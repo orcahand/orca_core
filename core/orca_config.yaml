@@ -1,0 +1,71 @@
+baudrate: 3000000
+port: /dev/tty.usbserial-FT4TFV01
+max_current: 350
+
+# current, velocity, position, multi-turn position, current_position
+control_mode: current_position
+
+motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+joint_ids: [thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip, wrist]
+
+# Which motor ID is physically connected to which joint
+joint_to_motor_map:
+  thumb_mcp: 8
+  thumb_abd: 13
+  thumb_pip: 14
+  thumb_dip: 7
+  index_abd: 12
+  index_mcp: 5
+  index_pip: 15
+  middle_abd: 2
+  middle_mcp: 6
+  middle_pip: 16
+  ring_abd: 11
+  ring_mcp: 1
+  ring_pip: 9
+  pinky_abd: 10
+  pinky_mcp: 3
+  pinky_pip: 4
+  wrist: 17
+
+joint_roms:
+  thumb_mcp: [-45, 45]
+  thumb_abd: [-40, 40]
+  thumb_pip: [-15, 110]
+  thumb_dip: [-20, 70]
+  index_abd: [-40, 40]
+  index_mcp: [-15, 110]
+  index_pip: [-15, 140]
+  middle_abd: [-40, 40]
+  middle_mcp: [-15, 110]
+  middle_pip: [-15, 140]
+  ring_abd: [-40, 40]
+  ring_mcp: [-15, 110]
+  ring_pip: [-15, 140]
+  pinky_abd: [-40, 40]
+  pinky_mcp: [-15, 110]
+  pinky_pip: [-15, 140]
+  wrist: [-60, 60]
+
+calib_current: 350
+calib_step_size: 0.1
+calib_step_period: 0.01
+calib_num_stable: 10  # should be period * num_stable > 1
+calib_threshold: 0.01
+
+calib_sequence:
+  - step: 1
+    joints:
+      index_abd: flex
+      #middle_abd: flex
+      #ring_abd: flex
+      #pinky_abd: flex
+      #thumb_abd: flex
+  - step: 2
+    joints:
+      index_abd: extend
+      #middle_abd: extend
+      #ring_abd: extend
+      #pinky_abd: extend
+      #thumb_abd: extend
+  

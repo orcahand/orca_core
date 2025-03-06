@@ -1,0 +1,20 @@
+[project]
+name = "orca_core"
+version = "0.1.0"
+description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
+authors = [
+    {name = "clemens-chr", email = "cchristoph@student.ethz.ch"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = "^3.10"
+dependencies = [
+    "dynamixel-sdk (>=3.7.31,<4.0.0)",
+    "pyyaml (>=6.0.2,<7.0.0)",
+    "numpy (>=2.2.3,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
