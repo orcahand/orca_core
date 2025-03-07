@@ -2,7 +2,7 @@ import unittest
 import os
 import numpy as np
 import yaml
-from core.utils.yaml import update_yaml, read_yaml
+from core.utils.yaml_utils import update_yaml, read_yaml
 
 class TestYamlFunctions(unittest.TestCase):
 

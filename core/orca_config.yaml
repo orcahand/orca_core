@@ -1,6 +1,6 @@
 baudrate: 3000000
 port: /dev/tty.usbserial-FT4TFV01
-max_current: 350
+max_current: 500
 
 # current, velocity, position, multi-turn position, current_position
 control_mode: current_position
@@ -30,26 +30,26 @@ joint_to_motor_map:
 
 joint_roms:
   thumb_mcp: [-45, 45]
-  thumb_abd: [-40, 40]
-  thumb_pip: [-15, 110]
-  thumb_dip: [-20, 70]
+  thumb_abd: [-65, 65]
+  thumb_pip: [-20, 140]
+  thumb_dip: [-20, 120]
   index_abd: [-40, 40]
-  index_mcp: [-15, 110]
-  index_pip: [-15, 140]
+  index_mcp: [-20, 120]
+  index_pip: [-20, 140]
   middle_abd: [-40, 40]
-  middle_mcp: [-15, 110]
-  middle_pip: [-15, 140]
+  middle_mcp: [-20, 120]
+  middle_pip: [-20, 140]
   ring_abd: [-40, 40]
-  ring_mcp: [-15, 110]
-  ring_pip: [-15, 140]
+  ring_mcp: [-20, 120]
+  ring_pip: [-20, 140]
   pinky_abd: [-40, 40]
-  pinky_mcp: [-15, 110]
-  pinky_pip: [-15, 140]
+  pinky_mcp: [-20, 120]
+  pinky_pip: [-20, 140]
   wrist: [-60, 60]
 
-calib_current: 350
-calib_step_size: 0.1
-calib_step_period: 0.01
+calib_current: 450
+calib_step_size: 0.3
+calib_step_period: 0.001
 calib_num_stable: 10  # should be period * num_stable > 1
 calib_threshold: 0.01
 
@@ -57,15 +57,47 @@ calib_sequence:
   - step: 1
     joints:
       index_abd: flex
-      #middle_abd: flex
-      #ring_abd: flex
-      #pinky_abd: flex
-      #thumb_abd: flex
+      middle_abd: flex
+      ring_abd: flex
+      pinky_abd: flex
+      thumb_abd: flex
   - step: 2
     joints:
       index_abd: extend
-      #middle_abd: extend
-      #ring_abd: extend
-      #pinky_abd: extend
-      #thumb_abd: extend
+      middle_abd: extend
+      ring_abd: extend
+      pinky_abd: extend
+      thumb_abd: extend
+  - step: 3
+    joints: 
+      index_mcp: flex
+      ring_mcp: flex
+      middle_pip: flex
+      pinky_pip: flex
+      thumb_dip: flex
+  - step: 4
+    joints:
+      index_mcp: extend
+      ring_mcp: extend
+      middle_pip: extend
+      pinky_pip: extend
+      thumb_dip: extend
+  - step: 5
+    joints:
+      index_pip: flex
+      ring_pip: flex
+      middle_mcp: flex
+      pinky_mcp: flex
+  - step: 6
+    joints:
+      index_pip: extend
+      ring_pip: extend
+      middle_mcp: extend
+      pinky_mcp: extend
+  - step: 7
+    joints:
+      thumb_mcp: flex
+  - step: 8
+    joints:
+      thumb_mcp: extend
   
