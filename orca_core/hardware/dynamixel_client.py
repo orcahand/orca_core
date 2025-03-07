@@ -18,7 +18,6 @@ import atexit
 import logging
 import time
 from typing import Optional, Sequence, Union, Tuple
-
 import numpy as np
 
 PROTOCOL_VERSION = 2.0

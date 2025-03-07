@@ -3,9 +3,8 @@ import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-import yaml
-from hardware.dynamixel_client import *
-from utils.yaml_utils import *
+from .hardware.dynamixel_client import *
+from .utils.yaml_utils import *
 
 class OrcaHand:
     """

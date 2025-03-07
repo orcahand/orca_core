@@ -23,7 +23,7 @@ To get started with Orca Core, follow these steps:
 
     ```python
     # Example usage
-    from core.core import OrcaHand
+    from orca_core import OrcaHand
 
     hand = OrcaHand()
     status = hand.connect()
