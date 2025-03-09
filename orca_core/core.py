@@ -3,14 +3,14 @@ import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-from .hardware.dynamixel_client import *
-from .utils.yaml_utils import *
+from hardware.dynamixel_client import *
+from utils.yaml_utils import *
 
 class OrcaHand:
     """
     OrcaHand class is used to abtract hardware control the hand of the robot with simple high level control methods in joint space. 
    """
-    def __init__(self, orca_config: str = "orca_config.yaml"):
+    def __init__(self, model_path: str = "models/orcahand_v1"):
         """
         Initialize the OrcaHand class.
 
@@ -19,8 +19,12 @@ class OrcaHand:
         """
         
         # Load configurations from the YAML files
-        self.config_path = os.path.join(os.path.dirname(__file__), orca_config)
-        self.calib_path = os.path.join(os.path.dirname(__file__), 'calibration.yaml')
+        self.model_path = model_path if model_path is not None else os.path.join(os.path.dirname(__file__), 'models', 'orcahand_v1')
+        self.config_path = os.path.join(self.model_path, "config.yaml")
+        self.urdf_path = os.path.join(self.model_path, "orcahand.urdf")
+        self.mjco_path = os.path.join(self.model_path, "orcahand.xml")
+        self.calib_path = os.path.join(self.model_path, "calibration.yaml")
+        
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
             
@@ -414,6 +418,8 @@ class OrcaHand:
 if __name__ == "__main__":
     # Example usage:
     hand = OrcaHand()
+    print(hand.model_path)#
+    print(hand.config_path)
     status = hand.connect()
     print(status)
     hand.enable_torque()

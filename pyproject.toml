@@ -7,13 +7,12 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = "^3.10"
+requires-python = ">=3.8"
 dependencies = [
     "dynamixel-sdk (>=3.7.31,<4.0.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
     "numpy (>=2.2.3,<3.0.0)",
 ]
-
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
