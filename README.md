@@ -1,3 +1,7 @@
+[![PyPI version](https://badge.fury.io/py/orca_core.svg)](https://badge.fury.io/py/orca_core)
+
+OrcaHand class is used to abstract hardware, control the hand of the robot with simple high-level control methods in joint space.
+
 # Orca Core
 
 OrcaHand class is used to abtract hardware, control the hand of the robot with simple high level control methods in joint space. 
