@@ -1,6 +1,6 @@
 [project]
 name = "orca_core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
 authors = [
     {name = "clemens-chr", email = "cchristoph@student.ethz.ch"}
