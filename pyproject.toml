@@ -7,11 +7,11 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "dynamixel-sdk (>=3.7.31,<4.0.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
-    "numpy (>=2.2.3,<3.0.0)",
+    "numpy<2", 
 ]
 
 [build-system]
