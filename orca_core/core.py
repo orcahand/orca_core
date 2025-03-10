@@ -3,8 +3,8 @@ import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-from hardware.dynamixel_client import *
-from utils.yaml_utils import *
+from .hardware.dynamixel_client import *
+from .utils.yaml_utils import *
 
 class OrcaHand:
     """
@@ -21,8 +21,8 @@ class OrcaHand:
         # Load configurations from the YAML files
         self.model_path = model_path if model_path is not None else os.path.join(os.path.dirname(__file__), 'models', 'orcahand_v1')
         self.config_path = os.path.join(self.model_path, "config.yaml")
-        self.urdf_path = os.path.join(self.model_path, "orcahand.urdf")
-        self.mjco_path = os.path.join(self.model_path, "orcahand.xml")
+        self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
+        self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
         self.calib_path = os.path.join(self.model_path, "calibration.yaml")
         
         config = read_yaml(self.config_path)
