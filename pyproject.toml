@@ -7,11 +7,13 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.10"
 dependencies = [
     "dynamixel-sdk (>=3.7.31,<4.0.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
-    "numpy<2", 
+    "numpy<2",
+    "torch (==2.2.0)",
+    "pytorch-kinematics (>=0.7.5,<0.8.0)", 
 ]
 
 [build-system]

@@ -10,22 +10,31 @@ class OrcaHand:
     """
     OrcaHand class is used to abtract hardware control the hand of the robot with simple high level control methods in joint space. 
    """
-    def __init__(self, model_path: str = "models/orcahand_v1"):
+    def __init__(self, model_path: str = None):
         """
         Initialize the OrcaHand class.
 
         Args:
             orca_config (str): The path to the orca_config.yaml file, which includes static information like ROMs, motor IDs, etc. 
         """
-        
+        # Find the model directory if not provided
+        if model_path is None:
+            models_dir = os.path.join(os.path.dirname(__file__), "models")
+            if not os.path.exists(models_dir):
+                raise FileNotFoundError("Models directory not found. Did you download them? If not find them at https://www.orcahand.com/downloads")
+            print(models_dir)
+            model_dirs = sorted(d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d)))
+            print(model_dirs)
+            if len(model_dirs) == 0:
+                raise FileNotFoundError("No model files found. Did you download them? If not find them at https://www.orcahand.com/downloads")
+            self.model_path = os.path.join(models_dir, model_dirs[0])
+        else:
+            self.model_path = model_path 
         # Load configurations from the YAML files
-        self.model_path = model_path if model_path is not None else os.path.join(os.path.dirname(__file__), 'models', 'orcahand_v1')
         self.config_path = os.path.join(self.model_path, "config.yaml")
         self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
         self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
         self.calib_path = os.path.join(self.model_path, "calibration.yaml")
-        self.hand_scheme_path = os.path.join(self.model_path, "hand_scheme.yaml")
-        self.retargeter
         
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
