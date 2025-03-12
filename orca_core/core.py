@@ -24,6 +24,8 @@ class OrcaHand:
         self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
         self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
         self.calib_path = os.path.join(self.model_path, "calibration.yaml")
+        self.hand_scheme_path = os.path.join(self.model_path, "hand_scheme.yaml")
+        self.retargeter
         
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
