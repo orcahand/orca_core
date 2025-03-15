@@ -11,6 +11,8 @@ from typing import Union
 import yaml
 from scipy.spatial.transform import Rotation
 from .utils.yaml_utils import *
+from .utils.load_utils import get_model_path
+from typing import List, Dict
 
 
 class Retargeter:
@@ -20,20 +22,29 @@ class Retargeter:
 
     def __init__(
         self,
-        hand: OrcaHand,
+        model_path: str = None,
         include_wrist_and_tower: bool = False,
 
     ) -> None:
         
-        self.hand: OrcaHand = hand
+        self.model_path = get_model_path(model_path)
+        
+        self.config_path = os.path.join(self.model_path, "config.yaml")
+        self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
+        self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
+        
+        config = read_yaml(self.config_path)
+        self.joint_ids: List[str] = config.get('joint_ids', [])
+        self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
+        
         assert (
-            int(hand.urdf_path is not None)
-            + int(hand.mjco_path is not None)
+            int(self.urdf_path is not None)
+            + int(self.mjco_path is not None)
         ) > 1, "One or more of urdf_path or mjco_path should be provided"
 
         self.device: str = "cuda" if torch.cuda.is_available() else "cpu"
         
-        self.retargeter_cfg_path = os.path.join(hand.model_path, "retargeter.yaml")
+        self.retargeter_cfg_path = os.path.join(self.model_path, "retargeter.yaml")
         print(self.retargeter_cfg_path)
         self.retargeter_cfg = read_yaml(self.retargeter_cfg_path)
         if self.retargeter_cfg is None:
@@ -46,7 +57,7 @@ class Retargeter:
         self.target_angles = None
         self.mano_adjustments = self.retargeter_cfg["mano_adjustments"]
 
-        self.hand_scheme_path = os.path.join(hand.model_path, "hand_scheme.yaml")
+        self.hand_scheme_path = os.path.join(self.model_path, "hand_scheme.yaml")
         self.hand_scheme = read_yaml(self.hand_scheme_path)
         if self.hand_scheme is None:
             raise ValueError(f"hand_scheme.yaml not found at {self.hand_scheme_path}") 
@@ -72,12 +83,12 @@ class Retargeter:
         print(f"GC_LIMITS_UPPER: {self.gc_limits_upper}")
 
         prev_cwd = os.getcwd()
-        os.chdir(hand.model_path)
-        if hand.urdf_path is not None:
+        os.chdir(self.model_path)
+        if self.urdf_path is not None:
             self.chain = pk.build_chain_from_urdf(open(hand.urdf_path).read()).to(
                 device=self.device
             )
-        elif hand.mjco_path is not None:
+        elif self.mjco_path is not None:
             self.chain = pk.build_chain_from_mjcf(open(hand.mjco_path).read()).to(
                 device=self.device
             )
