@@ -1,31 +1,31 @@
 import os
+import sys
 import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
 from .hardware.dynamixel_client import *
 from .utils.yaml_utils import *
+from .utils.load_utils import get_model_path
 
 class OrcaHand:
     """
     OrcaHand class is used to abtract hardware control the hand of the robot with simple high level control methods in joint space. 
    """
-    def __init__(self, model_path: str = "models/orcahand_v1"):
+    def __init__(self, model_path: str = None):
         """
         Initialize the OrcaHand class.
 
         Args:
             orca_config (str): The path to the orca_config.yaml file, which includes static information like ROMs, motor IDs, etc. 
         """
-        
+        # Find the model directory if not provided
+        self.model_path = get_model_path(model_path)
         # Load configurations from the YAML files
-        self.model_path = model_path if model_path is not None else os.path.join(os.path.dirname(__file__), 'models', 'orcahand_v1')
         self.config_path = os.path.join(self.model_path, "config.yaml")
         self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
         self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
         self.calib_path = os.path.join(self.model_path, "calibration.yaml")
-        self.hand_scheme_path = os.path.join(self.model_path, "hand_scheme.yaml")
-        self.retargeter
         
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
@@ -222,12 +222,22 @@ class OrcaHand:
         self.set_control_mode(self.control_mode)
         self.set_max_current(self.max_current)
 
-        
-        if not self.is_calibrated or calibrate:
+        if not self.calibrated or calibrate:
             self.calibrate()
    
         self.set_joint_pos({joint: 0 for joint in self.joint_ids})
-                             
+                   
+    def is_calibrated(self) -> bool:
+        """
+        Check if the hand is calibrated.
+        Returns:
+            bool: True if calibrated, False otherwise.
+        """
+        for motor_limit in self.motor_limits.values():
+            if any(limit is None for limit in motor_limit):
+                return False
+        return True
+              
     def calibrate(self):
         """
         Calibrate the hand by moving the joints to their limits and setting the ROMs. The proecess is hardware independent and is defined in the config.yaml file.
@@ -252,9 +262,7 @@ class OrcaHand:
                 current_log[motor_id] = []
                 motor_reached_limit[motor_id] = False
             
-            while(not all(motor_reached_limit.values())):
-                prev_pos = self.get_motor_pos()
-                
+            while(not all(motor_reached_limit.values())):                
                 for motor_id, reached_limit in motor_reached_limit.items():
                     if not reached_limit:
                         desired_increment[motor_id] = directions[motor_id] * self.calib_step_size
@@ -289,29 +297,76 @@ class OrcaHand:
                 
                 # Zero all joints that have been calibrated during this step
                 calibrated_joints[self.motor_to_joint_map[motor_id]] = 0
-            
-            # save the position logs in a separate file
-            # update_yaml(self.calib_path, 'position_logs', position_logs)
-            # update_yaml(self.calib_path, 'current_logs', current_log)
+
             
             update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
             update_yaml(self.calib_path, 'motor_limits', motor_limits)
             self.motor_limits = motor_limits
             self.set_joint_pos(calibrated_joints)
-            
             time.sleep(1)    
             
-        # Store the calibration results
-     
-        
-        update_yaml(self.calib_path, 'calibrated', True)
-        self.is_calibrated = True
-        
-        
+        print("Is fully calibrated: ", self.is_calibrated())
+        self.calibrated = self.is_calibrated()
+        update_yaml(self.calib_path, 'calibrated', self.calibrated)
         self.set_joint_pos(calibrated_joints)
-        
         self.set_max_current(self.max_current)
        
+    def calibrate_manual(self):
+        """
+        Calibrate the hand manually by moving the joints to their limits
+        """
+        self.disable_torque()
+        
+        calibrated_joints = {}
+        for i, step in enumerate(self.calib_sequence, start=1):
+            for joint, _ in step["joints"].items():  
+                motor_id = self.joint_to_motor_map[joint]
+                print(f"Progress: {i}/{len(self.calib_sequence)}")
+                print(f"\033[1;35mPlease flex joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
+                input()
+                self.motor_limits[motor_id][1] = float(self.get_motor_pos()[motor_id - 1])
+                print(f"\033[1;35mPlease extend the joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
+                input()
+                self.motor_limits[motor_id][0] = float(self.get_motor_pos()[motor_id - 1])
+
+                delta_motor = self.motor_limits[motor_id][1] - self.motor_limits[motor_id][0]
+                delta_joint = self.joint_roms[self.motor_to_joint_map[motor_id]][1] - self.joint_roms[self.motor_to_joint_map[motor_id]][0]
+                self.joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint) 
+                calibrated_joints[self.motor_to_joint_map[motor_id]] = 0
+            
+                print(f"Joint {joint} calibrated. Motor limits: {self.motor_limits[motor_id]} rad. Ratio: {self.joint_to_motor_ratios[motor_id]}")
+                update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
+                update_yaml(self.calib_path, 'motor_limits', self.motor_limits)
+                
+                count = 0
+                while count < 5:
+                    curr_pos = self.get_motor_pos()[motor_id - 1]
+                    print(f"\rMotor Pos: {curr_pos}, Joint Pos: {self.get_joint_pos()[joint]}")
+                    #sys.stdout.write(f"\rMotor Pos: {curr_pos:.4f}, Joint Pos: {self._motor_to_joint_pos([curr_pos]):.4f}")
+                    #sys.stdout.flush()
+                    time.sleep(1)
+                    count += 1
+                    print(count)
+                    
+                
+        self.enable_torque()
+        update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
+        update_yaml(self.calib_path, 'motor_limits', self.motor_limits)
+        print("Is fully calibrated: ", self.is_calibrated())
+        self.calibrated = self.is_calibrated()
+        update_yaml(self.calib_path, 'calibrated', self.calibrated)
+        
+        print("\033[1;33mMove away from the hand. Setting joints to 0 in:\033[0m")
+        for i in range(3, 0, -1):
+            print(f"\033[1;33m{i}\033[0m")
+            time.sleep(1)
+            
+        self.set_joint_pos(calibrated_joints)
+        time.sleep(1)
+        self.set_max_current(self.max_current)
+        
+        
+    
     def _set_motor_pos(self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False):
         """
         Set the desired motor positions in radians.
@@ -354,9 +409,10 @@ class OrcaHand:
         joint_pos = {}
         for motor_id, pos in enumerate(motor_pos, start=1):
             joint_name = self.motor_to_joint_map.get(motor_id)
-            if joint_name is None:
-                continue
-            joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+            if any(limit is None for limit in self.motor_limits[motor_id]):
+                joint_pos[joint_name] = None
+            else:
+                joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
         return joint_pos
     
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
@@ -376,7 +432,6 @@ class OrcaHand:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
             motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]
             
-            print(f"Joint {joint_name} set to {pos} deg. Motor limit: {self.motor_limits[motor_id]} rad. Motor pos: {motor_pos[motor_id - 1]} rad and ratio {self.joint_to_motor_ratios[motor_id]}")
             
         return motor_pos
                
@@ -416,7 +471,28 @@ class OrcaHand:
                     raise ValueError(f"Joint {joint} is not defined.")
                 if direction not in ['flex', 'extend']:
                     raise ValueError(f"Invalid direction for joint {joint}.")
+          
+        
+        for motor_limit in self.motor_limits.values():
+            if any(limit is None for limit in motor_limit):
+                self.calibrated = False
+                update_yaml(self.calib_path, 'calibrated', False)
                 
+
+def require_connection(func):
+    def wrapper(self, *args, **kwargs):
+        if not self._dxl_client.is_connected():
+            raise RuntimeError("Hand is not connected.")
+        return func(self, *args, **kwargs)
+    return wrapper
+
+def require_calibration(func):
+    def wrapper(self, *args, **kwargs):
+        if not self.calibrated:
+            raise RuntimeError("Hand is not calibrated. Please run .calibrate() first.")
+        return func(self, *args, **kwargs)
+    return wrapper
+
 if __name__ == "__main__":
     # Example usage:
     hand = OrcaHand()

@@ -1,9 +1,10 @@
 baudrate: 3000000
-port: /dev/tty.usbserial-FT4TFV01
+port: /dev/ttyUSB0 # linux
+#port: /dev/tty.usbserial-FT4TFV01 # mac
 max_current: 500
 
-# current, velocity, position, multi-turn position, current_position
-control_mode: current_position
+# current, velocity, position, multi-turn- position, current_based_position
+control_mode: current_based_position
 
 motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 joint_ids: [thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip, wrist]
@@ -53,51 +54,74 @@ calib_step_period: 0.001
 calib_num_stable: 10  # should be period * num_stable > 1
 calib_threshold: 0.01
 
+# calib_sequence:
+#   - step: 1
+#     joints:
+#       index_abd: flex
+#       middle_abd: flex
+#       ring_abd: flex
+#       pinky_abd: flex
+#       thumb_abd: flex
+#   - step: 2
+#     joints:
+#       index_abd: extend
+#       middle_abd: extend
+#       ring_abd: extend
+#       pinky_abd: extend
+#       thumb_abd: extend
+#   - step: 3
+#     joints: 
+#       index_mcp: flex
+#       ring_mcp: flex
+#       middle_pip: flex
+#       pinky_pip: flex
+#       thumb_dip: flex
+#   - step: 4
+#     joints:
+#       index_mcp: extend
+#       ring_mcp: extend
+#       middle_pip: extend
+#       pinky_pip: extend
+#       thumb_dip: extend
+#   - step: 5
+#     joints:
+#       index_pip: flex
+#       ring_pip: flex
+#       middle_mcp: flex
+#       pinky_mcp: flex
+#   - step: 6
+#     joints:
+#       index_pip: extend
+#       ring_pip: extend
+#       middle_mcp: extend
+#       pinky_mcp: extend
+#   - step: 7
+#     joints:
+#       thumb_mcp: flex
+#   - step: 8
+#     joints:
+#       thumb_mcp: extend
+  
+
+
 calib_sequence:
   - step: 1
     joints:
-      index_abd: flex
-      middle_abd: flex
-      ring_abd: flex
-      pinky_abd: flex
-      thumb_abd: flex
-  - step: 2
-    joints:
-      index_abd: extend
-      middle_abd: extend
-      ring_abd: extend
-      pinky_abd: extend
-      thumb_abd: extend
-  - step: 3
-    joints: 
-      index_mcp: flex
-      ring_mcp: flex
-      middle_pip: flex
-      pinky_pip: flex
-      thumb_dip: flex
-  - step: 4
-    joints:
-      index_mcp: extend
-      ring_mcp: extend
-      middle_pip: extend
-      pinky_pip: extend
-      thumb_dip: extend
-  - step: 5
-    joints:
-      index_pip: flex
-      ring_pip: flex
-      middle_mcp: flex
-      pinky_mcp: flex
-  - step: 6
-    joints:
-      index_pip: extend
-      ring_pip: extend
-      middle_mcp: extend
-      pinky_mcp: extend
-  - step: 7
-    joints:
-      thumb_mcp: flex
-  - step: 8
-    joints:
-      thumb_mcp: extend
-  
+      # index_abd: flex
+      # middle_abd: flex
+      # ring_abd: flex
+      # pinky_abd: flex
+
+      # index_pip: flex
+      # middle_pip: flex
+      # ring_pip: flex
+      # pinky_pip: flex
+      # index_mcp: flex
+      # middle_mcp: flex
+      # ring_mcp: flex
+      # pinky_mcp: flex
+
+      wrist: flex
+
+      
+

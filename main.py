@@ -1,11 +1,10 @@
-from orca_core import OrcaHand
+from orca_core import OrcaHand, Retargeter
 
 hand = OrcaHand()
 status = hand.connect()
 print(status)
-hand.calibrate()
+hand.calibrate_manual()
 
 # Set the desired joint positions to 0
-hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
-hand.disable_torque()
-hand.disconnect()
+# hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+

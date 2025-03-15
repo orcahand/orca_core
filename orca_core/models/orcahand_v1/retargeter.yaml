@@ -1,0 +1,31 @@
+lr: 2.5
+use_scalar_distance_palm: False
+loss_coeffs: [5.0, 5.0, 5.0, 5.0, 5.0,]
+
+joint_regularizers:  # tuples (joint_name, zero_value, weight) for regularizing joints to zero
+  - [index_abd, 0,  0.000001]
+  - [middle_abd, 0, 0.000001]
+  - [ring_abd, 0, 0.000001]
+  - [pinky_abd, 0, 0.000001]
+
+mano_adjustments:
+  thumb: 
+    translation : [0.0, 0.0, 0.0]
+    rotation : [0.0, 0.5, -0.5]
+    scale : [1.0, 1.0, 1.0]
+  index:
+    translation : [0.0, 0.0, 0.0]
+    rotation : [0.0, 0.0, -0.2]
+    scale : [1.1, 1.1, 1.1]
+  middle:
+    translation : [0.0, 0.0, 0.0]
+    rotation : [0.0, 0.0, 0.0]
+    scale : [1.1, 1.1, 1.1]
+  ring:
+    translation : [0.0, 0.0, 0.0]
+    rotation : [0.0, 0.0, 0.0]
+    scale : [1.1, 1.1, 1.1]
+  pinky: 
+    translation : [0.0, 0.0, 0.0]
+    rotation : [0.0, 0.0, 0.0]
+    scale : [1.1, 1.1, 1.1]
