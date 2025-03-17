@@ -24,7 +24,6 @@ def update_yaml(file_path, key, value):
 
 def read_yaml(file_path):
     """Reads a YAML file and returns its content."""
-    print(file_path)
     try:
         with open(file_path, 'r') as file:
             return yaml.safe_load(file) or None
