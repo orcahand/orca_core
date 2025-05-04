@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 from typing import Dict, List, Union
 from collections import deque
@@ -207,26 +208,44 @@ class OrcaHand:
         with self._motor_lock:
             return self._dxl_client.read_temperature()
 
-    def get_joint_pos(self) -> dict:
+    def get_joint_pos(self, as_list: bool = True) -> Union[dict, list]:
         """
         Get the current joint positions.
+    
+        Args:
+            as_list (bool): If True, return the joint positions as a list in the order of joint_ids.
+                            If False, return the joint positions as a dictionary.
+    
         Returns:
-            dict: {joint_name: position}
+            Union[dict, list]: Joint positions as a list [position1, position2, ...] in the order of joint_ids
+                               or as a dictionary {joint_name: position}.
         """
         motor_pos = self.get_motor_pos()
         joint_pos = self._motor_to_joint_pos(motor_pos)
+    
+        if as_list:
+            return [joint_pos[joint] for joint in self.joint_ids]
+    
         return joint_pos
          
-    def set_joint_pos(self, joint_pos: dict):
+    def set_joint_pos(self, joint_pos: Union[dict, list]):
         """
         Set the desired joint positions.
-        
+    
         Parameters:
-        - joint_pos (dict): {joint_name: desired_position}
+        - joint_pos (dict or list): If dict, it should be {joint_name: desired_position}.
+                                    If list, it should contain positions in the order of joint_ids.
         """
-        if not isinstance(joint_pos, dict):
-            raise ValueError("joint_pos must be a dict.")
-        motor_pos = self._joint_to_motor_pos(joint_pos)
+        if isinstance(joint_pos, dict):
+            motor_pos = self._joint_to_motor_pos(joint_pos)
+        elif isinstance(joint_pos, list):
+            if len(joint_pos) != len(self.joint_ids):
+                raise ValueError("Length of joint_pos list must match the number of joint_ids.")
+            joint_pos_dict = {joint: pos for joint, pos in zip(self.joint_ids, joint_pos)}
+            motor_pos = self._joint_to_motor_pos(joint_pos_dict)
+        else:
+            raise ValueError("joint_pos must be a dict or a list.")
+    
         self._set_motor_pos(motor_pos)
         
     def init_joints(self, calibrate: bool = False
@@ -320,7 +339,7 @@ class OrcaHand:
                 self.joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint) 
                 
                 # Zero all joints that have been calibrated during this step
-                calibrated_joints[self.motor_to_joint_map[motor_id]] = 0
+                calibrated_joints[self.motor_to_joint_map[motor_id]] = 0.0
 
             
             update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
@@ -336,59 +355,74 @@ class OrcaHand:
         self.set_max_current(self.max_current)
        
     def calibrate_manual(self):
-        """
-        Calibrate the hand manually by moving the joints to their limits
-        """
         self.disable_torque()
-        
+
         calibrated_joints = {}
+        motor_limits = self.motor_limits.copy()
+
         for i, step in enumerate(self.calib_sequence, start=1):
-            for joint, _ in step["joints"].items():  
+            for joint, _ in step["joints"].items():
                 motor_id = self.joint_to_motor_map[joint]
+
                 print(f"Progress: {i}/{len(self.calib_sequence)}")
                 print(f"\033[1;35mPlease flex joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
                 input()
-                self.motor_limits[motor_id][1] = float(self.get_motor_pos()[motor_id - 1])
+                flex_position = float(self.get_motor_pos()[motor_id - 1])
+                motor_limits[motor_id][1] = flex_position
+
                 print(f"\033[1;35mPlease extend the joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
                 input()
-                self.motor_limits[motor_id][0] = float(self.get_motor_pos()[motor_id - 1])
+                extend_position = float(self.get_motor_pos()[motor_id - 1])
+                motor_limits[motor_id][0] = extend_position
+                
+                delta_motor = abs(motor_limits[motor_id][1] - motor_limits[motor_id][0])
+                delta_joint = abs(self.joint_roms[joint][1] - self.joint_roms[joint][0])
+                self.joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
 
-                delta_motor = self.motor_limits[motor_id][1] - self.motor_limits[motor_id][0]
-                delta_joint = self.joint_roms[self.motor_to_joint_map[motor_id]][1] - self.joint_roms[self.motor_to_joint_map[motor_id]][0]
-                self.joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint) 
-                calibrated_joints[self.motor_to_joint_map[motor_id]] = 0
-            
-                print(f"Joint {joint} calibrated. Motor limits: {self.motor_limits[motor_id]} rad. Ratio: {self.joint_to_motor_ratios[motor_id]}")
+                calibrated_joints[joint] = 0.0
+
+                print(f"Joint {joint} calibrated. Motor limits: {motor_limits[motor_id]} rad. Ratio: {self.joint_to_motor_ratios[motor_id]}")
                 update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
-                update_yaml(self.calib_path, 'motor_limits', self.motor_limits)
-                
-                count = 0
-                while count < 5:
+                update_yaml(self.calib_path, 'motor_limits', motor_limits)
+
+                stop_flag = False
+
+                def wait_for_enter_local():
+                    nonlocal stop_flag
+                    input()
+                    stop_flag = True
+
+                thread = threading.Thread(target=wait_for_enter_local, daemon=True)
+                thread.start()
+
+                while not stop_flag:
                     curr_pos = self.get_motor_pos()[motor_id - 1]
-                    print(f"\rMotor Pos: {curr_pos}, Joint Pos: {self.get_joint_pos()[joint]}")
-                    #sys.stdout.write(f"\rMotor Pos: {curr_pos:.4f}, Joint Pos: {self._motor_to_joint_pos([curr_pos]):.4f}")
-                    #sys.stdout.flush()
-                    time.sleep(1)
-                    count += 1
-                    print(count)
-                    
-                
-        self.enable_torque()
-        update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
+                    joint_pos = self.get_joint_pos()[joint]
+                    print(f"\rMotor Pos: {curr_pos}, Joint Pos: {joint_pos}", end="")
+                    time.sleep(0.01)
+
+                print()
+
+        self.motor_limits.update(motor_limits)
         update_yaml(self.calib_path, 'motor_limits', self.motor_limits)
+        update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
+
+        self.set_joint_pos(calibrated_joints)
+        time.sleep(1)
+        self.set_max_current(self.max_current)
+
         print("Is fully calibrated: ", self.is_calibrated())
         self.calibrated = self.is_calibrated()
         update_yaml(self.calib_path, 'calibrated', self.calibrated)
-        
+
         print("\033[1;33mMove away from the hand. Setting joints to 0 in:\033[0m")
         for i in range(3, 0, -1):
             print(f"\033[1;33m{i}\033[0m")
             time.sleep(1)
-            
+
         self.set_joint_pos(calibrated_joints)
         time.sleep(1)
-        self.set_max_current(self.max_current)
-        
+
         
     def _set_motor_pos(self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False):
         """
