@@ -3,6 +3,54 @@ from typing import Dict
 import torch
 import numpy as np
 
+def preprocess_avp_data(data):
+        
+    
+    wrist = data["right_wrist"]
+    right_fingers = data["right_fingers"]
+    
+    wrist_angle, _, _ = compute_roll_pitch_yaw(wrist)
+    translations = right_fingers[:, :3, 3]
+    indices_to_remove = [5, 10, 15, 20]
+    translations = np.delete(translations, indices_to_remove, axis=0)
+    
+    # Add the first index to the beginning of the translations
+    first_row = translations[0:1]  # Extract the first row
+    translations = np.vstack((first_row, translations))  # Prepend the first row
+    
+    return translations, wrist_angle
+    
+def compute_roll_pitch_yaw(rotation_matrix):
+    """
+    Compute roll, pitch, and yaw angles from a 4x4 rotation matrix.
+
+    Args:
+        rotation_matrix (np.ndarray): A 4x4 rotation matrix.
+
+    Returns:
+        tuple: (roll, pitch, yaw) angles in radians.
+    """
+    rotation_matrix = np.squeeze(rotation_matrix)
+    # Extract the 3x3 rotation matrix from the 4x4 matrix
+    R = rotation_matrix[:3, :3]
+
+    # Compute pitch (theta)
+    pitch = -np.arcsin(R[2, 0])
+
+    # Handle gimbal lock
+    if np.abs(R[2, 0]) != 1.0:
+        # Compute roll (phi) and yaw (psi)
+        roll = np.arctan2(R[2, 1], R[2, 2])
+        yaw = np.arctan2(R[1, 0], R[0, 0])
+    else:
+        # Gimbal lock: pitch is ±90 degrees
+        yaw = 0
+        if R[2, 0] == -1:
+            roll = np.arctan2(-R[0, 1], -R[0, 2])
+        else:
+            roll = np.arctan2(R[0, 1], R[0, 2])
+
+    return roll, pitch, yaw
 
 def get_mano_joints_dict(
     joints: torch.Tensor, include_wrist=False, batch_processing=False
