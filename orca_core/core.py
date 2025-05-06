@@ -323,12 +323,19 @@ class OrcaHand:
                         # Check if buffer is full and all values are close
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
-                            avg_limit = float(np.mean(position_buffers[motor_id]))
+                            # disable torque for the motor
+                            if motor_id == 'wrist':
+                                avg_limit = float(np.mean(position_buffers[motor_id]))
+                            else:
+                                self.disable_torque([motor_id])
+                                time.sleep(0.1)
+                                avg_limit = float(self.get_motor_pos()[motor_id - 1])
                             print(f"Motor {motor_id} corresponding to joint {self.motor_to_joint_map[motor_id]} reached the limit at {avg_limit} rad.")
                             if directions[motor_id] == 1:
                                 motor_limits[motor_id][1] = avg_limit
                             if directions[motor_id] == -1:
                                 motor_limits[motor_id][0] = avg_limit
+                            self.enable_torque([motor_id])
                 
             # find ratios of all motors that have been calibrated
             for motor_id, limits in motor_limits.items():

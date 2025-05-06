@@ -43,8 +43,8 @@ def main():
     print("Torque enabled. Starting replay...")
 
     # --- Parameters ---
-    interp_time = 1      # seconds between waypoints
-    step_time = 0.05     # timestep for interpolation
+    interp_time = 0.15     # seconds between waypoints
+    step_time = 0.02     # timestep for interpolation
     mode = "ease_in_out" # can be "linear" or "ease_in_out"
 
     try:
