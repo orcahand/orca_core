@@ -496,10 +496,7 @@ def require_calibration(func):
 if __name__ == "__main__":
     # Example usage:
     hand = OrcaHand()
-    print(hand.model_path)#
-    print(hand.config_path)
     status = hand.connect()
-    print(status)
     hand.enable_torque()
     hand.calibrate()
 

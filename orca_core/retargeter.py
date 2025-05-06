@@ -23,8 +23,9 @@ class Retargeter:
     def __init__(
         self,
         model_path: str = None,
+        source: str = "apple-vision-pro",
         include_wrist_and_tower: bool = False,
-
+        
     ) -> None:
         
         self.model_path = get_model_path(model_path)
@@ -37,6 +38,11 @@ class Retargeter:
         self.joint_ids: List[str] = config.get('joint_ids', [])
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
         
+        if source == "apple-vision-pro":
+            self.num_mano_points = 22
+        if source == "rokoko":
+            self.num_mano_points = 21
+            
         assert (
             int(self.urdf_path is not None)
             + int(self.mjco_path is not None)
@@ -63,8 +69,8 @@ class Retargeter:
             raise ValueError(f"hand_scheme.yaml not found at {self.hand_scheme_path}") 
         
         self.include_wrist_and_tower = include_wrist_and_tower
-        tendons_to_joints = self.hand_scheme["gc_tendons_to_joint_ids"]
-        joints_to_tendons = {v: k for k, v in tendons_to_joints.items()}
+        self.tendons_to_joints = self.hand_scheme["gc_tendons_to_joint_ids"]
+        self.joints_to_tendons = {v: k for k, v in self.tendons_to_joints.items()}
         self.wrist_name = self.hand_scheme["wrist_name"]
         
         self.gc_tendons =  self.hand_scheme["gc_tendons"]
@@ -74,10 +80,10 @@ class Retargeter:
         self.gc_limits_lower = []
         self.gc_limits_upper = []
         for tendon in self.gc_tendons:
-            assert tendon in tendons_to_joints, f"{tendon} not found in tendons_to_joints"
-            joint = tendons_to_joints[tendon]
-            self.gc_limits_lower.append(hand.joint_roms[joint][0])
-            self.gc_limits_upper.append(hand.joint_roms[joint][1])
+            assert tendon in self.tendons_to_joints, f"{tendon} not found in tendons_to_joints"
+            joint = self.tendons_to_joints[tendon]
+            self.gc_limits_lower.append(self.joint_roms[joint][0])
+            self.gc_limits_upper.append(self.joint_roms[joint][1])
             
         print(f"GC_LIMITS_LOWER: {self.gc_limits_lower}")
         print(f"GC_LIMITS_UPPER: {self.gc_limits_upper}")
@@ -85,11 +91,11 @@ class Retargeter:
         prev_cwd = os.getcwd()
         os.chdir(self.model_path)
         if self.urdf_path is not None:
-            self.chain = pk.build_chain_from_urdf(open(hand.urdf_path).read()).to(
+            self.chain = pk.build_chain_from_urdf(open(self.urdf_path).read()).to(
                 device=self.device
             )
         elif self.mjco_path is not None:
-            self.chain = pk.build_chain_from_mjcf(open(hand.mjco_path).read()).to(
+            self.chain = pk.build_chain_from_mjcf(open(self.mjco_path).read()).to(
                 device=self.device
             )
         os.chdir(prev_cwd)
@@ -102,8 +108,8 @@ class Retargeter:
         self.regularizer_zeros = torch.zeros(self.n_tendons).to(self.device)
         self.regularizer_weights = torch.zeros(self.n_tendons).to(self.device)
         for joint_name, zero_value, weight in self.joint_regularizers:
-            self.regularizer_zeros[self.tendon_names.index(joints_to_tendons[joint_name])] = zero_value
-            self.regularizer_weights[self.tendon_names.index(joints_to_tendons[joint_name])] = weight
+            self.regularizer_zeros[self.tendon_names.index(self.joints_to_tendons[joint_name])] = zero_value
+            self.regularizer_weights[self.tendon_names.index(self.joints_to_tendons[joint_name])] = weight
 
         # self.opt = torch.optim.Adam([self.gc_joints], lr=self.lr)
         self.opt = torch.optim.RMSprop([self.gc_joints], lr=self.lr)
@@ -384,6 +390,14 @@ class Retargeter:
 
 
     def retarget(self, joints, debug_dict=None):
+        
+        # return fake values now for the hand
+        commanded_joint_dict = {joint: 0.0 for joint in self.joint_ids}
+        return commanded_joint_dict
+        
+        
+        
+        
         normalized_joint_pos, mano_center_and_rot = (
             retarget_utils.normalize_points_to_hands_local(joints)
         )
