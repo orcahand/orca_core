@@ -118,3 +118,5 @@ dmypy.json
 .pyre/
 
 urdf/
+
+orca_core/models/
