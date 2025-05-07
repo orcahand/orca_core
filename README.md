@@ -1,4 +1,5 @@
 [![PyPI version](https://badge.fury.io/py/orca_core.svg)](https://badge.fury.io/py/orca_core)
+[![GitHub stars](https://img.shields.io/github/stars/orcahand/orca_core.svg?style=social)](https://github.com/yourusername/orca_core/stargazers)
 
 OrcaHand class is used to abstract hardware, control the hand of the robot with simple high-level control methods in joint space.
 
