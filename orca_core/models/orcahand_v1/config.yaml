@@ -1,9 +1,8 @@
 baudrate: 3000000
-port: /dev/ttyUSB0 # linux
-#port: /dev/tty.usbserial-FT4TFV01 # mac
+port: "/dev/ttyUSB0"
 max_current: 500
 
-# current, velocity, position, multi-turn- position, current_based_position
+# current, velocity, position, multi-turn position, current_based_position
 control_mode: current_based_position
 
 motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
@@ -11,22 +10,22 @@ joint_ids: [thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, in
 
 # Which motor ID is physically connected to which joint
 joint_to_motor_map:
-  thumb_mcp: 8
-  thumb_abd: 13
-  thumb_pip: 14
-  thumb_dip: 7
-  index_abd: 12
-  index_mcp: 5
-  index_pip: 15
-  middle_abd: 2
-  middle_mcp: 6
-  middle_pip: 16
-  ring_abd: 11
-  ring_mcp: 1
-  ring_pip: 9
-  pinky_abd: 10
-  pinky_mcp: 3
-  pinky_pip: 4
+  thumb_mcp: 7
+  thumb_abd: -9
+  thumb_pip: 6
+  thumb_dip: 8
+  index_abd: 1
+  index_mcp: 10
+  index_pip: 5
+  middle_abd: 12
+  middle_mcp: 11
+  middle_pip: 2
+  ring_abd: 16
+  ring_mcp: 3
+  ring_pip: 15
+  pinky_abd: 4
+  pinky_mcp: 14
+  pinky_pip: 13
   wrist: 17
 
 joint_roms:
@@ -48,80 +47,68 @@ joint_roms:
   pinky_pip: [-20, 140]
   wrist: [-60, 60]
 
-calib_current: 450
+calib_current: 300
 calib_step_size: 0.3
 calib_step_period: 0.001
 calib_num_stable: 10  # should be period * num_stable > 1
 calib_threshold: 0.01
 
-# calib_sequence:
-#   - step: 1
-#     joints:
-#       index_abd: flex
-#       middle_abd: flex
-#       ring_abd: flex
-#       pinky_abd: flex
-#       thumb_abd: flex
-#   - step: 2
-#     joints:
-#       index_abd: extend
-#       middle_abd: extend
-#       ring_abd: extend
-#       pinky_abd: extend
-#       thumb_abd: extend
-#   - step: 3
-#     joints: 
-#       index_mcp: flex
-#       ring_mcp: flex
-#       middle_pip: flex
-#       pinky_pip: flex
-#       thumb_dip: flex
-#   - step: 4
-#     joints:
-#       index_mcp: extend
-#       ring_mcp: extend
-#       middle_pip: extend
-#       pinky_pip: extend
-#       thumb_dip: extend
-#   - step: 5
-#     joints:
-#       index_pip: flex
-#       ring_pip: flex
-#       middle_mcp: flex
-#       pinky_mcp: flex
-#   - step: 6
-#     joints:
-#       index_pip: extend
-#       ring_pip: extend
-#       middle_mcp: extend
-#       pinky_mcp: extend
-#   - step: 7
-#     joints:
-#       thumb_mcp: flex
-#   - step: 8
-#     joints:
-#       thumb_mcp: extend
-  
-
-
 calib_sequence:
   - step: 1
     joints:
-      # index_abd: flex
-      # middle_abd: flex
-      # ring_abd: flex
-      # pinky_abd: flex
-
-      # index_pip: flex
-      # middle_pip: flex
-      # ring_pip: flex
-      # pinky_pip: flex
-      # index_mcp: flex
-      # middle_mcp: flex
-      # ring_mcp: flex
-      # pinky_mcp: flex
-
+      index_abd: flex
+      middle_abd: flex
+      ring_abd: flex
+      pinky_abd: flex
+      thumb_abd: flex
+      thumb_mcp: flex # Wrong spooling on Zurich Hand
+      thumb_pip: extend
+  - step: 2
+    joints:
+      index_abd: extend
+      middle_abd: extend
+      ring_abd: extend
+      pinky_abd: extend
+      thumb_abd: extend
+  - step: 3
+    joints: 
+      index_mcp: flex
+      ring_mcp: flex
+      middle_pip: flex
+      pinky_pip: flex
+      thumb_dip: flex
+  - step: 4
+    joints:
+      index_mcp: extend
+      ring_mcp: extend
+      middle_pip: extend
+      pinky_pip: extend
+      thumb_dip: extend
+  - step: 5
+    joints:
+      index_pip: flex
+      ring_pip: flex
+      middle_mcp: flex
+      pinky_mcp: flex
+  - step: 6
+    joints:
+      index_pip: extend
+      ring_pip: extend
+      middle_mcp: extend
+      pinky_mcp: extend
+  - step: 7
+    joints:
+      thumb_mcp: extend # Wrong spooling on Zurich Hand
+  - step: 8
+    joints:
+      thumb_mcp: flex  # Wrong spooling on Zurich Hand
+      thumb_pip: flex
+  - step: 9
+    joints:
+      thumb_pip: extend  
+  - step: 10
+    joints:
       wrist: flex
-
-      
-
+  - step: 11
+    joints:
+      wrist: extend

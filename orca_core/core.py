@@ -4,9 +4,9 @@ import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-from .hardware.dynamixel_client import *
-from .utils.yaml_utils import *
-from .utils.load_utils import get_model_path
+from hardware.dynamixel_client import *
+from utils.yaml_utils import *
+from utils.load_utils import get_model_path
 
 class OrcaHand:
     """
@@ -48,9 +48,18 @@ class OrcaHand:
         self.motor_ids: List[int] = config.get('motor_ids', [])
         self.joint_ids: List[str] = config.get('joint_ids', [])
         self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
-        self.motor_to_joint_map: Dict[int, str] = {v: k for k, v in self.joint_to_motor_map.items()}
+        self.motor_to_joint_map: Dict[int, str] = {abs(v): k for k, v in self.joint_to_motor_map.items()}
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
-               
+
+        self.joint_inversion = {}  # True if the motor is inverted
+        for joint, motor_id in self.joint_to_motor_map.items():
+            if motor_id < 0:
+                self.joint_inversion[joint] = True
+                self.joint_to_motor_map[joint] = abs(motor_id)
+            else:
+                self.joint_inversion[joint] = False
+
+
         self._dxl_client: DynamixelClient = None
         self._motor_lock: RLock = RLock()
         
@@ -257,6 +266,9 @@ class OrcaHand:
             for joint, direction in step["joints"].items():          
                 motor_id = self.joint_to_motor_map[joint]
                 directions[motor_id] = 1 if direction == 'flex' else -1
+                if self.joint_inversion.get(joint, False):
+                    directions[motor_id] = -directions[motor_id]
+
                 position_buffers[motor_id] = deque(maxlen=self.calib_num_stable)
                 position_logs[motor_id] = []
                 current_log[motor_id] = []
@@ -412,7 +424,12 @@ class OrcaHand:
             if any(limit is None for limit in self.motor_limits[motor_id]):
                 joint_pos[joint_name] = None
             else:
-                joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+                # joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+                if self.joint_inversion.get(joint_name, False):
+                    joint_pos[joint_name] = self.joint_roms[joint_name][1] - (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+                else:
+                    joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+        
         return joint_pos
     
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
@@ -430,7 +447,14 @@ class OrcaHand:
                 continue
             if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
-            motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]
+            
+            if self.joint_inversion.get(joint_name, False):
+                # Inverted: higher ROM value corresponds to lower motor position.
+                motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (self.joint_roms[joint_name][1] - pos) * self.joint_to_motor_ratios[motor_id]
+            else:
+                motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]  
+            
+            # motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]
             
             
         return motor_pos
@@ -498,10 +522,17 @@ if __name__ == "__main__":
     hand = OrcaHand()
     status = hand.connect()
     hand.enable_torque()
-    hand.calibrate()
+    # hand.calibrate()
 
     # Set the desired joint positions to 0
-    hand.set_joint({joint: 0 for joint in hand.joint_ids})
+    hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+    time.sleep(1)
+    # Set the desired joint positions to 90 degrees
+    hand.set_joint_pos({joint: 90 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
+    time.sleep(0.1)
+    hand.set_joint_pos({joint: 45 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
+    time.sleep(2)
+
     hand.disable_torque()
     hand.disconnect()
     
