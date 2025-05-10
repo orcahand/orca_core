@@ -4,9 +4,9 @@ import time
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-from hardware.dynamixel_client import *
-from utils.yaml_utils import *
-from utils.load_utils import get_model_path
+from .hardware.dynamixel_client import *
+from .utils.yaml_utils import *
+from .utils.load_utils import get_model_path
 
 class OrcaHand:
     """
