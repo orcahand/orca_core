@@ -18,10 +18,15 @@ def convert_to_builtin(obj):
     return obj
 
 os.makedirs("configurations", exist_ok=True)
-for configuration in ["thumbs_up", "italian", "peace", "spiderman"]:
+# for configuration in ["thumbs_up", "italian", "peace", "spiderman"]:
+for configuration in ["spiderman"]:
     hand.disable_torque()
 
-    input("Please set the hand to the configuration: " + configuration + " and press Enter to continue...")
+    user_input = input("Please set the hand to the configuration: " + configuration + ". Then press Enter to save, s to skip or q to quit.")
+    if user_input == 'q':
+        break
+    if user_input == 's':
+        continue
     hand.enable_torque()
     time.sleep(1)
 

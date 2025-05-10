@@ -7,6 +7,7 @@ from threading import RLock
 from .hardware.dynamixel_client import *
 from .utils.yaml_utils import *
 from .utils.load_utils import get_model_path
+from pathlib import Path
 
 class OrcaHand:
     """
@@ -376,8 +377,6 @@ class OrcaHand:
         self.set_joint_pos(calibrated_joints)
         time.sleep(1)
         self.set_max_current(self.max_current)
-        
-        
     
     def _set_motor_pos(self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False):
         """
@@ -501,8 +500,73 @@ class OrcaHand:
             if any(limit is None for limit in motor_limit):
                 self.calibrated = False
                 update_yaml(self.calib_path, 'calibrated', False)
-                
 
+    def load_configuration(self, configuration: str):
+        orca_core_path = Path(__file__).parent
+        configuration_path = orca_core_path / "configurations" / f"{configuration}.yaml"
+        if not configuration_path.is_file():
+            print(f"Configuration {configuration} has not been saved beforehand.")
+            exit(1)
+
+        print(f"Loading configuration {configuration}...")
+        with open(configuration_path, 'r') as file:
+            hand_pos = yaml.safe_load(file)
+
+        # hand = OrcaHand()
+        # status = hand.connect()    
+        # hand.enable_torque()
+
+        self.set_joint_pos(hand_pos)
+        time.sleep(1)
+
+        if configuration == "italian":
+            orca_core_path = Path(__file__).parent
+            model_path = orca_core_path / "models" / "orcahand_v1"
+
+            calibration_yaml = model_path / "calibration.yaml"
+            with open(calibration_yaml, 'r') as file:
+                calibration = yaml.safe_load(file)
+            
+            config_yaml = model_path / "config.yaml"
+            with open(config_yaml, 'r') as file:
+                config = yaml.safe_load(file)
+
+            wrist_motor_id = config["joint_to_motor_map"]["wrist"]
+            wrist_lower, wrist_upper = np.array(calibration["motor_limits"][wrist_motor_id]) / np.pi * 180
+
+            curr_joint_pos = self.get_joint_pos()
+            # curr_wrist_pos = curr_joint_pos["wrist"]
+
+            # Sinusoidal motion parameters
+            frequency = 0.5
+            amplitude = (wrist_upper - wrist_lower) / 2
+            # offset = (wrist_upper + wrist_lower) / 2
+            duration = 6  # seconds
+            timestep = 0.01  # 50 Hz loop
+
+            # Compute initial phase to start at current wrist position
+            # Clamp to avoid domain error in arcsin
+            # sin_arg = np.clip((curr_wrist_pos - offset) / amplitude, -1.0, 1.0)
+            # initial_phase = np.arcsin(sin_arg)
+
+            # Time loop
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                t = time.time() - start_time
+                wrist_angle = amplitude * np.sin(2 * np.pi * frequency * t)
+
+                # Update joint position only for wrist
+                target_joint_pos = curr_joint_pos.copy()
+                target_joint_pos["wrist"] = wrist_angle
+
+                self.set_joint_pos(target_joint_pos)
+                time.sleep(timestep)
+
+            time.sleep(3)
+
+        # hand.disable_torque()
+        # hand.disconnect()
+                
 def require_connection(func):
     def wrapper(self, *args, **kwargs):
         if not self._dxl_client.is_connected():
@@ -522,16 +586,16 @@ if __name__ == "__main__":
     hand = OrcaHand()
     status = hand.connect()
     hand.enable_torque()
-    # hand.calibrate()
+    hand.calibrate()
 
-    # Set the desired joint positions to 0
-    hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
-    time.sleep(1)
-    # Set the desired joint positions to 90 degrees
-    hand.set_joint_pos({joint: 90 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
-    time.sleep(0.1)
-    hand.set_joint_pos({joint: 45 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
-    time.sleep(2)
+    # # Set the desired joint positions to 0
+    # hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+    # time.sleep(1)
+    # # Set the desired joint positions to 90 degrees
+    # hand.set_joint_pos({joint: 90 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
+    # time.sleep(0.1)
+    # hand.set_joint_pos({joint: 45 for joint in {"index_mcp", "middle_mcp", "ring_mcp","pinky_mcp"}})
+    # time.sleep(2)
 
     hand.disable_torque()
     hand.disconnect()

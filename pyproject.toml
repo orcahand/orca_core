@@ -10,10 +10,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "dynamixel-sdk (>=3.7.31,<4.0.0)",
-    "pyyaml (>=6.0.2,<7.0.0)",
-    "numpy<2",
-    "torch (==2.2.0)",
-    "pytorch-kinematics (>=0.7.5,<0.8.0)", 
+    # "pyyaml (>=6.0.2,<7.0.0)",
+    "pyyaml",
+    # "numpy<2",
+    "numpy",
+    # "torch (==2.2.0)",
+    "torch",
+    # "pytorch-kinematics (>=0.7.5,<0.8.0)", 
+    "pytorch-kinematics", 
 ]
 
 [build-system]
@@ -22,4 +26,3 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 matplotlib = "^3.10.1"
-
