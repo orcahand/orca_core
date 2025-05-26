@@ -1,6 +1,6 @@
 [project]
 name = "orca_core"
-version = "0.1.5"
+version = "0.1.8"
 description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
 authors = [
     {name = "clemens-chr", email = "cchristoph@student.ethz.ch"}
@@ -14,12 +14,12 @@ dependencies = [
     "numpy<2",
     "torch (==2.2.0)",
     "pytorch-kinematics (>=0.7.5,<0.8.0)",
-    "avp-stream (>=1.0,<2.0)",
     "fastapi (>=0.115.12,<0.116.0)",
     "uvicorn (>=0.34.2,<0.35.0)",
     "pytest (>=8.3.5,<9.0.0)",
     "httpx (>=0.28.1,<0.29.0)",
-    "requests (>=2.32.3,<3.0.0)", 
+    "requests (>=2.32.3,<3.0.0)",
+    "avp-stream (>=1.0,<2.0)", 
 ]
 
 [build-system]

@@ -45,11 +45,11 @@ class OrcaHand:
         self.calibrated: bool = calib.get('calibrated', False)
         self.motor_limits: Dict[int, List[float]] = calib.get('motor_limits', {})
         self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
+        self.neutral_position: Dict[str, float] = config.get('neutral_position', {})
         
         self.motor_ids: List[int] = config.get('motor_ids', [])
-        
-       
-        
+    
+    
         self.joint_ids: List[str] = config.get('joint_ids', [])
         self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
@@ -228,26 +228,74 @@ class OrcaHand:
     
         return joint_pos
          
-    def set_joint_pos(self, joint_pos: Union[dict, list]):
+    def set_joint_pos(self, joint_pos: Union[dict, list], num_steps: int = 1, step_size: float = 1.0):
         """
         Set the desired joint positions.
     
         Parameters:
         - joint_pos (dict or list): If dict, it should be {joint_name: desired_position}.
                                     If list, it should contain positions in the order of joint_ids.
+        - num_steps (int): Number of steps to reach the target position. If 1, moves directly to target.
+        - step_size (float): Time to wait between steps in seconds.
         """
-        if isinstance(joint_pos, dict):
-            motor_pos = self._joint_to_motor_pos(joint_pos)
-        elif isinstance(joint_pos, list):
-            if len(joint_pos) != len(self.joint_ids):
-                raise ValueError("Length of joint_pos list must match the number of joint_ids.")
-            joint_pos_dict = {joint: pos for joint, pos in zip(self.joint_ids, joint_pos)}
-            motor_pos = self._joint_to_motor_pos(joint_pos_dict)
+        if num_steps > 1:
+            current_positions = self.get_joint_pos(as_list=False)
+            
+            if isinstance(joint_pos, list):
+                if len(joint_pos) != len(self.joint_ids):
+                    raise ValueError("Length of joint_pos list must match the number of joint_ids.")
+                target_positions = {joint: pos for joint, pos in zip(self.joint_ids, joint_pos)}
+            else:
+                target_positions = joint_pos.copy()
+            
+            for step in range(num_steps + 1):
+                t = step / num_steps
+                
+                interpolated_positions = {}
+                for joint in self.joint_ids:
+                    if joint in target_positions:
+                        current_pos = current_positions[joint]
+                        target_pos = target_positions[joint]
+                        interpolated_positions[joint] = current_pos * (1 - t) + target_pos * t
+                    else:
+                        interpolated_positions[joint] = current_positions[joint]
+                
+                motor_pos = self._joint_to_motor_pos(interpolated_positions)
+                self._set_motor_pos(motor_pos)
+                if step < num_steps: 
+                    time.sleep(step_size)
         else:
-            raise ValueError("joint_pos must be a dict or a list.")
-    
-        self._set_motor_pos(motor_pos)
+            if isinstance(joint_pos, dict):
+                motor_pos = self._joint_to_motor_pos(joint_pos)
+            elif isinstance(joint_pos, list):
+                if len(joint_pos) != len(self.joint_ids):
+                    raise ValueError("Length of joint_pos list must match the number of joint_ids.")
+                joint_pos_dict = {joint: pos for joint, pos in zip(self.joint_ids, joint_pos)}
+                motor_pos = self._joint_to_motor_pos(joint_pos_dict)
+            else:
+                raise ValueError("joint_pos must be a dict or a list.")
+
+            self._set_motor_pos(motor_pos)
+
+    def set_zero_position(self, num_steps: int = 25, step_size: float = 0.001):
+        """
+        Set the hand to the zero position by moving all joints simultaneously to their zero positions
+        in a smooth, gradual motion.
         
+        Parameters:
+        - num_steps (int): Number of steps to reach the zero position.
+        - step_size (float): Step size for each joint.
+        """
+        self.set_joint_pos({joint: 0 for joint in self.joint_ids}, num_steps=num_steps, step_size=step_size)
+        
+    def set_neutral_position(self, num_steps: int = 25, step_size: float = 0.001):
+        """
+        Set the hand to the neutral position by moving all joints simultaneously to their neutral positions
+        in a smooth, gradual motion.
+        """
+        self.set_joint_pos(self.neutral_position, num_steps=num_steps, step_size=step_size)
+        
+
     def init_joints(self, calibrate: bool = False
                     ):
         """
@@ -261,11 +309,12 @@ class OrcaHand:
         self.enable_torque()
         self.set_control_mode(self.control_mode)
         self.set_max_current(self.max_current)
-
+        
         if not self.calibrated or calibrate:
             self.calibrate()
    
-        self.set_joint_pos({joint: 0 for joint in self.joint_ids})
+        self.set_joint_pos(self.neutral_position)
+
                    
     def is_calibrated(self) -> bool:
         """
