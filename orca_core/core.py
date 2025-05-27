@@ -1,5 +1,4 @@
 import os
-import sys
 import threading
 import time
 from typing import Dict, List, Union
@@ -37,6 +36,7 @@ class OrcaHand:
         self.control_mode: str = config.get('control_mode', 'current_position')
         
         self.calib_current: str = config.get('calib_current', 200)
+        self.wrist_calib_current: str = config.get('wrist_calib_current', 100)
         self.calib_step_size: float = config.get('calib_step_size', 0.1)
         self.calib_step_period: float = config.get('calib_step_period', 0.01)
         self.calib_threshold: float = config.get('calib_threshold', 0.01)
@@ -44,13 +44,18 @@ class OrcaHand:
         self.calib_sequence: Dict[str, Dict[str, str]] = config.get('calib_sequence', [])
         self.calibrated: bool = calib.get('calibrated', False)
         self.motor_limits: Dict[int, List[float]] = calib.get('motor_limits', {})
-        self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
+     
         self.neutral_position: Dict[str, float] = config.get('neutral_position', {})
         
         self.motor_ids: List[int] = config.get('motor_ids', [])
-    
-    
         self.joint_ids: List[str] = config.get('joint_ids', [])
+        
+        if not self.motor_limits:
+            self.motor_limits = {motor_id: [0, 0] for motor_id in self.motor_ids}
+        self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
+        if not self.joint_to_motor_ratios:
+            self.joint_to_motor_ratios = {motor_id: 1 for motor_id in self.motor_ids}
+            
         self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
         
@@ -189,24 +194,56 @@ class OrcaHand:
                     raise ValueError("Invalid motor IDs.")
             self._dxl_client.set_operating_mode(motor_ids, mode)
             
-    def get_motor_pos(self) -> np.ndarray:
+    def get_motor_pos(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """
         Get the current motor positions in radians (Note that this includes offsets of the motors).
         
+        Parameters:
+            as_dict (bool): If True, return the motor positions as a dictionary with motor IDs as keys.
+                           If False, return as numpy array.
+        
         Returns:
-            np.ndarray: Motor positions.
+            Union[np.ndarray, dict]: Motor positions either as numpy array or dictionary {motor_id: position}.
         """
         with self._motor_lock:
             motor_pos = self._dxl_client.read_pos_vel_cur()[0]
+            if as_dict:
+                return {motor_id: pos for motor_id, pos in zip(self.motor_ids, motor_pos)}
             return motor_pos
         
-    def get_motor_current(self) -> np.ndarray:
-        with self._motor_lock:
-            return self._dxl_client.read_pos_vel_cur()[2]
+    def get_motor_current(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """
+        Get the current motor currents in mA.
         
-    def get_motor_temp(self) -> np.ndarray:
+        Parameters:
+            as_dict (bool): If True, return the motor currents as a dictionary with motor IDs as keys.
+                           If False, return as numpy array.
+        
+        Returns:
+            Union[np.ndarray, dict]: Motor currents either as numpy array or dictionary {motor_id: current}.
+        """
         with self._motor_lock:
-            return self._dxl_client.read_temperature()
+            motor_current = self._dxl_client.read_pos_vel_cur()[2]
+            if as_dict:
+                return {motor_id: current for motor_id, current in zip(self.motor_ids, motor_current)}
+            return motor_current
+        
+    def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """
+        Get the current motor temperatures in Celsius.
+        
+        Parameters:
+            as_dict (bool): If True, return the motor temperatures as a dictionary with motor IDs as keys.
+                           If False, return as numpy array.
+        
+        Returns:
+            Union[np.ndarray, dict]: Motor temperatures either as numpy array or dictionary {motor_id: temperature}.
+        """
+        with self._motor_lock:
+            motor_temp = self._dxl_client.read_temperature()
+            if as_dict:
+                return {motor_id: temp for motor_id, temp in zip(self.motor_ids, motor_temp)}
+            return motor_temp
 
     def get_joint_pos(self, as_list: bool = True) -> Union[dict, list]:
         """
@@ -238,6 +275,7 @@ class OrcaHand:
         - num_steps (int): Number of steps to reach the target position. If 1, moves directly to target.
         - step_size (float): Time to wait between steps in seconds.
         """
+        
         if num_steps > 1:
             current_positions = self.get_joint_pos(as_list=False)
             
@@ -261,6 +299,7 @@ class OrcaHand:
                         interpolated_positions[joint] = current_positions[joint]
                 
                 motor_pos = self._joint_to_motor_pos(interpolated_positions)
+                                
                 self._set_motor_pos(motor_pos)
                 if step < num_steps: 
                     time.sleep(step_size)
@@ -342,8 +381,14 @@ class OrcaHand:
         
         for step in self.calib_sequence:
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
+
             
-            for joint, direction in step["joints"].items():          
+            for joint, direction in step["joints"].items(): 
+                if joint == 'wrist':
+                    self.set_max_current(self.wrist_calib_current)
+                else:
+                    self.set_max_current(self.calib_current)
+                    
                 motor_id = self.joint_to_motor_map[joint]
                 sign = 1 if direction == 'flex' else -1
                 if self.joint_inversion.get(joint, False):
@@ -373,7 +418,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if motor_id == 'wrist':
+                            if joint == 'wrist' or joint == 'thumb_abd':
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
@@ -388,7 +433,7 @@ class OrcaHand:
                 
             # find ratios of all motors that have been calibrated
             for motor_id, limits in motor_limits.items():
-                if limits[0] is None or limits[1] is None:
+                if limits[0] is None or limits[1] is None or limits[0] == 0 or limits[1] == 0 or limits[0] == limits[1]:
                     continue
                 delta_motor = limits[1] - limits[0]
                 delta_joint = self.joint_roms[self.motor_to_joint_map[motor_id]][1] - self.joint_roms[self.motor_to_joint_map[motor_id]][0]
@@ -401,13 +446,16 @@ class OrcaHand:
             update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
             update_yaml(self.calib_path, 'motor_limits', motor_limits)
             self.motor_limits = motor_limits
-            self.set_joint_pos(calibrated_joints)
+            if calibrated_joints:
+                print("Setting calibrated joints")
+                print(calibrated_joints)
+                self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
             time.sleep(1)    
             
         print("Is fully calibrated: ", self.is_calibrated())
         self.calibrated = self.is_calibrated()
         update_yaml(self.calib_path, 'calibrated', self.calibrated)
-        self.set_joint_pos(calibrated_joints)
+        self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
         self.set_max_current(self.max_current)
        
     def calibrate_manual(self):
@@ -506,6 +554,7 @@ class OrcaHand:
 
             if rel_to_current:
                 motor_pos_array += current_pos
+                
 
             self._dxl_client.write_desired_pos(self.motor_ids, motor_pos_array)
     
@@ -520,9 +569,12 @@ class OrcaHand:
         - dict: {joint_name: position}
         """          
         joint_pos = {}
-        for motor_id, pos in enumerate(motor_pos, start=1):
+        for idx, pos in enumerate(motor_pos):
+            motor_id = self.motor_ids[idx]
             joint_name = self.motor_to_joint_map.get(motor_id)
             if any(limit is None for limit in self.motor_limits[motor_id]):
+                joint_pos[joint_name] = None
+            if self.joint_to_motor_ratios[motor_id] == 0:
                 joint_pos[joint_name] = None
             else:
                 if self.joint_inversion.get(joint_name, False):
@@ -539,10 +591,10 @@ class OrcaHand:
         - joint_pos (dict): {joint_name: desired_position}
         """
         motor_pos = self.get_motor_pos()
-        
+                
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
-            if motor_id is None:
+            if motor_id is None or pos is None:
                 continue
             if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")

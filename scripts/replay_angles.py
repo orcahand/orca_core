@@ -1,6 +1,8 @@
+
 import time
 import yaml
 import numpy as np
+import argparse
 from orca_core import OrcaHand
 
 def linear_interp(t):
@@ -18,7 +20,13 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
 def main():
-    filename = input("Enter the filename of the replay sequence (e.g., replay_sequence_YYYYMMDD_HHMMSS.yaml): ")
+    parser = argparse.ArgumentParser(description='Replay recorded hand movements')
+    parser.add_argument('--step_time', type=float, default=0.02,
+                      help='Timestep for interpolation (default: 0.02)')
+    args = parser.parse_args()
+    
+    filename = input("Enter the filename of the replay data: ")
+    
     try:
         with open(filename, "r") as file:
             replay_data = yaml.safe_load(file)
@@ -31,7 +39,7 @@ def main():
         print("No waypoints found in the file.")
         return
 
-    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1')
+    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_left')
     status = hand.connect()
     print(status)
 
@@ -43,8 +51,8 @@ def main():
     print("Torque enabled. Starting replay...")
 
     # --- Parameters ---
-    interp_time = 0.15     # seconds between waypoints
-    step_time = 0.02     # timestep for interpolation
+    interp_time = 0.2     # seconds between waypoints
+    step_time = args.step_time     # timestep for interpolation
     mode = "ease_in_out" # can be "linear" or "ease_in_out"
 
     try:
