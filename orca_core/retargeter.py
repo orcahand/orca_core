@@ -476,10 +476,7 @@ class Retargeter:
         if self.source == "avp":
             joints, wrist_angle = retarget_utils.preprocess_avp_data(data)
   
-        print(joints)
-        print(wrist_angle)
   
-        print(f"Retargeting: {joints.shape}")
         normalized_joint_pos, mano_center_and_rot = (
             retarget_utils.normalize_points_to_hands_local(joints)
         )
@@ -488,7 +485,6 @@ class Retargeter:
             print("NaN in normalized_joint_pos")
             exit()
         
-        print(f"normalized_joint_pos: {normalized_joint_pos.shape}")
         
         # # TODO: Make the thumb rotate even more!
         # normalized_joint_pos = (
@@ -496,7 +492,6 @@ class Retargeter:
         #                                          offset_angle=0, scaling_factor=0)
         # )
         
-        print(f"normalized_joint_pos: {normalized_joint_pos.shape}")
         # rotate joints about z xis 15 degrees
         #normalized_joint_pos = self.adjust_mano_fingers(normalized_joint_pos)
         # (model_joint_pos - model_center) @ model_rotation = normalized_joint_pos
@@ -509,10 +504,8 @@ class Retargeter:
         translation = -0.02
         normalized_joint_pos = normalized_joint_pos + np.array([0, 0, translation])
         
-        print(f"normalized_joint_pos: {normalized_joint_pos.shape}")
         self.target_angles, wrist_angle = self.retarget_finger_mano_joints(normalized_joint_pos)
         
-        print(f"target_angles: {self.target_angles.shape}")
         
         wrist_angle = manual_wrist_angle if manual_wrist_angle is not None else wrist_angle
                 
@@ -533,7 +526,12 @@ class Retargeter:
             joint_id = self.tendons_to_joints[ith_key]  # Get the joint id
             if joint_id == "wrist":
                 angle = wrist_angle
-            target_angles_dict[joint_id] = np.deg2rad(angle)  # Add the joint id and angle to the dictionary
+            # # if joint_id == "thumb_abd":
+            # #     joint_id = "thumb_mcp"
+            # if joint_id == "thumb_mcp":
+            #     joint_id = "thumb_abd"
+            
+            target_angles_dict[joint_id] = (angle)  # Add the joint id and angle to the dictionary
             
     
         return target_angles_dict, debug_dict
