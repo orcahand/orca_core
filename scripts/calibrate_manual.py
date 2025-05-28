@@ -1,7 +1,26 @@
+import argparse
 from orca_core import OrcaHand, Retargeter
 
-hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1')
-status = hand.connect()
-print(status)
+def main():
+    parser = argparse.ArgumentParser(
+        description="Manually calibrate the ORCA Hand. Specify the path to the orcahand model folder."
+    )
+    parser.add_argument(
+        "model_path",
+        type=str,
+        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+    )
+    args = parser.parse_args()
 
-hand.calibrate_manual()
+    hand = OrcaHand(args.model_path)
+    status = hand.connect()
+    print(status)
+
+    if not status[0]:
+        print("Failed to connect to the hand.")
+        exit(1)
+
+    hand.calibrate_manual()
+
+if __name__ == "__main__":
+    main()

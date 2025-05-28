@@ -8,7 +8,7 @@ def main():
     
     filename = input("Enter the filename to save the replay sequence (default: replay_sequence.yaml): ")
     
-    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1')
+    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_left')
     status = hand.connect()
     print(status)
 

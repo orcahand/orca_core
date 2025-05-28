@@ -476,7 +476,6 @@ class Retargeter:
         if self.source == "avp":
             joints, wrist_angle = retarget_utils.preprocess_avp_data(data)
   
-  
         normalized_joint_pos, mano_center_and_rot = (
             retarget_utils.normalize_points_to_hands_local(joints)
         )
