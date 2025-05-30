@@ -525,7 +525,12 @@ class Retargeter:
             joint_id = self.tendons_to_joints[ith_key]  # Get the joint id
             if joint_id == "wrist":
                 angle = wrist_angle
-            target_angles_dict[joint_id] = np.deg2rad(angle)  # Add the joint id and angle to the dictionary
+            # # if joint_id == "thumb_abd":
+            # #     joint_id = "thumb_mcp"
+            # if joint_id == "thumb_mcp":
+            #     joint_id = "thumb_abd"
+            
+            target_angles_dict[joint_id] = (angle)  # Add the joint id and angle to the dictionary
             
     
         return target_angles_dict, debug_dict
