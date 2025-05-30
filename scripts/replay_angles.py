@@ -1,4 +1,3 @@
-
 import time
 import yaml
 import numpy as np
@@ -23,9 +22,11 @@ def main():
     parser = argparse.ArgumentParser(description='Replay recorded hand movements')
     parser.add_argument('--step_time', type=float, default=0.02,
                       help='Timestep for interpolation (default: 0.02)')
+    parser.add_argument('model_path', type=str,
+                      help='Path to the orcahand model folder (e.g., /path/to/orcahand_v1_right)')
     args = parser.parse_args()
     
-    filename = input("Enter the filename of the replay data: ")
+    filename = input("Enter the filename: ")
     
     try:
         with open(filename, "r") as file:
@@ -39,7 +40,7 @@ def main():
         print("No waypoints found in the file.")
         return
 
-    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_left')
+    hand = OrcaHand(args.model_path)
     status = hand.connect()
     print(status)
 

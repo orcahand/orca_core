@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 # Initialize the hand
-hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_berkeley')
+hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_right')
 status = hand.connect()
 print(status)
 
