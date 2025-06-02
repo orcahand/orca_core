@@ -30,10 +30,11 @@ class OrcaHand:
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
             
-        self.baudrate: int = config.get('baudrate', 3000000)
+        self.baudrate: int = config.get('baudrate', 57600)
         self.port: str = config.get('port', '/dev/ttyUSB0')
         self.max_current: int = config.get('max_current', 300)
         self.control_mode: str = config.get('control_mode', 'current_position')
+        self.type: str = config.get('type', None)
         
         self.calib_current: str = config.get('calib_current', 200)
         self.wrist_calib_current: str = config.get('wrist_calib_current', 100)
@@ -54,7 +55,7 @@ class OrcaHand:
             self.motor_limits = {motor_id: [0, 0] for motor_id in self.motor_ids}
         self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
         if not self.joint_to_motor_ratios:
-            self.joint_to_motor_ratios = {motor_id: 1 for motor_id in self.motor_ids}
+            self.joint_to_motor_ratios = {motor_id: 0.0 for motor_id in self.motor_ids}
             
         self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
@@ -382,7 +383,6 @@ class OrcaHand:
         for step in self.calib_sequence:
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
 
-            
             for joint, direction in step["joints"].items(): 
                 if joint == 'wrist':
                     self.set_max_current(self.wrist_calib_current)
@@ -610,6 +610,9 @@ class OrcaHand:
         """
         Check if the configuration is correct and the IDs are consistent.
         """
+        if self.type not in ['right', 'left']:
+            raise ValueError("Invalid hand type. Must be 'right' or 'left'.")
+        
         if len(self.motor_ids) != len(self.joint_ids):
             raise ValueError("Number of motor IDs and joints do not match.")
         
