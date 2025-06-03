@@ -1,6 +1,8 @@
 import os
 import threading
 import time
+import math
+import numpy as np
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
@@ -52,6 +54,7 @@ class OrcaHand:
         
         if not self.motor_limits:
             self.motor_limits = {motor_id: [0, 0] for motor_id in self.motor_ids}
+
         self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
         if not self.joint_to_motor_ratios:
             self.joint_to_motor_ratios = {motor_id: 1 for motor_id in self.motor_ids}
@@ -335,8 +338,7 @@ class OrcaHand:
         self.set_joint_pos(self.neutral_position, num_steps=num_steps, step_size=step_size)
         
 
-    def init_joints(self, calibrate: bool = False
-                    ):
+    def init_joints(self, calibrate: bool = False):
         """
         Initialize the joints, enables torque, sets the control mode and sets to the zero position.
         If the hand is not calibrated, it will calibrate the hand. 
@@ -374,6 +376,12 @@ class OrcaHand:
         # Store the min and max values for each motor
         motor_limits = self.motor_limits.copy()
 
+        # Zero motor limits for joints that appear in the calibration sequence
+        for step in self.calib_sequence:
+            for joint in step["joints"].keys():
+                motor_id = self.joint_to_motor_map[joint]
+                motor_limits[motor_id] = [0, 0]
+        
         # Set calibration control mode
         self.set_control_mode('current_based_position')
         self.set_max_current(self.calib_current)
@@ -446,6 +454,7 @@ class OrcaHand:
             update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
             update_yaml(self.calib_path, 'motor_limits', motor_limits)
             self.motor_limits = motor_limits
+            
             if calibrated_joints:
                 print("Setting calibrated joints")
                 print(calibrated_joints)
