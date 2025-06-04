@@ -3,14 +3,14 @@ from tkinter import ttk
 import argparse
 from orca_core import OrcaHand
 
-class HandControlUI:
+class MotorControlUI:
     def __init__(self, root, hand):
         self.hand = hand
-        self.joint_values = {joint: tk.DoubleVar() for joint in hand.joint_ids}
+        self.motor_values = {motor: tk.DoubleVar() for motor in hand.motor_ids}
         self.create_ui(root)
 
     def create_ui(self, root):
-        root.title("Orca Hand Joint Control")
+        root.title("Orca Hand Motor Control")
         root.geometry("400x800")
 
         # Torque control buttons
@@ -23,39 +23,42 @@ class HandControlUI:
         disable_button = ttk.Button(torque_frame, text="Disable Torque", command=self.disable_torque)
         disable_button.pack(side=tk.LEFT, padx=5)
 
-        # Sliders for each joint
+        # Sliders for each motor
         sliders_frame = ttk.Frame(root)
         sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
-        # Get current joint positions for initialization
-        current_joint_pos = self.hand.get_joint_pos(as_list=False)
-        for joint in self.hand.joint_ids:
-            self.joint_values[joint].set(current_joint_pos[joint])
+        # Get current motor positions for initialization
+        current_motor_pos = self.hand.get_motor_pos(as_dict=True)
+        for motor in self.hand.motor_ids:
+            self.motor_values[motor].set(current_motor_pos[motor])
 
             frame = ttk.Frame(sliders_frame)
             frame.pack(fill=tk.X, pady=5)
 
-            # Get ROM limits for the joint
-            rom_min, rom_max = self.hand.joint_roms[joint]
+            # Define slider range to be very small for precise control
+            rom_min = current_motor_pos[motor] - 1.0  # 1.0 encoder units below current position
+            rom_max = current_motor_pos[motor] + 1.0  # 1.0 encoder units above current position
             
-            label = ttk.Label(frame, text=f"{joint}", width=15)
+            label = ttk.Label(frame, text=f"Motor {motor}", width=15)
             label.pack(side=tk.LEFT)
 
-            slider = ttk.Scale(
+            slider = tk.Scale(
                 frame,
                 from_=rom_min,
                 to=rom_max,
                 orient=tk.HORIZONTAL,
-                variable=self.joint_values[joint],
-                command=lambda value, j=joint: self.update_joint_position(j, value),
-                length=200
+                variable=self.motor_values[motor],
+                command=lambda value, m=motor: self.update_motor_position(m, value),
+                length=200,
+                resolution=0.1,  # Set resolution to 0.1 for finer control
+                showvalue=False  # Hide the default value display since we have our own
             )
             slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-            value_label = ttk.Label(frame, text=f"{current_joint_pos[joint]:.2f}", width=8)
+            value_label = ttk.Label(frame, text=f"{current_motor_pos[motor]:.1f}", width=8)
             value_label.pack(side=tk.RIGHT)
 
-            self.joint_values[joint].trace_add("write", lambda *args, j=joint, label=value_label: self.update_value_label(j, label))
+            self.motor_values[motor].trace_add("write", lambda *args, m=motor, label=value_label: self.update_value_label(m, label))
 
     def enable_torque(self):
         self.hand.enable_torque()
@@ -65,21 +68,21 @@ class HandControlUI:
         self.hand.disable_torque()
         print("Torque disabled.")
 
-    def update_joint_position(self, joint, value):
+    def update_motor_position(self, motor, value):
         try:
-            # Get all current joint values and send as a dictionary
-            joint_positions = {j: v.get() for j, v in self.joint_values.items()}
-            self.hand.set_joint_pos(joint_positions)
-            print(f"Updated joint {joint} to position: {value}")
+            # Get all current motor values and send as a dictionary
+            motor_positions = {m: v.get() for m, v in self.motor_values.items()}
+            self.hand._set_motor_pos(motor_positions)
+            print(f"Updated motor {motor} to position: {value:.1f}")
         except Exception as e:
-            print(f"Error updating joint {joint}: {e}")
+            print(f"Error updating motor {motor}: {e}")
 
-    def update_value_label(self, joint, label):
-        value = self.joint_values[joint].get()
-        label.config(text=f"{value:.2f}")
+    def update_value_label(self, motor, label):
+        value = self.motor_values[motor].get()
+        label.config(text=f"{value:.1f}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Orca Hand Joint Control')
+    parser = argparse.ArgumentParser(description='Orca Hand Motor Control')
     parser.add_argument('hand_path', type=str, help='Path to the hand model directory')
     args = parser.parse_args()
 
@@ -92,7 +95,7 @@ def main():
         return
 
     root = tk.Tk()
-    app = HandControlUI(root, hand)
+    app = MotorControlUI(root, hand)
     root.mainloop()
 
 if __name__ == "__main__":
