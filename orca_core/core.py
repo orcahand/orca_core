@@ -333,6 +333,9 @@ class OrcaHand:
         Set the hand to the neutral position by moving all joints simultaneously to their neutral positions
         in a smooth, gradual motion.
         """
+        if self.neutral_position is None:
+            raise ValueError("Neutral position is not set. Please set the neutral position in the config.yaml file.")
+        print(self.neutral_position)
         self.set_joint_pos(self.neutral_position, num_steps=num_steps, step_size=step_size)
         
 
@@ -363,7 +366,7 @@ class OrcaHand:
             bool: True if calibrated, False otherwise.
         """
         for motor_limit in self.motor_limits.values():
-            if any(limit is None for limit in motor_limit):
+            if any(limit is None or limit == 0 for limit in motor_limit):
                 return False
         return True
               
@@ -418,7 +421,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if joint == 'wrist' or joint == 'thumb_abd':
+                            if joint == 'wrist' or joint == 'thumb_abd': # don't disable because of gravity
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
@@ -448,7 +451,6 @@ class OrcaHand:
             self.motor_limits = motor_limits
             if calibrated_joints:
                 print("Setting calibrated joints")
-                print(calibrated_joints)
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
             time.sleep(1)    
             
@@ -572,7 +574,7 @@ class OrcaHand:
         for idx, pos in enumerate(motor_pos):
             motor_id = self.motor_ids[idx]
             joint_name = self.motor_to_joint_map.get(motor_id)
-            if any(limit is None for limit in self.motor_limits[motor_id]):
+            if any(limit is None or limit == 0 for limit in self.motor_limits[motor_id]):
                 joint_pos[joint_name] = None
             if self.joint_to_motor_ratios[motor_id] == 0:
                 joint_pos[joint_name] = None
@@ -596,7 +598,7 @@ class OrcaHand:
             motor_id = self.joint_to_motor_map.get(joint_name)
             if motor_id is None or pos is None:
                 continue
-            if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
+            if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][0] == 0 or self.motor_limits[motor_id][1] is None or self.motor_limits[motor_id][1] == 0:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
             if self.joint_inversion.get(joint_name, False):
                 # Inverted: higher ROM value corresponds to lower motor position.
