@@ -612,9 +612,6 @@ class OrcaHand:
         """
         Check if the configuration is correct and the IDs are consistent.
         """
-        if self.type not in ['right', 'left']:
-            raise ValueError("Invalid hand type. Must be 'right' or 'left'.")
-        
         if len(self.motor_ids) != len(self.joint_ids):
             raise ValueError("Number of motor IDs and joints do not match.")
         
