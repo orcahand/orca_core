@@ -46,31 +46,35 @@ class OrcaHand:
         self.calib_num_stable: int = config.get('calib_num_stable', 20)
         self.calib_sequence: Dict[str, Dict[str, str]] = config.get('calib_sequence', [])
         self.calibrated: bool = calib.get('calibrated', False)
-        self.motor_limits: Dict[int, List[float]] = calib.get('motor_limits', {})
      
         self.neutral_position: Dict[str, float] = config.get('neutral_position', {})
         
         self.motor_ids: List[int] = config.get('motor_ids', [])
         self.joint_ids: List[str] = config.get('joint_ids', [])
-        
-        if not self.motor_limits:
-            self.motor_limits = {motor_id: [None, None] for motor_id in self.motor_ids}
-        self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
-        if not self.joint_to_motor_ratios:
-            self.joint_to_motor_ratios = {motor_id: 0.0 for motor_id in self.motor_ids}
+        self.motor_id_to_idx: Dict[int, int] = {motor_id: i for i, motor_id in enumerate(self.motor_ids)}
+
+        motor_limits_from_calib = calib.get('motor_limits', {})
+        self.motor_limits: Dict[int, List[float]] = {
+            motor_id: motor_limits_from_calib.get(motor_id, [None, None]) for motor_id in self.motor_ids}
+
+        joint_to_motor_ratios_from_calib = calib.get('joint_to_motor_ratios', {})
+        self.joint_to_motor_ratios: Dict[int, float] = {
+            motor_id: joint_to_motor_ratios_from_calib.get(motor_id, 0.0) for motor_id in self.motor_ids}
             
-        self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
+        self.joint_to_motor_map: Dict[str, float] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
         
         # inversion, quick fix 
         self.joint_inversion = {}  # True if the motor is inverted
         for joint, motor_id in self.joint_to_motor_map.items():
-            if motor_id < 0:
+            if motor_id < 0 or math.copysign(1, motor_id) < 0:
                 self.joint_inversion[joint] = True
-                self.joint_to_motor_map[joint] = abs(motor_id)
+                self.joint_to_motor_map[joint] = int(abs(motor_id))
             else:
                 self.joint_inversion[joint] = False
-        
+        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()}
+
+
         self.motor_to_joint_map: Dict[int, str] = {v: k for k, v in self.joint_to_motor_map.items()}
 
         self._dxl_client: DynamixelClient = None
@@ -368,7 +372,7 @@ class OrcaHand:
             bool: True if calibrated, False otherwise.
         """
         for motor_limit in self.motor_limits.values():
-            if any(limit is None or limit == 0 for limit in motor_limit):
+            if any(limit is None for limit in motor_limit):
                 return False
         return True
               
@@ -420,20 +424,20 @@ class OrcaHand:
                 
                 for motor_id in desired_increment.keys():
                     if not motor_reached_limit[motor_id]:
-                        position_buffers[motor_id].append(curr_pos[motor_id - 1])
-                        position_logs[motor_id].append(float(curr_pos[motor_id - 1]))
-                        current_log[motor_id].append(float(self.get_motor_current()[motor_id - 1]))
+                        position_buffers[motor_id].append(curr_pos[self.motor_id_to_idx[motor_id]])
+                        position_logs[motor_id].append(float(curr_pos[self.motor_id_to_idx[motor_id]]))
+                        current_log[motor_id].append(float(self.get_motor_current()[self.motor_id_to_idx[motor_id]]))
 
                         # Check if buffer is full and all values are close
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if joint == 'wrist' or joint == 'thumb_abd': # don't disable because of gravity
+                            if joint == 'wrist' or joint == 'thumb_abd': # don\'t disable because of gravity
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
                                 time.sleep(0.05)
-                                avg_limit = float(self.get_motor_pos()[motor_id - 1])
+                                avg_limit = float(self.get_motor_pos()[self.motor_id_to_idx[motor_id]])
                             print(f"Motor {motor_id} corresponding to joint {self.motor_to_joint_map[motor_id]} reached the limit at {avg_limit} rad.")
                             if directions[motor_id] == 1:
                                 motor_limits[motor_id][1] = avg_limit
@@ -479,12 +483,12 @@ class OrcaHand:
                 print(f"Progress: {i}/{len(self.calib_sequence)}")
                 print(f"\033[1;35mPlease flex joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
                 input()
-                flex_position = float(self.get_motor_pos()[motor_id - 1])
+                flex_position = float(self.get_motor_pos()[self.motor_id_to_idx[motor_id]])
                 motor_limits[motor_id][1] = flex_position
 
                 print(f"\033[1;35mPlease extend the joint {joint} corresponding to motor {motor_id} fully and press enter.\033[0m")
                 input()
-                extend_position = float(self.get_motor_pos()[motor_id - 1])
+                extend_position = float(self.get_motor_pos()[self.motor_id_to_idx[motor_id]])
                 motor_limits[motor_id][0] = extend_position
                 
                 delta_motor = abs(motor_limits[motor_id][1] - motor_limits[motor_id][0])
@@ -508,7 +512,7 @@ class OrcaHand:
                 thread.start()
 
                 while not stop_flag:
-                    curr_pos = self.get_motor_pos()[motor_id - 1]
+                    curr_pos = self.get_motor_pos()[self.motor_id_to_idx[motor_id]]
                     joint_pos = self.get_joint_pos()[joint]
                     print(f"\rMotor Pos: {curr_pos}, Joint Pos: {joint_pos}", end="")
                     time.sleep(0.01)
@@ -565,7 +569,7 @@ class OrcaHand:
 
                     pos_to_write = float(pos_val)
                     if rel_to_current:
-                        pos_to_write += current_positions[motor_id - 1]
+                        pos_to_write += current_positions[self.motor_id_to_idx[motor_id]]
                     
                     motor_ids_to_write.append(motor_id)
                     positions_to_write.append(pos_to_write)
@@ -643,15 +647,15 @@ class OrcaHand:
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
             if motor_id is None or pos is None:
-                motor_pos[motor_id - 1] = None
+                motor_pos[self.motor_id_to_idx[motor_id]] = None
                 continue
             if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
             if self.joint_inversion.get(joint_name, False):
                 # Inverted: higher ROM value corresponds to lower motor position.
-                motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (self.joint_roms[joint_name][1] - pos) * self.joint_to_motor_ratios[motor_id]
+                motor_pos[self.motor_id_to_idx[motor_id]] = self.motor_limits[motor_id][0] + (self.joint_roms[joint_name][1] - pos) * self.joint_to_motor_ratios[motor_id]
             else:
-                motor_pos[motor_id - 1] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]  
+                motor_pos[self.motor_id_to_idx[motor_id]] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]  
             
         return motor_pos
                
