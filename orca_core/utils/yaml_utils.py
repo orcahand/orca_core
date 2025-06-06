@@ -12,9 +12,14 @@ def update_yaml(file_path, key, value):
     try:
         with open(file_path, 'r+') as file:
             data = yaml.safe_load(file) or {} 
-            data[key] = value 
+            
+            new_data = {key: value} # Make the latest chnage in the yaml file the first entry
+            for existing_key, existing_value in data.items():
+                if existing_key != key:
+                    new_data[existing_key] = existing_value
+            
             file.seek(0) 
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False) 
+            yaml.dump(new_data, file, default_flow_style=False, sort_keys=False) 
             file.truncate() 
     except FileNotFoundError:
         with open(file_path, 'w') as file:

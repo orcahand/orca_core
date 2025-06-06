@@ -8,7 +8,11 @@ class HandControlUI:
         self.joint_roms = hand.joint_roms
         self.joint_ids = hand.joint_ids
         self.joint_values = {joint: tk.DoubleVar() for joint in self.joint_ids}
-
+        
+        current_joint_positions = self.hand.get_joint_pos(as_list=False)
+        for joint, pos in current_joint_positions.items():
+            if joint in self.joint_values:
+                self.joint_values[joint].set(pos)
         # Create UI elements
         self.create_ui(root)
 
@@ -58,6 +62,10 @@ class HandControlUI:
     def enable_torque(self):
         self.hand.enable_torque()
         print("Torque enabled.")
+        current_joint_positions = self.hand.get_joint_pos(as_list=False)
+        for joint, pos in current_joint_positions.items():
+            if joint in self.joint_values:
+                self.joint_values[joint].set(pos)
 
     def disable_torque(self):
         self.hand.disable_torque()
@@ -70,7 +78,7 @@ class HandControlUI:
         try:
             joint_positions = {joint: float(value)}  # Only update the specific joint
             self.hand.set_joint_pos(joint_positions)
-            print(f"Updated joint {joint} to position: {value}")
+            # print(f"Updated joint {joint} to position: {value}")
         except Exception as e:
             print(f"Error updating joint {joint}: {e}")
 
@@ -83,7 +91,7 @@ class HandControlUI:
 
 def main():
     # Initialize the hand
-    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_left')
+    hand = OrcaHand("models")
     status = hand.connect()
     print(status)
 
