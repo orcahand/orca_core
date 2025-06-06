@@ -1,5 +1,5 @@
 import argparse
-from orca_core import OrcaHand, Retargeter
+from orca_core import OrcaHand
 
 def main():
     parser = argparse.ArgumentParser(
