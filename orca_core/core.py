@@ -54,7 +54,7 @@ class OrcaHand:
         self.joint_ids: List[str] = config.get('joint_ids', [])
         
         if not self.motor_limits:
-            self.motor_limits = {motor_id: [0, 0] for motor_id in self.motor_ids}
+            self.motor_limits = {motor_id: [None, None] for motor_id in self.motor_ids}
         self.joint_to_motor_ratios: Dict[int, float] = calib.get('joint_to_motor_ratios', {})
         if not self.joint_to_motor_ratios:
             self.joint_to_motor_ratios = {motor_id: 0.0 for motor_id in self.motor_ids}
@@ -383,7 +383,7 @@ class OrcaHand:
         for step in self.calib_sequence:
             for joint in step["joints"].keys():
                 motor_id = self.joint_to_motor_map[joint]
-                motor_limits[motor_id] = [0, 0]
+                motor_limits[motor_id] = [None, None]
 
         # Set calibration control mode
         self.set_control_mode('current_based_position')
@@ -441,18 +441,17 @@ class OrcaHand:
                                 motor_limits[motor_id][0] = avg_limit
                             self.enable_torque([motor_id])
                 
-            # find ratios of all motors that have been calibrated
-            for motor_id, limits in motor_limits.items():
-                if limits[0] is None or limits[1] is None or limits[0] == 0 or limits[1] == 0:
+            # find ratios of all motors that have been calibrated in this step
+            for joint, direction in step["joints"].items(): 
+                motor_id = self.joint_to_motor_map[joint]
+                if motor_limits[motor_id][0] is None or motor_limits[motor_id][1] is None:
                     continue
-                delta_motor = limits[1] - limits[0]
+                delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = self.joint_roms[self.motor_to_joint_map[motor_id]][1] - self.joint_roms[self.motor_to_joint_map[motor_id]][0]
                 self.joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint) 
-                
-                # Zero all joints that have been calibrated during this step
-                calibrated_joints[self.motor_to_joint_map[motor_id]] = 0.0
-
-            
+                print("Joint calibrated: ", joint)
+                calibrated_joints[joint] = 0.0
+  
             update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios)
             update_yaml(self.calib_path, 'motor_limits', motor_limits)
             self.motor_limits = motor_limits
@@ -620,7 +619,7 @@ class OrcaHand:
         for idx, pos in enumerate(motor_pos):
             motor_id = self.motor_ids[idx]
             joint_name = self.motor_to_joint_map.get(motor_id)
-            if any(limit is None or limit == 0 for limit in self.motor_limits[motor_id]):
+            if any(limit is None for limit in self.motor_limits[motor_id]):
                 joint_pos[joint_name] = None
             elif self.joint_to_motor_ratios[motor_id] == 0:
                 joint_pos[joint_name] = None
@@ -646,7 +645,7 @@ class OrcaHand:
             if motor_id is None or pos is None:
                 motor_pos[motor_id - 1] = None
                 continue
-            if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][0] == 0 or self.motor_limits[motor_id][1] is None or self.motor_limits[motor_id][1] == 0:
+            if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
             if self.joint_inversion.get(joint_name, False):
                 # Inverted: higher ROM value corresponds to lower motor position.
