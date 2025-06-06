@@ -1,6 +1,8 @@
 import os
 import threading
 import time
+import math
+import numpy as np
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
@@ -378,6 +380,11 @@ class OrcaHand:
         # Store the min and max values for each motor
         motor_limits = self.motor_limits.copy()
 
+        for step in self.calib_sequence:
+            for joint in step["joints"].keys():
+                motor_id = self.joint_to_motor_map[joint]
+                motor_limits[motor_id] = [0, 0]
+
         # Set calibration control mode
         self.set_control_mode('current_based_position')
         self.set_max_current(self.calib_current)
@@ -425,7 +432,7 @@ class OrcaHand:
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
-                                time.sleep(0.1)
+                                time.sleep(0.05)
                                 avg_limit = float(self.get_motor_pos()[motor_id - 1])
                             print(f"Motor {motor_id} corresponding to joint {self.motor_to_joint_map[motor_id]} reached the limit at {avg_limit} rad.")
                             if directions[motor_id] == 1:
@@ -436,7 +443,7 @@ class OrcaHand:
                 
             # find ratios of all motors that have been calibrated
             for motor_id, limits in motor_limits.items():
-                if limits[0] is None or limits[1] is None or limits[0] == 0 or limits[1] == 0 or limits[0] == limits[1]:
+                if limits[0] is None or limits[1] is None or limits[0] == 0 or limits[1] == 0:
                     continue
                 delta_motor = limits[1] - limits[0]
                 delta_joint = self.joint_roms[self.motor_to_joint_map[motor_id]][1] - self.joint_roms[self.motor_to_joint_map[motor_id]][0]
@@ -535,30 +542,69 @@ class OrcaHand:
         Set the desired motor positions in radians.
         
         Parameters:
-        - desired_pos (dict or np.ndarray or list): Desired motor positions. If dict, it should be {motor_id: desired_position} and it can be partial. If np.ndarray or list, it should be the desired positions for all motors in the order of motor_ids.
+        - desired_pos (dict or np.ndarray or list): 
+            - If dict: {motor_id: desired_position}. Can be partial. Only motors in the dict will be commanded.
+            - If np.ndarray or list: Desired positions for all motors in the order of self.motor_ids.
+                                     None values will be skipped, and the corresponding motor won't be commanded.
         - rel_to_current (bool): If True, the desired position is relative to the current position.
         """
         with self._motor_lock:
-            current_pos = self.get_motor_pos()
+            current_positions = self.get_motor_pos() # np.ndarray of all motor positions
+
+            motor_ids_to_write = []
+            positions_to_write = []
 
             if isinstance(desired_pos, dict):
-                motor_pos_array = np.array([
-                    desired_pos.get(motor_id, 0 if rel_to_current else current_pos[motor_id - 1]) for motor_id in self.motor_ids
-                ])
-            elif isinstance(desired_pos, np.ndarray):
-                assert len(desired_pos) == len(self.motor_ids), "Number of motor positions do not match the number of motors."
-                motor_pos_array = desired_pos.copy()
-            elif isinstance(desired_pos, list):
-                assert len(desired_pos) == len(self.motor_ids), "Number of motor positions do not match the number of motors."
-                motor_pos_array = np.array(desired_pos)
-            else:
-                raise ValueError("desired_pos must be a dict or np.ndarray or list")
-
-            if rel_to_current:
-                motor_pos_array += current_pos
                 
+                for motor_id, pos_val in desired_pos.items():
+                    if motor_id not in self.motor_ids:
+                        print(f"Warning: Motor ID {motor_id} in desired_pos dict is not in self.motor_ids. Skipping.")
+                        continue
 
-            self._dxl_client.write_desired_pos(self.motor_ids, motor_pos_array)
+                    if pos_val is None or math.isnan(pos_val):
+                        continue
+
+                    pos_to_write = float(pos_val)
+                    if rel_to_current:
+                        pos_to_write += current_positions[motor_id - 1]
+                    
+                    motor_ids_to_write.append(motor_id)
+                    positions_to_write.append(pos_to_write)
+
+                if not motor_ids_to_write:
+                    return
+
+                positions_to_write = np.array(positions_to_write, dtype=float)
+
+            elif isinstance(desired_pos, (np.ndarray, list)):
+                if len(desired_pos) != len(self.motor_ids):
+                    raise ValueError(
+                        f"Length of desired_pos (list/ndarray) ({len(desired_pos)}) "
+                        f"must match the number of configured motor_ids ({len(self.motor_ids)})."
+                    )
+                
+                for i, pos_val in enumerate(desired_pos):
+                    if pos_val is None or math.isnan(pos_val):
+                        continue
+                    else:
+                        motor_ids_to_write.append(self.motor_ids[i])
+                        current_pos_of_motor = current_positions[i]
+                        if rel_to_current:
+                            positions_to_write.append(float(pos_val) + current_pos_of_motor)
+                        else:
+                            positions_to_write.append(float(pos_val))
+                
+                if not motor_ids_to_write:
+                    print("Info: All positions in desired_pos (list/array) were None. No motor commands sent.")
+                    return
+
+                motor_ids_to_write = motor_ids_to_write
+                positions_to_write = np.array(positions_to_write, dtype=float)
+            
+            else:
+                raise ValueError("desired_pos must be a dict, np.ndarray, or list.")
+   
+            self._dxl_client.write_desired_pos(motor_ids_to_write, positions_to_write)
     
     def _motor_to_joint_pos(self, motor_pos: np.ndarray) -> dict:
         """
@@ -576,7 +622,7 @@ class OrcaHand:
             joint_name = self.motor_to_joint_map.get(motor_id)
             if any(limit is None or limit == 0 for limit in self.motor_limits[motor_id]):
                 joint_pos[joint_name] = None
-            if self.joint_to_motor_ratios[motor_id] == 0:
+            elif self.joint_to_motor_ratios[motor_id] == 0:
                 joint_pos[joint_name] = None
             else:
                 if self.joint_inversion.get(joint_name, False):
@@ -592,11 +638,13 @@ class OrcaHand:
         Parameters:
         - joint_pos (dict): {joint_name: desired_position}
         """
-        motor_pos = self.get_motor_pos()
+        # motor_pos = self.get_motor_pos()
+        motor_pos = [None] * len(self.get_motor_pos())
                 
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
             if motor_id is None or pos is None:
+                motor_pos[motor_id - 1] = None
                 continue
             if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][0] == 0 or self.motor_limits[motor_id][1] is None or self.motor_limits[motor_id][1] == 0:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
@@ -674,13 +722,6 @@ if __name__ == "__main__":
     hand.calibrate()
 
     # Set the desired joint positions to 0
-    hand.set_joint({joint: 0 for joint in hand.joint_ids})
+    hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
     hand.disable_torque()
     hand.disconnect()
-    
-    
-    
-    
-        
-    
-    
