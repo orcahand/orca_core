@@ -69,19 +69,17 @@ class OrcaHand:
         self.joint_to_motor_ratios: Dict[int, float] = {
             motor_id: joint_to_motor_ratios_from_calib_dict.get(motor_id, 0.0) for motor_id in self.motor_ids}
             
-        self.joint_to_motor_map: Dict[str, float] = config.get('joint_to_motor_map', {})
+        self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
         
-        # inversion, quick fix 
         self.joint_inversion = {}  # True if the motor is inverted
-        for joint, motor_id in self.joint_to_motor_map.items():
-            if motor_id < 0 or math.copysign(1, motor_id) < 0:
+        for joint in self.joint_ids:
+            if joint in config.get('joint_inversion', {}):
                 self.joint_inversion[joint] = True
-                self.joint_to_motor_map[joint] = int(abs(motor_id))
             else:
                 self.joint_inversion[joint] = False
         
-        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()} # This is to make IDs INT TODO: Make gettting inverter direction not with sign
+        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()}
 
         self.motor_to_joint_map: Dict[int, str] = {v: k for k, v in self.joint_to_motor_map.items()}
 
