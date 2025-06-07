@@ -127,3 +127,5 @@ orca_core/models/
 
 # macOS
 .DS_Store
+
+.pytest_cache/
