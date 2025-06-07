@@ -61,13 +61,13 @@ class OrcaHand:
         self.joint_ids: List[str] = config.get('joint_ids', [])
         self.motor_id_to_idx: Dict[int, int] = {motor_id: i for i, motor_id in enumerate(self.motor_ids)}
 
-        motor_limits_from_calib = calib.get('motor_limits', {})
+        motor_limits_from_calib_dict = calib.get('motor_limits', {})
         self.motor_limits: Dict[int, List[float]] = {
-            motor_id: motor_limits_from_calib.get(motor_id, [None, None]) for motor_id in self.motor_ids}
+            motor_id: motor_limits_from_calib_dict.get(motor_id, [None, None]) for motor_id in self.motor_ids}
 
-        joint_to_motor_ratios_from_calib = calib.get('joint_to_motor_ratios', {})
+        joint_to_motor_ratios_from_calib_dict = calib.get('joint_to_motor_ratios', {})
         self.joint_to_motor_ratios: Dict[int, float] = {
-            motor_id: joint_to_motor_ratios_from_calib.get(motor_id, 0.0) for motor_id in self.motor_ids}
+            motor_id: joint_to_motor_ratios_from_calib_dict.get(motor_id, 0.0) for motor_id in self.motor_ids}
             
         self.joint_to_motor_map: Dict[str, float] = config.get('joint_to_motor_map', {})
         self.joint_roms: Dict[str, List[float]] = config.get('joint_roms', {})
@@ -80,10 +80,12 @@ class OrcaHand:
                 self.joint_to_motor_map[joint] = int(abs(motor_id))
             else:
                 self.joint_inversion[joint] = False
-        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()}
-
+        
+        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()} # This is to make IDs INT TODO: Make gettting inverter direction not with sign
 
         self.motor_to_joint_map: Dict[int, str] = {v: k for k, v in self.joint_to_motor_map.items()}
+
+        self._wrap_offsets: Dict[int, float] = None
 
         self._dxl_client: DynamixelClient = None
         self._motor_lock: RLock = RLock()
@@ -274,7 +276,6 @@ class OrcaHand:
         """
         motor_pos = self.get_motor_pos()
         joint_pos = self._motor_to_joint_pos(motor_pos)
-    
         if as_list:
             return [joint_pos[joint] for joint in self.joint_ids]
     
@@ -370,9 +371,43 @@ class OrcaHand:
         if not self.calibrated or calibrate:
             self.calibrate()
    
+        self._compute_wrap_offsets_dict()
         self.set_joint_pos(self.neutral_position)
 
-                   
+    def _compute_wrap_offsets_dict(self):
+        """Read motor_pos positions once and figure out ±1-turn offsets so that
+        pos + offset ∈ [motor_limits_lo, motor_limits_hi]."""
+
+        motor_pos = self.get_motor_pos()
+
+        lower_limit = np.array([self.motor_limits[motor_id][0] for motor_id in self.motor_ids])
+        higher_limit = np.array([self.motor_limits[motor_id][1] for motor_id in self.motor_ids])
+
+        offsets = {}
+        for i, motor_id in enumerate(self.motor_ids):
+            if lower_limit[i] is None or higher_limit[i] is None:
+                offsets[motor_id] = 0.0
+                continue
+
+            if motor_pos[i] < lower_limit[i]:
+                print(f"Motor ID {motor_id} is out of bounds: "
+                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
+                offsets[motor_id] = -2 * np.pi
+
+            elif motor_pos[i] > higher_limit[i]:
+                print(f"Motor ID {motor_id} is out of bounds: "
+                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
+                offsets[motor_id] = +2 * np.pi
+
+            else:
+                offsets[motor_id] = 0.0
+
+        print(f"Offsets: {offsets}")
+
+        self._wrap_offsets = offsets
+
+
+
     def is_calibrated(self) -> bool:
         """
         Check if the hand is calibrated.
@@ -392,16 +427,19 @@ class OrcaHand:
         # Store the min and max values for each motor
         motor_limits = self.motor_limits.copy()
 
+        self._compute_wrap_offsets_dict()
         for step in self.calib_sequence:
             for joint in step["joints"].keys():
                 motor_id = self.joint_to_motor_map[joint]
                 motor_limits[motor_id] = [None, None]
+                self._wrap_offsets[motor_id] = 0.0
 
         # Set calibration control mode
         self.set_control_mode('current_based_position')
         self.set_max_current(self.calib_current)
         self.enable_torque()
         
+
         for step in self.calib_sequence:
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
 
@@ -482,7 +520,14 @@ class OrcaHand:
         self.disable_torque()
 
         calibrated_joints = {}
+        self._compute_wrap_offsets_dict()
         motor_limits = self.motor_limits.copy()
+
+        for step in self.calib_sequence:
+            for joint in step["joints"].keys():
+                motor_id = self.joint_to_motor_map[joint]
+                motor_limits[motor_id] = [None, None]
+                self._wrap_offsets[motor_id] = 0.0
 
         for i, step in enumerate(self.calib_sequence, start=1):
             for joint, _ in step["joints"].items():
@@ -626,7 +671,10 @@ class OrcaHand:
         
         Returns:
         - dict: {joint_name: position}
-        """          
+        """
+        if self._wrap_offsets is None:
+            self._compute_wrap_offsets_dict()
+
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
             motor_id = self.motor_ids[idx]
@@ -636,10 +684,12 @@ class OrcaHand:
             elif self.joint_to_motor_ratios[motor_id] == 0:
                 joint_pos[joint_name] = None
             else:
+                wrapped_pos = pos - self._wrap_offsets.get(motor_id, 0.0)
+                
                 if self.joint_inversion.get(joint_name, False):
-                    joint_pos[joint_name] = self.joint_roms[joint_name][1] - (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+                    joint_pos[joint_name] = self.joint_roms[joint_name][1] - (wrapped_pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
                 else:
-                    joint_pos[joint_name] = self.joint_roms[joint_name][0] + (pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
+                    joint_pos[joint_name] = self.joint_roms[joint_name][0] + (wrapped_pos - self.motor_limits[motor_id][0]) / self.joint_to_motor_ratios[motor_id]
         return joint_pos
     
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
@@ -649,7 +699,9 @@ class OrcaHand:
         Parameters:
         - joint_pos (dict): {joint_name: desired_position}
         """
-        # motor_pos = self.get_motor_pos()
+        if self._wrap_offsets is None:
+            self._compute_wrap_offsets_dict()
+
         motor_pos = [None] * len(self.get_motor_pos())
                 
         for joint_name, pos in joint_pos.items():
@@ -657,13 +709,25 @@ class OrcaHand:
             if motor_id is None or pos is None:
                 motor_pos[self.motor_id_to_idx[motor_id]] = None
                 continue
+
             if self.motor_limits[motor_id][0] is None or self.motor_limits[motor_id][1] is None:
                 raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
+            
+            min_pos, max_pos = self.joint_roms[joint_name]
+            
+            # Clip the position if outside ROM and notify
+            if pos < min_pos or pos > max_pos:
+                clipped_pos = max(min_pos, min(max_pos, pos))
+                # print(f"Clipping {joint_name} from {pos} to {clipped_pos} (ROM: {min_pos} to {max_pos})")
+                pos = clipped_pos
+
             if self.joint_inversion.get(joint_name, False):
                 # Inverted: higher ROM value corresponds to lower motor position.
                 motor_pos[self.motor_id_to_idx[motor_id]] = self.motor_limits[motor_id][0] + (self.joint_roms[joint_name][1] - pos) * self.joint_to_motor_ratios[motor_id]
             else:
                 motor_pos[self.motor_id_to_idx[motor_id]] = self.motor_limits[motor_id][0] + (pos - self.joint_roms[joint_name][0]) * self.joint_to_motor_ratios[motor_id]  
+            
+            motor_pos[self.motor_id_to_idx[motor_id]] += self._wrap_offsets.get(motor_id, 0.0)
             
         return motor_pos
                
