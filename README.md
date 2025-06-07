@@ -4,11 +4,7 @@
 [![Website](https://img.shields.io/badge/Website-orcahand.org-blue?style=flat&logo=google-chrome)](https://orcahand.com)
 
 
-OrcaHand class is used to abstract hardware and control the hand of the robot with simple high-level control methods in joint space.
-
-# Orca Core
-
-OrcaHand class is used to abstract hardware and control the hand of the robot with simple high-level control methods in joint space.
+Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
 
 ## Get Started
 
