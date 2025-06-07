@@ -1,3 +1,11 @@
+# ==============================================================================
+# Copyright (c) 2025 ORCA
+#
+# This file is part of the ORCA and is licensed under the MIT License.
+# You may use, copy, modify, and distribute this file under the terms of the MIT License.
+# See the LICENSE file at the root of this repository for full license information.
+# ==============================================================================
+
 import os
 import threading
 import time
@@ -32,7 +40,7 @@ class OrcaHand:
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
             
-        self.baudrate: int = config.get('baudrate', 57600)
+        self.baudrate: int = config.get('baudrate', 3000000)
         self.port: str = config.get('port', '/dev/ttyUSB0')
         self.max_current: int = config.get('max_current', 300)
         self.control_mode: str = config.get('control_mode', 'current_position')
