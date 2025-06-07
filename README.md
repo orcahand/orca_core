@@ -1,6 +1,5 @@
 [![PyPI version](https://badge.fury.io/py/orca_core.svg)](https://badge.fury.io/py/orca_core)
 [![GitHub stars](https://img.shields.io/github/stars/orcahand/orca_core?style=social)](https://github.com/orcahand/orca_core/stargazers)
-[![Discord](https://img.shields.io/discord/123456789012345678?label=Discord&logo=discord&style=flat)]([https://discord.gg/your-invite-code](https://discord.gg/xvGyxaccRa)
 [![Twitter Follow](https://img.shields.io/twitter/follow/orcahand?style=social)](https://x.com/orcahand)
 [![Website](https://img.shields.io/badge/Website-orcahand.org-blue?style=flat&logo=google-chrome)](https://orcahand.com)
 
