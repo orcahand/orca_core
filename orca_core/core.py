@@ -462,7 +462,7 @@ class OrcaHand:
             if calibrated_joints:
                 print("Setting calibrated joints")
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
-            time.sleep(1)    
+            time.sleep(0.1)    
             
         print("Is fully calibrated: ", self.is_calibrated())
         self.calibrated = self.is_calibrated()
@@ -471,6 +471,9 @@ class OrcaHand:
         self.set_max_current(self.max_current)
        
     def calibrate_manual(self):
+        
+        raise NotImplementedError("Manual calibration is not implemented yet. Please use the automatic calibration method.")
+        
         self.disable_torque()
 
         calibrated_joints = {}

@@ -258,7 +258,6 @@ class MockDynamixelClient:
         times = [0.0]
         for _ in range(4):
             times.append(times[-1] + random.uniform(0.01, 0.05))
-            time.sleep(random.uniform(0.0001, 0.0005))
         return times
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
