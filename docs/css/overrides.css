@@ -89,3 +89,12 @@
 [data-md-color-scheme="slate"] .md-nav__link:hover {
   color: #52a0b3 !important; /* Or your desired hover color */
 }
+
+.admonition,
+.admonition .admonition-title,
+.admonition p,
+.admonition li {
+  font-family: Roboto, sans-serif !important;
+  font-size: 1rem !important;
+  line-height: 1.1;
+}

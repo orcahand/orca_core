@@ -51,7 +51,7 @@ nav:
   - About Orca: index.md
   - Getting Started with ORCA Hand: 
       - Setting Up Dynamixels: pages/getting-started-docs/setting-up-dynamixels.md
-      - Settung Up Config: pages/getting-started-docs/setting-up-config.md
+      - Setting Up Config: pages/getting-started-docs/setting-up-config.md
       - Qucikstart with Core Package: pages/getting-started-docs/quickstart-with-core-package.md
   - ORCA Core:
       - Structure: pages/orca-core-docs/orca-core-structure.md
