@@ -1,4 +1,4 @@
-Install dependencies first (had issues with poetry, just pip install them)
+Install dependencies first (had issues with poetry and users don't need to install this libraries, just pip install them)
 
 ```pip3 install -r requirements.txt```
 
