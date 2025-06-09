@@ -99,6 +99,7 @@ class OrcaHand:
     def connect(self) -> tuple[bool, str]:
         """
         Connect to the hand with the DynamixelClient.
+
         Returns:
             tuple[bool, str]: (Success status, message).
         """
@@ -114,6 +115,7 @@ class OrcaHand:
     def disconnect(self) -> tuple[bool, str]:
         """
         Disconnect from the hand.
+
         Returns:
             tuple[bool, str]: (Success status, message).
         """
@@ -129,6 +131,7 @@ class OrcaHand:
     def is_connected(self) -> bool:
         """
         Check if the hand is connected.
+
         Returns:
             bool: True if connected, False otherwise.
         """
@@ -181,11 +184,11 @@ class OrcaHand:
         
         Parameters:
         - mode (str): Control mode.
-            current: Current control mode (0)
-            velocity: Velocity control mode (1)
-            position: Position control mode (3)
-            multi_turn_position: Multi-turn position control mode (4)
-            current_based_position: Current-based position control mode (5)
+            (0) current: Current control mode,
+            (1) velocity: Velocity control mode,
+            (3) position: Position control mode,
+            (4) multi_turn_position: Multi-turn position control mode,
+            (5) current_based_position: Current-based position control mode.
         - motor_ids (list): List of motor IDs to set the control mode. If None, all motors will be set.
         """
         
@@ -409,6 +412,7 @@ class OrcaHand:
     def is_calibrated(self) -> bool:
         """
         Check if the hand is calibrated.
+
         Returns:
             bool: True if calibrated, False otherwise.
         """

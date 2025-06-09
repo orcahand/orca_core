@@ -98,3 +98,28 @@
   font-size: 1rem !important;
   line-height: 1.1;
 }
+
+/* Override Material’s inline‐code vars */
+:root {
+  --md-typeset-code-background: #0c5b6f91;
+  --md-typeset-code-border-radius: 4px;
+  --md-typeset-code-padding: 5px 8px;
+  --md-typeset-code-opacity: 0.9;
+}
+
+/* Fallback in case theme uses direct selectors */
+.md-typeset code {
+  background-color: var(--md-typeset-code-background) !important;
+  border-radius: var(--md-typeset-code-border-radius) !important;
+  padding: var(--md-typeset-code-padding) !important;
+  opacity: var(--md-typeset-code-opacity) !important;
+}
+
+/* Fallback in case theme uses direct selectors */
+.md-typeset code {
+  background-color: var(--md-typeset-code-background) !important;
+  color: #ffffff !important;                            /* make inline code text white */
+  border-radius: var(--md-typeset-code-border-radius) !important;
+  padding: var(--md-typeset-code-padding) !important;
+  opacity: var(--md-typeset-code-opacity) !important;
+}

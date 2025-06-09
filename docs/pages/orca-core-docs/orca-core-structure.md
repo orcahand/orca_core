@@ -1,43 +1,30 @@
-# ORCA Core
+# Orca Core Repository Structure
 
-The core package for ORCA Hand control and functionality.
+This document outlines the general structure of the `orca_core` repository.
 
-## Overview
+*   **`orca_core/`**: The main python package for OrcaHand control.
+    *   `core.py`: Contains the central *OrcaHand class*, which provides the high-level interface for controlling the robotic hand. This includes methods for connection, calibration, setting joint positions, and reading sensor data. <br> [**OrcaHand Class methods**](orcahand-api.md)
+    *   **`api/`**: Contains the FastAPI application for exposing *OrcaHand* functionalities over a web API.
+        *   `api.py`: Defines the FastAPI endpoints, request/response models, and integrates with the OrcaHand class. This is not properly implemented yet, please ignore.
 
-The ORCA Core package provides the fundamental functionality for controlling and interacting with the ORCA Hand.
+    *   **`hardware/`**: Modules for interacting with specific hardware components.
+        *   `dynamixel_client.py`: Implements the communication logic for Dynamixel servo motors.
 
-## Software Stack Overview
+    *   **`models/`**: Stores configuration files specific to different hand models. Each sub-directory typically represents a specific hand version (or just left-right) or configuration and contains:
+        *   `config.yaml`: Defines static parameters of the hand, such as motor IDs, joint IDs, control modes, calibration sequences, and neutral positions.
+        *   `calibration.yaml`: Stores calibration data, such as motor limits and joint-to-motor ratios, generated during the calibration process.
+        
+    *   **`utils/`**: Contains utility modules with helper functions.
 
-### Core
+*   **`scripts/`**: Contains standalone Python scripts for performing various operations with the *OrcaHand*, such as auto-calibration (*calibrate.py*), Tensioning (*tension.py*) etc. <br> [**Explore Scripts**](orca-core-scripts.md)
 
-- **Role:** Main control for the ORCA Hand. Abstracts the low-level hardware control of the robot's hand by providing simple methods for connecting, calibrating, and commanding the hand via joint positions
-- **Features:**
-  - Calibration routines.
-  - Accepts joint angle commands and control motors respectively.
-  - Retargeting for motion mapping.
-  - Reads data from the servo motors. 
-- **Language:** Python.
+*   **`tests/`**: Includes unit tests and integration tests for the *orca_core* package to ensure code correctness and reliability (Under development).
 
-### Models
+*   **`docs/`**: Contains the generated documentation website (built using MkDocs). Ingore this directory. 
+    
+*   **`demo/`**: Contains demonstration files, such as example replay sequences.
+    *   *kapangi_replay_sequence_20250504_002233.yaml*: An example YAML file defining a sequence of hand movements for replay.
 
-- **Contents:**
-  - URDF/MJCO files for simulation.
-  - CAD files and configuration data.
+*   **`replay_sequences/`**: Stores YAML files that define sequences of joint positions or motor commands for the hand to replay.
 
-### ROS Wrappers
-
-- **orca_ros1:**  
-  Wrapper for ROS1 environments.
-- **orca_ros2:**  
-  Wrapper for ROS2 environments.
-
-Both wrappers offer example scripts to kickstart your integration.
-
-## Features
-
-- Motor control
-- Sensor integration
-- Communication protocols
-- Configuration management
-
----
+*   `mkdocs.yml`: Configuration file for the MkDocs documentation generator. You can ingore this.

@@ -1,62 +1,77 @@
-# Quickstart with Core Package
-
-Abstracts hardware and control with simple high level control methods in joint space. 
-
-!!!  warning
-This package is still under development and is not yet fully tested.!!! 
+Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
 
 ## Get Started
 
-To get started with orca_core, follow these steps:
+To get started with Orca Core, follow these steps:
 
-1. **(Recommended) Install orca_core using pip**:
-    :::info 
-    We are still uploading to PyPI. In the meantime please build from source!
-    ```sh
-    pip install orca_core
-    ```
-
-2. **(Optional) Build from source**:
+1. **Create a virtual environment** (recommended):
 
     ```sh
-    git clone git@github.com:orcahand/orca_core.git
-    cd orca_core
-    poetry install
+    python -m venv venv
+    source venv/bin/activate
     ```
 
-3. **Download the `orca_config.yaml` file (e.g. orca_v1)**:
+    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
+
+2. **Install dependencies**:
+
     ```sh
-    curl -o orca_config.yaml https://raw.githubusercontent.com/orcahand/orca_models/main/orca_v1/orca_config.yaml
+    pip install -e .
     ```
-    :::danger
-    Make sure to have the correct motors assigned to the joints in the `config.yaml` file
-    :::
 
-4. **Connect the hand and run the example usage**:
+3. **Check the configuration file**:
+
+    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+
+4. **Run the tension and calibration scripts**:
+
+    ```sh
+    python scripts/tension.py orca_core/orca_core/models/orcahand_v1_right
+    python scripts/calibrate.py orca_core/orca_core/models/orcahand_v1_right
+    ```
+
+    Replace the path with your specific hand model folder if needed.
+
+5. **Move the hand to the neutral position**:
+
+    ```sh
+    python scripts/neutral.py orca_core/orca_core/models/orcahand_v1_right
+    ```
+
+6. **Example usage: test.py**
+
+    Here is a minimal example script you can use to test your setup:
+
     ```python
-    # Example usage
     from orca_core import OrcaHand
+    import time
 
-    hand = OrcaHand(orca_config="orca_config.yaml")
+    hand = OrcaHand('orca_core/orca_core/models/orcahand_v1_right')
     status = hand.connect()
     print(status)
-    hand.calibrate()
+    if not status[0]:
+        print("Failed to connect to the hand.")
+        exit(1)
 
-    # Set the desired joint positions to 0
-    hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+    hand.enable_torque()
+
+    joint_dict = {
+        "index_mcp": 90,
+        "middle_pip": 30,
+    }
+
+    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
+
+    time.sleep(2)
+    hand.disable_torque()
     hand.disconnect()
     ```
 
-## Installation
+---
 
-```bash
-# Installation steps will go here
-```
+**Note:**  
+- Always ensure your `config.yaml` matches your hardware and wiring.
+- All scripts in the `scripts/` folder take the model path as their first argument.
+- For more advanced usage, see the other scripts and the API documentation.
 
-## Basic Usage
-
-1. Import the package
-2. Initialize the system
-3. Run your first program
-
-More content will be added here... 
+---

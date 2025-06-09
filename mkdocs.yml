@@ -58,9 +58,6 @@ nav:
       - OrcaHand Class API: pages/orca-core-docs/orcahand-api.md
       - Scripts: pages/orca-core-docs/orca-core-scripts.md
 
-extra_css:
-  - css/overrides.css
-
 extra:
   social:
     - icon: fontawesome/brands/linkedin
@@ -69,3 +66,6 @@ extra:
       link: https://x.com/orca_hand
     - icon: fontawesome/brands/github
       link: https://github.com/orca-hand
+
+extra_css:
+  - css/overrides.css
