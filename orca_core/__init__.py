@@ -6,3 +6,4 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 from .core import OrcaHand
+from .core import MockOrcaHand
