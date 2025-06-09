@@ -116,11 +116,23 @@ def render_member_mdx(name: str, member: dict, level: int = 2) -> str:
         if docstring:
             lines.append(docstring + "\n")
 
+    # elif kind in {"function", "method"}:
+    #     param_summary = get_param_summary(parameters)
+    #     lines.append("<details>\n<summary><strong>")
+    #     lines.append(f"{name}{param_summary}")
+    #     lines.append("</strong></summary>\n")
+
     elif kind in {"function", "method"}:
         param_summary = get_param_summary(parameters)
-        lines.append("<details>\n<summary><strong>")
-        lines.append(f"{name}{param_summary}")
-        lines.append("</strong></summary>\n")
+
+        # Add real heading for sidebar navigation:
+        lines.append(f"### {name}{param_summary}\n")
+
+        # Add collapsible details (optional — nice UI):
+        lines.append("<details>\n<summary>")
+        lines.append("Info")
+        lines.append("</summary>\n")
+    
         if docstring:
             formatted_doc = format_docstring(docstring, param_defaults)
             lines.append(formatted_doc + "\n")
