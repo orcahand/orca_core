@@ -23,8 +23,6 @@ class OrcaHand:
         self.model_path = get_model_path(model_path)
         # Load configurations from the YAML files
         self.config_path = os.path.join(self.model_path, "config.yaml")
-        self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
-        self.mjco_path = os.path.join(self.model_path, "mujoco", "orcahand.xml")
         self.calib_path = os.path.join(self.model_path, "calibration.yaml")
         
         config = read_yaml(self.config_path)
