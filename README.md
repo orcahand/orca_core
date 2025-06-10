@@ -1,8 +1,16 @@
-[![PyPI version](https://badge.fury.io/py/orca_core.svg)](https://badge.fury.io/py/orca_core)
-[![GitHub stars](https://img.shields.io/github/stars/orcahand/orca_core?style=social)](https://github.com/orcahand/orca_core/stargazers)
-[![Twitter Follow](https://img.shields.io/twitter/follow/orcahand?style=social)](https://x.com/orcahand)
-[![Website](https://img.shields.io/badge/Website-orcahand.org-blue?style=flat&logo=google-chrome)](https://orcahand.com)
+<p align="center">
+  <img src="https://orcahand.com/assets/orcahand_logo.png" style="width: 60%; height: auto;">
+</p>
 
+<div align="center" style="line-height: 1;">
+  <a href="https://arxiv.org/abs/2504.04259" target="_blank"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2504.04259-B31B1B?logo=arxiv"/></a>
+  <a href="https://discord.com/invite/hk9PGKShPK" target="_blank"><img alt="Discord" src="https://img.shields.io/badge/Discord-orcahand-7289da?logo=discord&logoColor=white&color=7289da"/></a>
+  <a href="https://x.com/orcahand" target="_blank"><img alt="Twitter Follow" src="https://img.shields.io/twitter/follow/orcahand?style=social"/></a>
+  <a href="https://orcahand.com" target="_blank"><img alt="Website" src="https://img.shields.io/badge/Website-orcahand.com-blue?style=flat&logo=google-chrome"/></a>
+  <br>
+  <a href="https://github.com/orcahand/orca_core" target="_blank"><img alt="GitHub stars" src="https://img.shields.io/github/stars/orcahand/orca_core?style=social"/></a>
+  <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
+</div>
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
 
