@@ -1,5 +1,11 @@
+# ==============================================================================
+# Copyright (c) 2025 ORCA
+#
+# This file is part of the ORCA and is licensed under the MIT License.
+# You may use, copy, modify, and distribute this file under the terms of the MIT License.
+# See the LICENSE file at the root of this repository for full license information.
+# ==============================================================================
 import os
-
 def get_model_path(model_path=None):
     if model_path is None:
         models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
