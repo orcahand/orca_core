@@ -14,7 +14,8 @@ import numpy as np
 from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
-from .hardware.dynamixel_client import *
+from .hardware.dynamixel_client import DynamixelClient
+from .hardware.mock_dynamixel_client import MockDynamixelClient
 from .utils.yaml_utils import *
 from .utils.load_utils import get_model_path
 
@@ -27,10 +28,11 @@ class OrcaHand:
         Initialize the OrcaHand class.
 
         Args:
-            orca_config (str): The path to the orca_config.yaml file, which includes static information like ROMs, motor IDs, etc. 
+            model_path (str): The path to model_path folder, which includes the config.yaml and calibration.yaml 
         """
         # Find the model directory if not provided
         self.model_path = get_model_path(model_path)
+                
         # Load configurations from the YAML files
         self.config_path = os.path.join(self.model_path, "config.yaml")
         self.urdf_path = os.path.join(self.model_path, "urdf", "orcahand.urdf")
@@ -510,7 +512,7 @@ class OrcaHand:
             if calibrated_joints:
                 print("Setting calibrated joints")
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
-            time.sleep(1)    
+            time.sleep(0.1)    
             
         print("Is fully calibrated: ", self.is_calibrated())
         self.calibrated = self.is_calibrated()
@@ -519,6 +521,9 @@ class OrcaHand:
         self.set_max_current(self.max_current)
        
     def calibrate_manual(self):
+        
+        raise NotImplementedError("Manual calibration is not implemented yet. Please use the automatic calibration method.")
+        
         self.disable_torque()
 
         calibrated_joints = {}
@@ -790,6 +795,24 @@ def require_calibration(func):
             raise RuntimeError("Hand is not calibrated. Please run .calibrate() first.")
         return func(self, *args, **kwargs)
     return wrapper
+
+
+class MockOrcaHand(OrcaHand):
+    """
+    MockOrcaHand class is used to simulate the OrcaHand class for testing
+    """
+   
+    def connect(self) -> tuple[bool, str]:
+        try:
+            self._dxl_client = MockDynamixelClient(self.motor_ids, self.port, self.baudrate)
+            with self._motor_lock:
+                self._dxl_client.connect()
+            return True, "Mock connection successful"
+        except Exception as e:
+            self._dxl_client = None
+            return False, f"Mock connection failed: {str(e)}"
+        
+    
 
 if __name__ == "__main__":
     # Example usage:
