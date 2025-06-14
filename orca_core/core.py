@@ -392,12 +392,12 @@ class OrcaHand:
                 offsets[motor_id] = 0.0
                 continue
 
-            if motor_pos[i] < lower_limit[i]:
+            if motor_pos[i] < lower_limit[i] - 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
                 print(f"Motor ID {motor_id} is out of bounds: "
                     f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
                 offsets[motor_id] = -2 * np.pi
 
-            elif motor_pos[i] > higher_limit[i]:
+            elif motor_pos[i] > higher_limit[i] + 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
                 print(f"Motor ID {motor_id} is out of bounds: "
                     f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
                 offsets[motor_id] = +2 * np.pi

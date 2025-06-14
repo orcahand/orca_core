@@ -83,10 +83,10 @@ class MotorControlUI:
 
 def main():
     parser = argparse.ArgumentParser(description='Orca Hand Motor Control')
-    parser.add_argument('hand_path', type=str, help='Path to the hand model directory')
+    parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
     args = parser.parse_args()
 
-    hand = OrcaHand(args.hand_path)
+    hand = OrcaHand(args.model_path)
     status = hand.connect()
     print(status)
 

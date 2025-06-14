@@ -3,6 +3,7 @@ import yaml
 import numpy as np
 import argparse
 from orca_core import OrcaHand
+import os
 
 def linear_interp(t):
     return t
@@ -22,17 +23,31 @@ def main():
     parser = argparse.ArgumentParser(description='Replay recorded hand movements')
     parser.add_argument('--step_time', type=float, default=0.02,
                       help='Timestep for interpolation (default: 0.02)')
-    parser.add_argument('model_path', type=str,
-                      help='Path to the orcahand model folder (e.g., /path/to/orcahand_v1_right)')
+    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
     args = parser.parse_args()
     
-    filename = input("Enter the filename: ")
+    user_input_filename = input(
+        "Enter filename (e.g., my_replay.yaml, will be sought in 'replay_sequences/' at project root)\\n"
+        "or provide a relative/absolute path to the .yaml file: "
+    ).strip()
+    
+    project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    default_replay_dir_path = os.path.join(project_root, 'replay_sequences')
+
+    if os.path.isabs(user_input_filename):
+        full_filepath = user_input_filename
+    elif os.sep in user_input_filename:
+        full_filepath = os.path.join(project_root, user_input_filename)
+    else:
+        full_filepath = os.path.join(default_replay_dir_path, user_input_filename)
+    
+    full_filepath = os.path.abspath(full_filepath)
     
     try:
-        with open(filename, "r") as file:
+        with open(full_filepath, "r") as file:
             replay_data = yaml.safe_load(file)
     except FileNotFoundError:
-        print(f"File {filename} not found.")
+        print(f"File not found at the resolved path: {full_filepath}")
         return
 
     waypoints = replay_data.get("waypoints", [])

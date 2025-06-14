@@ -30,4 +30,5 @@ def get_model_path(model_path=None):
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"\033[1;35mconfig.yaml not found in {resolved_path}. Did you specify the correct model directory?\033[0m")
     
+    print("Using model path: \033[1;32m{}\033[0m".format(resolved_path))
     return resolved_path
