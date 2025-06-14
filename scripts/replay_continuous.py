@@ -8,7 +8,7 @@ import os
 def main():
     parser = argparse.ArgumentParser(description='Replay continuous hand joint movements.')
     parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
-    parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute path, a path relative to the project root (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'PROJECT_ROOT/replay_sequences/'.") # Made required and updated help
+    parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
 
     user_input_replay_file = args.replay_file.strip()
@@ -24,7 +24,7 @@ def main():
         full_filepath = os.path.join(default_replay_dir_path, user_input_replay_file)
     
     full_filepath = os.path.abspath(full_filepath)
-    
+
     try:
         with open(full_filepath, "r") as file:
             replay_data = yaml.safe_load(file)

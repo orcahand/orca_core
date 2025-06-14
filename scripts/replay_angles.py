@@ -24,12 +24,10 @@ def main():
     parser.add_argument('--step_time', type=float, default=0.02,
                       help='Timestep for interpolation (default: 0.02)')
     parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
+    parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
     
-    user_input_filename = input(
-        "Enter filename (e.g., my_replay.yaml, will be sought in 'replay_sequences/' at project root)\\n"
-        "or provide a relative/absolute path to the .yaml file: "
-    ).strip()
+    user_input_filename = args.replay_file.strip()
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     default_replay_dir_path = os.path.join(project_root, 'replay_sequences')

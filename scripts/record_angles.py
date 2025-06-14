@@ -7,19 +7,8 @@ import os  # Added import
 
 def main():
     parser = argparse.ArgumentParser(description="Record waypoints for the ORCA Hand.")
-    parser.add_argument(
-        "model_path",
-        type=str,
-        nargs="?",
-        default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)"
-    )
-    parser.add_argument(
-        "--output_dir", 
-        type=str, 
-        default=None, 
-        help="Directory to save the replay sequence. Defaults to 'replay_sequences/' at the project root."
-    )
+    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
+    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the replay sequence. Defaults to 'replay_sequences/' at the project root.")
 
     args = parser.parse_args()
 
