@@ -137,7 +137,7 @@ class OrcaHand:
         Returns:
             bool: True if connected, False otherwise.
         """
-        return self._dxl_client.is_connected() if self._dxl_client else False
+        return self._dxl_client.is_connected if self._dxl_client else False
         
     def enable_torque(self, motor_ids: List[int] = None):
         """
