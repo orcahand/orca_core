@@ -7,5 +7,4 @@ This site provides all the necessary information to get started with Orca Hand S
 Whether you're configuring your first system or extending its capabilities, this documentation is intended to support development and experimentation with the control software.
 
 !!! Info
-    In order for the hand to behave as expected we strognly suggest you to
-    follow the guide found at [ORCA Hand Official site](https://orcahand.com) faithfully.
+    To ensure the hand functions as intended, we strongly recommend following the official guide on the [ORCA Hand Official site](https://orcahand.com) closely.
