@@ -6,7 +6,7 @@ import argparse
 class HandControlUI:
     def __init__(self, root, hand):
         self.hand = hand
-        self.joint_roms = hand.joint_roms
+        self.joint_roms = hand.joint_roms_dict
         self.joint_ids = hand.joint_ids
         self.joint_values = {joint: tk.DoubleVar() for joint in self.joint_ids}
         

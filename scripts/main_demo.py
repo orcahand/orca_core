@@ -54,7 +54,7 @@ def main(): # Added main function
     ]
 
     # Movement parameters
-    period = 0.8 # Total time for one cycle (seconds)
+    period = 0.4 # Total time for one cycle (seconds)
     step_time = 0.005  # Time between updates (seconds)
     amplitude = 0.7  # Fraction of the ROM to use for finger movement
     thumb_amplitude = 0.4  # Fraction of the ROM to use for thumb movement
