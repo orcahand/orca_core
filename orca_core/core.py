@@ -297,6 +297,9 @@ class OrcaHand:
                 for joint in self.joint_ids:
                     if joint in target_positions:
                         current_pos = current_positions[joint]
+                        if current_pos is None or target_positions[joint] is None:
+                            interpolated_positions[joint] = None
+                            continue
                         target_pos = target_positions[joint]
                         interpolated_positions[joint] = current_pos * (1 - t) + target_pos * t
                     else:
@@ -739,8 +742,10 @@ class OrcaHand:
                 motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
-            if self.motor_limits_dict[motor_id][0] is None or self.motor_limits_dict[motor_id][1] is None:
-                raise ValueError(f"Motor {motor_id} corresponding to joint {joint_name} is not calibrated.")
+            if self.motor_limits_dict[motor_id][0] is None or self.motor_limits_dict[motor_id][1] is None or self.joint_to_motor_ratios_dict[motor_id] == 0:
+                motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
+                continue
             
             min_pos, max_pos = self.joint_roms_dict[joint_name]
             
