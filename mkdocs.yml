@@ -19,7 +19,7 @@ theme:
 
 plugins:
   - search
-  - awesome-pages
+  # - awesome-pages
   - mkdocstrings:
       default_handler: python
       handlers:
