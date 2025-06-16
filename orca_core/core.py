@@ -89,6 +89,8 @@ class OrcaHand:
         self._motor_lock: RLock = RLock()
         
         self._sanity_check()       
+        self._check_calibration_status()
+
         
     def __del__(self):
         """Destructor to disconnect from the hand."""
@@ -670,9 +672,9 @@ class OrcaHand:
             motor_id = self.motor_ids[idx]
             joint_name = self.motor_to_joint_dict.get(motor_id)
             if any(limit is None for limit in self.motor_limits_dict[motor_id]):
-                joint_pos[joint_name] = None
+                joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
             elif self.joint_to_motor_ratios_dict[motor_id] == 0:
-                joint_pos[joint_name] = None
+                joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
                 
@@ -722,7 +724,26 @@ class OrcaHand:
             motor_pos[self.motor_id_to_idx_dict[motor_id]] += self._wrap_offsets_dict.get(motor_id, 0.0)
             
         return motor_pos
-               
+    
+    def _check_calibration_status(self):
+        """Check if all motors are calibrated and print a warning if not."""
+        uncalibrated_motors = False
+        for motor_id, limits in self.motor_limits_dict.items():
+            if any(limit is None for limit in limits):
+                joint_name = self.motor_to_joint_dict.get(motor_id, "Unknown")
+                uncalibrated_motors = True
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m")
+
+        for motor_id, ratio in self.joint_to_motor_ratios_dict.items():
+            if ratio is None or ratio == 0.0:
+                joint_name = self.motor_to_joint_dict.get(motor_id, "Unknown")
+                uncalibrated_motors = True
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
+
+
+        if not uncalibrated_motors:
+            print("All joints found to be calibrated.")
+
     def _sanity_check(self):
         """Check if the configuration is correct and the IDs are consistent."""
         if len(self.motor_ids) != len(self.joint_ids):
