@@ -7,7 +7,7 @@ This document provides an overview of the available scripts in the `scripts` fol
 <details>
 <summary><strong>calibrate.py</strong></summary>
 
-Calibrates the ORCA Hand. This script reads the calibration sequence from the hand\\\'s configuration and applies it.
+Calibrates the ORCA Hand. This script reads the calibration sequence from the hand's configuration and applies it.
 
 <br><strong>Args:</strong><br>
 <ul>
@@ -41,7 +41,7 @@ python scripts/calibrate_manual.py /path/to/orcahand_v1_right
 <details>
 <summary><strong>check_motor.py</strong></summary>
 
-Checks a specific motor by setting its operating mode and enabling torque. It then incrementally changes the motor\\\'s target position and prints the current and target positions. This script is useful for testing individual motor functionality.
+Checks a specific motor by setting its operating mode and enabling torque. It then incrementally changes the motor's target position and prints the current and target positions. This script is useful for testing individual motor functionality.
 
 <br><strong>Args:</strong><br>
 <ul>

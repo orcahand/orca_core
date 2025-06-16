@@ -99,6 +99,15 @@
   line-height: 1.1;
 }
 
+/* Style for details/summary dropdowns */
+[data-md-color-scheme="slate"] details {
+  background-color: #2c2c2c; /* Dark grey background */
+  border: 1px solid #333;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+
 /* Override Material’s inline‐code vars */
 :root {
   --md-typeset-code-background: #0c5b6f91;
