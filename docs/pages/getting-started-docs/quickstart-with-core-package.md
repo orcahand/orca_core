@@ -1,4 +1,4 @@
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioning and to control the hand with simple high-level control methods in joint space.
 
 ## Get Started
 

@@ -31,8 +31,8 @@ When the hand is first assembled, because tendons are spooled by hand, significa
 
 Recommended steps:
 
-1. Run calibration (for all joints). Significant slack will accumulate during this step,this is expected, and calibration may seem ineffective at first.
+1. Run calibration (for all joints). Significant slack will accumulate during this step, this is expected, and calibration may seem ineffective at first.
 2. Perform the tensioning procedure as described above.
-3. Repeat steps 1 and 2 **two more times**, or until **no additional slack** appears after calibration completes.
+3. Repeat steps 1 and 2 **1-2 more times**, or until **no additional slack** appears after calibration completes.
 
 This ensures the tendons are properly tensioned and the hand is correctly calibrated.
