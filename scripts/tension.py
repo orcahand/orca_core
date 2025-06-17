@@ -22,6 +22,7 @@ def main():
 
     hand.enable_torque()
     print("Torque enabled.")
+    calibration_current = hand.calib_current
 
     if args.move_motors:
         motor_ids_to_move = [i for i in range(1, 17) if i in hand.motor_ids]
@@ -31,7 +32,6 @@ def main():
             print(f"Moving motors {motor_ids_to_move} continuously for 3 seconds...")
             hand.set_control_mode('current_based_position', motor_ids=motor_ids_to_move)
             
-            calibration_current = hand.calib_current
             # Apply calibration current to all motors; only targeted ones will move.
             hand.set_max_current(calibration_current) 
             print(f"Using calibration current: {calibration_current}mA for targeted motors.")
