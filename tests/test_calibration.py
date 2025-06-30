@@ -30,14 +30,14 @@ class TestOrcaHandCalibration(unittest.TestCase):
         calib = read_yaml(self.calib_path)
         
         motor_limits_file = calib.get('motor_limits', {})
-        motor_limits = hand.motor_limits
+        motor_limits = hand.motor_limits_dict
         if motor_limits != motor_limits_file:
             print(f"motor_limits from hand: {motor_limits}")
             print(f"motor_limits from file: {motor_limits_file}")
         self.assertEqual(motor_limits, motor_limits_file, "Motor limits do not match between hand and calibration file")
         
         joint_to_motor_ratios_file = calib.get('joint_to_motor_ratios', {})
-        joint_to_motor_ratios = hand.joint_to_motor_ratios
+        joint_to_motor_ratios = hand.joint_to_motor_ratios_dict
         if joint_to_motor_ratios != joint_to_motor_ratios_file:
             print(f"joint_to_motor_ratios from hand: {joint_to_motor_ratios}")
             print(f"joint_to_motor_ratios from file: {joint_to_motor_ratios_file}")

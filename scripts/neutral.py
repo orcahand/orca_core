@@ -11,8 +11,13 @@ from orca_core import OrcaHand
 
 def main():
     parser = argparse.ArgumentParser(description='Move OrcaHand to neutral position.')
-    parser.add_argument('model_path', type=str,
-                      help='Path to the hand model directory')
+    parser.add_argument(
+        "model_path",
+        type=str,
+        nargs="?",
+        default=None,
+        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+    )
     
     args = parser.parse_args()
 

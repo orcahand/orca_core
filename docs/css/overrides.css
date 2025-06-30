@@ -1,0 +1,134 @@
+/* === Orca Docusaurus-like full overrides === */
+
+/* 1️⃣ Global white text */
+[data-md-color-scheme="slate"] {
+  --md-default-fg-color: #ffffff;
+  --md-default-fg-color--light: #ffffff;
+  --md-default-fg-color--lighter: #eeeeee;
+}
+
+/* 2️⃣ Top header bar = light grey */
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: #2c2c2c !important;
+  box-shadow: none !important; /* remove any box shadow */
+}
+
+
+/* 5️⃣ Sidebar active link = bold, white, no left border */
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link {
+  border-left: none !important;
+  color: #19809f !important;
+  font-weight: bold;
+}
+
+
+/* 8️⃣ Typography = heavier, larger */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-weight: 600;
+}
+
+/* 9️⃣ Remove "¶" paragraph icons */
+.md-typeset .headerlink {
+  display: none;
+}
+
+/* ========== CLEAR VISUAL BLOCKS FOR METHODS ========== */
+
+/* Add spacing and border to each method */
+.doc.doc-object.doc-function {
+  margin: 2rem 0;
+  padding: 1rem 1rem 0.5rem 1rem;
+  border-radius: 0.5rem;
+  background-color: #1c1e24;  /* slightly lifted dark grey */
+  border: 1px solid #333;
+  box-shadow: 0 0 0.2rem rgba(255, 255, 255, 0.03);
+}
+
+/* Header inside each method (function name) */
+.doc.doc-object.doc-function h3 {
+  margin-top: 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+/* Improve parameter list contrast */
+.doc-children .doc-attribute .doc-label {
+  color: #e0e0e0;
+  font-weight: bold;
+}
+
+/* Add spacing between function description and signature */
+.doc.doc-object.doc-function .doc-signature {
+  margin-bottom: 0.5rem;
+  font-family: var(--md-code-font-family);
+  background: #111;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.25rem;
+  color: #19809f;
+  font-size: 0.9rem;
+}
+
+.doc.doc-object.doc-function:hover {
+  border-color: #19809f;
+  box-shadow: 0 0 0.3rem rgba(0, 255, 255, 0.2);
+}
+
+/* Override Table of Contents active link color */
+[data-md-color-scheme="slate"] .md-nav--secondary .md-nav__link--active {
+  color: #19809f !important;
+}
+
+/* Override sidebar navigation link hover color */
+[data-md-color-scheme="slate"] .md-nav__link:hover {
+  color: #52a0b3 !important; /* Or your desired hover color */
+}
+
+.admonition,
+.admonition .admonition-title,
+.admonition p,
+.admonition li {
+  font-family: Roboto, sans-serif !important;
+  font-size: 1rem !important;
+  line-height: 1.1;
+}
+
+/* Style for details/summary dropdowns */
+[data-md-color-scheme="slate"] details {
+  background-color: #2c2c2c; /* Dark grey background */
+  border: 1px solid #333;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+
+/* Override Material’s inline‐code vars */
+:root {
+  --md-typeset-code-background: #0c5b6f91;
+  --md-typeset-code-border-radius: 4px;
+  --md-typeset-code-padding: 5px 8px;
+  --md-typeset-code-opacity: 0.9;
+}
+
+/* Fallback in case theme uses direct selectors */
+.md-typeset code {
+  background-color: var(--md-typeset-code-background) !important;
+  border-radius: var(--md-typeset-code-border-radius) !important;
+  padding: var(--md-typeset-code-padding) !important;
+  opacity: var(--md-typeset-code-opacity) !important;
+}
+
+/* Fallback in case theme uses direct selectors */
+.md-typeset code {
+  background-color: var(--md-typeset-code-background) !important;
+  color: #ffffff !important;                            /* make inline code text white */
+  border-radius: var(--md-typeset-code-border-radius) !important;
+  padding: var(--md-typeset-code-padding) !important;
+  opacity: var(--md-typeset-code-opacity) !important;
+}
