@@ -5,6 +5,7 @@
 # You may use, copy, modify, and distribute this file under the terms of the MIT License.
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
+
 import os
 import time
 import math
@@ -89,7 +90,6 @@ class OrcaHand:
         self._sanity_check()       
         self.is_calibrated(verbose=True)
 
-        
     def __del__(self):
         """Destructor to disconnect from the hand."""
         self.disconnect()
@@ -344,7 +344,6 @@ class OrcaHand:
         print(self.neutral_position)
         self.set_joint_pos(self.neutral_position, num_steps=num_steps, step_size=step_size)
         
-
     def init_joints(self, calibrate: bool = False
                     ):
         """Initialize the joints, enables torque, sets the control mode and sets to the zero position.
@@ -363,41 +362,6 @@ class OrcaHand:
    
         self._compute_wrap_offsets_dict()
         self.set_joint_pos(self.neutral_position)
-
-    def _compute_wrap_offsets_dict(self):
-        """Read motor_pos positions once and figure out ±1-turn offsets so that
-        pos + offset ∈ [motor_limits_lo, motor_limits_hi].
-        """
-
-        motor_pos = self.get_motor_pos()
-
-        lower_limit = np.array([self.motor_limits_dict[motor_id][0] for motor_id in self.motor_ids])
-        higher_limit = np.array([self.motor_limits_dict[motor_id][1] for motor_id in self.motor_ids])
-
-        offsets = {}
-        for i, motor_id in enumerate(self.motor_ids):
-            if lower_limit[i] is None or higher_limit[i] is None:
-                offsets[motor_id] = 0.0
-                continue
-
-            if motor_pos[i] < lower_limit[i] - 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
-                print(f"Motor ID {motor_id} is out of bounds: "
-                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
-                offsets[motor_id] = -2 * np.pi
-
-            elif motor_pos[i] > higher_limit[i] + 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
-                print(f"Motor ID {motor_id} is out of bounds: "
-                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
-                offsets[motor_id] = +2 * np.pi
-
-            else:
-                offsets[motor_id] = 0.0
-
-        print(f"Offsets: {offsets}")
-
-        self._wrap_offsets_dict = offsets
-
-
 
     def is_calibrated(self, verbose: bool = False) -> bool:
         """Check if the hand is calibrated.
@@ -622,7 +586,39 @@ class OrcaHand:
         self.set_joint_pos(calibrated_joints)
         time.sleep(1)
 
-        
+    def _compute_wrap_offsets_dict(self):
+        """Read motor_pos positions once and figure out ±1-turn offsets so that
+        pos + offset ∈ [motor_limits_lo, motor_limits_hi].
+        """
+
+        motor_pos = self.get_motor_pos()
+
+        lower_limit = np.array([self.motor_limits_dict[motor_id][0] for motor_id in self.motor_ids])
+        higher_limit = np.array([self.motor_limits_dict[motor_id][1] for motor_id in self.motor_ids])
+
+        offsets = {}
+        for i, motor_id in enumerate(self.motor_ids):
+            if lower_limit[i] is None or higher_limit[i] is None:
+                offsets[motor_id] = 0.0
+                continue
+
+            if motor_pos[i] < lower_limit[i] - 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
+                print(f"Motor ID {motor_id} is out of bounds: "
+                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
+                offsets[motor_id] = -2 * np.pi
+
+            elif motor_pos[i] > higher_limit[i] + 0.25 * np.pi: # Some buffer to compensate for noise/slack differences
+                print(f"Motor ID {motor_id} is out of bounds: "
+                    f"{lower_limit[i]} < {motor_pos[i]} < {higher_limit[i]}")
+                offsets[motor_id] = +2 * np.pi
+
+            else:
+                offsets[motor_id] = 0.0
+
+        print(f"Offsets: {offsets}")
+
+        self._wrap_offsets_dict = offsets
+
     def _set_motor_pos(self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False):
         """Set the desired motor positions in radians.
         
@@ -840,7 +836,6 @@ class MockOrcaHand(OrcaHand):
             return False, f"Mock connection failed: {str(e)}"
         
     
-
 if __name__ == "__main__":
     # Example usage:
     hand = OrcaHand()
