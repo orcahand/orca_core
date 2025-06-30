@@ -1,0 +1,72 @@
+site_name: Orca Core Docs
+site_url: https://www.orcahand.com/
+repo_url: https://github.com/orcahand
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.expand
+  palette:
+    scheme: slate  # dark mode
+    primary: gray  # built-in light grey
+    accent: teal   # optional: keep accents in Orca teal
+  font:
+    text: Roboto
+    code: Roboto Mono
+  logo: img/logo-light-256.png
+  favicon: images/favicon.ico
+
+plugins:
+  - search
+  # - awesome-pages
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: ["orca_core.core"]
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            merge_init_into_class: true
+            show_signature_annotations: true
+            members_order: source
+            docstring_style: google
+            show_source: false
+            filters:
+              - "!^__del__$"
+              - "!^__.*__$"
+              - "!^_.*"   
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed
+  - toc:
+      permalink: true
+
+nav:
+  - About Orca: index.md
+  - Getting Started with ORCA Hand: 
+      - Setting Up Dynamixels: pages/getting-started-docs/setting-up-dynamixels.md
+      - Setting Up Config: pages/getting-started-docs/setting-up-config.md
+      - Quickstart with Core Package: pages/getting-started-docs/quickstart-with-core-package.md
+      - Calibration and Tensioning: pages/getting-started-docs/initial-tensioning-and-calibration.md
+  - ORCA Core:
+      - Structure: pages/orca-core-docs/orca-core-structure.md
+      - OrcaHand Class API: pages/orca-core-docs/orcahand-api.md
+      - Scripts: pages/orca-core-docs/orca-core-scripts.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/company/orcahand
+    - icon: fontawesome/brands/x-twitter
+      link: https://x.com/orca_hand
+    - icon: fontawesome/brands/github
+      link: https://github.com/orca-hand
+
+extra_css:
+  - css/overrides.css

@@ -3,18 +3,33 @@ import yaml
 import numpy as np
 import argparse
 from orca_core import OrcaHand
+import os
 
 def main():
     parser = argparse.ArgumentParser(description='Replay continuous hand joint movements.')
-    parser.add_argument('model_path', type=str, help='Path to the OrcaHand model folder (e.g., /path/to/orcahand_v1_right)')
-    parser.add_argument('replay_file', type=str, help='YAML file containing the recorded angles and metadata')
+    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
+    parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
 
+    user_input_replay_file = args.replay_file.strip()
+    
+    project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    default_replay_dir_path = os.path.join(project_root, 'replay_sequences')
+
+    if os.path.isabs(user_input_replay_file):
+        full_filepath = user_input_replay_file
+    elif os.sep in user_input_replay_file :
+        full_filepath = os.path.join(project_root, user_input_replay_file)
+    else:
+        full_filepath = os.path.join(default_replay_dir_path, user_input_replay_file)
+    
+    full_filepath = os.path.abspath(full_filepath)
+
     try:
-        with open(args.replay_file, "r") as file:
+        with open(full_filepath, "r") as file:
             replay_data = yaml.safe_load(file)
     except FileNotFoundError:
-        print(f"File {args.replay_file} not found.")
+        print(f"File not found at the resolved path: {full_filepath}")
         return
 
     metadata = replay_data.get("metadata", {})

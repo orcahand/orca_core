@@ -17,7 +17,7 @@ joint_to_motor_map:
   thumb_mcp: -4
   thumb_abd: -3
   thumb_pip: -1
-  thumb_dip: 2
+  thumb_dip: -2
   index_abd: 14
   index_mcp: -15
   index_pip: -16
