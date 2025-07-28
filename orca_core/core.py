@@ -343,7 +343,6 @@ class OrcaHand:
         """
         if self.neutral_position is None:
             raise ValueError("Neutral position is not set. Please set the neutral position in the config.yaml file.")
-        print(self.neutral_position)
         self.set_joint_pos(self.neutral_position, num_steps=num_steps, step_size=step_size)
         
 
@@ -364,7 +363,7 @@ class OrcaHand:
         if not self.calibrated or calibrate:
             self.calibrate()
    
-        self.set_joint_pos(self.neutral_position)
+        self.set_neutral_position()
 
                    
     def is_calibrated(self) -> bool:
@@ -429,7 +428,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if joint == 'wrist' or joint == 'thumb_abd': # don't disable because of gravity
+                            if 'wrist' in joint or 'abd' in joint:
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
@@ -458,11 +457,9 @@ class OrcaHand:
             update_yaml(self.calib_path, 'motor_limits', motor_limits)
             self.motor_limits = motor_limits
             if calibrated_joints:
-                print("Setting calibrated joints")
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
             time.sleep(0.1)    
             
-        print("Is fully calibrated: ", self.is_calibrated())
         self.calibrated = self.is_calibrated()
         update_yaml(self.calib_path, 'calibrated', self.calibrated)
         self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)

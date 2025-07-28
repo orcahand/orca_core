@@ -8,7 +8,7 @@ def main():
     
     filename = input("Enter the filename to save the replay sequence (default: replay_sequence.yaml): ")
     
-    hand = OrcaHand('/Users/ccc/dev/orca/orca_core/orca_core/models/orcahand_v1_left')
+    hand = OrcaHand('/Users/ccc/dev/orca/orca_configs/orcahand_v1_right_clemens_stanford')
     status = hand.connect()
     print(status)
 
@@ -17,7 +17,8 @@ def main():
         return
     
     hand.init_joints()
-    time.sleep(1)
+    time.sleep(1
+    )
 
     hand.disable_torque()
     print("Torque disabled. Ready to record motor angles.")
