@@ -1,38 +1,44 @@
 import argparse
+import sys
+import os
+import time
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from orca_core import OrcaHand
-import time 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Move only the wrist joint (motor 17) to zero position."
-    )
-    parser.add_argument(
-        "model_path",
-        type=str,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
-    )
+    parser = argparse.ArgumentParser(description='Move OrcaHand joints to zero position.')
+    parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
+
+    
     args = parser.parse_args()
 
-    hand = OrcaHand(args.model_path)
-    status = hand.connect()
-    hand.enable_torque()
-    print(status)
-
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
-
-    
-    # Get current motor position
-    current_pos = hand.get_motor_pos()
-    
-    while True:
-        new_pos = current_pos.copy()
-        new_pos[-1] += 0.1
-        hand._set_motor_pos(new_pos)
-        time.sleep(0.001)
-    
- 
-    
+    try:
+        hand = OrcaHand(model_path=args.model_path)
+            
+        success, message = hand.connect()
+        if not success:
+            print(f"Failed to connect: {message}")
+            return 1
+            
+        print("Connected to hand successfully")
+        
+        hand.enable_torque()
+        print("Torque enabled")
+        print("Available motor IDs:", hand.motor_ids)
+        print("Moving all joints to 0 position...")
+        hand.set_joint_pos({joint: 0 for joint in hand.joint_ids}, num_steps=25, step_size=0.001) # Setting pos with steps to avoid too fast movement
+        print("Reached 0 position of all joints")
+        time.sleep(3)  # Wait for the hand to stabilize
+        hand.disable_torque()
+        hand.disconnect()
+        print("Disconnected from hand")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main()) 

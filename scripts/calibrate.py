@@ -8,6 +8,8 @@ def main():
     parser.add_argument(
         "model_path",
         type=str,
+        nargs="?",
+        default=None,
         help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
     )
     args = parser.parse_args()
