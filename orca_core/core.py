@@ -86,6 +86,12 @@ class OrcaHand:
 
         self._dxl_client: DynamixelClient = None
         self._motor_lock: RLock = RLock()
+
+        # Task thread to start and stop longer tasks like tensioning, calibration, etc. externally
+        self._task_thread: threading.Thread = None
+        self._task_stop_event = threading.Event()
+        self._lock = threading.Lock() 
+        self._current_task = None
         
         self._sanity_check()       
         self.is_calibrated(verbose=True)
@@ -362,42 +368,6 @@ class OrcaHand:
         self._compute_wrap_offsets_dict()
         self.set_joint_pos(self.neutral_position)
 
-    def tension(self, move_motors: bool = False):
-        """Freeze the motors, so that the hand can be manually tensioned.
-        
-        Args:
-            move_motors (bool): If True, the hand will move to all motors positively for 3 seconds to set some initial tension.
-        """
-        self.set_control_mode('current_based_position')
-        if move_motors:
-            motors_to_move = [
-                motor_id for joint, motor_id in self.joint_to_motor_map.items()
-                if 'wrist' not in joint.lower() and motor_id in self.motor_ids
-            ]
-            self.set_max_current(self.calib_current)
-
-            duration = 3
-            increment_per_step = 0.1
-            motor_increments = {motor_id: increment_per_step for motor_id in motors_to_move}
-
-            start_time = time.time()
-            while(time.time() - start_time < duration):
-                self._set_motor_pos(motor_increments, rel_to_current=True)
-                time.sleep(0.1)
-
-        self.set_max_current(self.max_current)
-        self.disable_torque()
-        time.sleep(0.25)
-        self.enable_torque()
-        print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
-        try:
-            while True:
-                # Keep torque enabled; motors will hold their last commanded position.
-                time.sleep(0.1) 
-        except KeyboardInterrupt:
-            print("\nExiting. Disabling torque.")
-            self.disable_torque()    
-
     def is_calibrated(self, verbose: bool = False) -> bool:
         """Check if the hand is calibrated.
 
@@ -462,7 +432,6 @@ class OrcaHand:
         self.set_max_current(self.calib_current)
         self.enable_torque()
         
-
         for step in self.calib_sequence:
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
 
@@ -829,7 +798,86 @@ class OrcaHand:
             if any(limit is None for limit in motor_limit):
                 self.calibrated = False
                 update_yaml(self.calib_path, 'calibrated', False)
-                
+
+    def tension(self, move_motors: bool = False):
+        self._start_task(self._tension, move_motors)
+
+    def _tension(self, move_motors: bool = False):
+        """Freeze the motors, so that the hand can be manually tensioned.
+        
+        Args:
+            move_motors (bool): If True, the hand will move to all motors positively for 3 seconds to set some initial tension.
+        """
+        self.set_control_mode('current_based_position')
+        if move_motors:
+            motors_to_move = [
+                motor_id for joint, motor_id in self.joint_to_motor_map.items()
+                if 'wrist' not in joint.lower() and motor_id in self.motor_ids
+            ]
+            self.set_max_current(self.calib_current)
+
+            duration = 3
+            increment_per_step = 0.1
+            motor_increments = {motor_id: increment_per_step for motor_id in motors_to_move}
+
+            start_time = time.time()
+            while(time.time() - start_time < duration):
+                if self._task_stop_event.is_set():
+                    break
+                self._set_motor_pos(motor_increments, rel_to_current=True)
+                time.sleep(0.1)
+
+        self.set_max_current(self.max_current)
+        self.disable_torque()
+        time.sleep(0.25)
+        self.enable_torque()
+        print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
+        try:
+            while not self._task_stop_event.is_set():
+                time.sleep(0.1) 
+        finally:
+            self.disable_torque()  
+
+    def _run_task(self, task_fn, *args, **kwargs):
+        """Run a task in a separate thread, so that it can be stopped externally.
+        
+        Args:
+            task_fn (function): The task function to run.
+            *args: Additional arguments to pass to the task function.
+            **kwargs: Additional keyword arguments to pass to the task function.
+        """
+        with self._lock:
+            self._task_stop_event.clear()
+            self._current_task = task_fn.__name__
+            try:
+                task_fn(*args, **kwargs)
+            finally:
+                self._current_task = None
+
+    def _start_task(self, task_fn, *args, **kwargs):
+        """Start a task in a separate thread, so that it can be stopped externally.
+        
+        Args:
+            task_fn (function): The task function to run.
+            *args: Additional arguments to pass to the task function.
+            **kwargs: Additional keyword arguments to pass to the task function.
+        """
+        if self._task_thread and self._task_thread.is_alive():
+            print(f"Task '{self._current_task}' is already running.")
+            return
+
+        self._task_thread = threading.Thread(target=self._run_task, args=(task_fn,) + args, kwargs=kwargs)
+        self._task_thread.start()
+
+    def stop_task(self):
+        """Stop the currently running task.
+        """
+        if self._task_thread and self._task_thread.is_alive():
+            self._task_stop_event.set()
+            self._task_thread.join()
+            print("Task stopped.")
+        else:
+            print("No running task to stop.")               
 
 def require_connection(func):
     def wrapper(self, *args, **kwargs):
