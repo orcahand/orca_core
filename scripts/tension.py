@@ -23,9 +23,12 @@ def main():
 
     hand.tension(args.move_motors)
 
-    while(True):
-        time.sleep(1)
-        print("Holding tension. Press Ctrl+C to exit.")
+    try:
+        while(True):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Stopping task.")
+        hand.stop_task()
 
     hand.disconnect()
 
