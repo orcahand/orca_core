@@ -18,8 +18,7 @@ class TestOrcaHandTension(unittest.TestCase):
 
     def test_tension_move_motors_false(self):
         """Test tension function with move_motors=False."""
-        self.hand.tension(move_motors=False)
-        time.sleep(0.2)
+        self.hand.tension(move_motors=False, blocking=False)
         self.assertTrue(self.hand._task_thread.is_alive())
         self.hand.stop_task()
         time.sleep(0.1)
@@ -27,8 +26,8 @@ class TestOrcaHandTension(unittest.TestCase):
 
     def test_tension_move_motors_true(self):
         """Test tension function with move_motors=True."""
-        self.hand.tension(move_motors=True)
-        time.sleep(0.2)
+        self.hand.tension(move_motors=True, blocking=False)
+        time.sleep(1)
         self.assertTrue(self.hand._task_thread.is_alive())
         self.hand.stop_task()
         time.sleep(0.1)
@@ -36,7 +35,7 @@ class TestOrcaHandTension(unittest.TestCase):
 
     def test_tension_interrupt_after_3_seconds(self):
         """Start tension, wait 3 seconds, then interrupt."""
-        self.hand.tension(move_motors=True)
+        self.hand.tension(move_motors=True, blocking=False)
         time.sleep(3)
         self.assertTrue(self.hand._task_thread.is_alive(), "Tension task should still be running")
         self.hand.stop_task()
@@ -44,12 +43,10 @@ class TestOrcaHandTension(unittest.TestCase):
         self.assertFalse(self.hand._task_thread.is_alive(), "Tension task should have stopped")
 
     def test_second_tension_is_rejected(self):
-        """Ensure second tension start is rejected while one is running."""
-        self.hand.tension(move_motors=True)
-        time.sleep(0.2) 
+        """Ensure that starting a second tension is rejected while one is running."""
+        self.hand.tension(move_motors=True, blocking=False)
 
-        print(self.hand.tension(move_motors=False))
-        time.sleep(0.1)
+        self.hand.tension(move_motors=True, blocking=False)
 
         self.assertTrue(self.hand._task_thread.is_alive())
         self.assertEqual(self.hand._current_task, '_tension')

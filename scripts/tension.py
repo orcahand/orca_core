@@ -22,14 +22,7 @@ def main():
     hand.enable_torque()
 
     hand.tension(args.move_motors)
-
-    try:
-        while(True):
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Stopping task.")
-        hand.stop_task()
-
+    
     hand.disconnect()
 
 if __name__ == "__main__":
