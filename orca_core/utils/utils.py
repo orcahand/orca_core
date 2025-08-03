@@ -95,3 +95,84 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         t = i / n_steps
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
+
+
+################################################################################
+### peripheral utils ###########################################################
+################################################################################
+
+def get_and_choose_dynamixel_port() -> str:
+    """
+    Interactive terminal UI to choose from available USB devices with arrow key navigation.
+    Returns the selected port or None if the user quits.
+    """
+    import curses
+    import serial.tools.list_ports
+    
+    def draw_menu(stdscr, ports, selected_idx):
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        title = "Choose a device (use arrow keys, Enter to select, q to quit)"
+        stdscr.addstr(0, (width - len(title)) // 2, title, curses.A_BOLD)
+        
+        for i, port in enumerate(ports):
+            y_pos = i + 2
+            marker = "(x)" if i == selected_idx else "( )"
+            
+            if i == selected_idx:
+                stdscr.attron(curses.A_REVERSE)
+                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
+                stdscr.attroff(curses.A_REVERSE)
+            else:
+                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
+            
+            if y_pos + 1 < height:
+                stdscr.addstr(y_pos + 1, 4, f"{port.description or 'No description'}")
+            if y_pos + 2 < height:
+                stdscr.addstr(y_pos + 2, 4, f"{port.manufacturer or 'Unknown manufacturer'}")
+        
+        if len(ports) + 5 < height:
+            stdscr.addstr(height - 2, 0, "Use ↑↓ arrows to navigate, Enter to select, q to quit")
+        
+        stdscr.refresh()
+    
+    def main_menu(stdscr):
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        
+        ports = list(serial.tools.list_ports.comports())
+        
+        if not ports:
+            stdscr.clear()
+            stdscr.addstr(0, 0, "No USB devices found!")
+            stdscr.refresh()
+            stdscr.getch()
+            return None
+        
+        selected_idx = 0
+        
+        while True:
+            draw_menu(stdscr, ports, selected_idx)
+            
+            key = stdscr.getch()
+            
+            if key == curses.KEY_UP and selected_idx > 0:
+                selected_idx -= 1
+            elif key == curses.KEY_DOWN and selected_idx < len(ports) - 1:
+                selected_idx += 1
+            elif key == curses.KEY_ENTER or key in [10, 13]:
+                return ports[selected_idx].device
+            elif key == ord('q') or key == ord('Q'):
+                return None
+            elif key == 27:
+                return None
+    
+    try:
+        return curses.wrapper(main_menu)
+    except KeyboardInterrupt:
+        return None
+
+
+if __name__ == "__main__":
+    print(get_and_choose_dynamixel_port())

@@ -14,6 +14,7 @@ from typing import Dict, List, Union
 from collections import deque
 from threading import RLock
 import numpy as np
+import serial
 from .hardware.dynamixel_client import DynamixelClient
 from .hardware.mock_dynamixel_client import MockDynamixelClient
 from .utils.utils import *
@@ -38,7 +39,11 @@ class OrcaHand:
         calib = read_yaml(self.calib_path)
             
         self.baudrate: int = config.get('baudrate', 3000000)
-        self.port: str = config.get('port', '/dev/ttyUSB0')
+        self.port: str = config.get('port')
+        if self.port is None:
+            self.port = get_and_choose_dynamixel_port()
+        update_yaml(self.config_path, 'port', self.port)
+
         self.max_current: int = config.get('max_current', 300)
         self.control_mode: str = config.get('control_mode', 'current_position')
         self.type: str = config.get('type', None)
@@ -110,6 +115,11 @@ class OrcaHand:
             with self._motor_lock:
                 self._dxl_client.connect()
             return True, "Connection successful"
+        except serial.SerialException as e:
+            self._dxl_client = None
+            self.port = get_and_choose_dynamixel_port()
+            update_yaml(self.config_path, 'port', self.port)
+            return self.connect()
         except Exception as e:
             self._dxl_client = None
             return False, f"Connection failed: {str(e)}"
