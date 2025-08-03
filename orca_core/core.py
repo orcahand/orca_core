@@ -16,8 +16,7 @@ from threading import RLock
 import numpy as np
 from .hardware.dynamixel_client import DynamixelClient
 from .hardware.mock_dynamixel_client import MockDynamixelClient
-from .utils.yaml_utils import read_yaml, update_yaml # Changed from import *
-from .utils.load_utils import get_model_path
+from .utils.utils import *
 
 class OrcaHand:
     """OrcaHand class is used to abtract hardware control the hand of the robot with simple high level control methods in joint space."""
@@ -86,6 +85,12 @@ class OrcaHand:
 
         self._dxl_client: DynamixelClient = None
         self._motor_lock: RLock = RLock()
+
+        # Task thread to start and stop longer tasks like tensioning, calibration, etc. externally
+        self._task_thread: threading.Thread = None
+        self._task_stop_event = threading.Event()
+        self._lock = threading.Lock() 
+        self._current_task = None
         
         self._sanity_check()       
         self.is_calibrated(verbose=True)
@@ -400,20 +405,19 @@ class OrcaHand:
                     motors_with_warnings.add(motor_id)
         
         if verbose:
-            if not uncalibrated_messages:
-                print("All joints found to be calibrated.")
-            else:
-                for msg in uncalibrated_messages:
-                    print(msg)
+            for msg in uncalibrated_messages:
+                print(msg)
         
         return overall_calibrated
 
-    def calibrate(self):
-        """Calibrate the hand by moving the joints to their limits and setting the ROMs. 
-        
-        The proecess is mostly hardware independent and is defined in the config.yaml file.
-        The motor position is increseed and decreased flexing and extending each joint while recording the reached limits.
-        """        
+    def calibrate(self, blocking: bool = True):
+        if blocking:
+            self._calibrate()
+        else:
+            self._start_task(self._calibrate)
+
+    def _calibrate(self):
+            
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
 
@@ -429,11 +433,16 @@ class OrcaHand:
         self.set_max_current(self.calib_current)
         self.enable_torque()
         
-
         for step in self.calib_sequence:
+            if self._task_stop_event.is_set():
+                return
+
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
 
             for joint, direction in step["joints"].items(): 
+                if self._task_stop_event.is_set():
+                    return
+
                 if joint == 'wrist':
                     self.set_max_current(self.wrist_calib_current)
                 else:
@@ -449,7 +458,7 @@ class OrcaHand:
                 current_log[motor_id] = []
                 motor_reached_limit[motor_id] = False
             
-            while(not all(motor_reached_limit.values())):                
+            while(not all(motor_reached_limit.values()) and not self._task_stop_event.is_set()):               
                 for motor_id, reached_limit in motor_reached_limit.items():
                     if not reached_limit:
                         desired_increment[motor_id] = directions[motor_id] * self.calib_step_size
@@ -740,10 +749,8 @@ class OrcaHand:
             
             min_pos, max_pos = self.joint_roms_dict[joint_name]
             
-            # Clip the position if outside ROM and notify
             if pos < min_pos or pos > max_pos:
                 clipped_pos = max(min_pos, min(max_pos, pos))
-                # print(f"Clipping {joint_name} from {pos} to {clipped_pos} (ROM: {min_pos} to {max_pos})")
                 pos = clipped_pos
 
             if self.joint_inversion_dict.get(joint_name, False):
@@ -796,7 +803,89 @@ class OrcaHand:
             if any(limit is None for limit in motor_limit):
                 self.calibrated = False
                 update_yaml(self.calib_path, 'calibrated', False)
-                
+
+    def tension(self, move_motors: bool = False, blocking: bool = True):
+        if blocking:
+            self._tension(move_motors)
+        else:
+            self._start_task(self._tension, move_motors)
+
+    def _tension(self, move_motors: bool = False):
+        """Freeze the motors, so that the hand can be manually tensioned.
+        
+        Args:
+            move_motors (bool): If True, the hand will move to all motors positively for 3 seconds to set some initial tension.
+        """
+        self.set_control_mode('current_based_position')
+        if move_motors:
+            motors_to_move = [
+                motor_id for joint, motor_id in self.joint_to_motor_map.items()
+                if 'wrist' not in joint.lower() and motor_id in self.motor_ids
+            ]
+            self.set_max_current(self.calib_current)
+
+            duration = 3
+            increment_per_step = 0.1
+            motor_increments = {motor_id: increment_per_step for motor_id in motors_to_move}
+
+            start_time = time.time()
+            while(time.time() - start_time < duration):
+                if self._task_stop_event.is_set():
+                    break
+                self._set_motor_pos(motor_increments, rel_to_current=True)
+                time.sleep(0.1)
+
+        self.set_max_current(self.max_current)
+        self.disable_torque()
+        time.sleep(0.25)
+        self.enable_torque()
+        print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
+        try:
+            while not self._task_stop_event.is_set():
+                time.sleep(0.1) 
+        finally:
+            self.disable_torque()  
+
+    def _run_task(self, task_fn, *args, **kwargs):
+        """Run a task in a separate thread, so that it can be stopped externally.
+        
+        Args:
+            task_fn (function): The task function to run.
+            *args: Additional arguments to pass to the task function.
+            **kwargs: Additional keyword arguments to pass to the task function.
+        """
+        with self._lock:
+            self._task_stop_event.clear()
+            self._current_task = task_fn.__name__
+            try:
+                task_fn(*args, **kwargs)
+            finally:
+                self._current_task = None
+
+    def _start_task(self, task_fn, *args, **kwargs):
+        """Start a task in a separate thread, so that it can be stopped externally.
+        
+        Args:
+            task_fn (function): The task function to run.
+            *args: Additional arguments to pass to the task function.
+            **kwargs: Additional keyword arguments to pass to the task function.
+        """
+        if self._task_thread and self._task_thread.is_alive():
+            print(f"Task '{self._current_task}' is already running.")
+            return
+
+        self._task_thread = threading.Thread(target=self._run_task, args=(task_fn,) + args, kwargs=kwargs)
+        self._task_thread.start()
+
+    def stop_task(self):
+        """Stop the currently running task.
+        """
+        if self._task_thread and self._task_thread.is_alive():
+            self._task_stop_event.set()
+            self._task_thread.join()
+            print("Task stopped.")
+        else:
+            print("No running task to stop.")               
 
 def require_connection(func):
     def wrapper(self, *args, **kwargs):
