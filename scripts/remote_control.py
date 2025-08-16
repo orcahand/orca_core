@@ -111,7 +111,7 @@ current_client_id = None
 latest_command = None
 command_lock = threading.Lock()
 command_available = threading.Event()
-blocking_realtime_commands = False
+blocking_slider_commands = False
 waypoint_playback_active = False
 waypoint_playback_thread = None
 waypoint_playback_stop_event = threading.Event()
@@ -134,12 +134,12 @@ def set_command_buffer(new_command):
 
 def command_processor_thread(hand):
     """Thread that processes the latest command from the buffer"""
-    global current_client_id, blocking_realtime_commands
+    global current_client_id, blocking_slider_commands
     
     while True:
         try:
             # Wait for a command to become available, skip if blocking
-            if not command_available.wait(timeout=1.0) or blocking_realtime_commands:
+            if not command_available.wait(timeout=1.0) or blocking_slider_commands:
                 continue
             
             # Get and clear command atomically
@@ -163,9 +163,9 @@ def command_processor_thread(hand):
 
 def reset_to_neutral(hand):
     """Reset the hand to neutral position without toggling torque"""
-    global blocking_realtime_commands
+    global blocking_slider_commands
     
-    blocking_realtime_commands = True
+    blocking_slider_commands = True
     get_and_clear_command_buffer()  # Clear any pending commands
     
     try:
@@ -175,7 +175,7 @@ def reset_to_neutral(hand):
         logger.exception(f"Error during reset: {e}")
         return False
     finally:
-        blocking_realtime_commands = False
+        blocking_slider_commands = False
 
 
 def save_joint_positions(hand, client_id=None):
@@ -221,18 +221,18 @@ def _load_waypoints(client_file):
 
 def play_waypoints(hand, client_id):
     """Play waypoints from the client's YAML file"""
-    global waypoint_playback_active, blocking_realtime_commands, waypoint_playback_stop_event
+    global waypoint_playback_active, blocking_slider_commands, waypoint_playback_stop_event
     
     def cleanup(success=True, message="Completed"):
-        global waypoint_playback_active, blocking_realtime_commands
+        global waypoint_playback_active, blocking_slider_commands
         waypoint_playback_active = False
-        blocking_realtime_commands = False
+        blocking_slider_commands = False
         return success, message
     
     try:
         logger.info("Starting waypoint playback...")
         waypoint_playback_active = True
-        blocking_realtime_commands = True
+        blocking_slider_commands = True
         
         client_file = _get_client_file_path(client_id)
         
@@ -324,9 +324,8 @@ def handle_new_active_client(hand, data, ws):
         logger.info(f"Client changing: {current_client_id} -> {client_id}")
         reset_to_neutral(hand)
         current_client_id = client_id
-        ws.send(json.dumps({"status": "ok", "message": "New active client acknowledged"}))
-    else:
-        ws.send(json.dumps({"status": "ok", "message": "Client already active"}))
+        # No response needed - this is an internal state change
+    # No response needed - client state is already correct
 
 def handle_save_joints(hand, data, ws):
     """Handle save joints command"""
@@ -348,7 +347,11 @@ def handle_get_waypoint_count(data, ws):
         return
         
     count = get_waypoint_count(data.get("clientId", ""))
-    ws.send(json.dumps({"status": "ok", "action": "waypointCount", "count": count}))
+    ws.send(json.dumps({
+        "status": "ok", 
+        "message": f"You have {count} saved waypoints",
+        "data": {"count": count}
+    }))
 
 def handle_play_waypoints(hand, data, ws):
     """Handle play waypoints command"""
@@ -401,21 +404,21 @@ def handle_stop_playback(hand, data, ws):
             time.sleep(0.5)
             reset_to_neutral(hand)
             ws.send(json.dumps({"status": "ok", "message": "Waypoint playback stopped"}))
-        else:
-            ws.send(json.dumps({"status": "ok", "message": "No active playback to stop"}))
+        # No message needed if playback wasn't active - frontend should know the state
     finally:
         waypoint_playback_active = False
 
 def handle_command(data, ws):
-    """Handle realtime command"""
+    """Handle slider command"""
     if not is_authorized_client(data, "user"):
         send_unauthorized_response(ws, data)
         return
         
-    global blocking_realtime_commands
-    if not blocking_realtime_commands:
+    global blocking_slider_commands
+    if not blocking_slider_commands:
         set_command_buffer(data)
-        ws.send(json.dumps({"status": "ok", "message": "command buffer updated"}))
+        # No response needed for real-time commands - silent success
+
 
 def is_authorized_client(data, action_type="user"):
     """Check if the client is authorized to perform actions"""
