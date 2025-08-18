@@ -12,80 +12,8 @@ import yaml # type: ignore
 # Add the parent directory to the Python path so we can import orca_core
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from orca_core import OrcaHand
+from orca_core import OrcaHand, MockOrcaHand
 from replay_angles import ease_in_out
-
-###############################################################################################
-
-# Mock OrcaHand class for development without hardware
-class MockOrcaHand:
-    def __init__(self, model_path=None):
-        self.model_path = model_path
-        self.joint_positions = {
-            "thumb_mcp": -13.0, "thumb_abd": 42.0, "thumb_pip": 33.0, "thumb_dip": 19.0,
-            "index_abd": 25.0, "index_mcp": 0.0, "index_pip": 0.0,
-            "middle_abd": -2.0, "middle_mcp": 0.0, "middle_pip": 0.0,
-            "ring_abd": -20.0, "ring_mcp": -1.0, "ring_pip": 0.0,
-            "pinky_abd": -37.0, "pinky_mcp": 1.0, "pinky_pip": 0.0,
-            "wrist": 0.0
-        }
-        self.connected = False
-        self.torque_enabled = False
-    
-    def connect(self):
-        time.sleep(0.5)  # Simulate connection time
-        self.connected = True
-        return True, "Mock connection successful"
-    
-    def disconnect(self):
-        self.connected = False
-        return True
-    
-    def enable_torque(self):
-        self.torque_enabled = True
-        return True
-    
-    def disable_torque(self):
-        self.torque_enabled = False
-        return True
-    
-    def set_joint_pos(self, joint_pos, num_steps=1, step_size=0.001):
-        """Simulate setting joint positions"""
-        logger.debug(f"MockOrcaHand: Setting joint positions: {joint_pos}")
-        
-        # Update internal joint positions
-        for joint_name, position in joint_pos.items():
-            if joint_name in self.joint_positions:
-                self.joint_positions[joint_name] = float(position)
-        
-        # Simulate movement time based on num_steps
-        if num_steps > 1:
-            time.sleep(num_steps * step_size)
-        
-        return True
-    
-    def set_neutral_position(self, num_steps=25, step_size=0.001):
-        """Simulate setting to neutral position"""
-        neutral_positions = {
-            "thumb_mcp": -13.0, "thumb_abd": 42.0, "thumb_pip": 33.0, "thumb_dip": 19.0,
-            "index_abd": 25.0, "index_mcp": 0.0, "index_pip": 0.0,
-            "middle_abd": -2.0, "middle_mcp": 0.0, "middle_pip": 0.0,
-            "ring_abd": -20.0, "ring_mcp": -1.0, "ring_pip": 0.0,
-            "pinky_abd": -37.0, "pinky_mcp": 1.0, "pinky_pip": 0.0,
-            "wrist": 0.0
-        }
-        
-        self.joint_positions.update(neutral_positions)
-        time.sleep(num_steps * step_size)
-        return True
-    
-    def get_joint_pos(self, as_list=False):
-        """Get current joint positions"""
-        if as_list:
-            # Return in the same order as command array using global JOINT_NAMES
-            return [self.joint_positions[name] for name in JOINT_NAMES]
-        else:
-            return self.joint_positions.copy()
 
 ###############################################################################################
 
@@ -151,11 +79,10 @@ def command_processor_thread(hand):
             if current_client_id and cmd.get("clientId") != current_client_id:
                 continue
             
-            # Apply command to hand
             joint_dict = {name: float(value) for name, value in zip(JOINT_NAMES, cmd.get("command", []))}
-            logger.debug(f"Setting joint positions: {joint_dict}")
+            logger.info(f"Setting joint positions: {joint_dict}")
             hand.set_joint_pos(joint_pos=joint_dict, num_steps=1)
-            
+
         except Exception as e:
             logger.error(f"Command processor error: {e}")
             time.sleep(0.1)
@@ -202,6 +129,51 @@ def save_joint_positions(hand, client_id=None):
     logger.info(f"Positions saved to {client_file}")
 
 
+def delete_last_waypoint(client_id=None):
+    """Delete the last (most recent) waypoint from a client's YAML file"""
+    client_file = _get_client_file_path(client_id)
+    
+    if not os.path.exists(client_file):
+        logger.warning(f"No waypoints file found for client: {client_file}")
+        return 0
+    
+    try:
+        # Load existing positions
+        with open(client_file, "r") as file:
+            client_positions = yaml.safe_load(file) or {}
+        
+        if not client_positions:
+            logger.warning(f"No waypoints found in file: {client_file}")
+            return 0
+        
+        # Find the most recent waypoint (by timestamp in key name)
+        # Sort by the timestamp part of the key (waypoint_YYYYMMDD_HHMMSS)
+        sorted_keys = sorted(client_positions.keys(), key=lambda x: x.split('_')[1:3] if len(x.split('_')) >= 3 else ['0', '0'])
+        
+        if sorted_keys:
+            last_key = sorted_keys[-1]
+            del client_positions[last_key]
+            logger.info(f"Deleted waypoint: {last_key}")
+            
+            # Save updated positions back to file
+            if client_positions:
+                with open(client_file, "w") as file:
+                    yaml.dump(client_positions, file, default_flow_style=False)
+            else:
+                # If no waypoints left, delete the file
+                os.remove(client_file)
+                logger.info(f"No waypoints remaining, deleted file: {client_file}")
+            
+            return len(client_positions)
+        else:
+            logger.warning(f"No waypoints found to delete in: {client_file}")
+            return 0
+            
+    except Exception as e:
+        logger.exception(f"Error deleting waypoint from {client_file}:")
+        raise e
+
+
 def _get_client_file_path(client_id):
     """Get the file path for a client's waypoints"""
     client_short = client_id[:8]
@@ -219,18 +191,21 @@ def _load_waypoints(client_file):
     waypoints = [[joint_dict.get(name, 0.0) for name in JOINT_NAMES] for joint_dict in positions.values()]
     return waypoints
 
-def play_waypoints(hand, client_id):
+def play_waypoints(hand, client_id, ws):
     """Play waypoints from the client's YAML file"""
-    global waypoint_playback_active, blocking_slider_commands, waypoint_playback_stop_event
+    global waypoint_playback_active, blocking_slider_commands, waypoint_playback_stop_event, current_client_id
     
     def cleanup(success=True, message="Completed"):
         global waypoint_playback_active, blocking_slider_commands
+        reset_to_neutral(hand)
         waypoint_playback_active = False
         blocking_slider_commands = False
+
         return success, message
     
+
     try:
-        logger.info("Starting waypoint playback...")
+        logger.info(f"Starting waypoint playback for client: {client_id}")
         waypoint_playback_active = True
         blocking_slider_commands = True
         
@@ -244,18 +219,28 @@ def play_waypoints(hand, client_id):
         
         # Playback constants
         INTERP_TIME, STEP_TIME = 0.8, 0.02
+        MAX_PLAYBACK_TIME = 120  # 2 minutes maximum playback time
         n_steps = int(INTERP_TIME / STEP_TIME)
         
         waypoint_playback_stop_event.clear()
+        playback_start_time = time.time()
         
         while not waypoint_playback_stop_event.is_set():
+            # Check maximum playback time (2 minutes)
+            if time.time() - playback_start_time > MAX_PLAYBACK_TIME:
+                logger.info(f"Waypoint playback reached maximum time limit ({MAX_PLAYBACK_TIME}s), stopping")
+                ws.send(json.dumps({"action": "playback_stopped", "data": None}))
+                return cleanup(True, "Maximum playback time reached")
+            
             for i, start in enumerate(waypoints):
                 end = waypoints[(i + 1) % len(waypoints)]
                 
                 for step in range(n_steps + 1):
+                    # Check stop event
                     if waypoint_playback_stop_event.is_set():
                         return cleanup(True, "Waypoint playback stopped")
-                        
+                    logger.info("Processing waypoint step")
+                    
                     t = step / n_steps if n_steps > 0 else 1.0
                     alpha = ease_in_out(t)
                     pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
@@ -287,28 +272,31 @@ def get_waypoint_count(client_id):
 
 def handle_reset_action(hand, data, ws):
     """Handle reset command"""
-    # Reset is a safety command - allow from any authenticated client
-    if not is_authorized_client(data, "user"):
+    # Check if this is a system reset (client leaving/timeout) or user reset
+    reason = data.get("reason", "")
+    if reason in ["client_left", "client_timeout"]:
+        # System resets are always allowed - don't check authorization
+        pass
+    elif not is_authorized_client(data, "user"):
+        # User-initiated resets require authorization
         send_unauthorized_response(ws, data)
         return
         
     client_id = data.get('clientId', 'unknown')
-    logger.info(f"Reset command from client: {client_id}")
+    logger.info(f"Reset command from client: {client_id}, reason: {reason or 'user_initiated'}")
     
     try:
-        reset_to_neutral(hand)
-        
-        # Clear client tracking on client leaving/timeout
-        if data.get("reason", "") in ["client_left", "client_timeout"]:
-            logger.info(f"Client {data.get('reason')} - clearing current client ID")
-            global current_client_id
-            current_client_id = None
-        
-        ws.send(json.dumps({"status": "ok", "message": "Hand reset to neutral position"}))
-        
+        global waypoint_playback_active, waypoint_playback_stop_event
+        if waypoint_playback_active:
+            logger.info("Stopping waypoint playback due to reset")
+            waypoint_playback_stop_event.set()
+            waypoint_playback_active = False
+        else:
+            reset_to_neutral(hand)
+
     except Exception as e:
         logger.exception("Error during reset:")
-        ws.send(json.dumps({"status": "error", "message": f"Reset failed: {e}"}))
+        ws.send(json.dumps({"action": "error", "data": f"Reset failed: {e}"}))
 
 def handle_new_active_client(hand, data, ws):
     """Handle new active client notification"""
@@ -317,14 +305,20 @@ def handle_new_active_client(hand, data, ws):
         send_unauthorized_response(ws, data)
         return
         
-    global current_client_id
+    global current_client_id, waypoint_playback_active, waypoint_playback_stop_event
     client_id = data.get('clientId')
     
     if client_id != current_client_id:
         logger.info(f"Client changing: {current_client_id} -> {client_id}")
-        reset_to_neutral(hand)
+        
+        # CRITICAL: Stop any active waypoint playback from previous client
+        if waypoint_playback_active:
+            logger.info("Stopping waypoint playback due to client change")
+            waypoint_playback_stop_event.set()
+            waypoint_playback_active = False
+        else:
+            reset_to_neutral(hand)
         current_client_id = client_id
-        # No response needed - this is an internal state change
     # No response needed - client state is already correct
 
 def handle_save_joints(hand, data, ws):
@@ -335,10 +329,9 @@ def handle_save_joints(hand, data, ws):
         
     try:
         save_joint_positions(hand, client_id=data.get('clientId'))
-        ws.send(json.dumps({"status": "ok", "message": "Joint positions saved successfully"}))
     except Exception as e:
         logger.exception("Error saving joint positions:")
-        ws.send(json.dumps({"status": "error", "message": f"Error saving: {e}"}))
+        ws.send(json.dumps({"action": "error", "data": f"Error saving: {e}"}))
 
 def handle_get_waypoint_count(data, ws):
     """Handle get waypoint count command"""
@@ -348,10 +341,25 @@ def handle_get_waypoint_count(data, ws):
         
     count = get_waypoint_count(data.get("clientId", ""))
     ws.send(json.dumps({
-        "status": "ok", 
-        "message": f"You have {count} saved waypoints",
+        "action": "waypoint_count_updated",
         "data": {"count": count}
     }))
+
+def handle_delete_last_waypoint(data, ws):
+    """Handle delete last waypoint command"""
+    if not is_authorized_client(data, "user"):
+        send_unauthorized_response(ws, data)
+        return
+        
+    try:
+        remaining_count = delete_last_waypoint(data.get("clientId", ""))
+        ws.send(json.dumps({
+            "action": "waypoint_count_updated",
+            "data": {"count": remaining_count}
+        }))
+    except Exception as e:
+        logger.exception("Error deleting waypoint:")
+        ws.send(json.dumps({"action": "error", "data": f"Error deleting waypoint: {e}"}))
 
 def handle_play_waypoints(hand, data, ws):
     """Handle play waypoints command"""
@@ -371,7 +379,7 @@ def handle_play_waypoints(hand, data, ws):
         count = get_waypoint_count(data.get("clientId", ""))
         if count < 2:
             logger.warning(f"Not enough waypoints ({count}) to start playback")
-            ws.send(json.dumps({"status": "error", "message": f"Need at least 2 waypoints, found {count}"}))
+            ws.send(json.dumps({"action": "error", "data": f"Need at least 2 waypoints, found {count}"}))
             return
         
         # Start new playback
@@ -379,16 +387,15 @@ def handle_play_waypoints(hand, data, ws):
         
         waypoint_playback_thread = threading.Thread(
             target=play_waypoints,
-            args=(hand, data.get('clientId')),
+            args=(hand, data.get('clientId'), ws),
             daemon=True,
             name="WaypointPlayback"
         )
         waypoint_playback_thread.start()
-        ws.send(json.dumps({"status": "ok", "message": "Waypoint playback started"}))
         
     except Exception as e:
         waypoint_playback_active = False  # Reset flag on any error
-        ws.send(json.dumps({"status": "error", "message": f"Failed to start playback: {e}"}))
+        ws.send(json.dumps({"action": "error", "data": f"Failed to start playback: {e}"}))
 
 def handle_stop_playback(hand, data, ws):
     """Handle stop playback command"""
@@ -402,8 +409,7 @@ def handle_stop_playback(hand, data, ws):
         if waypoint_playback_active:
             waypoint_playback_stop_event.set()
             time.sleep(0.5)
-            reset_to_neutral(hand)
-            ws.send(json.dumps({"status": "ok", "message": "Waypoint playback stopped"}))
+            ws.send(json.dumps({"action": "playback_stopped", "data": None}))
         # No message needed if playback wasn't active - frontend should know the state
     finally:
         waypoint_playback_active = False
@@ -416,7 +422,12 @@ def handle_command(data, ws):
         
     global blocking_slider_commands
     if not blocking_slider_commands:
-        set_command_buffer(data)
+        # Extract the command array from the data and pass it with clientId
+        command_data = {
+            "clientId": data.get("clientId"),
+            "command": data.get("command", [])
+        }
+        set_command_buffer(command_data)
         # No response needed for real-time commands - silent success
 
 
@@ -432,10 +443,6 @@ def is_authorized_client(data, action_type="user"):
     if action_type == "system":
         return True
         
-    # Safety commands (like reset) are allowed from any client
-    if action_type == "safety":
-        return True
-        
     # User commands require being the active client
     return current_client_id is None or client_id == current_client_id
 
@@ -446,18 +453,19 @@ def send_unauthorized_response(ws, data=None):
     logger.warning(f"Unauthorized attempt: client {client_id} tried action '{action}' (active: {current_client_id})")
     
     ws.send(json.dumps({
-        "status": "error", 
-        "message": "Unauthorized: You are not the active client"
+        "action": "error", 
+        "data": "Unauthorized: You are not the active client"
     }))
 
 # Action dispatch table
 ACTION_HANDLERS = {
-    "resetToNeutral": handle_reset_action,
-    "newActiveClient": handle_new_active_client,
-    "saveJoints": handle_save_joints,
-    "getWaypointCount": handle_get_waypoint_count,
-    "playWaypoints": handle_play_waypoints,
-    "stopPlayback": handle_stop_playback,
+    "reset_to_neutral": handle_reset_action,
+    "new_active_client": handle_new_active_client,
+    "save_waypoints": handle_save_joints,
+    "get_waypoint_count": handle_get_waypoint_count,
+    "delete_last_waypoint": handle_delete_last_waypoint,
+    "start_waypoint_playback": handle_play_waypoints,
+    "stop_waypoint_playback": handle_stop_playback,
 }
 
 def main():
@@ -482,7 +490,7 @@ def main():
     parser.add_argument(
         "--server",
         type=str,
-        default="ws://localhost:8086/ws/orca-core",
+        default="ws://localhost:8082/ws/orca-backend",
         help="WebSocket server URL"
     )
     parser.add_argument(
@@ -523,7 +531,7 @@ def main():
         
         try:
             ws = websocket.create_connection(args.server)
-            ws.send(json.dumps({"type": "orca_core", "status": "connected"}))
+            logger.info("Connected to server, ready to receive commands")
             
             while True:
                 try:
@@ -531,29 +539,43 @@ def main():
                     try:
                         data = json.loads(message)
                         
-                        if "command" in data:
-                            handle_command(data, ws)
-                        elif "action" in data:
+                        if "action" in data:
                             action = data["action"]
-                            if action in ACTION_HANDLERS:
-                                if action == "getWaypointCount":
+                            if action == "command":
+                                logger.info(f"Received command action")
+                                # Handle slider commands (now using action: 'command')
+                                handle_command(data, ws)
+                            elif action in ACTION_HANDLERS:
+                                if action in ["get_waypoint_count", "delete_last_waypoint"]:
                                     ACTION_HANDLERS[action](data, ws)
                                 else:
                                     ACTION_HANDLERS[action](hand, data, ws)
                             else:
                                 logger.debug(f"Unknown action: {action}")
                         else:
-                            logger.debug(f"Received message without command or action: {data}")
+                            logger.debug(f"Received message without action: {data}")
                             
                     except json.JSONDecodeError:
                         logger.error(f"Failed to parse message as JSON: {message}")
+                        # Send error to frontend about JSON parsing
+                        ws.send(json.dumps({
+                            "action": "error",
+                            "data": "Failed to parse command from server"
+                        }))
                     
                 except websocket.WebSocketConnectionClosedException:
                     logger.error("WebSocket connection closed unexpectedly")
                     break
                 except Exception as e:
-                    logger.error(f"Error receiving message: {str(e)}")
-                    break
+                    logger.error(f"Error receiving/processing message: {str(e)}")
+                    # Send error to frontend about communication issues
+                    try:
+                        ws.send(json.dumps({
+                            "action": "error", 
+                            "data": f"Communication error: {str(e)}"
+                        }))
+                    except:
+                        break  # If we can't send error, connection is broken
                     
         except websocket.WebSocketException as e:
             logger.error(f"WebSocket error: {e}")
