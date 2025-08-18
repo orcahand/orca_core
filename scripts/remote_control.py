@@ -229,7 +229,7 @@ def play_waypoints(hand, client_id, ws):
             # Check maximum playback time (2 minutes)
             if time.time() - playback_start_time > MAX_PLAYBACK_TIME:
                 logger.info(f"Waypoint playback reached maximum time limit ({MAX_PLAYBACK_TIME}s), stopping")
-                ws.send(json.dumps({"action": "playback_stopped", "data": None}))
+                ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
                 return cleanup(True, "Maximum playback time reached")
             
             for i, start in enumerate(waypoints):
@@ -296,7 +296,7 @@ def handle_reset_action(hand, data, ws):
 
     except Exception as e:
         logger.exception("Error during reset:")
-        ws.send(json.dumps({"action": "error", "data": f"Reset failed: {e}"}))
+        ws.send(json.dumps({"action": "response_error", "data": f"Reset failed: {e}"}))
 
 def handle_new_active_client(hand, data, ws):
     """Handle new active client notification"""
@@ -331,9 +331,9 @@ def handle_save_joints(hand, data, ws):
         save_joint_positions(hand, client_id=data.get('clientId'))
     except Exception as e:
         logger.exception("Error saving joint positions:")
-        ws.send(json.dumps({"action": "error", "data": f"Error saving: {e}"}))
+        ws.send(json.dumps({"action": "response_error", "data": f"Error saving: {e}"}))
 
-def handle_get_waypoint_count(data, ws):
+def handle_get_waypoint_count(hand, data, ws):
     """Handle get waypoint count command"""
     if not is_authorized_client(data, "user"):
         send_unauthorized_response(ws, data)
@@ -341,11 +341,11 @@ def handle_get_waypoint_count(data, ws):
         
     count = get_waypoint_count(data.get("clientId", ""))
     ws.send(json.dumps({
-        "action": "waypoint_count_updated",
+        "action": "response_waypoint_count_updated",
         "data": {"count": count}
     }))
 
-def handle_delete_last_waypoint(data, ws):
+def handle_delete_last_waypoint(hand, data, ws):
     """Handle delete last waypoint command"""
     if not is_authorized_client(data, "user"):
         send_unauthorized_response(ws, data)
@@ -354,12 +354,12 @@ def handle_delete_last_waypoint(data, ws):
     try:
         remaining_count = delete_last_waypoint(data.get("clientId", ""))
         ws.send(json.dumps({
-            "action": "waypoint_count_updated",
+            "action": "response_waypoint_count_updated",
             "data": {"count": remaining_count}
         }))
     except Exception as e:
         logger.exception("Error deleting waypoint:")
-        ws.send(json.dumps({"action": "error", "data": f"Error deleting waypoint: {e}"}))
+        ws.send(json.dumps({"action": "response_error", "data": f"Error deleting waypoint: {e}"}))
 
 def handle_play_waypoints(hand, data, ws):
     """Handle play waypoints command"""
@@ -379,7 +379,7 @@ def handle_play_waypoints(hand, data, ws):
         count = get_waypoint_count(data.get("clientId", ""))
         if count < 2:
             logger.warning(f"Not enough waypoints ({count}) to start playback")
-            ws.send(json.dumps({"action": "error", "data": f"Need at least 2 waypoints, found {count}"}))
+            ws.send(json.dumps({"action": "response_error", "data": f"Need at least 2 waypoints, found {count}"}))
             return
         
         # Start new playback
@@ -395,7 +395,7 @@ def handle_play_waypoints(hand, data, ws):
         
     except Exception as e:
         waypoint_playback_active = False  # Reset flag on any error
-        ws.send(json.dumps({"action": "error", "data": f"Failed to start playback: {e}"}))
+        ws.send(json.dumps({"action": "response_error", "data": f"Failed to start playback: {e}"}))
 
 def handle_stop_playback(hand, data, ws):
     """Handle stop playback command"""
@@ -409,12 +409,12 @@ def handle_stop_playback(hand, data, ws):
         if waypoint_playback_active:
             waypoint_playback_stop_event.set()
             time.sleep(0.5)
-            ws.send(json.dumps({"action": "playback_stopped", "data": None}))
+            ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
         # No message needed if playback wasn't active - frontend should know the state
     finally:
         waypoint_playback_active = False
 
-def handle_command(data, ws):
+def handle_command(hand, data, ws):
     """Handle slider command"""
     if not is_authorized_client(data, "user"):
         send_unauthorized_response(ws, data)
@@ -453,19 +453,20 @@ def send_unauthorized_response(ws, data=None):
     logger.warning(f"Unauthorized attempt: client {client_id} tried action '{action}' (active: {current_client_id})")
     
     ws.send(json.dumps({
-        "action": "error", 
+        "action": "response_error", 
         "data": "Unauthorized: You are not the active client"
     }))
 
 # Action dispatch table
 ACTION_HANDLERS = {
-    "reset_to_neutral": handle_reset_action,
-    "new_active_client": handle_new_active_client,
-    "save_waypoints": handle_save_joints,
-    "get_waypoint_count": handle_get_waypoint_count,
-    "delete_last_waypoint": handle_delete_last_waypoint,
-    "start_waypoint_playback": handle_play_waypoints,
-    "stop_waypoint_playback": handle_stop_playback,
+    "query_reset_to_neutral": handle_reset_action,
+    "query_new_active_client": handle_new_active_client,
+    "query_save_waypoints": handle_save_joints,
+    "query_get_waypoint_count": handle_get_waypoint_count,
+    "query_delete_last_waypoint": handle_delete_last_waypoint,
+    "query_start_waypoint_playback": handle_play_waypoints,
+    "query_stop_waypoint_playback": handle_stop_playback,
+    "query_slider_control": handle_command,
 }
 
 def main():
@@ -541,15 +542,9 @@ def main():
                         
                         if "action" in data:
                             action = data["action"]
-                            if action == "command":
-                                logger.info(f"Received command action")
-                                # Handle slider commands (now using action: 'command')
-                                handle_command(data, ws)
-                            elif action in ACTION_HANDLERS:
-                                if action in ["get_waypoint_count", "delete_last_waypoint"]:
-                                    ACTION_HANDLERS[action](data, ws)
-                                else:
-                                    ACTION_HANDLERS[action](hand, data, ws)
+                            if action in ACTION_HANDLERS:
+                                # All action handlers now take (hand, data, ws) consistently
+                                ACTION_HANDLERS[action](hand, data, ws)
                             else:
                                 logger.debug(f"Unknown action: {action}")
                         else:
@@ -559,7 +554,7 @@ def main():
                         logger.error(f"Failed to parse message as JSON: {message}")
                         # Send error to frontend about JSON parsing
                         ws.send(json.dumps({
-                            "action": "error",
+                            "action": "response_error",
                             "data": "Failed to parse command from server"
                         }))
                     
@@ -571,7 +566,7 @@ def main():
                     # Send error to frontend about communication issues
                     try:
                         ws.send(json.dumps({
-                            "action": "error", 
+                            "action": "response_error", 
                             "data": f"Communication error: {str(e)}"
                         }))
                     except:
