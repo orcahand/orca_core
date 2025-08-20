@@ -30,7 +30,8 @@ def main():
         return
     
     hand.init_joints()
-    time.sleep(1)
+    time.sleep(1
+    )
 
     hand.disable_torque()
     print("Torque disabled. Ready to record motor angles.")
