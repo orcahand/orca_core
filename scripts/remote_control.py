@@ -14,6 +14,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orca_core import OrcaHand, MockOrcaHand
 from replay_angles import ease_in_out
 
+# Use shared YAML utilities
+from orca_core.utils.yaml_utils import read_yaml
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -25,16 +28,10 @@ logger = logging.getLogger('remote_control')
 # Constants and Globals
 # ================================
 
-JOINT_NAMES = [
-    "thumb_mcp", "thumb_abd", "thumb_pip", "thumb_dip",
-    "index_abd", "index_mcp", "index_pip",
-    "middle_abd", "middle_mcp", "middle_pip",
-    "ring_abd", "ring_mcp", "ring_pip",
-    "pinky_abd", "pinky_mcp", "pinky_pip",
-    "wrist"
-]
+# JOINT_NAMES is now dynamically loaded from the hand model config (hand.joint_ids)
 
 # Global state
+SERVER = "ws://localhost:8082/ws/orca-backend"
 current_client_id = None
 latest_command = None
 command_lock = threading.Lock()
@@ -47,7 +44,6 @@ waypoint_playback_stop_event = threading.Event()
 # ================================
 # Utility Functions
 # ================================
-
 
 def get_and_clear_command_buffer():
     """Atomically get and clear the latest command from the buffer."""
@@ -70,16 +66,6 @@ def get_client_file_path(client_id: str) -> str:
     client_short = (client_id or "")[:8]
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'saved_positions', f"client_{client_short}.yaml")
 
-def load_yaml_positions(client_file: str) -> dict:
-    """Load YAML positions from file, return empty dict if not found or error."""
-    if not os.path.exists(client_file):
-        return {}
-    try:
-        with open(client_file, "r") as file:
-            return yaml.safe_load(file) or {}
-    except Exception as e:
-        logger.warning(f"Could not load positions from {client_file}: {e}")
-        return {}
 
 def save_yaml_positions(client_file: str, positions: dict):
     """Save positions dict to YAML file."""
@@ -105,40 +91,32 @@ def command_processor_thread(hand):
                 continue
             if current_client_id and cmd.get("clientId") != current_client_id:
                 continue
-            joint_dict = {name: float(value) for name, value in zip(JOINT_NAMES, cmd.get("command", []))}
-            logger.info(f"Setting joint positions: {joint_dict}")
-            hand.set_joint_pos(joint_pos=joint_dict, num_steps=1)
+            hand.set_joint_pos(cmd.get("command", []))
         except Exception as e:
             logger.error(f"Command processor error: {e}")
             time.sleep(0.1)
-
 
 
 # ================================
 # Waypoint and Joint Management
 # ================================
 def reset_to_neutral(hand):
-    """Reset the hand to neutral position without toggling torque."""
+    """Reset the hand to neutral position"""
     global blocking_slider_commands
     blocking_slider_commands = True
     get_and_clear_command_buffer()  # Clear any pending commands
     try:
-        logger.info("Starting neutral position reset...")
-        return hand.set_neutral_position(num_steps=25, step_size=0.001)
-    except Exception as e:
-        logger.exception(f"Error during reset: {e}")
-        return False
+        hand.set_neutral_position(num_steps=25, step_size=0.001)
     finally:
         blocking_slider_commands = False
-
 
 
 def save_joint_positions(hand, client_id=None):
     """Save the current joint positions to a client-specific YAML file."""
     current_angles = hand.get_joint_pos(as_list=True)
     client_file = get_client_file_path(client_id)
-    joint_dict = {name: float(angle) for name, angle in zip(JOINT_NAMES, current_angles)}
-    client_positions = load_yaml_positions(client_file)
+    joint_dict = {name: float(angle) for name, angle in zip(hand.joint_ids, current_angles)}
+    client_positions = read_yaml(client_file)
     client_positions[f"waypoint_{time.strftime('%Y%m%d_%H%M%S')}"] = joint_dict
     save_yaml_positions(client_file, client_positions)
     logger.info(f"Positions saved to {client_file}")
@@ -148,7 +126,7 @@ def save_joint_positions(hand, client_id=None):
 def delete_last_waypoint(client_id=None):
     """Delete the last (most recent) waypoint from a client's YAML file."""
     client_file = get_client_file_path(client_id)
-    client_positions = load_yaml_positions(client_file)
+    client_positions = read_yaml(client_file)
     if not client_positions:
         logger.warning(f"No waypoints found in file: {client_file}")
         return 0
@@ -172,13 +150,11 @@ def delete_last_waypoint(client_id=None):
     return len(client_positions)
 
 
-
-def load_waypoints(client_file: str):
-    """Load and validate waypoints from file, return list of joint arrays."""
-    positions = load_yaml_positions(client_file)
+def load_waypoints(client_file: str, joint_ids):
+    positions = read_yaml(client_file)
     if len(positions) < 2:
         raise ValueError(f"Need at least 2 waypoints, found {len(positions)}")
-    return [[joint_dict.get(name, 0.0) for name in JOINT_NAMES] for joint_dict in positions.values()]
+    return [[joint_dict.get(name, 0.0) for name in joint_ids] for joint_dict in positions.values()]
 
 
 def play_waypoints(hand, client_id, ws):
@@ -197,7 +173,7 @@ def play_waypoints(hand, client_id, ws):
         client_file = get_client_file_path(client_id)
         if not os.path.exists(client_file):
             return cleanup(False, "No saved waypoints found")
-        waypoints = load_waypoints(client_file)
+        waypoints = load_waypoints(client_file, hand.joint_ids)
         logger.info(f"Loaded {len(waypoints)} waypoints")
         INTERP_TIME, STEP_TIME = 0.8, 0.02
         MAX_PLAYBACK_TIME = 120
@@ -217,8 +193,7 @@ def play_waypoints(hand, client_id, ws):
                     t = step / n_steps if n_steps > 0 else 1.0
                     alpha = ease_in_out(t)
                     pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    joint_dict = {name: value for name, value in zip(JOINT_NAMES, pose)}
-                    hand.set_joint_pos(joint_pos=joint_dict, num_steps=1)
+                    hand.set_joint_pos(pose, num_steps=1)
                     time.sleep(STEP_TIME)
         return cleanup(True, "Waypoint playback completed")
     except Exception as e:
@@ -230,18 +205,17 @@ def get_waypoint_count(client_id):
     """Get the number of saved waypoints for a client."""
     try:
         client_file = get_client_file_path(client_id)
-        return len(load_yaml_positions(client_file))
+        return len(read_yaml(client_file))
     except Exception as e:
         logger.error(f"Error getting waypoint count: {e}")
         return 0
 
 
-def handle_reset_action(hand, data, ws):
+def query_reset_to_neutral(hand, data, ws):
     """Handle reset command"""
     # Check if this is a system reset (client leaving/timeout) or user reset
-    
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+
+    if not is_authorized_client(data, ws, "user"):
         return
         
     client_id = data.get('clientId', 'unknown')
@@ -260,11 +234,10 @@ def handle_reset_action(hand, data, ws):
         logger.exception("Error during reset:")
         ws.send(json.dumps({"action": "response_error", "data": f"Reset failed: {e}"}))
 
-def handle_new_active_client(hand, data, ws):
+def query_new_active_client(hand, data, ws):
     """Handle new active client notification"""
     # This is a system command - requires client ID but bypasses active client check
-    if not is_authorized_client(data, "system"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "system"):
         return
         
     global current_client_id, waypoint_playback_active, waypoint_playback_stop_event
@@ -283,22 +256,20 @@ def handle_new_active_client(hand, data, ws):
         current_client_id = client_id
     # No response needed - client state is already correct
 
-def handle_save_joints(hand, data, ws):
+def query_save_waypoints(hand, data, ws):
     """Handle save joints command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
         
     try:
         save_joint_positions(hand, client_id=data.get('clientId'))
     except Exception as e:
         logger.exception("Error saving joint positions:")
-        ws.send(json.dumps({"action": "response_error", "data": f"Error saving: {e}"}))
+        send_error(ws, f"Error saving waypoints: {e}")
 
-def handle_get_waypoint_count(_, data, ws):
+def query_get_waypoint_count(_, data, ws):
     """Handle get waypoint count command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
         
     count = get_waypoint_count(data.get("clientId", ""))
@@ -307,10 +278,9 @@ def handle_get_waypoint_count(_, data, ws):
         "data": {"count": count}
     }))
 
-def handle_delete_last_waypoint(_, data, ws):
+def query_delete_last_waypoint(_, data, ws):
     """Handle delete last waypoint command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
     remaining_count = delete_last_waypoint(data.get("clientId", ""))
     ws.send(json.dumps({
@@ -318,10 +288,9 @@ def handle_delete_last_waypoint(_, data, ws):
         "data": {"count": remaining_count}
     }))
 
-def handle_play_waypoints(hand, data, ws):
+def query_start_waypoint_playback(hand, data, ws):
     """Handle play waypoints command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
         
     try:
@@ -336,7 +305,7 @@ def handle_play_waypoints(hand, data, ws):
         count = get_waypoint_count(data.get("clientId", ""))
         if count < 2:
             logger.warning(f"Not enough waypoints ({count}) to start playback")
-            ws.send(json.dumps({"action": "response_error", "data": f"Need at least 2 waypoints, found {count}"}))
+            send_error(ws, f"Need at least 2 waypoints, found {count}")
             return
         
         # Start new playback
@@ -352,88 +321,51 @@ def handle_play_waypoints(hand, data, ws):
         
     except Exception as e:
         waypoint_playback_active = False  # Reset flag on any error
-        ws.send(json.dumps({"action": "response_error", "data": f"Failed to start playback: {e}"}))
+        send_error(ws, f"Failed to start playback: {e}")
 
-def handle_stop_playback(hand, data, ws):
+
+def query_stop_waypoint_playback(_, data, ws):
     """Handle stop playback command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
         
     global waypoint_playback_active
-    try:
-        # Stop playback and clear commands
-        if waypoint_playback_active:
-            waypoint_playback_stop_event.set()
-            time.sleep(0.5)
-            ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
-        # No message needed if playback wasn't active - frontend should know the state
-    finally:
-        waypoint_playback_active = False
+    if waypoint_playback_active:
+        waypoint_playback_stop_event.set()
+        time.sleep(0.5)
+        ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
+    waypoint_playback_active = False
 
-def handle_command(hand, data, ws):
+
+def query_slider_control(_, data, ws):
     """Handle slider command"""
-    if not is_authorized_client(data, "user"):
-        send_unauthorized_response(ws, data)
+    if not is_authorized_client(data, ws, "user"):
         return
         
     global blocking_slider_commands
     if not blocking_slider_commands:
-        # Extract the command array from the data and pass it with clientId
         command_data = {
             "clientId": data.get("clientId"),
             "command": data.get("command", [])
         }
+        logger.info(f"Setting command: {command_data}")
         set_command_buffer(command_data)
-        # No response needed for real-time commands - silent success
 
 
-def is_authorized_client(data, action_type="user"):
-    """Check if the client is authorized to perform actions"""
-    client_id = data.get('clientId')
-    
-    # System commands coming from server and invisible to clients
-    if action_type == "system":
-        return True
-        
-    elif action_type == "user":
-        return current_client_id is None or client_id == current_client_id
+def is_authorized_client(data, ws, action_type="user"):
+    authorized = (
+        action_type == "system"
+        or (action_type == "user" and (current_client_id is None or data.get('clientId') == current_client_id))
+    )
+    if not authorized:
+        send_error(ws, "Unauthorized: You are not the active client")
+        return False
+    return True
 
-def send_unauthorized_response(ws, data=None):
-    """Send unauthorized response to client"""
-    client_id = data.get('clientId', 'unknown') if data else 'unknown'
-    action = data.get('action', 'unknown') if data else 'unknown'
-    logger.warning(f"Unauthorized attempt: client {client_id} tried action '{action}' (active: {current_client_id})")
-    
-    ws.send(json.dumps({
-        "action": "response_error", 
-        "data": "Unauthorized: You are not the active client"
-    }))
-
-
-# ================================
-# Action Dispatch Table
-# ================================
-ACTION_HANDLERS = {
-    "query_reset_to_neutral": handle_reset_action,
-    "query_new_active_client": handle_new_active_client,
-    "query_save_waypoints": handle_save_joints,
-    "query_get_waypoint_count": handle_get_waypoint_count,
-    "query_delete_last_waypoint": handle_delete_last_waypoint,
-    "query_start_waypoint_playback": handle_play_waypoints,
-    "query_stop_waypoint_playback": handle_stop_playback,
-    "query_slider_control": handle_command,
-}
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Remote control for OrcaHand via WebSocket.',
-        epilog='Examples:\n'
-               '  # Run with real robot:\n'
-               '  python remote_control.py /path/to/orcahand_model\n\n'
-               '  # Run in mock mode for development:\n'
-               '  python remote_control.py --mock\n\n',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description='Remote control of orcahand via websocket server',
     )
     parser.add_argument(
         "model_path",
@@ -443,13 +375,6 @@ def main():
         help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1). Not required in mock mode."
     )
     parser.add_argument(
-        "--server",
-        type=str,
-        default="ws://localhost:8082/ws/orca-backend",
-        help="WebSocket server URL"
-    )
-    # Debug flag removed for production/clean version
-    parser.add_argument(
         "--mock",
         action="store_true",
         help="Run in mock mode (no physical robot required)"
@@ -457,88 +382,43 @@ def main():
     
     args = parser.parse_args()
     
+    hand = MockOrcaHand(model_path=args.model_path) if args.mock else OrcaHand(model_path=args.model_path)
+    success, message = hand.connect()
+    if not success:
+        logger.error(f"Failed to connect: {message}")
+        return 1
+    
+    hand.enable_torque()
+    hand.set_neutral_position(num_steps=25, step_size=0.001)
+    logger.info("Hand initialized and ready")
 
+    processor_thread = threading.Thread(target=command_processor_thread, args=(hand,), daemon=True)
+    processor_thread.start()
+        
+    ws = None
     try:
-        # Initialize and connect to hand
-        hand = MockOrcaHand(model_path=args.model_path) if args.mock else OrcaHand(model_path=args.model_path)
-        logger.info(f"Starting {'MOCK' if args.mock else 'REAL'} mode")
-        
-        success, message = hand.connect()
-        if not success:
-            logger.error(f"Failed to connect: {message}")
-            return 1
-        
-        hand.enable_torque()
-        hand.set_neutral_position(num_steps=25, step_size=0.001)
-        logger.info("Hand initialized and ready")
-
-        # Start command processor thread
-        processor_thread = threading.Thread(target=command_processor_thread, args=(hand,), daemon=True)
-        processor_thread.start()
-        
-        try:
-            ws = websocket.create_connection(args.server)
-            logger.info("Connected to server, ready to receive commands")
-            
-            while True:
-                try:
-                    message = ws.recv()
-                    try:
-                        data = json.loads(message)
-                        
-                        if "action" in data:
-                            action = data["action"]
-                            if action in ACTION_HANDLERS:
-                                # All action handlers now take (hand, data, ws) consistently
-                                ACTION_HANDLERS[action](hand, data, ws)
-                            else:
-                                logger.debug(f"Unknown action: {action}")
-                        else:
-                            logger.debug(f"Received message without action: {data}")
-                            
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse message as JSON: {message}")
-                        # Send error to frontend about JSON parsing
-                        ws.send(json.dumps({
-                            "action": "response_error",
-                            "data": "Failed to parse command from server"
-                        }))
-                    
-                except websocket.WebSocketConnectionClosedException:
-                    logger.error("WebSocket connection closed unexpectedly")
-                    break
-                except Exception as e:
-                    logger.error(f"Error receiving/processing message: {str(e)}")
-                    # Send error to frontend about communication issues
-                    try:
-                        ws.send(json.dumps({
-                            "action": "response_error", 
-                            "data": f"Communication error: {str(e)}"
-                        }))
-                    except:
-                        break  # If we can't send error, connection is broken
-                    
-        except websocket.WebSocketException as e:
-            logger.error(f"WebSocket error: {e}")
-        finally:
-            if 'ws' in locals():
-                ws.close()
-        
-        # Cleanup
+        ws = websocket.create_connection(SERVER)
+        while True:
+            message = ws.recv()
+            try:
+                data = json.loads(message)
+                action = data.get("action")
+                if action and action.startswith('query_') and action in globals():
+                    globals()[action](hand, data, ws)
+            except Exception:
+                ws.send(json.dumps({"action": "response_error", "data": message}))
+                continue
+    except Exception as e:
+        logger.error(f"Websocket error: {e}")
+    except KeyboardInterrupt:
+         logger.info("Shutting down due to keyboard interrupt...")
+    finally:
+        logger.info("Disabling torque and disconnecting hand...")
         hand.disable_torque()
         hand.disconnect()
-        logger.info("Shutdown complete")
-        
-        return 0
-        
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-        if 'hand' in locals():
-            hand.disable_torque()
-            hand.disconnect()
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        return 1
+        if ws is not None:
+            ws.close()
+
 
 if __name__ == "__main__":
     sys.exit(main())
