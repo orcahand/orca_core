@@ -12,10 +12,9 @@ import yaml  # type: ignore
 # Add the parent directory to the Python path so we can import orca_core
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orca_core import OrcaHand, MockOrcaHand
-from replay_angles import ease_in_out
 
 # Use shared YAML utilities
-from orca_core.utils.yaml_utils import read_yaml
+from orca_core.utils.utils import read_yaml
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +29,7 @@ logger = logging.getLogger('remote_control')
 
 # JOINT_NAMES is now dynamically loaded from the hand model config (hand.joint_ids)
 
+
 # Global state
 SERVER = "ws://localhost:8082/ws/orca-backend"
 SERVER_SECRET = os.environ.get("ORCA_SERVER_SECRET")
@@ -41,6 +41,7 @@ command_available = threading.Event()
 blocking_slider_commands = False
 waypoint_playback_active = False
 waypoint_playback_stop_event = threading.Event()
+shutdown_event = threading.Event()
 
 # ================================
 # Utility Functions
@@ -77,7 +78,7 @@ def send_error(ws, message: str):
 def command_processor_thread(hand):
     """Thread that processes the latest command from the buffer."""
     global current_client_id, blocking_slider_commands
-    while True:
+    while not shutdown_event.is_set():
         try:
             if not command_available.wait(timeout=1.0) or blocking_slider_commands:
                 continue
@@ -93,15 +94,7 @@ def command_processor_thread(hand):
 # ================================
 # Waypoint and Joint Management
 # ================================
-def reset_to_neutral(hand):
-    """Reset the hand to neutral position"""
-    global blocking_slider_commands
-    blocking_slider_commands = True
-    get_and_clear_command_buffer()  # Clear any pending commands
-    try:
-        hand.set_neutral_position(num_steps=25, step_size=0.001)
-    finally:
-        blocking_slider_commands = False
+
 
 
 
@@ -139,52 +132,6 @@ def load_waypoints(client_file: str, joint_ids):
     return [[joint_dict.get(name, 0.0) for name in joint_ids] for joint_dict in positions.values()]
 
 
-def play_waypoints(hand, client_id, ws):
-    """Play waypoints from the client's YAML file."""
-    global waypoint_playback_active, blocking_slider_commands, waypoint_playback_stop_event
-    def cleanup(success=True, message="Completed"):
-        if success:
-            ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
-        logger.info(f"Playback cleanup: {message}")
-        global waypoint_playback_active, blocking_slider_commands
-        reset_to_neutral(hand)
-        waypoint_playback_active = False
-        blocking_slider_commands = False
-        return success, message
-    try:
-        logger.info(f"Starting waypoint playback for client: {client_id}")
-        waypoint_playback_active = True
-        blocking_slider_commands = True
-        client_file = get_client_file_path(client_id)
-        if not os.path.exists(client_file):
-            return cleanup(False, "No saved waypoints found")
-        waypoints = load_waypoints(client_file, hand.joint_ids)
-        logger.info(f"Loaded {len(waypoints)} waypoints")
-        INTERP_TIME, STEP_TIME = 0.8, 0.02
-        MAX_PLAYBACK_TIME = 120
-        n_steps = int(INTERP_TIME / STEP_TIME)
-        waypoint_playback_stop_event.clear()
-        playback_start_time = time.time()
-        while not waypoint_playback_stop_event.is_set():
-            if time.time() - playback_start_time > MAX_PLAYBACK_TIME:
-                logger.info(f"Waypoint playback reached maximum time limit ({MAX_PLAYBACK_TIME}s), stopping")
-                return cleanup(True, "Maximum playback time reached")
-            for i, start in enumerate(waypoints):
-                end = waypoints[(i + 1) % len(waypoints)]
-                for step in range(n_steps + 1):
-                    if waypoint_playback_stop_event.is_set():
-                        return cleanup(True, "Waypoint playback stopped")
-                    t = step / n_steps if n_steps > 0 else 1.0
-                    alpha = ease_in_out(t)
-                    pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    hand.set_joint_pos(pose, num_steps=1)
-                    if step % 100 == 0:
-                        logger.info(f"Interpolating {i+1}/{len(waypoints)}: {pose}")
-                    time.sleep(STEP_TIME)
-        return cleanup(True, "Waypoint playback completed")
-    except Exception as e:
-        logger.exception(f"Error in waypoint playback: {str(e)}")
-        return cleanup(False, str(e))
 
 
 def get_waypoint_count(client_id):
@@ -195,8 +142,20 @@ def get_waypoint_count(client_id):
     except Exception as e:
         return 0
     
+
+def reset_to_neutral(hand):
+    """Reset the hand to neutral position"""
+    global blocking_slider_commands
+    blocking_slider_commands = True
+    get_and_clear_command_buffer()
+    try:
+        hand.set_neutral_position(num_steps=25, step_size=0.001)
+    finally:
+        blocking_slider_commands = False
+
+
 # ================================
-#  Client Authorization Management
+# Server Message Handlers
 # ================================
 
 def is_authorized_client(data, ws):
@@ -207,24 +166,15 @@ def is_authorized_client(data, ws):
     return True
 
 
-def query_new_active_client(hand, data, _):
+def secure_new_active_client(hand, data, _):
     """Switch active client, secured by server secret."""
-    if data.get("server_secret") != SERVER_SECRET:
-        logger.warning("Unauthorized attempt to activate client (bad server_secret)")
-        return
-
     global current_client_id, waypoint_playback_active, waypoint_playback_stop_event
     client_id = data.get('clientId')
-    if client_id == current_client_id:
-        return
-    reset_to_neutral(hand)
-    current_client_id = client_id
-    logger.info(f"Switching active client: {current_client_id} -> {client_id}")
+    if client_id != current_client_id:
+        logger.info(f"Switching active client: {current_client_id} -> {client_id}")
+        reset_to_neutral(hand)
+        current_client_id = client_id
 
-
-# ================================
-# Query Handlers
-# ================================
 
 def query_reset_to_neutral(hand, data, ws):
     """Reset hand to neutral, stopping playback if active."""
@@ -269,34 +219,48 @@ def query_delete_last_waypoint(_, data, ws):
 
 def query_start_waypoint_playback(hand, data, ws):
     """Handle play waypoints command"""
-    if is_authorized_client(data, ws):
-        global waypoint_playback_active, waypoint_playback_stop_event
-        if waypoint_playback_active:
-            waypoint_playback_stop_event.set()
-        count = get_waypoint_count(data.get("clientId", ""))
-        if count < 2:
-            send_error(ws, f"Need at least 2 waypoints, found {count}")
-            return
-        waypoint_playback_stop_event.clear()
-        threading.Thread(
-            target=play_waypoints,
-            args=(hand, data.get('clientId'), ws),
-            daemon=True,
-            name="WaypointPlayback"
-        ).start()
+    if not is_authorized_client(data, ws):
+        return
+
+    global waypoint_playback_active, blocking_slider_commands
+    if waypoint_playback_active:
+        hand.stop_task()
+
+    client_id = data.get("clientId", "")
+    count = get_waypoint_count(client_id)
+    if count < 2:
+        send_error(ws, f"Need at least 2 waypoints, found {count}")
+        return
+
+    logger.info(f"Starting waypoint playback for client: {client_id}")
+    waypoint_playback_active = blocking_slider_commands = True
+    
+    client_file = get_client_file_path(client_id)
+    if not os.path.exists(client_file):
+        handle_playback_finish(hand, ws)
+        return
+    
+    waypoints = load_waypoints(client_file, hand.joint_ids)
+    hand.replay_waypoints(waypoints, max_iterations=50, mode="ease_in_out", on_finish=lambda: handle_playback_finish(hand, ws), blocking=False)
+
+def handle_playback_finish(hand, ws):
+    ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
+    logger.info(f"Playback cleanup")
+    reset_to_neutral(hand)
+    global waypoint_playback_active, blocking_slider_commands
+    waypoint_playback_active = blocking_slider_commands = False
     
 
-def query_stop_waypoint_playback(_, data, ws):
+def query_stop_waypoint_playback(hand, data, ws):
     """Handle stop playback command"""
     logger.info("Received stop playback command")
     if is_authorized_client(data, ws):
         global waypoint_playback_active
         logger.info(f"Stopping playback for client: {data.get('clientId')}")
-
         if waypoint_playback_active:
             logger.info("Stopping waypoint playback")
-            waypoint_playback_stop_event.set()
-            # ws.send(json.dumps({"action": "response_playback_stopped", "data": None}))
+            # Use the new API to stop the background task
+            hand.stop_task()
         waypoint_playback_active = False
 
 
@@ -351,9 +315,9 @@ def main():
             try:
                 data = json.loads(message)
                 action = data.get("action")
-                if action and action.startswith('query_') and action in globals():
+                if action and (action.startswith('query_') or action.startswith('secure_')) and action in globals():
                     globals()[action](hand, data, ws)
-            except Exception:
+            except Exception as e:
                 ws.send(json.dumps({"action": "response_error", "data": message}))
                 continue
     except Exception as e:
@@ -362,7 +326,8 @@ def main():
         logger.info("Shutting down due to keyboard interrupt...")
     finally:
         logger.info("Disabling torque and disconnecting hand...")
-        waypoint_playback_stop_event.set()
+        shutdown_event.set()
+        hand.stop_task()
         hand.disable_torque()
         hand.disconnect()
         if ws is not None:

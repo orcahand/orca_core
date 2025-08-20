@@ -10,7 +10,7 @@ import os
 import time
 import math
 import threading
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional, Callable
 from collections import deque
 from threading import RLock
 import numpy as np
@@ -844,7 +844,72 @@ class OrcaHand:
             while not self._task_stop_event.is_set():
                 time.sleep(0.1) 
         finally:
-            self.disable_torque()  
+            self.disable_torque() 
+
+    def record_waypoints(self, buffer: list, on_finish: Optional[Callable] = None, input_fn: Optional[Callable] = input, blocking: bool = True):
+        """
+        Start interactive waypoint recording in a thread-safe, interruptible way.
+        Args:
+            buffer (list): List to append captured waypoints (joint positions as list).
+            on_capture (callable): Optional callback called after each capture (passed the new waypoint).
+            on_finish (callable): Optional callback called when recording finishes or is stopped.
+            blocking (bool): If True, run in the current thread. If False, run in a background thread.
+        """
+        if blocking:
+            self._record_waypoints(buffer, on_finish, input_fn)
+        else:
+            self._start_task(self._record_waypoints, buffer, on_finish, input_fn)
+
+    def _record_waypoints(self, buffer, on_finish, input_fn):
+        try:
+            print("Press Enter to capture a waypoint. Ctrl+C or stop_task() to quit.")
+            while not self._task_stop_event.is_set():
+                input_fn("Press Enter to capture current joint positions...")
+                if self._task_stop_event.is_set():
+                    break
+                current_angles = self.get_joint_pos(as_list=True)
+                buffer.append([float(angle) for angle in current_angles])
+                print(f"Captured waypoint: {current_angles}")
+        finally:
+            if on_finish:
+                on_finish()
+
+    def replay_waypoints(self, waypoints: list, duration: float = 0.8, step_time: float = 0.02, max_iterations: int = 1000, mode: str = "linear", on_finish: Optional[Callable] = None, blocking: bool = True):
+        """ Replay a sequence of waypoints by interpolating between them.
+
+        Args:
+            waypoints (list): List of joint position lists or dicts.
+            duration (float): Total duration to interpolate between waypoints (seconds).
+            step_time (float): Time per interpolation step (seconds).
+            max_iterations (int): Maximum number of waypoint playback iterations.
+            mode (str): Interpolation mode, e.g., "linear", "ease_in_out", etc.
+            on_finish (callable): Optional callback called when playback finishes or is stopped.
+            blocking (bool): If True, run in the current thread. If False, run in a background thread.
+        """
+        if blocking:
+            self._replay_waypoints(waypoints, duration, step_time, max_iterations, mode, on_finish)
+        else:
+            self._start_task(self._replay_waypoints, waypoints, duration, step_time, max_iterations, mode, on_finish)
+
+    def _replay_waypoints(self, waypoints: list, duration: float, step_time: float, max_iterations: int, mode: str, on_finish: Optional[Callable] = None):
+        iteration_count = 0
+        try:
+            while not self._task_stop_event.is_set():
+                if iteration_count >= max_iterations:
+                    break
+                for i, start in enumerate(waypoints):
+                    if self._task_stop_event.is_set():
+                        break
+                    end = waypoints[(i + 1) % len(waypoints)]
+                    for position in interpolate_waypoints(start, end, duration, step_time, mode):
+                        if self._task_stop_event.is_set():
+                            break
+                        self.set_joint_pos(position)
+                        time.sleep(step_time)
+                iteration_count += 1
+        finally:
+            if on_finish:
+                on_finish()
 
     def _run_task(self, task_fn, *args, **kwargs):
         """Run a task in a separate thread, so that it can be stopped externally.

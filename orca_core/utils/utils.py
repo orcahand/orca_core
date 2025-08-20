@@ -82,7 +82,7 @@ def read_yaml(file_path):
 ### Interpolation utils ########################################################
 ################################################################################
 
-def linear_interp(t):
+def linear(t):
     return t
 
 def ease_in_out(t):
@@ -90,7 +90,10 @@ def ease_in_out(t):
 
 def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
     n_steps = int(duration / step_time)
-    interp_func = linear_interp if mode == "linear" else ease_in_out
+    try:
+        interp_func = globals()[mode]
+    except KeyError:
+        raise ValueError(f"Unknown interpolation mode: {mode}")
     for i in range(n_steps + 1):
         t = i / n_steps
         alpha = interp_func(t)
