@@ -4,6 +4,7 @@ import numpy as np
 import argparse
 from orca_core import OrcaHand, MockOrcaHand
 import os
+from orca_core.utils.utils import read_yaml, get_yaml_path_and_waypoints
 
 def resolve_replay_file(user_input_filename, project_root):
     user_input_filename = user_input_filename.strip()
@@ -27,14 +28,8 @@ def main():
     project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     replay_file_path = resolve_replay_file(args.replay_file, project_root)
 
-    try:
-        with open(replay_file_path, "r") as file:
-            replay_data = yaml.safe_load(file)
-    except FileNotFoundError:
-        print(f"File not found at the resolved path: {replay_file_path}")
-        return
+    _, waypoints = get_yaml_path_and_waypoints(replay_file_path)
 
-    waypoints = replay_data.get("waypoints", [])
     if not waypoints:
         print("No waypoints found in the file.")
         return

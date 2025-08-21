@@ -898,6 +898,7 @@ class OrcaHand:
                 if iteration_count >= max_iterations:
                     break
                 for i, start in enumerate(waypoints):
+                    print(f"Reached waypoint {i + 1}/{len(waypoints)}: {start}")
                     if self._task_stop_event.is_set():
                         break
                     end = waypoints[(i + 1) % len(waypoints)]

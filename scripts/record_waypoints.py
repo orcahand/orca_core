@@ -2,7 +2,8 @@ import time
 import yaml
 from orca_core import OrcaHand, MockOrcaHand
 import argparse
-import os  # Added import
+import os
+from orca_core.utils.utils import update_yaml
 
 def main():
     parser = argparse.ArgumentParser(description="Record waypoints for the ORCA Hand.")
@@ -45,8 +46,7 @@ def main():
     os.makedirs(output_directory, exist_ok=True)
 
     output_filepath = os.path.join(output_directory, filename_core)
-    with open(output_filepath, "w") as file:
-        yaml.dump({"waypoints": replay_buffer}, file)
+    update_yaml(output_filepath, "waypoints", replay_buffer)
 
     hand.disconnect()
     print(f"Replay sequence saved to {output_filepath} and disconnected from hand.")
