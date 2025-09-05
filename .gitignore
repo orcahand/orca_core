@@ -116,18 +116,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-
 .vscode/
 
+# orca related files
 urdf/
+.pytest_cache/
+logs/
+orca_core/models/orcahand_v1_right/calibration.yaml
 
-
-orca_core/models/*
 
 # macOS
 .DS_Store
 
-.pytest_cache/
-
-# logs
-logs/
