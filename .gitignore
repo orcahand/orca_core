@@ -121,7 +121,6 @@ dmypy.json
 
 urdf/
 
-dev_scripts/
 
 orca_core/models/*
 
@@ -129,3 +128,6 @@ orca_core/models/*
 .DS_Store
 
 .pytest_cache/
+
+# logs
+logs/
