@@ -437,7 +437,12 @@ class DynamixelReader:
                 errored_ids.append(motor_id)
                 continue
 
-            self._update_data(i, motor_id)
+            try:
+                self._update_data(i, motor_id)
+            except Exception as e:
+                logging.error(f'Error updating data for motor {motor_id}: {e}')
+                errored_ids.append(motor_id)
+                continue
 
         if errored_ids:
             logging.error('Bulk read data is unavailable for: %s',
