@@ -25,6 +25,7 @@ def main():
                       help='Timestep for interpolation (default: 0.02)')
     parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
     parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
+    parser.add_argument('--cont_log', action='store_true', default=False, help='Enable continuous logging to motor_temps.csv (default: False)')
     args = parser.parse_args()
     
     user_input_filename = args.replay_file.strip()
@@ -74,9 +75,19 @@ def main():
     from datetime import datetime
     log_dir = os.path.join(project_root, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_filename = os.path.join(log_dir, f"motor_temps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    
+    # Choose log filename based on cont_log argument
+    if args.cont_log:
+        log_filename = os.path.join(log_dir, "motor_temps.csv")
+        # Check if file exists to determine mode
+        file_mode = "a" if os.path.exists(log_filename) else "w"
+        print(f"Continuous logging enabled. Logging to: {log_filename} (mode: {'append' if file_mode == 'a' else 'create'})")
+    else:
+        log_filename = os.path.join(log_dir, f"motor_temps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        file_mode = "w"
+        print(f"Logging to: {log_filename}")
 
-    with open(log_filename, mode="w", newline="") as logfile:
+    with open(log_filename, mode=file_mode, newline="") as logfile:
         writer = None
         try:
             while True:  # Infinite loop
@@ -99,10 +110,17 @@ def main():
                         temps = hand.get_motor_temp(as_dict=True)
                         timestamp = datetime.now().isoformat()
                         if writer is None:
-                            # Write header on first log
-                            header = ["timestamp"] + [f"motor_{mid}" for mid in temps.keys()]
-                            writer = csv.DictWriter(logfile, fieldnames=header)
-                            writer.writeheader()
+                            # Write header only if creating new file or if appending to empty file
+                            if file_mode == "w" or os.path.getsize(log_filename) == 0:
+                                header = ["timestamp"] + [f"motor_{mid}" for mid in temps.keys()]
+                                writer = csv.DictWriter(logfile, fieldnames=header)
+                                writer.writeheader()
+                            else:
+                                # For appending, read existing headers
+                                with open(log_filename, 'r') as existing_file:
+                                    existing_reader = csv.DictReader(existing_file)
+                                    header = existing_reader.fieldnames
+                                writer = csv.DictWriter(logfile, fieldnames=header)
                         row = {f"motor_{mid}": temp for mid, temp in temps.items()}
                         row["timestamp"] = timestamp
                         writer.writerow(row)
