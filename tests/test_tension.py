@@ -1,20 +1,9 @@
 import unittest
 import time
 from orca_core import MockOrcaHand
+from tests.base_test import BaseTestCase
 
-class TestOrcaHandTension(unittest.TestCase):
-
-    def setUp(self):
-        """Set up a mock hand and connect."""
-        self.hand = MockOrcaHand()
-        success, msg = self.hand.connect()
-        self.assertTrue(success, f"Failed to connect mock hand: {msg}")
-
-    def tearDown(self):
-        """Disconnect after each test."""
-        self.hand.stop_task()  
-        time.sleep(0.1)  
-        self.hand.disconnect()
+class TestOrcaHandTension(BaseTestCase):
 
     def test_tension_move_motors_false(self):
         """Test tension function with move_motors=False."""

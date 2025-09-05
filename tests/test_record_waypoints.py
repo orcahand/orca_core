@@ -1,27 +1,20 @@
 import unittest
 import time
 from orca_core import MockOrcaHand
+from tests.base_test import BaseTestCase
 
-class TestOrcaHandRecordWaypoints(unittest.TestCase):
+class TestOrcaHandRecordWaypoints(BaseTestCase):
 
-    def setUp(self):
-        self.hand = MockOrcaHand()
-        success, msg = self.hand.connect()
-        self.assertTrue(success, f"Failed to connect mock hand: {msg}")
 
     def tearDown(self):
-        self.hand.stop_task()
-        time.sleep(0.1)
-        self.hand.disconnect()
+        super().tearDown()
 
     def test_record_waypoints_thread_starts_and_stops(self):
         buffer = []
-        # Use a mock input_fn that returns immediately to avoid blocking
         def mock_input_fn(prompt=None):
             time.sleep(0.3)
             return ''
         self.hand.record_waypoints(buffer, blocking=False, on_finish=None, input_fn=mock_input_fn)
-        # Wait a bit for the thread to start
         time.sleep(0.1)
         self.assertTrue(self.hand._task_thread.is_alive(), "Task thread should be alive after starting record_waypoints")
         self.hand.stop_task()
