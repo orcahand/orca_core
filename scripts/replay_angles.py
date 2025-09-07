@@ -79,15 +79,12 @@ def main():
     # Choose log filename based on cont_log argument
     if args.cont_log:
         log_filename = os.path.join(log_dir, "motor_temps.csv")
-        # Check if file exists to determine mode
-        file_mode = "a" if os.path.exists(log_filename) else "w"
-        print(f"Continuous logging enabled. Logging to: {log_filename} (mode: {'append' if file_mode == 'a' else 'create'})")
+        print(f"Continuous logging enabled. Logging to: {log_filename}")
     else:
         log_filename = os.path.join(log_dir, f"motor_temps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-        file_mode = "w"
         print(f"Logging to: {log_filename}")
 
-    with open(log_filename, mode=file_mode, newline="") as logfile:
+    with open(log_filename, mode="w", newline="") as logfile:
         writer = None
         try:
             while True:  # Infinite loop

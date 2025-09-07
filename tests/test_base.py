@@ -22,7 +22,7 @@ class BaseTestCase(unittest.TestCase):
         self.assertTrue(status[0], "Mock connection failed")
         self.assertEqual(status[1], "Mock connection successful")
         
-        self.assertTrue(self.hand.is_connected(), 
+        self.assertTrue(self.hand.is_connected, 
                        "Hand should be connected after setUp")
 
     def tearDown(self):

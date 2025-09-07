@@ -5,14 +5,14 @@ import shutil
 import yaml
 from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml
-from tests.base_test import BaseTestCase
+from tests.test_base import BaseTestCase
 
 EXPECTED_LIMITS = [-1.0, 1.0]
 
 class TestOrcaHandCalibration(BaseTestCase):
 
     def check_calibrated(self):
-        self.assertTrue(self.hand.calibrated, "Hand should be marked as calibrated")
+        self.assertTrue(self.hand.is_calibrated, "Hand should be marked as calibrated")
 
         calib = read_yaml(self.hand.calib_path)
         

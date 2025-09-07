@@ -1,7 +1,7 @@
 import unittest
 import time
 from orca_core import MockOrcaHand
-from tests.base_test import BaseTestCase
+from tests.test_base import BaseTestCase
 
 class TestOrcaHandReplayWaypoints(BaseTestCase):
 
