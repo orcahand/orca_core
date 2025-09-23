@@ -33,7 +33,7 @@ joint_to_motor_map:
   wrist: -17
 
 joint_roms:
-  thumb_mcp: [-50, 50]
+  thumb_mcp: [-35, 65]
   thumb_abd: [-20, 42]
   thumb_pip: [-12, 108]
   thumb_dip: [-20, 112]
@@ -42,14 +42,14 @@ joint_roms:
   index_pip: [-20, 108]
   middle_abd: [-37, 37]
   middle_mcp: [-20, 91]
-  middle_pip: [-20, 107]
-  ring_abd: [-37, 37]
+  middle_pip: [-20, 108]
+  ring_abd: [-31, 37]
   ring_mcp: [-20, 91]
-  ring_pip: [-20, 107]
+  ring_pip: [-20, 108]
   pinky_abd: [-37, 37]
-  pinky_mcp: [-20, 98]
+  pinky_mcp: [-20, 99]
   pinky_pip: [-20, 108]
-  wrist: [-50, 30]
+  wrist: [-60, 30]
 
 neutral_position:
   thumb_mcp: -13
