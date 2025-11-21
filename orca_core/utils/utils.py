@@ -19,10 +19,11 @@ def get_model_path(model_path=None):
     if model_path is None or model_path == "models":
         models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
         if not os.path.exists(models_dir):
-            raise FileNotFoundError("\033[1;35mModels directory not found. Did you download them? If not find them at https://www.orcahand.com/downloads\033[0m")
-        model_dirs = sorted(d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d)))
+            raise FileNotFoundError("\033[1;35mModels directory not found. Did you delete them?")
+        model_dirs = [d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d))]
+        model_dirs = sorted(model_dirs, key=lambda x: (x.lower() != 'right', x))
         if len(model_dirs) == 0:
-            raise FileNotFoundError("\033[1;35mNo model files found. Did you download them? If not find them at https://www.orcahand.com/downloads\033[0m")
+            raise FileNotFoundError("\033[1;35mNo model files found. Did you delete them?")
         resolved_path = os.path.join(models_dir, model_dirs[0])
     else:
         if os.path.isabs(model_path):
