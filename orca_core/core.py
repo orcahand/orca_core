@@ -431,15 +431,22 @@ class OrcaHand:
         # Set calibration control mode
         self.set_control_mode('current_based_position')
         self.set_max_current(self.calib_current)
-        self.enable_torque()
         
         for step in self.calib_sequence:
+
+            self.disable_torque()
+
             if self._task_stop_event.is_set():
                 return
 
             desired_increment, motor_reached_limit, directions, position_buffers, motor_reached_limit, calibrated_joints, position_logs, current_log = {}, {}, {}, {}, {}, {}, {}, {}
 
             for joint, direction in step["joints"].items(): 
+
+                self.enable_torque(motor_ids=[self.joint_to_motor_map[joint]])
+
+                print("Enabling torque for the following motor: ", self.joint_to_motor_map[joint])
+
                 if self._task_stop_event.is_set():
                     return
 
@@ -457,8 +464,11 @@ class OrcaHand:
                 position_logs[motor_id] = []
                 current_log[motor_id] = []
                 motor_reached_limit[motor_id] = False
-            
-            while(not all(motor_reached_limit.values()) and not self._task_stop_event.is_set()):               
+
+
+
+            while(not all(motor_reached_limit.values()) and not self._task_stop_event.is_set()): 
+
                 for motor_id, reached_limit in motor_reached_limit.items():
                     if not reached_limit:
                         desired_increment[motor_id] = directions[motor_id] * self.calib_step_size
@@ -824,20 +834,29 @@ class OrcaHand:
             ]
             self.set_max_current(self.calib_current)
 
-            duration = 3
+            duration = 8
             increment_per_step = 0.1
-            motor_increments = {motor_id: increment_per_step for motor_id in motors_to_move}
+            motor_increments_right = {motor_id: increment_per_step for motor_id in motors_to_move}
+            motor_increments_left = {motor_id: -increment_per_step for motor_id in motors_to_move}
 
             start_time = time.time()
             while(time.time() - start_time < duration):
                 if self._task_stop_event.is_set():
                     break
-                self._set_motor_pos(motor_increments, rel_to_current=True)
+                self._set_motor_pos(motor_increments_left, rel_to_current=True)
                 time.sleep(0.1)
+            
+            start_time = time.time()
+            while(time.time() - start_time < duration):
+                if self._task_stop_event.is_set():
+                    break
+                self._set_motor_pos(motor_increments_right, rel_to_current=True)
+                time.sleep(0.1)
+            
+
 
         self.set_max_current(self.max_current)
-        self.disable_torque()
-        time.sleep(0.25)
+       
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
         try:
