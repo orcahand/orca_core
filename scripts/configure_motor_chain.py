@@ -3,6 +3,7 @@ import time
 import logging
 import argparse
 import os
+import subprocess
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orca_core.hardware.dynamixel_client import DynamixelClient
@@ -18,6 +19,16 @@ ORANGE = '\033[38;5;208m'
 BOLD = '\033[1m'
 UNDERLINE = '\033[4m'
 RESET = '\033[0m'
+
+def play_success_beep():
+    """Play a short beep to indicate successful motor configuration."""
+    try:
+        subprocess.run(['paplay', '/usr/share/sounds/freedesktop/stereo/complete.oga'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
+    except:
+        try:
+            subprocess.run(['beep', '-f', '800', '-l', '100'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
+        except:
+            print('\a', end='', flush=True)
 
 def scan_for_default_motor(expected_type: str, port: str) -> bool:
     try:
@@ -57,6 +68,7 @@ def configure_default_motor(target_id: int, port: str, target_baud: int) -> bool
             return False
         client.port_handler.closePort()
         print(f"{GREEN}✓ Successfully configured the new motor to ID={target_id}, baudrate={target_baud}{RESET}")
+        play_success_beep()
         return True
     except Exception as e:
         print(f"{RED}❌ Error configuring motor: {e}{RESET}")

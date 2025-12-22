@@ -1,8 +1,8 @@
 version: 0.2.1
 baudrate: 3000000
-#port: /dev/ttyUSB0 # linux
-port: /dev/tty.usbserial-FT9MISJT # mac
-max_current: 400
+port: /dev/ttyUSB0 # linux
+#port: /dev/cu.usbserial-FTAAMOG2 # mac
+max_current: 500
 
 type: right
 
@@ -10,46 +10,46 @@ type: right
 control_mode: current_based_position
 
 motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-joint_ids: [thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip, wrist]
+joint_ids: [wrist, thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip]
 
 # Which motor ID is physically connected to which joint
 joint_to_motor_map:
-  thumb_mcp: -4
-  thumb_abd: -3
-  thumb_pip: -1
-  thumb_dip: -2
-  index_abd: 14
-  index_mcp: -15
-  index_pip: -16
-  middle_abd: 13
-  middle_mcp: -8
-  middle_pip: -9
-  ring_abd: -5
+  wrist: 1
+  thumb_mcp: 17
+  thumb_abd: 14
+  thumb_pip: 15
+  thumb_dip: 16
+  index_abd: -4
+  index_mcp: 3
+  index_pip: 2
+  middle_abd: -5
+  middle_mcp: 10
+  middle_pip: 9
+  ring_abd: -6
   ring_mcp: -7
-  ring_pip: -6
-  pinky_abd: 12
-  pinky_mcp: -10
+  ring_pip: 8
+  pinky_abd: 13
+  pinky_mcp: 12
   pinky_pip: -11
-  wrist: -17
 
 joint_roms:
-  thumb_mcp: [-50, 50]
-  thumb_abd: [-20, 42]
-  thumb_pip: [-12, 108]
-  thumb_dip: [-20, 112]
-  index_abd: [-37, 37]
-  index_mcp: [-20, 95]
-  index_pip: [-20, 108]
-  middle_abd: [-37, 37]
-  middle_mcp: [-20, 91]
-  middle_pip: [-20, 107]
-  ring_abd: [-37, 37]
-  ring_mcp: [-20, 91]
-  ring_pip: [-20, 107]
-  pinky_abd: [-37, 37]
-  pinky_mcp: [-20, 98]
-  pinky_pip: [-20, 108]
-  wrist: [-50, 30]
+  wrist: [-20, 60]
+  thumb_mcp: [-45, 45]
+  thumb_abd: [-18, 55]
+  thumb_pip: [-55, 107]
+  thumb_dip: [-55, 112]
+  index_abd: [-30, 30]
+  index_mcp: [-60, 95]
+  index_pip: [-55, 107]
+  middle_abd: [-30, 30]
+  middle_mcp: [-60, 95]
+  middle_pip: [-55, 107]
+  ring_abd: [-30, 30]
+  ring_mcp: [-60, 95]
+  ring_pip: [-55, 107]
+  pinky_abd: [-30, 30]
+  pinky_mcp: [-60, 95]
+  pinky_pip: [-55, 107]
 
 neutral_position:
   thumb_mcp: -13
@@ -167,6 +167,9 @@ calib_sequence:
   - step: 28
     joints:
       wrist: extend
+
+
+
 
 # calib_sequence:
 #   - step: 1
