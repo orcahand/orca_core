@@ -185,6 +185,7 @@ class OrcaHand:
                 (4) multi_turn_position: Multi-turn position control mode,
                 (5) current_based_position: Current-based position control mode.
             motor_ids (list): List of motor IDs to set the control mode. If None, all motors will be set.
+            The wrist motor is controlled in multi-turn position control mode, if current or current-based position control mode is seleceted.
         """
         
         mode_map = {
@@ -205,6 +206,17 @@ class OrcaHand:
             else:
                 if not all(motor_id in self.motor_ids for motor_id in motor_ids):
                     raise ValueError("Invalid motor IDs.")
+
+        if mode == 5 or mode == 0:
+            wrist_motor_id = self.joint_to_motor_map.get("wrist")
+            if wrist_motor_id is not None:
+                motor_ids_without_wrist = [motor_id for motor_id in motor_ids if motor_id != wrist_motor_id]
+                self._dxl_client.set_operating_mode(motor_ids_without_wrist, mode)
+                if wrist_motor_id in motor_ids:
+                    self._dxl_client.set_operating_mode([wrist_motor_id], 4)
+            else:
+                self._dxl_client.set_operating_mode(motor_ids, mode)
+        else:
             self._dxl_client.set_operating_mode(motor_ids, mode)
             
     def get_motor_pos(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
@@ -274,7 +286,7 @@ class OrcaHand:
         return joint_pos
          
     def set_joint_pos(self, joint_pos: Union[dict, list], num_steps: int = 1, step_size: float = 1.0):
-        """Set the desired joint positions. If nun_steps > 1, the hand will move to the target position in a smooth, gradual motion (depending also on step_size).
+        """Set the desired joint positions. If num_steps > 1, the hand will move to the target position in a smooth, gradual motion (depending also on step_size).
     
         Args:
             joint_pos (dict or list): If dict, it should be {joint_name: desired_position}.
@@ -692,7 +704,7 @@ class OrcaHand:
                             positions_to_write.append(float(pos_val))
                 
                 if not motor_ids_to_write:
-                    print("Info: All positions in desired_pos (list/array) were None. No motor commands sent.")
+                    print(f"\033[93mWarning: All positions in desired_pos (list/array) were None. No motor commands sent.\033[0m")
                     return
 
                 motor_ids_to_write = motor_ids_to_write
@@ -721,8 +733,10 @@ class OrcaHand:
             joint_name = self.motor_to_joint_dict.get(motor_id)
             if any(limit is None for limit in self.motor_limits_dict[motor_id]):
                 joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m")
             elif self.joint_to_motor_ratios_dict[motor_id] == 0:
                 joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
                 
