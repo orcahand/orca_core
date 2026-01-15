@@ -70,7 +70,6 @@ def update_yaml(file_path, key, value):
         with open(file_path, 'w') as file:
             yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
 
-
 def read_yaml(file_path):
     """Reads a YAML file and returns its content."""
     try:
@@ -78,12 +77,28 @@ def read_yaml(file_path):
             return yaml.safe_load(file) or None
     except FileNotFoundError:
         return {}
+    
+def get_yaml_path_and_waypoints(source, client_id=None):
+    """
+    Return the waypoint yaml file path and loaded waypoints list.
+    If client_id is provided, 'source' is treated as the directory containing client YAML files,
+    and the function loads the file for that client.
+    If client_id is None, 'source' is treated as a direct YAML file path.
+    """
+    if client_id is not None:
+        file_path = os.path.join(source, f"client_{client_id[:8]}.yaml")
+    else:
+        file_path = source
+    data = read_yaml(file_path)
+    waypoints = data.get("waypoints", []) if data else []
+    return file_path, waypoints
+
 
 ################################################################################
 ### Interpolation utils ########################################################
 ################################################################################
 
-def linear_interp(t):
+def linear(t):
     return t
 
 def ease_in_out(t):
@@ -91,7 +106,10 @@ def ease_in_out(t):
 
 def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
     n_steps = int(duration / step_time)
-    interp_func = linear_interp if mode == "linear" else ease_in_out
+    try:
+        interp_func = globals()[mode]
+    except KeyError:
+        raise ValueError(f"Unknown interpolation mode: {mode}")
     for i in range(n_steps + 1):
         t = i / n_steps
         alpha = interp_func(t)
