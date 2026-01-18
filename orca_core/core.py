@@ -112,7 +112,27 @@ class OrcaHand:
             return True, "Connection successful"
         except Exception as e:
             self._dxl_client = None
-            return False, f"Connection failed: {str(e)}"
+            # If connection fails, prompt user to choose a port
+            print(f"Connection failed: {str(e)}")
+            print("Please select a port from available devices:")
+            chosen_port = get_and_choose_port()
+            
+            if chosen_port is None:
+                return False, "Connection failed: No port selected"
+            
+            # Try connecting with the chosen port
+            try:
+                self._dxl_client = DynamixelClient(self.motor_ids, chosen_port, self.baudrate)
+                with self._motor_lock:
+                    self._dxl_client.connect()
+                
+                # Update config file and instance variable with the working port
+                self.port = chosen_port
+                update_yaml(self.config_path, 'port', chosen_port)
+                return True, f"Connection successful with port {chosen_port}"
+            except Exception as e2:
+                self._dxl_client = None
+                return False, f"Connection failed with selected port: {str(e2)}"
         
     def disconnect(self) -> tuple[bool, str]:
         """Disconnect from the hand.
