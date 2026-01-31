@@ -1,0 +1,94 @@
+Using model path: /Users/ccc/dev/orca/orca_core_dev/orca_core/models/orcahand-nitto
+Warning: Motor ID 1 (Joint: wrist) has not been fully calibrated (missing joint-to-motor ratio).
+(True, 'Connection successful')
+Motor ID 2 is out of bounds: 6.007068634033203 < 0.04448544234037399 < 7.685243606567383
+Motor ID 9 is out of bounds: 5.603631973266602 < -0.09357282519340515 < 7.350835800170898
+Offsets: {1: 0.0, 2: -6.283185307179586, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0, 7: 0.0, 8: 0.0, 9: -6.283185307179586, 10: 0.0, 11: 0.0, 12: 0.0, 13: 0.0, 14: 0.0, 15: 0.0, 16: 0.0, 17: 0.0}
+Enabling torque for the following motor:  17
+Motor 17 corresponding to joint thumb_cmc reached the limit at 3.3563499450683594 rad.
+Enabling torque for the following motor:  17
+Motor 17 corresponding to joint thumb_cmc reached the limit at 2.7105441093444824 rad.
+Joint calibrated:  thumb_cmc
+Enabling torque for the following motor:  14
+Motor 14 corresponding to joint thumb_abd reached the limit at 1.1586154699325562 rad.
+Enabling torque for the following motor:  14
+Motor 14 corresponding to joint thumb_abd reached the limit at 0.11412815749645233 rad.
+Joint calibrated:  thumb_abd
+Enabling torque for the following motor:  15
+Motor 15 corresponding to joint thumb_mcp reached the limit at 1.0937283039093018 rad.
+Enabling torque for the following motor:  15
+Motor 15 corresponding to joint thumb_mcp reached the limit at 3.5573015213012695 rad.
+Joint calibrated:  thumb_mcp
+Enabling torque for the following motor:  16
+Motor 16 corresponding to joint thumb_dip reached the limit at 2.434427499771118 rad.
+Enabling torque for the following motor:  16
+ERROR:root:> read: [TxRxResult] There is no status packet!
+ERROR:root:> read: [TxRxResult] There is no status packet!
+Motor 16 corresponding to joint thumb_dip reached the limit at 4.781418323516846 rad.
+Joint calibrated:  thumb_dip
+Enabling torque for the following motor:  4
+Enabling torque for the following motor:  5
+Enabling torque for the following motor:  6
+Enabling torque for the following motor:  13
+Motor 13 corresponding to joint pinky_abd reached the limit at 1.3238255977630615 rad.
+Motor 6 corresponding to joint ring_abd reached the limit at 0.4503767490386963 rad.
+Motor 4 corresponding to joint index_abd reached the limit at 5.37721586227417 rad.
+Motor 5 corresponding to joint middle_abd reached the limit at 3.786785125732422 rad.
+Enabling torque for the following motor:  4
+Enabling torque for the following motor:  5
+Enabling torque for the following motor:  6
+Enabling torque for the following motor:  13
+Motor 4 corresponding to joint index_abd reached the limit at 4.169360160827637 rad.
+Motor 5 corresponding to joint middle_abd reached the limit at 2.5896663665771484 rad.
+Motor 13 corresponding to joint pinky_abd reached the limit at 2.475691556930542 rad.
+Motor 6 corresponding to joint ring_abd reached the limit at -0.6060757637023926 rad.
+Joint calibrated:  index_abd
+Joint calibrated:  middle_abd
+Joint calibrated:  ring_abd
+Joint calibrated:  pinky_abd
+Enabling torque for the following motor:  3
+Motor 3 corresponding to joint index_mcp reached the limit at 3.4008355140686035 rad.
+Enabling torque for the following motor:  3
+Motor 3 corresponding to joint index_mcp reached the limit at 0.4939418137073517 rad.
+Joint calibrated:  index_mcp
+Enabling torque for the following motor:  2
+Motor 2 corresponding to joint index_pip reached the limit at 1.3974565267562866 rad.
+Enabling torque for the following motor:  2
+Motor 2 corresponding to joint index_pip reached the limit at -0.302194207906723 rad.
+Joint calibrated:  index_pip
+Enabling torque for the following motor:  10
+Motor 10 corresponding to joint middle_mcp reached the limit at 6.873767852783203 rad.
+Enabling torque for the following motor:  10
+Motor 10 corresponding to joint middle_mcp reached the limit at 3.969942331314087 rad.
+Joint calibrated:  middle_mcp
+Enabling torque for the following motor:  9
+Motor 9 corresponding to joint middle_pip reached the limit at 1.0753204822540283 rad.
+Enabling torque for the following motor:  9
+Motor 9 corresponding to joint middle_pip reached the limit at -0.708699107170105 rad.
+Joint calibrated:  middle_pip
+Enabling torque for the following motor:  7
+Motor 7 corresponding to joint ring_mcp reached the limit at 1.38825261592865 rad.
+Enabling torque for the following motor:  7
+Motor 7 corresponding to joint ring_mcp reached the limit at 4.565126895904541 rad.
+Joint calibrated:  ring_mcp
+Enabling torque for the following motor:  8
+Motor 8 corresponding to joint ring_pip reached the limit at 6.040816307067871 rad.
+Enabling torque for the following motor:  8
+Motor 8 corresponding to joint ring_pip reached the limit at 4.301281929016113 rad.
+Joint calibrated:  ring_pip
+Enabling torque for the following motor:  12
+Motor 12 corresponding to joint pinky_mcp reached the limit at 7.231185436248779 rad.
+Enabling torque for the following motor:  12
+Motor 12 corresponding to joint pinky_mcp reached the limit at 4.743068695068359 rad.
+Joint calibrated:  pinky_mcp
+Enabling torque for the following motor:  11
+Motor 11 corresponding to joint pinky_pip reached the limit at 1.3284273147583008 rad.
+Enabling torque for the following motor:  11
+Motor 11 corresponding to joint pinky_pip reached the limit at 2.9621169567108154 rad.
+Joint calibrated:  pinky_pip
+Enabling torque for the following motor:  1
+Motor 1 corresponding to joint wrist reached the limit at 6.077631950378418 rad.
+Enabling torque for the following motor:  1
+Motor 1 corresponding to joint wrist reached the limit at 6.077631950378418 rad.
+Joint calibrated:  wrist
+(venv) ccc@Clemenss-MacBook-Pro orca_core_dev % 
