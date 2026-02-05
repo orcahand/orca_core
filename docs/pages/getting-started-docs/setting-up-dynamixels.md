@@ -50,4 +50,29 @@ After assigning IDs:
 
 ---
 
+## USB Latency (Linux)
+
+FTDI USB-serial adapters (like the U2D2) default to 16ms latency on Linux, which limits motor control to ~30 Hz. The `DynamixelClient` and `FeetechClient` automatically enable low latency mode when connecting, achieving ~500 Hz control rates without any manual configuration.
+
+### Troubleshooting
+
+If you experience slow communication, verify the latency setting:
+
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+# Should output: 1 (after connecting with DynamixelClient)
+```
+
+If low latency mode isn't being set automatically, you can create a udev rule:
+
+```bash
+# Create the udev rule
+sudo tee /etc/udev/rules.d/99-usb-serial-low-latency.rules <<< 'ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"'
+
+# Reload rules and replug the adapter
+sudo udevadm control --reload-rules
+```
+
+---
+
 Now you're ready to put your servos in the hand tower!
