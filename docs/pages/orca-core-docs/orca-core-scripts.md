@@ -20,22 +20,6 @@ python scripts/calibrate.py /path/to/orcahand_v1_right
 ```
 </details>
 
-<details>
-<summary><strong>calibrate_manual.py</strong></summary>
-
-Manually calibrates the ORCA Hand. This script guides the user through a manual calibration process.
-
-<br><strong>Args:</strong><br>
-<ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
-</ul>
-
-<strong>Example:</strong>
-```bash
-python scripts/calibrate_manual.py /path/to/orcahand_v1_right
-```
-</details>
-
 ### Motor and Joint Check Scripts
 
 <details>
