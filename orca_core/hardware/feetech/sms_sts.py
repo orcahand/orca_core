@@ -5,7 +5,7 @@ from .protocol_packet_handler import *
 from .group_sync_read import *
 from .group_sync_write import *
 
-#波特率定义
+# Baud rate definitions
 SMS_STS_1M = 0
 SMS_STS_0_5M = 1
 SMS_STS_250K = 2
@@ -15,12 +15,12 @@ SMS_STS_76800 = 5
 SMS_STS_57600 = 6
 SMS_STS_38400 = 7
 
-#内存表定义
-#-------EPROM(只读)--------
+# Memory table definitions
+#-------EPROM (read-only)--------
 SMS_STS_MODEL_L = 3
 SMS_STS_MODEL_H = 4
 
-#-------EPROM(读写)--------
+#-------EPROM (read-write)--------
 SMS_STS_ID = 5
 SMS_STS_BAUD_RATE = 6
 SMS_STS_MIN_ANGLE_LIMIT_L = 9
@@ -33,7 +33,7 @@ SMS_STS_OFS_L = 31
 SMS_STS_OFS_H = 32
 SMS_STS_MODE = 33
 
-#-------SRAM(读写)--------
+#-------SRAM (read-write)--------
 SMS_STS_TORQUE_ENABLE = 40
 SMS_STS_ACC = 41
 SMS_STS_GOAL_POSITION_L = 42
@@ -44,7 +44,7 @@ SMS_STS_GOAL_SPEED_L = 46
 SMS_STS_GOAL_SPEED_H = 47
 SMS_STS_LOCK = 55
 
-#-------SRAM(只读)--------
+#-------SRAM (read-only)--------
 SMS_STS_PRESENT_POSITION_L = 56
 SMS_STS_PRESENT_POSITION_H = 57
 SMS_STS_PRESENT_SPEED_L = 58
