@@ -79,7 +79,36 @@ To get started with Orca Core, follow these steps:
 
 ---
 
-**Note:**  
+## Troubleshooting
+
+### Serial Port Permissions (Linux)
+
+On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
+
+**Permanent fix** (requires re-login):
+
+```sh
+sudo usermod -aG dialout $USER
+```
+
+**Temporary fix** (resets on reboot/replug):
+
+```sh
+sudo chmod 666 /dev/ttyUSB0
+```
+
+### Serial Port Path
+
+Make sure the `port` field in your `config.yaml` matches your operating system:
+
+| OS    | Example port                    |
+|-------|---------------------------------|
+| Linux | `/dev/ttyUSB0`                  |
+| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+
+---
+
+**Note:**
 - Always ensure your `config.yaml` matches your hardware and wiring.
 - All scripts in the `scripts/` folder take the model path as their first argument.
 - For more advanced usage, see the other scripts and the API documentation.

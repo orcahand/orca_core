@@ -208,6 +208,10 @@ def main():
         print("   ✓ Board connection: Properly connected to power and computer")
         print("   ✓ Motor connection: Properly wired to daisy chain")
         print("   ✓ Motor settings: ID=1, baudrate=57600 (factory default)")
+        print(f"   ✓ Serial port permissions (Linux): Your user must have read/write access to the serial port.")
+        print(f"     Run {BOLD}sudo usermod -aG dialout $USER{RESET} and re-login, or {BOLD}sudo chmod 666 /dev/ttyUSB0{RESET} for a quick fix.")
+        print(f"   ✓ Serial port path: Ensure {BOLD}config.yaml{RESET} has the correct port for your OS")
+        print(f"     (e.g., {BOLD}/dev/ttyUSB0{RESET} on Linux, {BOLD}/dev/tty.usbserial-*{RESET} on macOS)")
         print(f"   Otherwise the motors {UNDERLINE}won't be detected{RESET} during scanning.")
         print("\n" + "─" * 60)
     else:
