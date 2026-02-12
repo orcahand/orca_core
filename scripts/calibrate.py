@@ -12,6 +12,11 @@ def main():
         default=None,
         help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
     )
+    parser.add_argument(
+        "--force-wrist",
+        action="store_true",
+        help="Force wrist calibration even if already calibrated"
+    )
     args = parser.parse_args()
 
     hand = OrcaHand(args.model_path)
@@ -22,7 +27,7 @@ def main():
         print("Failed to connect to the hand.")
         exit(1)
 
-    hand.calibrate()
+    hand.calibrate(force_wrist=args.force_wrist)
 
 if __name__ == "__main__":
     main()
