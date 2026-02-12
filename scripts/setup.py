@@ -27,7 +27,8 @@ def run_tension(hand, step_num, label):
     """Run tension with move_motors in background, wait for user to press Enter."""
     print_step(step_num, f"TENSION — {label}")
     print("  Motors will move to set initial tension, then hold.")
-    print("  Adjust tendons while motors are holding.")
+    print("  Use the tensioning tool or pliers to turn the top spool clockwise.")
+    print("  Do NOT overtension — just enough to remove slack.")
     hand.tension(move_motors=True, blocking=False)
     wait_for_enter("Press ENTER when tensioning is done...")
     hand.stop_task()
