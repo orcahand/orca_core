@@ -39,6 +39,7 @@ ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_CURRENT = 126
 ADDR_PRESENT_POS_VEL_CUR = 126
 ADDR_MOVING_STATUS = 123
+ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_PRESENT_TEMPERATURE = 146
 
 # Data Byte Length
@@ -168,6 +169,7 @@ class DynamixelClient(MotorClient):
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
+        self._operating_modes = {}
 
         self.OPEN_CLIENTS.add(self)
 
@@ -204,6 +206,9 @@ class DynamixelClient(MotorClient):
                 logging.info('Enabled low latency mode for USB serial')
             except Exception:
                 pass  # Not critical if it fails
+
+        # Clear any pre-existing hardware errors before enabling torque.
+        self.check_overload_and_reboot(self.motor_ids)
 
         # Start with all motors enabled.
         self.set_torque_enabled(self.motor_ids, True)
@@ -264,6 +269,8 @@ class DynamixelClient(MotorClient):
         self.set_torque_enabled(motor_ids, False)
         self.sync_write(motor_ids, [mode_value]*len(motor_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
         self.set_torque_enabled(motor_ids, True)
+        for mid in motor_ids:
+            self._operating_modes[mid] = mode_value
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the positions, velocities, and currents."""
@@ -368,6 +375,47 @@ class DynamixelClient(MotorClient):
         sync_writer.clearParam()
         times.append(time.monotonic())
         return times
+
+    def reboot_motor(self, motor_id: int):
+        """Reboots a single motor using the Protocol 2.0 reboot instruction."""
+        comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
+        self.handle_packet_result(comm_result, dxl_error, motor_id, context='reboot')
+
+    def read_hardware_error(self, motor_id: int) -> int:
+        """Reads the Hardware Error Status register (address 70). Returns raw byte or 0 on failure."""
+        value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
+            self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
+        if comm_result != self.dxl.COMM_SUCCESS:
+            return 0
+        return value
+
+    def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> list:
+        """Checks for overload errors and reboots affected motors.
+
+        Returns list of motor IDs that were rebooted.
+        """
+        OVERLOAD_BIT = 0x20
+        rebooted = []
+        for mid in motor_ids:
+            error_status = self.read_hardware_error(mid)
+            if error_status & OVERLOAD_BIT:
+                logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
+                self.reboot_motor(mid)
+                rebooted.append(mid)
+        if rebooted:
+            time.sleep(0.3)
+            for mid in rebooted:
+                mode = self._operating_modes.get(mid)
+                if mode is not None:
+                    # Reboot clears RAM — restore operating mode and torque.
+                    # Use retries=0 to avoid hanging if motor isn't ready yet.
+                    self.set_torque_enabled([mid], False, retries=0)
+                    self.sync_write([mid], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+                    self.set_torque_enabled([mid], True, retries=0)
+                    self._operating_modes[mid] = mode
+                else:
+                    self.set_torque_enabled([mid], True, retries=0)
+        return rebooted
 
     def check_connected(self):
         """Ensures the robot is connected."""
@@ -489,6 +537,7 @@ class DynamixelReader:
         self.address = address
         self.size = size
         self._initialize_data()
+        self._read_count = 0
 
         self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
                                                        client.packet_handler)
@@ -533,6 +582,11 @@ class DynamixelReader:
         if errored_ids:
             logging.error('Bulk read data is unavailable for: %s',
                           str(errored_ids))
+
+        # Check for hardware errors every 10th read to avoid per-cycle overhead
+        self._read_count += 1
+        if self._read_count % 10 == 0:
+            self.client.check_overload_and_reboot(self.motor_ids)
 
         return self._get_data()
 

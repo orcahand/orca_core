@@ -55,6 +55,7 @@ class OrcaHand:
         self.calib_num_stable: int = config.get('calib_num_stable', 20)
         self.calib_sequence: Dict[str, Dict[str, str]] = config.get('calib_sequence', [])
         self.calibrated: bool = calib.get('calibrated', False)
+        self.wrist_calibrated: bool = calib.get('wrist_calibrated', False)
      
         self.neutral_position: Dict[str, float] = config.get('neutral_position', {})
         
@@ -464,19 +465,31 @@ class OrcaHand:
         
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True):
+    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
         if blocking:
-            self._calibrate()
+            self._calibrate(force_wrist=force_wrist)
         else:
-            self._start_task(self._calibrate)
+            self._start_task(self._calibrate, force_wrist=force_wrist)
 
-    def _calibrate(self):
+    def _calibrate(self, force_wrist: bool = False):
+
+        # Build effective calibration sequence with wrist logic
+        wrist_in_sequence = any('wrist' in step['joints'] for step in self.calib_sequence)
+        calib_sequence = list(self.calib_sequence)
+
+        if self.wrist_calibrated and not force_wrist:
+            if wrist_in_sequence:
+                print("WARNING: Wrist is already calibrated. Skipping wrist calibration. Use --force-wrist to override.")
+            calib_sequence = [step for step in calib_sequence if 'wrist' not in step['joints']]
+        elif not wrist_in_sequence:
+            calib_sequence.append({'step': len(calib_sequence) + 1, 'joints': {'wrist': 'flex'}})
+            calib_sequence.append({'step': len(calib_sequence) + 1, 'joints': {'wrist': 'extend'}})
 
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
 
         self._compute_wrap_offsets_dict()
-        for step in self.calib_sequence:
+        for step in calib_sequence:
             for joint in step["joints"].keys():
                 motor_id = self.joint_to_motor_map[joint]
                 motor_limits[motor_id] = [None, None]
@@ -489,7 +502,7 @@ class OrcaHand:
         self.set_control_mode('current_based_position')
         self.set_max_current(self.calib_current)
 
-        for step in self.calib_sequence:
+        for step in calib_sequence:
 
             self.disable_torque()
 
@@ -590,6 +603,11 @@ class OrcaHand:
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
             time.sleep(0.1)    
             
+        # Update wrist_calibrated if wrist was calibrated in this run
+        if any('wrist' in step['joints'] for step in calib_sequence):
+            self.wrist_calibrated = True
+            update_yaml(self.calib_path, 'wrist_calibrated', True)
+
         self.calibrated = self.is_calibrated()
         update_yaml(self.calib_path, 'calibrated', self.calibrated)
         self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
