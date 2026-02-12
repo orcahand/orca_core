@@ -24,8 +24,10 @@ from .motor_client import MotorClient
 
 PROTOCOL_VERSION = 2.0
 
-# The following addresses assume XH motors.
+# The following addresses assume XC motors.
 # see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ for control table
+ADDR_ID = 7
+ADDR_BAUD_RATE = 8
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
@@ -57,6 +59,24 @@ DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
 DEFAULT_CUR_SCALE = 1.34
 
+# Baud rate mapping for Dynamixel motors, see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/#baud-rate
+BAUD_RATE_MAP = {
+    9600: 0,
+    57600: 1,
+    115200: 2,
+    1000000: 3,
+    2000000: 4,
+    3000000: 5,
+    4000000: 6,
+    4500000: 7,
+    10500000: 8,
+}
+
+# Dynamixel model number to name mapping (see table 2.2. @ https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ as reference)
+DYNAMIXEL_MODELS = {
+    1220: 'XC330-T288-T',
+    1080: 'XC430-T240BB-T',
+}
 
 def dynamixel_cleanup_handler():
     """Cleanup function to ensure Dynamixels are disconnected properly."""
@@ -383,6 +403,62 @@ class DynamixelClient(MotorClient):
             max_value = (1 << (8 * size)) - 1
             value = max_value + value
         return value
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Changes the ID of a Dynamixel motor (1-252)."""
+        if not (1 <= new_id <= 252):
+            logging.error(f"Invalid ID {new_id}. Valid range is 1-252.")
+            return False   
+        try:
+            self.set_torque_enabled([current_id], False)
+            success = not self.write_byte([current_id], new_id, ADDR_ID)
+            if success:
+                logging.info(f"Changed motor ID: {current_id} → {new_id}")
+            return success
+        except Exception as e:
+            logging.error(f"Failed to change motor ID: {e}")
+            return False
+    
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Changes the baud rate of a Dynamixel motor. Requires reconnect after change."""
+        if new_baud_rate not in BAUD_RATE_MAP:
+            logging.error(f"Invalid baud rate {new_baud_rate}. Valid: {list(BAUD_RATE_MAP.keys())}")
+            return False   
+        try:
+            self.set_torque_enabled([motor_id], False)
+            success = not self.write_byte([motor_id], BAUD_RATE_MAP[new_baud_rate], ADDR_BAUD_RATE)
+            if success:
+                logging.info(f"Changed motor {motor_id} baud rate: {new_baud_rate}")
+            return success
+        except Exception as e:
+            logging.error(f"Failed to change baud rate: {e}")
+            return False
+    
+    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252), 
+                             baud_rates: Optional[list] = None) -> list:
+        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_number', 'model_name'}."""
+        baud_rates = baud_rates or list(BAUD_RATE_MAP.keys())
+        detected_motors = []
+        for baud_rate in baud_rates:
+            port_handler = self.dxl.PortHandler(port)
+            packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
+            try:
+                if not port_handler.openPort() or not port_handler.setBaudRate(baud_rate):
+                    continue
+                for motor_id in range(id_range[0], id_range[1] + 1):
+                    model_number, comm_result, _ = packet_handler.ping(port_handler, motor_id)
+                    if comm_result == self.dxl.COMM_SUCCESS:
+                        detected_motors.append({
+                            'id': motor_id, 'baud_rate': baud_rate, 
+                            'model_name': DYNAMIXEL_MODELS.get(model_number, f'Unknown({model_number})')
+                        })
+                port_handler.closePort()
+            except Exception:
+                try:
+                    port_handler.closePort()
+                except Exception:
+                    pass
+        return detected_motors
 
     def __enter__(self):
         """Enables use as a context manager."""
