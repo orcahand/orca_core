@@ -20,6 +20,8 @@ import time
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
+from .motor_client import MotorClient
+
 PROTOCOL_VERSION = 2.0
 
 # The following addresses assume XC motors.
@@ -103,7 +105,7 @@ def unsigned_to_signed(value: int, size: int) -> int:
     return value
 
 
-class DynamixelClient:
+class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
 
     NOTE: This only supports Protocol 2.
@@ -194,6 +196,14 @@ class DynamixelClient:
             raise OSError(
                 ('Failed to set the baudrate to {} (Ensure that the device was '
                  'configured for this baudrate).').format(self.baudrate))
+
+        # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
+        if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+            try:
+                self.port_handler.ser.set_low_latency_mode(True)
+                logging.info('Enabled low latency mode for USB serial')
+            except Exception:
+                pass  # Not critical if it fails
 
         # Start with all motors enabled.
         self.set_torque_enabled(self.motor_ids, True)
