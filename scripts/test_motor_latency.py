@@ -15,6 +15,9 @@ Usage:
 
     # Custom iterations and baudrate
     python scripts/test_motor_latency.py /dev/ttyUSB0 dynamixel 1 -n 200 --baudrate 3000000
+
+    # With optimizations (Return Delay=0, Status Return=READ_ONLY, Fast Sync Read)
+    python scripts/test_motor_latency.py /dev/ttyUSB0 dynamixel 1 2 3 --optimize
 """
 
 import argparse
@@ -132,8 +135,10 @@ class FeetechInterface(MotorInterface):
 class DynamixelInterface(MotorInterface):
     """Dynamixel motor interface for latency testing."""
 
-    ADDR_TORQUE_ENABLE = 64
+    ADDR_RETURN_DELAY_TIME = 9
     ADDR_OPERATING_MODE = 11
+    ADDR_TORQUE_ENABLE = 64
+    ADDR_STATUS_RETURN_LEVEL = 68
     ADDR_GOAL_POSITION = 116
     ADDR_PRESENT_POSITION = 132
 
@@ -167,6 +172,31 @@ class DynamixelInterface(MotorInterface):
         if self.port_handler:
             self.port_handler.closePort()
 
+    def optimize_motors(self, motor_ids: list):
+        """Set Return Delay Time=0 and Status Return Level=1 (read-only replies)."""
+        for mid in motor_ids:
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_TORQUE_ENABLE, 0)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_RETURN_DELAY_TIME, 0)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_STATUS_RETURN_LEVEL, 1)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_TORQUE_ENABLE, 1)
+            time.sleep(0.02)
+        print(f"Optimized {len(motor_ids)} motors: Return Delay=0, Status Return=READ_ONLY")
+
+    def restore_motors(self, motor_ids: list):
+        """Restore default Return Delay Time and Status Return Level."""
+        for mid in motor_ids:
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_TORQUE_ENABLE, 0)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_RETURN_DELAY_TIME, 250)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_STATUS_RETURN_LEVEL, 2)
+            time.sleep(0.02)
+            self.packet_handler.write1ByteTxRx(self.port_handler, mid, self.ADDR_TORQUE_ENABLE, 1)
+            time.sleep(0.02)
+
     def setup_motor(self, motor_id: int) -> int:
         self.packet_handler.write1ByteTxRx(self.port_handler, motor_id, self.ADDR_TORQUE_ENABLE, 0)
         time.sleep(0.05)
@@ -187,11 +217,26 @@ class DynamixelInterface(MotorInterface):
     def write_position(self, motor_id: int, position: int):
         self.packet_handler.write4ByteTxRx(self.port_handler, motor_id, self.ADDR_GOAL_POSITION, position)
 
+    def write_position_tx_only(self, motor_id: int, position: int):
+        self.packet_handler.write4ByteTxOnly(self.port_handler, motor_id, self.ADDR_GOAL_POSITION, position)
+
     def sync_read_positions(self, motor_ids: list) -> list:
         sync_read = self.dxl.GroupSyncRead(self.port_handler, self.packet_handler, self.ADDR_PRESENT_POSITION, 4)
         for mid in motor_ids:
             sync_read.addParam(mid)
         sync_read.txRxPacket()
+        positions = []
+        for mid in motor_ids:
+            pos = sync_read.getData(mid, self.ADDR_PRESENT_POSITION, 4)
+            positions.append(pos)
+        sync_read.clearParam()
+        return positions
+
+    def fast_sync_read_positions(self, motor_ids: list) -> list:
+        sync_read = self.dxl.GroupSyncRead(self.port_handler, self.packet_handler, self.ADDR_PRESENT_POSITION, 4)
+        for mid in motor_ids:
+            sync_read.addParam(mid)
+        sync_read.fastSyncRead()
         positions = []
         for mid in motor_ids:
             pos = sync_read.getData(mid, self.ADDR_PRESENT_POSITION, 4)
@@ -263,10 +308,11 @@ def measure_read_latency(iface, motor_id, iterations, burst=False):
     return times
 
 
-def measure_write_latency(iface, motor_id, positions, iterations, burst=False):
+def measure_write_latency(iface, motor_id, positions, iterations, burst=False, write_fn=None):
     """Measure position write latency."""
+    write = write_fn or iface.write_position
     for i in range(WARMUP_ITERATIONS):
-        iface.write_position(motor_id, positions[i % len(positions)])
+        write(motor_id, positions[i % len(positions)])
         if not burst:
             time.sleep(0.02)
 
@@ -274,7 +320,7 @@ def measure_write_latency(iface, motor_id, positions, iterations, burst=False):
     for i in range(iterations):
         pos = positions[i % len(positions)]
         start = time.perf_counter()
-        iface.write_position(motor_id, pos)
+        write(motor_id, pos)
         elapsed = (time.perf_counter() - start) * 1000
         times.append(elapsed)
         if not burst:
@@ -282,17 +328,18 @@ def measure_write_latency(iface, motor_id, positions, iterations, burst=False):
     return times
 
 
-def measure_roundtrip_latency(iface, motor_id, positions, iterations):
+def measure_roundtrip_latency(iface, motor_id, positions, iterations, write_fn=None):
     """Measure write + immediate read latency."""
+    write = write_fn or iface.write_position
     for i in range(WARMUP_ITERATIONS):
-        iface.write_position(motor_id, positions[i % len(positions)])
+        write(motor_id, positions[i % len(positions)])
         iface.read_position(motor_id)
 
     times = []
     for i in range(iterations):
         pos = positions[i % len(positions)]
         start = time.perf_counter()
-        iface.write_position(motor_id, pos)
+        write(motor_id, pos)
         iface.read_position(motor_id)
         elapsed = (time.perf_counter() - start) * 1000
         times.append(elapsed)
@@ -300,18 +347,19 @@ def measure_roundtrip_latency(iface, motor_id, positions, iterations):
     return times
 
 
-def measure_control_loop_latency(iface, motor_id, positions, iterations):
+def measure_control_loop_latency(iface, motor_id, positions, iterations, write_fn=None):
     """Simulate control loop: read->write with no delays."""
+    write = write_fn or iface.write_position
     for i in range(WARMUP_ITERATIONS):
         iface.read_position(motor_id)
-        iface.write_position(motor_id, positions[i % len(positions)])
+        write(motor_id, positions[i % len(positions)])
 
     times = []
     for i in range(iterations):
         start = time.perf_counter()
         iface.read_position(motor_id)
         target = positions[i % len(positions)]
-        iface.write_position(motor_id, target)
+        write(motor_id, target)
         elapsed = (time.perf_counter() - start) * 1000
         times.append(elapsed)
     return times
@@ -355,6 +403,45 @@ def measure_sync_read_latency(iface, motor_ids, iterations):
     return times
 
 
+def measure_fast_sync_read_latency(iface, motor_ids, iterations):
+    """Measure fast sync read latency (single combined status packet)."""
+    if len(motor_ids) < 2:
+        return None
+
+    for _ in range(WARMUP_ITERATIONS):
+        iface.fast_sync_read_positions(motor_ids)
+
+    times = []
+    for _ in range(iterations):
+        start = time.perf_counter()
+        iface.fast_sync_read_positions(motor_ids)
+        elapsed = (time.perf_counter() - start) * 1000
+        times.append(elapsed)
+        time.sleep(0.01)
+    return times
+
+
+def measure_full_hand_control_loop(iface, motor_ids, positions_dict, iterations):
+    """Simulate full-hand control loop: fast sync read + sync write, no delays."""
+    if len(motor_ids) < 2:
+        return None
+
+    for i in range(WARMUP_ITERATIONS):
+        iface.fast_sync_read_positions(motor_ids)
+        positions = [positions_dict[mid][i % len(positions_dict[mid])] for mid in motor_ids]
+        iface.sync_write_positions(motor_ids, positions)
+
+    times = []
+    for i in range(iterations):
+        start = time.perf_counter()
+        iface.fast_sync_read_positions(motor_ids)
+        positions = [positions_dict[mid][i % len(positions_dict[mid])] for mid in motor_ids]
+        iface.sync_write_positions(motor_ids, positions)
+        elapsed = (time.perf_counter() - start) * 1000
+        times.append(elapsed)
+    return times
+
+
 def measure_sync_write_latency(iface, motor_ids, positions_dict, iterations):
     """Measure sync write latency for multiple motors."""
     if len(motor_ids) < 2:
@@ -388,6 +475,7 @@ def main():
     parser.add_argument("--baudrate", "-b", type=int, default=None, help="Baudrate (default: 1M for feetech, 3M for dynamixel)")
     parser.add_argument("--amplitude", "-a", type=int, default=100, help="Position amplitude for oscillation test (default: 100)")
     parser.add_argument("--no-low-latency", action="store_true", help="Disable low latency mode (for testing)")
+    parser.add_argument("--optimize", action="store_true", help="Enable Dynamixel optimizations (Return Delay=0, Status Return=READ_ONLY, Fast Sync Read)")
     args = parser.parse_args()
 
     motor_ids = args.motor_ids
@@ -431,6 +519,11 @@ def main():
             ]
         print(f"Motor {mid}: current={current_pos}, test range={positions_dict[mid]}")
 
+    optimized = args.optimize and args.motor_type == "dynamixel"
+    if optimized:
+        print()
+        interface.optimize_motors(motor_ids)
+
     positions = positions_dict[primary_motor]
     print()
 
@@ -447,20 +540,22 @@ def main():
         read_burst_times = measure_read_latency(interface, primary_motor, iterations, burst=True)
         print_stats("Read (burst)", read_burst_times)
 
+        write_fn = interface.write_position_tx_only if optimized else None
+
         print("\n[3] Write latency (20ms between writes)...")
-        write_times = measure_write_latency(interface, primary_motor, positions, iterations, burst=False)
+        write_times = measure_write_latency(interface, primary_motor, positions, iterations, burst=False, write_fn=write_fn)
         print_stats("Write (spaced)", write_times)
 
         print("\n[4] Write latency (burst, no delays)...")
-        write_burst_times = measure_write_latency(interface, primary_motor, positions, iterations, burst=True)
+        write_burst_times = measure_write_latency(interface, primary_motor, positions, iterations, burst=True, write_fn=write_fn)
         print_stats("Write (burst)", write_burst_times)
 
         print("\n[5] Round-trip latency (write + read)...")
-        rt_times = measure_roundtrip_latency(interface, primary_motor, positions, iterations)
+        rt_times = measure_roundtrip_latency(interface, primary_motor, positions, iterations, write_fn=write_fn)
         print_stats("Round-trip", rt_times)
 
         print("\n[6] Control loop simulation (read->write, no delays)...")
-        loop_times = measure_control_loop_latency(interface, primary_motor, positions, iterations)
+        loop_times = measure_control_loop_latency(interface, primary_motor, positions, iterations, write_fn=write_fn)
         print_stats("Control loop", loop_times)
         max_hz = 1000 / statistics.mean(loop_times)
         print(f"  Max control rate: {max_hz:.1f} Hz")
@@ -488,6 +583,21 @@ def main():
             if sync_write_times:
                 print_stats("Sync write", sync_write_times)
 
+            if optimized:
+                print(f"\n[10] Fast Sync read ({len(motor_ids)} motors)...")
+                fast_sync_read_times = measure_fast_sync_read_latency(interface, motor_ids, iterations)
+                if fast_sync_read_times:
+                    print_stats("Fast Sync read", fast_sync_read_times)
+                    speedup = statistics.mean(sync_read_times) / statistics.mean(fast_sync_read_times)
+                    print(f"  Speedup vs regular sync read: {speedup:.2f}x")
+
+                print(f"\n[11] Full-hand control loop (fast sync read + sync write, no delays)...")
+                full_loop_times = measure_full_hand_control_loop(interface, motor_ids, positions_dict, iterations)
+                if full_loop_times:
+                    print_stats("Full-hand control loop", full_loop_times)
+                    full_hz = 1000 / statistics.mean(full_loop_times)
+                    print(f"  Max full-hand control rate: {full_hz:.1f} Hz")
+
         print()
         print("=" * 60)
         print("SUMMARY")
@@ -504,11 +614,19 @@ def main():
         if len(motor_ids) >= 2 and sync_read_times:
             print(f"{'Sync read':<25} {statistics.mean(sync_read_times):<12.3f} {min(sync_read_times):<12.3f} {max(sync_read_times):<12.3f}")
             print(f"{'Sequential read':<25} {statistics.mean(seq_read_times):<12.3f} {min(seq_read_times):<12.3f} {max(seq_read_times):<12.3f}")
+            if optimized and fast_sync_read_times:
+                print(f"{'Fast Sync read':<25} {statistics.mean(fast_sync_read_times):<12.3f} {min(fast_sync_read_times):<12.3f} {max(fast_sync_read_times):<12.3f}")
+                print(f"{'Full-hand loop':<25} {statistics.mean(full_loop_times):<12.3f} {min(full_loop_times):<12.3f} {max(full_loop_times):<12.3f}")
 
         print()
-        print(f"Estimated max control loop rate: {max_hz:.1f} Hz")
+        print(f"Estimated max single-motor control rate: {max_hz:.1f} Hz")
+        if optimized and len(motor_ids) >= 2 and full_loop_times:
+            print(f"Estimated max full-hand control rate: {full_hz:.1f} Hz")
 
     finally:
+        if optimized:
+            interface.restore_motors(motor_ids)
+            print("Restored motor settings to defaults")
         cleanup()
         print("\nDone!")
 
