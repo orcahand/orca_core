@@ -168,10 +168,10 @@ class DynamixelClient(MotorClient):
         )
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
+        self._hw_error_reader = DynamixelReader(self, self.motor_ids, ADDR_HARDWARE_ERROR_STATUS, 1)
         self._sync_writers = {}
         self._operating_modes = {}
-        self._last_overload_check = 0.0
-        self._overload_check_interval = 5.0
+        self._recovering = set()
 
         self.OPEN_CLIENTS.add(self)
 
@@ -275,12 +275,18 @@ class DynamixelClient(MotorClient):
             self._operating_modes[mid] = mode_value
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the positions, velocities, and currents."""
-        now = time.monotonic()
-        if now - self._last_overload_check >= self._overload_check_interval:
-            self._last_overload_check = now
-            self.check_overload_and_reboot(self.motor_ids)
-        return self._pos_vel_cur_reader.read()
+        """Returns the positions, velocities, and currents.
+
+        Also reads the hardware error register in the same cycle.
+        If any motor has an overload error, it is rebooted and restored immediately.
+        """
+        result = self._pos_vel_cur_reader.read()
+        hw_errors = self._hw_error_reader.read()
+        OVERLOAD_BIT = 0x20
+        for i, mid in enumerate(self.motor_ids):
+            if int(hw_errors[i]) & OVERLOAD_BIT:
+                self._handle_hardware_alert(mid)
+        return result
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
@@ -435,12 +441,22 @@ class DynamixelClient(MotorClient):
                              dxl_error: Optional[int] = None,
                              dxl_id: Optional[int] = None,
                              context: Optional[str] = None):
-        """Handles the result from a communication request."""
+        """Handles the result from a communication request.
+
+        Reactively detects the Alert bit (0x80) in dxl_error, which the motor
+        sets on every status packet when a hardware error (e.g. overload) is
+        present. When detected, the affected motor is rebooted and restored
+        without any periodic polling.
+        """
         error_message = None
         if comm_result != self.dxl.COMM_SUCCESS:
             error_message = self.packet_handler.getTxRxResult(comm_result)
         elif dxl_error is not None:
-            error_message = self.packet_handler.getRxPacketError(dxl_error)
+            # Alert bit (bit 7) means a hardware error is latched
+            if dxl_error & 0x80 and dxl_id is not None:
+                self._handle_hardware_alert(dxl_id)
+            if dxl_error & 0x7F:
+                error_message = self.packet_handler.getRxPacketError(dxl_error)
         if error_message:
             if dxl_id is not None:
                 error_message = '[Motor ID: {}] {}'.format(
@@ -450,6 +466,30 @@ class DynamixelClient(MotorClient):
             logging.error(error_message)
             return False
         return True
+
+    def _handle_hardware_alert(self, motor_id: int):
+        """React to a hardware alert by reading the error register and rebooting if overloaded."""
+        if motor_id in self._recovering:
+            return
+        self._recovering.add(motor_id)
+        try:
+            error_status = self.read_hardware_error(motor_id)
+            OVERLOAD_BIT = 0x20
+            if error_status & OVERLOAD_BIT:
+                import os as _os
+                _os.write(2, f'\033[91m⚠ OVERLOAD on motor {motor_id} (error=0x{error_status:02X}) — rebooting and recovering...\033[0m\n'.encode())
+                logging.warning(f'Motor {motor_id} overload detected (error=0x{error_status:02X}), rebooting...')
+                self.reboot_motor(motor_id)
+                time.sleep(0.3)
+                mode = self._operating_modes.get(motor_id)
+                if mode is not None:
+                    self.set_torque_enabled([motor_id], False, retries=0)
+                    self.sync_write([motor_id], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+                    self.set_torque_enabled([motor_id], True, retries=0)
+                else:
+                    self.set_torque_enabled([motor_id], True, retries=0)
+        finally:
+            self._recovering.discard(motor_id)
 
     def convert_to_unsigned(self, value: int, size: int) -> int:
         """Converts the given value to its unsigned representation."""
