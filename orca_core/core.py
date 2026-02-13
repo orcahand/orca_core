@@ -833,6 +833,50 @@ class OrcaHand:
         else:
             self._start_task(self._tension, move_motors)
 
+    def jitter(self, motor_ids: List[int] = None, amplitude: float = 5.0,
+               frequency: float = 10.0, duration: float = 3.0,
+               include_wrist: bool = False, blocking: bool = True):
+        """Vibrate motors back and forth to release tension. Works at the motor level (no calibration required).
+
+        Args:
+            motor_ids (list): Motor IDs to jitter. If None, defaults to all motors (excluding wrist unless include_wrist is True).
+            amplitude (float): Vibration amplitude in degrees (max 10 for safety).
+            frequency (float): Vibration frequency in Hz.
+            duration (float): Duration of jitter in seconds.
+            include_wrist (bool): If True, include the wrist motor when motor_ids is None.
+            blocking (bool): If True, blocks until complete. If False, runs in a background thread.
+        """
+        if blocking:
+            self._jitter(motor_ids, amplitude, frequency, duration, include_wrist)
+        else:
+            self._start_task(self._jitter, motor_ids, amplitude, frequency, duration, include_wrist)
+
+    def _jitter(self, motor_ids: List[int] = None, amplitude: float = 5.0,
+                frequency: float = 10.0, duration: float = 3.0,
+                include_wrist: bool = False):
+        MAX_AMPLITUDE_DEG = 10.0
+        if amplitude > MAX_AMPLITUDE_DEG:
+            raise ValueError(f"Amplitude must be <= {MAX_AMPLITUDE_DEG} degrees for safety. Got {amplitude}.")
+
+        amplitude_rad = np.deg2rad(amplitude)
+
+        if motor_ids is None:
+            wrist_motor_id = self.joint_to_motor_map.get("wrist")
+            motor_ids = [mid for mid in self.motor_ids if include_wrist or mid != wrist_motor_id]
+
+        start_positions = self.get_motor_pos(as_dict=True)
+
+        start_time = time.time()
+        while time.time() - start_time < duration and not self._task_stop_event.is_set():
+            t = time.time() - start_time
+            offset = amplitude_rad * math.sin(2 * math.pi * frequency * t)
+            desired = {mid: start_positions[mid] + offset for mid in motor_ids}
+            self._set_motor_pos(desired)
+            time.sleep(0.001)
+
+        # Return to starting positions
+        self._set_motor_pos({mid: start_positions[mid] for mid in motor_ids})
+
     def _tension(self, move_motors: bool = False):
         """Freeze the motors, so that the hand can be manually tensioned.
         
