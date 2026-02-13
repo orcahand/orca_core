@@ -170,6 +170,8 @@ class DynamixelClient(MotorClient):
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
         self._operating_modes = {}
+        self._last_overload_check = 0.0
+        self._overload_check_interval = 5.0
 
         self.OPEN_CLIENTS.add(self)
 
@@ -274,6 +276,10 @@ class DynamixelClient(MotorClient):
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the positions, velocities, and currents."""
+        now = time.monotonic()
+        if now - self._last_overload_check >= self._overload_check_interval:
+            self._last_overload_check = now
+            self.check_overload_and_reboot(self.motor_ids)
         return self._pos_vel_cur_reader.read()
 
     def read_status_is_done_moving(self) -> bool:
@@ -537,7 +543,6 @@ class DynamixelReader:
         self.address = address
         self.size = size
         self._initialize_data()
-        self._read_count = 0
 
         self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
                                                        client.packet_handler)
@@ -582,11 +587,6 @@ class DynamixelReader:
         if errored_ids:
             logging.error('Bulk read data is unavailable for: %s',
                           str(errored_ids))
-
-        # Check for hardware errors every 10th read to avoid per-cycle overhead
-        self._read_count += 1
-        if self._read_count % 10 == 0:
-            self.client.check_overload_and_reboot(self.motor_ids)
 
         return self._get_data()
 
