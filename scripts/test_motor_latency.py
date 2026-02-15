@@ -2,25 +2,24 @@
 """Test motor read/write latency for Feetech or Dynamixel motors.
 
 Measures communication latency with various test patterns.
+Reads hand config to auto-detect port, motor type, and motor IDs (excluding wrist).
 
 Usage:
-    # Feetech motor
-    python scripts/test_motor_latency.py /dev/ttyUSB0 feetech 1
+    # Auto-detect model (uses default model path)
+    python scripts/test_motor_latency.py
 
-    # Dynamixel motor
-    python scripts/test_motor_latency.py /dev/ttyUSB0 dynamixel 1
+    # Specify model path
+    python scripts/test_motor_latency.py /path/to/orcahand_model
 
-    # Multiple motors for sync tests
-    python scripts/test_motor_latency.py /dev/ttyUSB0 feetech 1 2 3
+    # With optimizations
+    python scripts/test_motor_latency.py --optimize
 
-    # Custom iterations and baudrate
-    python scripts/test_motor_latency.py /dev/ttyUSB0 dynamixel 1 -n 200 --baudrate 3000000
-
-    # With optimizations (Return Delay=0, Status Return=READ_ONLY, Fast Sync Read)
-    python scripts/test_motor_latency.py /dev/ttyUSB0 dynamixel 1 2 3 --optimize
+    # Custom iterations
+    python scripts/test_motor_latency.py -n 200
 """
 
 import argparse
+import os
 import signal
 import statistics
 import sys
@@ -468,35 +467,45 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     parser = argparse.ArgumentParser(description="Test motor latency")
-    parser.add_argument("port", help="Serial port (e.g., /dev/ttyUSB0)")
-    parser.add_argument("motor_type", choices=["feetech", "dynamixel"], help="Motor type")
-    parser.add_argument("motor_ids", type=int, nargs='+', help="Motor ID(s)")
+    parser.add_argument("model_path", type=str, nargs='?', default=None,
+                        help="Path to the hand model directory (default: auto-detect)")
     parser.add_argument("--iterations", "-n", type=int, default=100, help="Iterations per test")
-    parser.add_argument("--baudrate", "-b", type=int, default=None, help="Baudrate (default: 1M for feetech, 3M for dynamixel)")
+    parser.add_argument("--baudrate", "-b", type=int, default=None, help="Override baudrate")
     parser.add_argument("--amplitude", "-a", type=int, default=100, help="Position amplitude for oscillation test (default: 100)")
     parser.add_argument("--no-low-latency", action="store_true", help="Disable low latency mode (for testing)")
     parser.add_argument("--optimize", action="store_true", help="Enable Dynamixel optimizations (Return Delay=0, Status Return=READ_ONLY, Fast Sync Read)")
     args = parser.parse_args()
 
-    motor_ids = args.motor_ids
+    from orca_core.utils.utils import get_model_path, read_yaml
+    model_path = get_model_path(args.model_path)
+    config = read_yaml(os.path.join(model_path, 'config.yaml'))
+
+    port = config.get('port')
+    motor_type = config.get('motor_type', 'dynamixel')
+    baudrate = args.baudrate or config.get('baudrate', 3000000)
+
+    joint_to_motor = config.get('joint_to_motor_map', {})
+    wrist_motor_id = abs(int(joint_to_motor.get('wrist', 0)))
+    all_ids = config.get('motor_ids', [])
+    motor_ids = [mid for mid in all_ids if mid != wrist_motor_id]
+    print(f"Excluding wrist motor {wrist_motor_id} — testing {len(motor_ids)} motors")
+
     iterations = args.iterations
     primary_motor = motor_ids[0]
 
-    if args.baudrate:
-        baudrate = args.baudrate
-    else:
-        baudrate = 1000000 if args.motor_type == "feetech" else 3000000
+    if not baudrate:
+        baudrate = 1000000 if motor_type == "feetech" else 3000000
 
-    print(f"Motor type: {args.motor_type.upper()}")
-    print(f"Testing latency for motor(s) {motor_ids} on {args.port} @ {baudrate} baud")
+    print(f"Motor type: {motor_type.upper()}")
+    print(f"Testing latency for motor(s) {motor_ids} on {port} @ {baudrate} baud")
     print(f"Low latency mode: {'enabled' if not args.no_low_latency else 'DISABLED'}")
     print(f"Iterations per test: {iterations} (+ {WARMUP_ITERATIONS} warmup)")
     print("=" * 60)
 
-    if args.motor_type == "feetech":
-        interface = FeetechInterface(args.port, baudrate)
+    if motor_type == "feetech":
+        interface = FeetechInterface(port, baudrate)
     else:
-        interface = DynamixelInterface(args.port, baudrate)
+        interface = DynamixelInterface(port, baudrate)
 
     low_latency = not args.no_low_latency
     if not interface.connect(low_latency=low_latency):
@@ -507,7 +516,7 @@ def main():
     positions_dict = {}
     for mid in motor_ids:
         current_pos = interface.setup_motor(mid)
-        if args.motor_type == "feetech":
+        if motor_type == "feetech":
             positions_dict[mid] = [
                 max(500, current_pos - amplitude),
                 min(3500, current_pos + amplitude)
@@ -519,7 +528,7 @@ def main():
             ]
         print(f"Motor {mid}: current={current_pos}, test range={positions_dict[mid]}")
 
-    optimized = args.optimize and args.motor_type == "dynamixel"
+    optimized = args.optimize and motor_type == "dynamixel"
     if optimized:
         print()
         interface.optimize_motors(motor_ids)
