@@ -27,13 +27,29 @@ def get_model_path(model_path=None):
         resolved_path = os.path.join(models_dir, model_dirs[0])
     else:
         if os.path.isabs(model_path):
-            resolved_path = model_path # Absolute path provided
+            resolved_path = model_path
         else:
-            package_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) #Relative path provided
-            resolved_path = os.path.join(package_root, model_path)
+            # Check if it's a model name in the models directory
+            models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+            model_by_name = os.path.join(models_dir, model_path)
+            if os.path.isdir(model_by_name):
+                resolved_path = model_by_name
+            else:
+                package_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                resolved_path = os.path.join(package_root, model_path)
     
     if not os.path.exists(resolved_path):
-        raise FileNotFoundError(f"\033[1;35mModel directory not found: {resolved_path}\033[0m")
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+        available = []
+        if os.path.isdir(models_dir):
+            available = sorted(d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d)))
+        msg = f"\033[1;35mModel '{model_path}' not found."
+        if available:
+            msg += f" Available models: {', '.join(available)}"
+        else:
+            msg += " No models found in models directory."
+        msg += "\033[0m"
+        raise FileNotFoundError(msg)
     
     config_file = os.path.join(resolved_path, "config.yaml")
     if not os.path.exists(config_file):
@@ -97,6 +113,32 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
+KNOWN_DYNAMIXEL_VIDS = [
+    0x0403,  # FTDI (U2D2, most common)
+    0x16D0,  # MCS Electronics (some Robotis boards)
+]
+
+
+def auto_detect_port() -> str:
+    """Auto-detect a Dynamixel adapter by USB vendor ID.
+
+    Returns the port device string if exactly one known adapter is found,
+    otherwise returns None.
+    """
+    import serial.tools.list_ports
+
+    ports = serial.tools.list_ports.comports()
+    matches = [p for p in ports if p.vid in KNOWN_DYNAMIXEL_VIDS]
+
+    if len(matches) == 1:
+        port = matches[0]
+        print(f"Auto-detected Dynamixel adapter: {port.device} "
+              f"({port.description or 'unknown'})")
+        return port.device
+
+    return None
+
+
 def get_and_choose_port() -> str:
     """
     Interactive terminal UI to choose from available USB devices with arrow key navigation.
@@ -113,19 +155,21 @@ def get_and_choose_port() -> str:
         stdscr.addstr(0, (width - len(title)) // 2, title, curses.A_BOLD)
         
         for i, port in enumerate(ports):
-            y_pos = i + 2
+            y_pos = i * 3 + 2
+            if y_pos >= height - 1:
+                break
             marker = "(x)" if i == selected_idx else "( )"
-            
+
             if i == selected_idx:
                 stdscr.attron(curses.A_REVERSE)
                 stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
                 stdscr.attroff(curses.A_REVERSE)
             else:
                 stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
-            
-            if y_pos + 1 < height:
+
+            if y_pos + 1 < height - 1:
                 stdscr.addstr(y_pos + 1, 4, f"{port.description or 'No description'}")
-            if y_pos + 2 < height:
+            if y_pos + 2 < height - 1:
                 stdscr.addstr(y_pos + 2, 4, f"{port.manufacturer or 'Unknown manufacturer'}")
         
         if len(ports) + 5 < height:

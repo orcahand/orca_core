@@ -5,6 +5,7 @@ Three rounds of tension+calibration with a 1-minute motion test in between.
 """
 
 import argparse
+import platform
 import sys
 import time
 from orca_core import OrcaHand
@@ -33,6 +34,18 @@ def run_tension(hand, step_num, label):
     wait_for_enter("Press ENTER when tensioning is done...")
     hand.stop_task()
     print("  Tension complete.")
+
+
+def run_jitter(hand, step_num):
+    """Jitter all fingers (not wrist) to release tension."""
+    freq = 50.0 if platform.system() == "Linux" else 20.0
+    print_step(step_num, f"JITTER — {freq:.0f} Hz for 5s")
+    print("  Vibrating fingers to release residual tension...")
+    hand.enable_torque()
+    hand.set_control_mode('current_based_position')
+    hand.jitter(frequency=freq, duration=15.0, include_wrist=False, amplitude=1.0)
+    hand.disable_torque()
+    print("  Jitter complete.")
 
 
 def run_calibrate(hand, step_num, label, force_wrist=False):
@@ -126,24 +139,27 @@ def main():
 
         wait_for_enter("Place the hand in a neutral position, then press ENTER...")
 
-        run_calibrate(hand, 2, "First calibration (with wrist)", force_wrist=True)
+        run_jitter(hand, 2)
+        run_calibrate(hand, 3, "First calibration (with wrist)", force_wrist=True)
 
         # --- Round 2: Re-tension + calibration (without wrist) ---
-        run_tension(hand, 3, "Second tensioning")
+        run_tension(hand, 4, "Second tensioning")
 
-        run_neutral(hand, 4)
-
-        run_calibrate(hand, 5, "Second calibration (fingers only)")
+        run_neutral(hand, 5)
+        run_jitter(hand, 6)
+        run_calibrate(hand, 7, "Second calibration (fingers only)")
 
         # --- Motion test ---
-        run_motion_test(hand, 6, duration=60)
+        run_motion_test(hand, 8, duration=60)
 
         # --- Round 3: Final tension + calibration ---
-        run_tension(hand, 7, "Final tensioning")
+        run_tension(hand, 9, "Final tensioning")
 
-        run_calibrate(hand, 8, "Final calibration (fingers only)")
+        run_neutral(hand, 10)
+        run_jitter(hand, 11)
+        run_calibrate(hand, 12, "Final calibration (fingers only)")
 
-        run_neutral(hand, 9)
+        run_neutral(hand, 13)
 
         print(f"\n{DIVIDER}")
         print("  Done. Have fun playing with ORCA!")

@@ -135,8 +135,22 @@ class OrcaHand:
             return True, "Connection successful"
         except Exception as e:
             self._motor_client = None
-            # If connection fails, prompt user to choose a port
-            print(f"Connection failed: {str(e)}")
+            print(f"Connection failed on {self.port}: {str(e)}")
+
+            # Try auto-detecting the port first
+            chosen_port = auto_detect_port()
+            if chosen_port and chosen_port != self.port:
+                try:
+                    self.port = chosen_port
+                    self._motor_client = self._create_motor_client()
+                    with self._motor_lock:
+                        self._motor_client.connect()
+                    update_yaml(self.config_path, 'port', chosen_port)
+                    return True, f"Connection successful with auto-detected port {chosen_port}"
+                except Exception:
+                    self._motor_client = None
+
+            # Fall back to interactive selection
             print("Please select a port from available devices:")
             chosen_port = get_and_choose_port()
 
@@ -467,6 +481,7 @@ class OrcaHand:
 
     def calibrate(self, blocking: bool = True, force_wrist: bool = False):
         if blocking:
+            self._task_stop_event.clear()
             self._calibrate(force_wrist=force_wrist)
         else:
             self._start_task(self._calibrate, force_wrist=force_wrist)
@@ -829,6 +844,7 @@ class OrcaHand:
 
     def tension(self, move_motors: bool = False, blocking: bool = True):
         if blocking:
+            self._task_stop_event.clear()
             self._tension(move_motors)
         else:
             self._start_task(self._tension, move_motors)
@@ -847,6 +863,7 @@ class OrcaHand:
             blocking (bool): If True, blocks until complete. If False, runs in a background thread.
         """
         if blocking:
+            self._task_stop_event.clear()
             self._jitter(motor_ids, amplitude, frequency, duration, include_wrist)
         else:
             self._start_task(self._jitter, motor_ids, amplitude, frequency, duration, include_wrist)
@@ -865,17 +882,17 @@ class OrcaHand:
             motor_ids = [mid for mid in self.motor_ids if include_wrist or mid != wrist_motor_id]
 
         start_positions = self.get_motor_pos(as_dict=True)
+        start_pos_array = np.array([start_positions[mid] for mid in motor_ids])
 
         start_time = time.time()
         while time.time() - start_time < duration and not self._task_stop_event.is_set():
             t = time.time() - start_time
             offset = amplitude_rad * math.sin(2 * math.pi * frequency * t)
-            desired = {mid: start_positions[mid] + offset for mid in motor_ids}
-            self._set_motor_pos(desired)
-            time.sleep(0.001)
+            with self._motor_lock:
+                self._motor_client.write_desired_pos(motor_ids, start_pos_array + offset)
 
-        # Return to starting positions
-        self._set_motor_pos({mid: start_positions[mid] for mid in motor_ids})
+        with self._motor_lock:
+            self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
     def _tension(self, move_motors: bool = False):
         """Freeze the motors, so that the hand can be manually tensioned.
