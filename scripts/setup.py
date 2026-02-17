@@ -5,7 +5,6 @@ Three rounds of tension+calibration with a 1-minute motion test in between.
 """
 
 import argparse
-import platform
 import sys
 import time
 from orca_core import OrcaHand
@@ -15,7 +14,13 @@ DIVIDER = "=" * 60
 
 
 def wait_for_enter(msg="Press ENTER to continue..."):
-    input(f"\n>>> {msg}")
+    """Wait for user input. Returns True if the user chose to skip."""
+    try:
+        response = input(f"\n>>> {msg} ('s' to skip) ")
+        return response.strip().lower() in ('s', 'skip')
+    except KeyboardInterrupt:
+        print()
+        return True
 
 
 def print_step(step_num, title):
@@ -31,49 +36,46 @@ def run_tension(hand, step_num, label):
     print("  Use the tensioning tool or pliers to turn the top spool clockwise.")
     print("  Do NOT overtension — just enough to remove slack.")
     hand.tension(move_motors=True, blocking=False)
-    wait_for_enter("Press ENTER when tensioning is done...")
+    skipped = wait_for_enter("Press ENTER when tensioning is done...")
     hand.stop_task()
-    print("  Tension complete.")
-
-
-def run_jitter(hand, step_num):
-    """Jitter all fingers (not wrist) to release tension."""
-    freq = 50.0 if platform.system() == "Linux" else 20.0
-    print_step(step_num, f"JITTER — {freq:.0f} Hz for 5s")
-    print("  Vibrating fingers to release residual tension...")
-    hand.enable_torque()
-    hand.set_control_mode('current_based_position')
-    hand.jitter(frequency=freq, duration=15.0, include_wrist=False, amplitude=1.0)
-    hand.disable_torque()
-    print("  Jitter complete.")
+    print("  Tension skipped." if skipped else "  Tension complete.")
 
 
 def run_calibrate(hand, step_num, label, force_wrist=False):
     """Run calibration."""
     print_step(step_num, f"CALIBRATE — {label}")
+    print("  Press Ctrl+C to skip.")
     if force_wrist:
         print("  Calibrating all joints including wrist...")
     else:
         print("  Calibrating finger joints (wrist already calibrated, skipping)...")
-    hand.calibrate(force_wrist=force_wrist)
-    print("  Calibration complete.")
+    try:
+        hand.calibrate(force_wrist=force_wrist)
+        print("  Calibration complete.")
+    except KeyboardInterrupt:
+        print("\n  Calibration skipped.")
 
 
 def run_neutral(hand, step_num):
     """Move to neutral position."""
     print_step(step_num, "NEUTRAL POSITION")
     print("  Moving hand to neutral position...")
+    print("  Press Ctrl+C to skip.")
     hand.enable_torque()
     hand.set_control_mode('current_based_position')
-    hand.set_neutral_position()
-    print("  Hand is in neutral position.")
+    try:
+        hand.set_neutral_position()
+        print("  Hand is in neutral position.")
+    except KeyboardInterrupt:
+        print("\n  Neutral position skipped.")
 
 
 def run_motion_test(hand, step_num, duration=60):
     """Open/close the hand repeatedly for `duration` seconds with countdown."""
     print_step(step_num, f"MOTION TEST — {duration}s")
     print("  Opening and closing the hand to verify calibration.")
-    print("  Watch for any issues with finger movement.\n")
+    print("  Watch for any issues with finger movement.")
+    print("  Press Ctrl+C to skip.\n")
 
     hand.enable_torque()
     hand.set_control_mode('current_based_position')
@@ -90,27 +92,31 @@ def run_motion_test(hand, step_num, duration=60):
         "thumb_abd": 40,
     }
 
-    start = time.time()
-    cycle = 0
-    while True:
-        remaining = duration - (time.time() - start)
-        if remaining <= 0:
-            break
+    try:
+        start = time.time()
+        cycle = 0
+        while True:
+            remaining = duration - (time.time() - start)
+            if remaining <= 0:
+                break
 
-        if cycle % 2 == 0:
-            print(f"  [{int(remaining):3d}s left]  OPEN")
-            hand.set_joint_pos(open_pos, num_steps=25, step_size=0.001)
-        else:
-            print(f"  [{int(remaining):3d}s left]  CLOSE")
-            hand.set_joint_pos(closed_pos, num_steps=25, step_size=0.001)
-        cycle += 1
+            if cycle % 2 == 0:
+                print(f"  [{int(remaining):3d}s left]  OPEN")
+                hand.set_joint_pos(open_pos, num_steps=25, step_size=0.001)
+            else:
+                print(f"  [{int(remaining):3d}s left]  CLOSE")
+                hand.set_joint_pos(closed_pos, num_steps=25, step_size=0.001)
+            cycle += 1
 
-        hold_end = min(time.time() + 2.0, start + duration)
-        while time.time() < hold_end:
-            time.sleep(0.1)
+            hold_end = min(time.time() + 2.0, start + duration)
+            while time.time() < hold_end:
+                time.sleep(0.1)
+
+        print("  Motion test complete.")
+    except KeyboardInterrupt:
+        print("\n  Motion test skipped.")
 
     hand.set_neutral_position()
-    print("  Motion test complete.")
 
 
 def main():
@@ -124,6 +130,7 @@ def main():
     print(DIVIDER)
     print("  ORCA HAND SETUP")
     print("  Full calibration and verification workflow")
+    print("  Type 's' at any prompt or Ctrl+C to skip a step")
     print(DIVIDER)
 
     hand = OrcaHand(args.model_path)
@@ -139,27 +146,24 @@ def main():
 
         wait_for_enter("Place the hand in a neutral position, then press ENTER...")
 
-        run_jitter(hand, 2)
-        run_calibrate(hand, 3, "First calibration (with wrist)", force_wrist=True)
+        run_calibrate(hand, 2, "First calibration (with wrist)", force_wrist=True)
 
         # --- Round 2: Re-tension + calibration (without wrist) ---
-        run_tension(hand, 4, "Second tensioning")
+        run_tension(hand, 3, "Second tensioning")
 
-        run_neutral(hand, 5)
-        run_jitter(hand, 6)
-        run_calibrate(hand, 7, "Second calibration (fingers only)")
+        run_neutral(hand, 4)
+        run_calibrate(hand, 5, "Second calibration (fingers only)")
 
         # --- Motion test ---
-        run_motion_test(hand, 8, duration=60)
+        run_motion_test(hand, 6, duration=60)
 
         # --- Round 3: Final tension + calibration ---
-        run_tension(hand, 9, "Final tensioning")
+        run_tension(hand, 7, "Final tensioning")
+
+        run_neutral(hand, 8)
+        run_calibrate(hand, 9, "Final calibration (fingers only)")
 
         run_neutral(hand, 10)
-        run_jitter(hand, 11)
-        run_calibrate(hand, 12, "Final calibration (fingers only)")
-
-        run_neutral(hand, 13)
 
         print(f"\n{DIVIDER}")
         print("  Done. Have fun playing with ORCA!")

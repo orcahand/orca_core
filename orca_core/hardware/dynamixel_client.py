@@ -168,7 +168,6 @@ class DynamixelClient(MotorClient):
         )
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
-        self._hw_error_reader = DynamixelReader(self, self.motor_ids, ADDR_HARDWARE_ERROR_STATUS, 1)
         self._sync_writers = {}
         self._operating_modes = {}
         self._recovering = set()
@@ -277,16 +276,10 @@ class DynamixelClient(MotorClient):
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the positions, velocities, and currents.
 
-        Also reads the hardware error register in the same cycle.
-        If any motor has an overload error, it is rebooted and restored immediately.
+        Overload detection is handled reactively via the Alert bit in
+        handle_packet_result, so no extra bulk read is needed here.
         """
-        result = self._pos_vel_cur_reader.read()
-        hw_errors = self._hw_error_reader.read()
-        OVERLOAD_BIT = 0x20
-        for i, mid in enumerate(self.motor_ids):
-            if int(hw_errors[i]) & OVERLOAD_BIT:
-                self._handle_hardware_alert(mid)
-        return result
+        return self._pos_vel_cur_reader.read()
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
@@ -569,6 +562,52 @@ class DynamixelClient(MotorClient):
         self.disconnect()
 
 
+class _AlertCaptureBulkRead:
+    """Wraps GroupBulkRead to capture per-motor error bytes from status packets.
+
+    The stock GroupBulkRead discards the error byte returned by each motor's
+    status packet. This wrapper stores them in ``motor_errors`` so callers can
+    detect the Alert bit (0x80) without any extra bus traffic.
+    """
+
+    ALERT_BIT = 0x80
+
+    def __init__(self, port_handler, packet_handler, dxl):
+        self._inner = dxl.GroupBulkRead(port_handler, packet_handler)
+        self._dxl = dxl
+        self.motor_errors = {}
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def txRxPacket(self):
+        result = self._inner.txPacket()
+        if result != self._dxl.COMM_SUCCESS:
+            return result
+        return self._rxPacket()
+
+    def _rxPacket(self):
+        inner = self._inner
+        inner.last_result = False
+        self.motor_errors = {}
+        result = self._dxl.COMM_RX_FAIL
+
+        if not inner.data_dict:
+            return self._dxl.COMM_NOT_AVAILABLE
+
+        for dxl_id in inner.data_dict:
+            data, result, error = inner.ph.readRx(
+                inner.port, dxl_id, inner.data_dict[dxl_id][2])
+            inner.data_dict[dxl_id][0] = data
+            self.motor_errors[dxl_id] = error or 0
+            if result != self._dxl.COMM_SUCCESS:
+                return result
+
+        if result == self._dxl.COMM_SUCCESS:
+            inner.last_result = True
+        return result
+
+
 class DynamixelReader:
     """Reads data from Dynamixel motors.
 
@@ -584,8 +623,9 @@ class DynamixelReader:
         self.size = size
         self._initialize_data()
 
-        self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
-                                                       client.packet_handler)
+        self.operation = _AlertCaptureBulkRead(client.port_handler,
+                                               client.packet_handler,
+                                               client.dxl)
 
         for motor_id in motor_ids:
             success = self.operation.addParam(motor_id, address, size)
@@ -607,6 +647,11 @@ class DynamixelReader:
         # If we failed, send a copy of the previous data.
         if not success:
             return self._get_data()
+
+        # Check for Alert bits in the status packets we already received.
+        for motor_id, error in self.operation.motor_errors.items():
+            if error & _AlertCaptureBulkRead.ALERT_BIT:
+                self.client._handle_hardware_alert(motor_id)
 
         errored_ids = []
         for i, motor_id in enumerate(self.motor_ids):
