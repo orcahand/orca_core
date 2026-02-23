@@ -1,7 +1,7 @@
 version: 0.2.1
 baudrate: 3000000
-#port: /dev/ttyUSB0 # linux
-port: /dev/tty.usbserial-FT9MISJT # mac
+port: /dev/ttyUSB0 # linux
+#port: /dev/tty.usbserial-FT9MISJT # mac
 max_current: 400
 
 type: right
@@ -10,13 +10,13 @@ type: right
 control_mode: current_based_position
 
 motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-joint_ids: [thumb_mcp, thumb_abd, thumb_pip, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip, wrist]
+joint_ids: [thumb_cmc, thumb_abd, thumb_mcp, thumb_dip, index_abd, index_mcp, index_pip, middle_abd, middle_mcp, middle_pip, ring_abd, ring_mcp, ring_pip, pinky_abd, pinky_mcp, pinky_pip, wrist]
 
 # Which motor ID is physically connected to which joint
 joint_to_motor_map:
-  thumb_mcp: -4
+  thumb_cmc: -4
   thumb_abd: -3
-  thumb_pip: -1
+  thumb_mcp: -1
   thumb_dip: -2
   index_abd: 14
   index_mcp: -15
@@ -33,28 +33,28 @@ joint_to_motor_map:
   wrist: -17
 
 joint_roms:
-  thumb_mcp: [-50, 50]
-  thumb_abd: [-20, 42]
-  thumb_pip: [-12, 108]
-  thumb_dip: [-20, 112]
-  index_abd: [-37, 37]
-  index_mcp: [-20, 95]
-  index_pip: [-20, 108]
-  middle_abd: [-37, 37]
-  middle_mcp: [-20, 91]
-  middle_pip: [-20, 107]
-  ring_abd: [-37, 37]
-  ring_mcp: [-20, 91]
-  ring_pip: [-20, 107]
-  pinky_abd: [-37, 37]
-  pinky_mcp: [-20, 98]
-  pinky_pip: [-20, 108]
-  wrist: [-50, 30]
+  thumb_cmc: [-54, 25]
+  thumb_abd: [-17, 55]
+  thumb_mcp: [-55, 85]
+  thumb_dip: [-95, 45]
+  index_abd: [-20, 65]
+  index_mcp: [-50, 95]
+  index_pip: [-10, 110]
+  middle_abd: [-30, 30]
+  middle_mcp: [-50, 95]
+  middle_pip: [-10, 110]
+  ring_abd: [-30, 30]
+  ring_mcp: [-50, 95]
+  ring_pip: [-10, 110]
+  pinky_abd: [-75, 15]
+  pinky_mcp: [-50, 95]
+  pinky_pip: [-10, 110]
+  wrist: [-65, 35]
 
 neutral_position:
-  thumb_mcp: -13
+  thumb_cmc: -13
   thumb_abd: 43
-  thumb_pip: 33
+  thumb_mcp: 33
   thumb_dip: 19
   index_abd: 25
   index_mcp: 0
@@ -79,10 +79,10 @@ calib_threshold: 0.01
 calib_sequence:
   - step: 1
     joints:
-      thumb_mcp: flex
+      thumb_cmc: flex
   - step: 2
     joints:
-      thumb_mcp: extend
+      thumb_cmc: extend
   - step: 3
     joints:
       thumb_abd: flex
@@ -91,10 +91,10 @@ calib_sequence:
       thumb_abd: extend
   - step: 5
     joints:
-      thumb_pip: flex
+      thumb_mcp: flex
   - step: 6
     joints:
-      thumb_pip: extend
+      thumb_mcp: extend
   - step: 7
     joints:
       thumb_dip: flex
