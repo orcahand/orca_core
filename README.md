@@ -8,7 +8,7 @@
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca Core is the core control package of the Orca Hand™. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
 
 ## Get Started
 
@@ -114,3 +114,7 @@ Make sure the `port` field in your `config.yaml` matches your operating system:
 - For more advanced usage, see the other scripts and the API documentation.
 
 ---
+
+## Trademark & Brand Policy
+
+Orca Dexterity™ and Orca Hand™ are trademarks of the project creators. The MIT License grants rights to the software, but does **not** grant rights to use these trademarks. See [TRADEMARK.md](TRADEMARK.md) for details.
