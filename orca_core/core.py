@@ -410,19 +410,31 @@ class OrcaHand:
         
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True):
+    def calibrate(self, blocking: bool = True, joints: list = None):
         if blocking:
-            self._calibrate()
+            self._calibrate(joints=joints)
         else:
-            self._start_task(self._calibrate)
+            self._start_task(self._calibrate, joints=joints)
 
-    def _calibrate(self):
-            
+    def _calibrate(self, joints: list = None):
+
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
 
+        # Filter calibration sequence if specific joints are requested
+        if joints is not None:
+            joints_set = set(joints)
+            calib_sequence = []
+            for step in self.calib_sequence:
+                filtered_joints = {j: d for j, d in step["joints"].items() if j in joints_set}
+                if filtered_joints:
+                    calib_sequence.append({"step": step["step"], "joints": filtered_joints})
+            print(f"Calibrating {len(joints)} joints across {len(calib_sequence)} steps (out of {len(self.calib_sequence)} total)")
+        else:
+            calib_sequence = self.calib_sequence
+
         self._compute_wrap_offsets_dict()
-        for step in self.calib_sequence:
+        for step in calib_sequence:
             for joint in step["joints"].keys():
                 motor_id = self.joint_to_motor_map[joint]
                 motor_limits[motor_id] = [None, None]
@@ -433,7 +445,7 @@ class OrcaHand:
         self.set_max_current(self.calib_current)
         self.enable_torque()
         
-        for step in self.calib_sequence:
+        for step in calib_sequence:
             if self._task_stop_event.is_set():
                 return
 
@@ -477,7 +489,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if 'wrist' in joint or 'abd' in joint:
+                            if 'wrist' in joint:
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
