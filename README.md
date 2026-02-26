@@ -1,6 +1,6 @@
 <div align="center" style="line-height: 1;">
   <a href="https://arxiv.org/abs/2504.04259" target="_blank"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2504.04259-B31B1B?logo=arxiv"/></a>
-  <a href="https://discord.com/invite/hk9PGKShPK" target="_blank"><img alt="Discord" src="https://img.shields.io/badge/Discord-orcahand-7289da?logo=discord&logoColor=white&color=7289da"/></a>
+  <a href="https://discord.gg/xvGyxaccRa" target="_blank"><img alt="Discord" src="https://img.shields.io/badge/Discord-orcahand-7289da?logo=discord&logoColor=white&color=7289da"/></a>
   <a href="https://x.com/orcahand" target="_blank"><img alt="Twitter Follow" src="https://img.shields.io/twitter/follow/orcahand?style=social"/></a>
   <a href="https://orcahand.com" target="_blank"><img alt="Website" src="https://img.shields.io/badge/Website-orcahand.com-blue?style=flat&logo=google-chrome"/></a>
   <br>
@@ -79,7 +79,36 @@ To get started with Orca Core, follow these steps:
 
 ---
 
-**Note:**  
+## Troubleshooting
+
+### Serial Port Permissions (Linux)
+
+On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
+
+**Permanent fix** (requires re-login):
+
+```sh
+sudo usermod -aG dialout $USER
+```
+
+**Temporary fix** (resets on reboot/replug):
+
+```sh
+sudo chmod 666 /dev/ttyUSB0
+```
+
+### Serial Port Path
+
+Make sure the `port` field in your `config.yaml` matches your operating system:
+
+| OS    | Example port                    |
+|-------|---------------------------------|
+| Linux | `/dev/ttyUSB0`                  |
+| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+
+---
+
+**Note:**
 - Always ensure your `config.yaml` matches your hardware and wiring.
 - All scripts in the `scripts/` folder take the model path as their first argument.
 - For more advanced usage, see the other scripts and the API documentation.

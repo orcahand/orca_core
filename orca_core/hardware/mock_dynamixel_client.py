@@ -15,6 +15,8 @@ import random
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
+from .motor_client import MotorClient
+
 PROTOCOL_VERSION = 2.0
 
 ADDR_OPERATING_MODE = 11
@@ -76,7 +78,7 @@ def unsigned_to_signed(value: int, size: int) -> int:
     return value
 
 
-class MockDynamixelClient:
+class MockDynamixelClient(MotorClient):
     """Mock client for simulating communication with Dynamixel motors.
 
     NOTE: This only supports Protocol 2.

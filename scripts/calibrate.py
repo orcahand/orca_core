@@ -37,6 +37,11 @@ def main():
         choices=ALL_JOINTS,
         help="Individual joints to calibrate (e.g., --joints thumb_cmc index_mcp)"
     )
+    parser.add_argument(
+        "--force-wrist",
+        action="store_true",
+        help="Force wrist calibration even if already calibrated"
+    )
     args = parser.parse_args()
 
     if args.fingers and args.joints:
@@ -62,7 +67,7 @@ def main():
         print("Failed to connect to the hand.")
         exit(1)
 
-    hand.calibrate(joints=joints)
+    hand.calibrate(joints=joints, force_wrist=args.force_wrist)
 
 if __name__ == "__main__":
     main()

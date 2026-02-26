@@ -20,10 +20,14 @@ import time
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
+from .motor_client import MotorClient
+
 PROTOCOL_VERSION = 2.0
 
-# The following addresses assume XH motors.
+# The following addresses assume XC motors.
 # see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ for control table
+ADDR_ID = 7
+ADDR_BAUD_RATE = 8
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
@@ -35,6 +39,7 @@ ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_CURRENT = 126
 ADDR_PRESENT_POS_VEL_CUR = 126
 ADDR_MOVING_STATUS = 123
+ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_PRESENT_TEMPERATURE = 146
 
 # Data Byte Length
@@ -55,6 +60,24 @@ DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
 DEFAULT_CUR_SCALE = 1.34
 
+# Baud rate mapping for Dynamixel motors, see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/#baud-rate
+BAUD_RATE_MAP = {
+    9600: 0,
+    57600: 1,
+    115200: 2,
+    1000000: 3,
+    2000000: 4,
+    3000000: 5,
+    4000000: 6,
+    4500000: 7,
+    10500000: 8,
+}
+
+# Dynamixel model number to name mapping (see table 2.2. @ https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ as reference)
+DYNAMIXEL_MODELS = {
+    1220: 'XC330-T288-T',
+    1080: 'XC430-T240BB-T',
+}
 
 def dynamixel_cleanup_handler():
     """Cleanup function to ensure Dynamixels are disconnected properly."""
@@ -83,7 +106,7 @@ def unsigned_to_signed(value: int, size: int) -> int:
     return value
 
 
-class DynamixelClient:
+class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
 
     NOTE: This only supports Protocol 2.
@@ -146,6 +169,8 @@ class DynamixelClient:
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
+        self._operating_modes = {}
+        self._recovering = set()
 
         self.OPEN_CLIENTS.add(self)
 
@@ -174,6 +199,17 @@ class DynamixelClient:
             raise OSError(
                 ('Failed to set the baudrate to {} (Ensure that the device was '
                  'configured for this baudrate).').format(self.baudrate))
+
+        # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
+        if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+            try:
+                self.port_handler.ser.set_low_latency_mode(True)
+                logging.info('Enabled low latency mode for USB serial')
+            except Exception:
+                pass  # Not critical if it fails
+
+        # Clear any pre-existing hardware errors before enabling torque.
+        self.check_overload_and_reboot(self.motor_ids)
 
         # Start with all motors enabled.
         self.set_torque_enabled(self.motor_ids, True)
@@ -234,9 +270,15 @@ class DynamixelClient:
         self.set_torque_enabled(motor_ids, False)
         self.sync_write(motor_ids, [mode_value]*len(motor_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
         self.set_torque_enabled(motor_ids, True)
+        for mid in motor_ids:
+            self._operating_modes[mid] = mode_value
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the positions, velocities, and currents."""
+        """Returns the positions, velocities, and currents.
+
+        Overload detection is handled reactively via the Alert bit in
+        handle_packet_result, so no extra bulk read is needed here.
+        """
         return self._pos_vel_cur_reader.read()
 
     def read_status_is_done_moving(self) -> bool:
@@ -339,6 +381,47 @@ class DynamixelClient:
         times.append(time.monotonic())
         return times
 
+    def reboot_motor(self, motor_id: int):
+        """Reboots a single motor using the Protocol 2.0 reboot instruction."""
+        comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
+        self.handle_packet_result(comm_result, dxl_error, motor_id, context='reboot')
+
+    def read_hardware_error(self, motor_id: int) -> int:
+        """Reads the Hardware Error Status register (address 70). Returns raw byte or 0 on failure."""
+        value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
+            self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
+        if comm_result != self.dxl.COMM_SUCCESS:
+            return 0
+        return value
+
+    def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> list:
+        """Checks for overload errors and reboots affected motors.
+
+        Returns list of motor IDs that were rebooted.
+        """
+        OVERLOAD_BIT = 0x20
+        rebooted = []
+        for mid in motor_ids:
+            error_status = self.read_hardware_error(mid)
+            if error_status & OVERLOAD_BIT:
+                logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
+                self.reboot_motor(mid)
+                rebooted.append(mid)
+        if rebooted:
+            time.sleep(0.3)
+            for mid in rebooted:
+                mode = self._operating_modes.get(mid)
+                if mode is not None:
+                    # Reboot clears RAM — restore operating mode and torque.
+                    # Use retries=0 to avoid hanging if motor isn't ready yet.
+                    self.set_torque_enabled([mid], False, retries=0)
+                    self.sync_write([mid], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+                    self.set_torque_enabled([mid], True, retries=0)
+                    self._operating_modes[mid] = mode
+                else:
+                    self.set_torque_enabled([mid], True, retries=0)
+        return rebooted
+
     def check_connected(self):
         """Ensures the robot is connected."""
         if self.lazy_connect and not self.is_connected:
@@ -351,12 +434,22 @@ class DynamixelClient:
                              dxl_error: Optional[int] = None,
                              dxl_id: Optional[int] = None,
                              context: Optional[str] = None):
-        """Handles the result from a communication request."""
+        """Handles the result from a communication request.
+
+        Reactively detects the Alert bit (0x80) in dxl_error, which the motor
+        sets on every status packet when a hardware error (e.g. overload) is
+        present. When detected, the affected motor is rebooted and restored
+        without any periodic polling.
+        """
         error_message = None
         if comm_result != self.dxl.COMM_SUCCESS:
             error_message = self.packet_handler.getTxRxResult(comm_result)
         elif dxl_error is not None:
-            error_message = self.packet_handler.getRxPacketError(dxl_error)
+            # Alert bit (bit 7) means a hardware error is latched
+            if dxl_error & 0x80 and dxl_id is not None:
+                self._handle_hardware_alert(dxl_id)
+            if dxl_error & 0x7F:
+                error_message = self.packet_handler.getRxPacketError(dxl_error)
         if error_message:
             if dxl_id is not None:
                 error_message = '[Motor ID: {}] {}'.format(
@@ -367,12 +460,92 @@ class DynamixelClient:
             return False
         return True
 
+    def _handle_hardware_alert(self, motor_id: int):
+        """React to a hardware alert by reading the error register and rebooting if overloaded."""
+        if motor_id in self._recovering:
+            return
+        self._recovering.add(motor_id)
+        try:
+            error_status = self.read_hardware_error(motor_id)
+            OVERLOAD_BIT = 0x20
+            if error_status & OVERLOAD_BIT:
+                import os as _os
+                _os.write(2, f'\033[91m⚠ OVERLOAD on motor {motor_id} (error=0x{error_status:02X}) — rebooting and recovering...\033[0m\n'.encode())
+                logging.warning(f'Motor {motor_id} overload detected (error=0x{error_status:02X}), rebooting...')
+                self.reboot_motor(motor_id)
+                time.sleep(0.3)
+                mode = self._operating_modes.get(motor_id)
+                if mode is not None:
+                    self.set_torque_enabled([motor_id], False, retries=0)
+                    self.sync_write([motor_id], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+                    self.set_torque_enabled([motor_id], True, retries=0)
+                else:
+                    self.set_torque_enabled([motor_id], True, retries=0)
+        finally:
+            self._recovering.discard(motor_id)
+
     def convert_to_unsigned(self, value: int, size: int) -> int:
         """Converts the given value to its unsigned representation."""
         if value < 0:
             max_value = (1 << (8 * size)) - 1
             value = max_value + value
         return value
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Changes the ID of a Dynamixel motor (1-252)."""
+        if not (1 <= new_id <= 252):
+            logging.error(f"Invalid ID {new_id}. Valid range is 1-252.")
+            return False   
+        try:
+            self.set_torque_enabled([current_id], False)
+            success = not self.write_byte([current_id], new_id, ADDR_ID)
+            if success:
+                logging.info(f"Changed motor ID: {current_id} → {new_id}")
+            return success
+        except Exception as e:
+            logging.error(f"Failed to change motor ID: {e}")
+            return False
+    
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Changes the baud rate of a Dynamixel motor. Requires reconnect after change."""
+        if new_baud_rate not in BAUD_RATE_MAP:
+            logging.error(f"Invalid baud rate {new_baud_rate}. Valid: {list(BAUD_RATE_MAP.keys())}")
+            return False   
+        try:
+            self.set_torque_enabled([motor_id], False)
+            success = not self.write_byte([motor_id], BAUD_RATE_MAP[new_baud_rate], ADDR_BAUD_RATE)
+            if success:
+                logging.info(f"Changed motor {motor_id} baud rate: {new_baud_rate}")
+            return success
+        except Exception as e:
+            logging.error(f"Failed to change baud rate: {e}")
+            return False
+    
+    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252), 
+                             baud_rates: Optional[list] = None) -> list:
+        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_number', 'model_name'}."""
+        baud_rates = baud_rates or list(BAUD_RATE_MAP.keys())
+        detected_motors = []
+        for baud_rate in baud_rates:
+            port_handler = self.dxl.PortHandler(port)
+            packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
+            try:
+                if not port_handler.openPort() or not port_handler.setBaudRate(baud_rate):
+                    continue
+                for motor_id in range(id_range[0], id_range[1] + 1):
+                    model_number, comm_result, _ = packet_handler.ping(port_handler, motor_id)
+                    if comm_result == self.dxl.COMM_SUCCESS:
+                        detected_motors.append({
+                            'id': motor_id, 'baud_rate': baud_rate, 
+                            'model_name': DYNAMIXEL_MODELS.get(model_number, f'Unknown({model_number})')
+                        })
+                port_handler.closePort()
+            except Exception:
+                try:
+                    port_handler.closePort()
+                except Exception:
+                    pass
+        return detected_motors
 
     def __enter__(self):
         """Enables use as a context manager."""
@@ -387,6 +560,52 @@ class DynamixelClient:
     def __del__(self):
         """Automatically disconnect on destruction."""
         self.disconnect()
+
+
+class _AlertCaptureBulkRead:
+    """Wraps GroupBulkRead to capture per-motor error bytes from status packets.
+
+    The stock GroupBulkRead discards the error byte returned by each motor's
+    status packet. This wrapper stores them in ``motor_errors`` so callers can
+    detect the Alert bit (0x80) without any extra bus traffic.
+    """
+
+    ALERT_BIT = 0x80
+
+    def __init__(self, port_handler, packet_handler, dxl):
+        self._inner = dxl.GroupBulkRead(port_handler, packet_handler)
+        self._dxl = dxl
+        self.motor_errors = {}
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def txRxPacket(self):
+        result = self._inner.txPacket()
+        if result != self._dxl.COMM_SUCCESS:
+            return result
+        return self._rxPacket()
+
+    def _rxPacket(self):
+        inner = self._inner
+        inner.last_result = False
+        self.motor_errors = {}
+        result = self._dxl.COMM_RX_FAIL
+
+        if not inner.data_dict:
+            return self._dxl.COMM_NOT_AVAILABLE
+
+        for dxl_id in inner.data_dict:
+            data, result, error = inner.ph.readRx(
+                inner.port, dxl_id, inner.data_dict[dxl_id][2])
+            inner.data_dict[dxl_id][0] = data
+            self.motor_errors[dxl_id] = error or 0
+            if result != self._dxl.COMM_SUCCESS:
+                return result
+
+        if result == self._dxl.COMM_SUCCESS:
+            inner.last_result = True
+        return result
 
 
 class DynamixelReader:
@@ -404,8 +623,9 @@ class DynamixelReader:
         self.size = size
         self._initialize_data()
 
-        self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
-                                                       client.packet_handler)
+        self.operation = _AlertCaptureBulkRead(client.port_handler,
+                                               client.packet_handler,
+                                               client.dxl)
 
         for motor_id in motor_ids:
             success = self.operation.addParam(motor_id, address, size)
@@ -428,6 +648,11 @@ class DynamixelReader:
         if not success:
             return self._get_data()
 
+        # Check for Alert bits in the status packets we already received.
+        for motor_id, error in self.operation.motor_errors.items():
+            if error & _AlertCaptureBulkRead.ALERT_BIT:
+                self.client._handle_hardware_alert(motor_id)
+
         errored_ids = []
         for i, motor_id in enumerate(self.motor_ids):
             # Check if the data is available.
@@ -437,7 +662,12 @@ class DynamixelReader:
                 errored_ids.append(motor_id)
                 continue
 
-            self._update_data(i, motor_id)
+            try:
+                self._update_data(i, motor_id)
+            except Exception as e:
+                logging.error(f'Error updating data for motor {motor_id}: {e}')
+                errored_ids.append(motor_id)
+                continue
 
         if errored_ids:
             logging.error('Bulk read data is unavailable for: %s',
