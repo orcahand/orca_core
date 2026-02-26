@@ -479,14 +479,14 @@ class OrcaHand:
         
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+    def calibrate(self, blocking: bool = True, force_wrist: bool = False, joints: list = None):
         if blocking:
             self._task_stop_event.clear()
-            self._calibrate(force_wrist=force_wrist)
+            self._calibrate(force_wrist=force_wrist, joints=joints)
         else:
-            self._start_task(self._calibrate, force_wrist=force_wrist)
+            self._start_task(self._calibrate, force_wrist=force_wrist, joints=joints)
 
-    def _calibrate(self, force_wrist: bool = False):
+    def _calibrate(self, force_wrist: bool = False, joints: list = None):
 
         # Build effective calibration sequence with wrist logic
         wrist_in_sequence = any('wrist' in step['joints'] for step in self.calib_sequence)
@@ -502,6 +502,18 @@ class OrcaHand:
 
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
+
+        # Filter calibration sequence if specific joints are requested
+        if joints is not None:
+            joints_set = set(joints)
+            calib_sequence = []
+            for step in self.calib_sequence:
+                filtered_joints = {j: d for j, d in step["joints"].items() if j in joints_set}
+                if filtered_joints:
+                    calib_sequence.append({"step": step["step"], "joints": filtered_joints})
+            print(f"Calibrating {len(joints)} joints across {len(calib_sequence)} steps (out of {len(self.calib_sequence)} total)")
+        else:
+            calib_sequence = self.calib_sequence
 
         self._compute_wrap_offsets_dict()
         for step in calib_sequence:
@@ -576,7 +588,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if 'wrist' in joint or 'abd' in joint:
+                            if 'wrist' in joint:
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
