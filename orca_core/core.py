@@ -40,12 +40,12 @@ class OrcaHand:
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
             
-        self.baudrate: int = config.get('baudrate', 3000000)
+        self.motor_type: str = config.get('motor_type', 'dynamixel')
+        self.baudrate: int = 1000000 if self.motor_type == 'feetech' else config.get('baudrate', 3000000)
         self.port: str = config.get('port', '/dev/ttyUSB0')
         self.max_current: int = config.get('max_current', 300)
         self.control_mode: str = config.get('control_mode', 'current_position')
         self.type: str = config.get('type', None)
-        self.motor_type: str = config.get('motor_type', 'dynamixel')
         
         self.calib_current: str = config.get('calib_current', 200)
         self.wrist_calib_current: str = config.get('wrist_calib_current', 100)
@@ -122,12 +122,18 @@ class OrcaHand:
         else:
             raise ValueError(f"Unknown motor_type: {self.motor_type}. Expected 'dynamixel' or 'feetech'.")
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, port: str = None) -> tuple[bool, str]:
         """Connect to the hand with the configured motor client.
+
+        Args:
+            port: If provided, use this port and don't fall back to interactive selection.
 
         Returns:
             tuple[bool, str]: (Success status, message).
         """
+        if port:
+            self.port = port
+
         try:
             self._motor_client = self._create_motor_client()
             with self._motor_lock:
@@ -135,6 +141,11 @@ class OrcaHand:
             return True, "Connection successful"
         except Exception as e:
             self._motor_client = None
+
+            # If port was explicitly specified, don't fall back
+            if port:
+                return False, f"Connection failed on {self.port}: {str(e)}"
+
             print(f"Connection failed on {self.port}: {str(e)}")
 
             # Try auto-detecting the port first

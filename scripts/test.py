@@ -65,12 +65,13 @@ def print_temp_table(hand, temps):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test the ORCA Hand.")  # Added parser
+    parser = argparse.ArgumentParser(description="Test the ORCA Hand.")
     parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
+    parser.add_argument('--port', type=str, default=None, help='Serial port to use (e.g., /dev/ttyUSB0)')
     args = parser.parse_args()
     hand = OrcaHand(args.model_path)
 
-    status = hand.connect()
+    status = hand.connect(port=args.port)
     print(status)
     if not status[0]:
         print("Failed to connect to the hand.")

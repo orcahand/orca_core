@@ -142,61 +142,76 @@ def auto_detect_port() -> str:
 def get_and_choose_port() -> str:
     """
     Interactive terminal UI to choose from available USB devices with arrow key navigation.
+    Supports scrolling when the list is longer than the terminal height.
     Returns the selected port or None if the user quits.
     """
     import curses
     import serial.tools.list_ports
-    
-    def draw_menu(stdscr, ports, selected_idx):
+
+    LINES_PER_ITEM = 3  # device line + description + manufacturer
+
+    def draw_menu(stdscr, ports, selected_idx, scroll_offset):
         stdscr.clear()
         height, width = stdscr.getmaxyx()
-        
-        title = "Choose a device (use arrow keys, Enter to select, q to quit)"
-        stdscr.addstr(0, (width - len(title)) // 2, title, curses.A_BOLD)
-        
-        for i, port in enumerate(ports):
-            y_pos = i * 3 + 2
-            if y_pos >= height - 1:
-                break
-            marker = "(x)" if i == selected_idx else "( )"
 
-            if i == selected_idx:
+        title = "Choose a device (use arrow keys, Enter to select, q to quit)"
+        stdscr.addstr(0, min((width - len(title)) // 2, 0), title[:width - 1], curses.A_BOLD)
+
+        # Available lines for port entries (reserve line 0 for title, last line for footer)
+        available_lines = height - 3
+        max_visible = max(1, available_lines // LINES_PER_ITEM)
+
+        for draw_i, port_i in enumerate(range(scroll_offset, min(scroll_offset + max_visible, len(ports)))):
+            port = ports[port_i]
+            y_pos = draw_i * LINES_PER_ITEM + 2
+            marker = "(x)" if port_i == selected_idx else "( )"
+
+            if port_i == selected_idx:
                 stdscr.attron(curses.A_REVERSE)
-                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
+                stdscr.addstr(y_pos, 0, f"{port_i+1:2d}. {marker} {port.device}"[:width - 1])
                 stdscr.attroff(curses.A_REVERSE)
             else:
-                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
+                stdscr.addstr(y_pos, 0, f"{port_i+1:2d}. {marker} {port.device}"[:width - 1])
 
             if y_pos + 1 < height - 1:
-                stdscr.addstr(y_pos + 1, 4, f"{port.description or 'No description'}")
+                stdscr.addstr(y_pos + 1, 4, f"{port.description or 'No description'}"[:width - 5])
             if y_pos + 2 < height - 1:
-                stdscr.addstr(y_pos + 2, 4, f"{port.manufacturer or 'Unknown manufacturer'}")
-        
-        if len(ports) + 5 < height:
-            stdscr.addstr(height - 2, 0, "Use ↑↓ arrows to navigate, Enter to select, q to quit")
-        
+                stdscr.addstr(y_pos + 2, 4, f"{port.manufacturer or 'Unknown manufacturer'}"[:width - 5])
+
+        footer = f"[{selected_idx + 1}/{len(ports)}] ↑↓ navigate, Enter select, q quit"
+        stdscr.addstr(height - 1, 0, footer[:width - 1])
+
         stdscr.refresh()
-    
+
     def main_menu(stdscr):
         curses.curs_set(0)
         stdscr.keypad(True)
-        
+
         ports = list(serial.tools.list_ports.comports())
-        
+
         if not ports:
             stdscr.clear()
             stdscr.addstr(0, 0, "No USB devices found!")
             stdscr.refresh()
             stdscr.getch()
             return None
-        
+
         selected_idx = 0
-        
+        scroll_offset = 0
+        height = stdscr.getmaxyx()[0]
+        max_visible = max(1, (height - 3) // LINES_PER_ITEM)
+
         while True:
-            draw_menu(stdscr, ports, selected_idx)
-            
+            # Keep selected item visible
+            if selected_idx < scroll_offset:
+                scroll_offset = selected_idx
+            elif selected_idx >= scroll_offset + max_visible:
+                scroll_offset = selected_idx - max_visible + 1
+
+            draw_menu(stdscr, ports, selected_idx, scroll_offset)
+
             key = stdscr.getch()
-            
+
             if key == curses.KEY_UP and selected_idx > 0:
                 selected_idx -= 1
             elif key == curses.KEY_DOWN and selected_idx < len(ports) - 1:
@@ -207,7 +222,11 @@ def get_and_choose_port() -> str:
                 return None
             elif key == 27:
                 return None
-    
+
+            # Recalculate on terminal resize
+            height = stdscr.getmaxyx()[0]
+            max_visible = max(1, (height - 3) // LINES_PER_ITEM)
+
     try:
         return curses.wrapper(main_menu)
     except KeyboardInterrupt:
