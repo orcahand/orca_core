@@ -12,7 +12,7 @@ orca_core/
 ├── hardware/         # Hardware interfaces (motors)
 │   ├── dynamixel_client.py      # Dynamixel motor control
 ├── utils/            # Shared utilities
-├── configs/          # Hand configurations (YAML)
+├── models/          # Hand configurations (YAML)
 └── core.py           # Main OrcaHand API
 
 scripts/              # CLI tools for calibration, demos
@@ -24,7 +24,7 @@ docs/                 # Documentation
 
 - [orca_core/core.py](orca_core/core.py) - Main `OrcaHand` class API
 - [orca_core/hardware/dynamixel_client.py](orca_core/hardware/dynamixel_client.py) - Motor control interface
-- [orca_core/configs/*/config.yaml](orca_core/configs/) - Hand configuration files
+- [orca_core/models/*/config.yaml](orca_core/models/) - Hand configuration files
 - [scripts/](scripts/) - Calibration and utility scripts
 
 ### Hardware Components
@@ -95,13 +95,13 @@ pytest tests/
 
 ```bash
 # Calibration workflow
-python scripts/tension.py orca_core/configs/orcahand_v1_right
-python scripts/calibrate.py orca_core/configs/orcahand_v1_right
-python scripts/neutral.py orca_core/configs/orcahand_v1_right
+python scripts/tension.py orca_core/models/orcahand_v1_right
+python scripts/calibrate.py orca_core/models/orcahand_v1_right
+python scripts/neutral.py orca_core/models/orcahand_v1_right
 
 # Manual control
-python scripts/slider_joint.py orca_core/configs/orcahand_v1_right
-python scripts/slider_motor.py orca_core/configs/orcahand_v1_right
+python scripts/slider_joint.py orca_core/models/orcahand_v1_right
+python scripts/slider_motor.py orca_core/models/orcahand_v1_right
 ```
 
 ### Configuration
