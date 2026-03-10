@@ -6,8 +6,8 @@ import os
 import subprocess
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from orca_core.hardware.dynamixel_client import DynamixelClient
-from orca_core.hardware.feetech_client import FeetechClient
+from orca_core.hardware.dynamixel_client import DynamixelClient, BAUD_RATE_MAP as DYNAMIXEL_BAUD_RATE_MAP
+from orca_core.hardware.feetech_client import FeetechClient, FEETECH_BAUD_RATE_MAP
 from orca_core.utils import read_yaml, get_model_path, auto_detect_port, get_and_choose_port
 
 RED = '\033[91m'
@@ -253,6 +253,33 @@ def verify_all_motors(configured_ids: list, port: str, target_baud: int, total_m
         print(f"{RED}❌ Error verifying motors: {e}{RESET}")
         return False
 
+def get_valid_baudrates(motor_type: str) -> list:
+    """Get list of valid baudrates for the given motor type."""
+    if motor_type == 'feetech':
+        return sorted(FEETECH_BAUD_RATE_MAP.keys(), reverse=True)
+    return sorted(DYNAMIXEL_BAUD_RATE_MAP.keys(), reverse=True)
+
+def change_motor_baudrate_only(motor_type: str, motor_id: int, port: str, current_baud: int, new_baud: int) -> bool:
+    """Change only the baudrate of a motor, leaving ID unchanged."""
+    try:
+        if current_baud == new_baud:
+            print(f"{YELLOW}   Motor {motor_id} already at {new_baud:,} bps{RESET}")
+            return True
+
+        client = create_config_client(motor_type, [motor_id], port, current_baud)
+        client.connect()
+        if not client.change_motor_baudrate(motor_id, new_baud):
+            print(f"{RED}❌ Failed to change baud rate for motor {motor_id}{RESET}")
+            client.disconnect()
+            return False
+        client.disconnect()
+
+        print(f"{GREEN}✓ Changed motor {motor_id} baudrate: {current_baud:,} → {new_baud:,}{RESET}")
+        return True
+    except Exception as e:
+        print(f"{RED}❌ Error changing baudrate for motor {motor_id}: {e}{RESET}")
+        return False
+
 def reset_motor_to_factory(motor_type: str, motor_id: int, port: str, current_baud: int, default_id: int, default_baud: int) -> bool:
     try:
         if current_baud != default_baud:
@@ -278,6 +305,47 @@ def reset_motor_to_factory(motor_type: str, motor_id: int, port: str, current_ba
     except Exception as e:
         print(f"{RED}❌ Error resetting motor {motor_id}: {e}{RESET}")
         return False
+
+def baudrate_change_loop(port: str, current_baud: int, new_baud: int, total_motors: int, motor_type: str):
+    """Scan for motors and change their baudrate without modifying IDs."""
+    print(f"\n{BOLD}🔄 BAUDRATE CHANGE MODE{RESET} — Changing all motors to {new_baud:,} bps...")
+    print(f"   Press {BOLD}Ctrl+C{RESET} to stop.")
+
+    if motor_type == 'feetech':
+        while True:
+            feetech_safe_connect_prompt(port, "Connect the motor(s) you want to change baudrate")
+            print(f"\n🔍 Scanning for motors at {current_baud:,} bps...")
+            client = create_config_client(motor_type, [], port, current_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[current_baud])
+            if not motors:
+                print(f"{YELLOW}   No motors found at {current_baud:,} bps. Check connections.{RESET}")
+                continue
+            for motor in motors:
+                color = motor_color(motor['model_name'])
+                print(f"   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                change_motor_baudrate_only(
+                    motor_type, motor['id'], port, motor['baud_rate'], new_baud
+                )
+    else:
+        print(f"\n🔍 Waiting for motors to be connected at {current_baud:,} bps... (Ctrl+C to stop)")
+        known_ids = set()
+        while True:
+            client = create_config_client(motor_type, [], port, current_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[current_baud])
+            found_ids = {m['id'] for m in motors}
+            new_motors = [m for m in motors if m['id'] not in known_ids]
+
+            if new_motors:
+                for motor in new_motors:
+                    color = motor_color(motor['model_name'])
+                    print(f"\n   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                    change_motor_baudrate_only(
+                        motor_type, motor['id'], port, motor['baud_rate'], new_baud
+                    )
+                print(f"\n🔍 Waiting for motors to be connected at {current_baud:,} bps... (Ctrl+C to stop)")
+
+            known_ids = found_ids
+            time.sleep(1)
 
 def reset_loop(port: str, target_baud: int, total_motors: int, motor_type: str, default_id: int, default_baud: int):
     print(f"\n{BOLD}🔄 RESET MODE{RESET} — Scanning for configured motors to reset to factory defaults...")
@@ -337,6 +405,11 @@ def main():
         "--reset",
         action="store_true",
         help="Reset configured motors back to factory defaults (runs in a loop until Ctrl+C)")
+    parser.add_argument(
+        "--baudrate",
+        type=int,
+        metavar="BAUD",
+        help="Change all motors to the specified baudrate without modifying IDs (runs in a loop until Ctrl+C)")
     args = parser.parse_args()
 
     try:
@@ -374,6 +447,27 @@ def main():
             reset_loop(PORT, TARGET_BAUD, TOTAL_MOTORS, motor_type, default_id, default_baud)
         except KeyboardInterrupt:
             print(f"\n\n{GREEN}Reset mode stopped.{RESET}\n")
+        return 0
+
+    if args.baudrate is not None:
+        valid_baudrates = get_valid_baudrates(motor_type)
+        if args.baudrate not in valid_baudrates:
+            print(f"{RED}❌ Invalid baudrate {args.baudrate:,} for {motor_type_label} motors{RESET}")
+            print(f"\n{YELLOW}Valid baudrates for {motor_type_label}:{RESET}")
+            for baud in valid_baudrates:
+                print(f"   • {baud:,} bps")
+            return 1
+
+        print("\n" + "=" * 60)
+        print(f"{BOLD}🔄 ORCAHAND {motor_type_label.upper()} BAUDRATE CHANGE 🔄{RESET}")
+        print("=" * 60)
+        print(f"\nChanging all motors to baudrate: {BOLD}{args.baudrate:,} bps{RESET}")
+        print(f"Current baudrate in config: {BOLD}{TARGET_BAUD:,} bps{RESET}")
+        print(f"\n{YELLOW}Note: Motor IDs will NOT be changed, only baudrate.{RESET}")
+        try:
+            baudrate_change_loop(PORT, TARGET_BAUD, args.baudrate, TOTAL_MOTORS, motor_type)
+        except KeyboardInterrupt:
+            print(f"\n\n{GREEN}Baudrate change mode stopped.{RESET}\n")
         return 0
 
     print("\n" + "=" * 60)
