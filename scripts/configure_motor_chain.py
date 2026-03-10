@@ -8,7 +8,7 @@ import subprocess
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orca_core.hardware.dynamixel_client import DynamixelClient
 from orca_core.hardware.feetech_client import FeetechClient
-from orca_core.utils import read_yaml, get_model_path
+from orca_core.utils import read_yaml, get_model_path, auto_detect_port, get_and_choose_port
 
 RED = '\033[91m'
 GREEN = '\033[92m'
@@ -19,6 +19,63 @@ ORANGE = '\033[38;5;208m'
 BOLD = '\033[1m'
 UNDERLINE = '\033[4m'
 RESET = '\033[0m'
+
+def validate_or_detect_port(port: str, config_path: str) -> str:
+    """Check if port exists, auto-detect or prompt if not."""
+    if os.path.exists(port):
+        return port
+
+    print(f"{YELLOW}⚠ Port {port} not found.{RESET}")
+
+    detected = auto_detect_port()
+    if detected and os.path.exists(detected):
+        print(f"{GREEN}✓ Using auto-detected port: {detected}{RESET}")
+        return detected
+
+    print("Please select a port from available devices:")
+    chosen = get_and_choose_port()
+    if chosen:
+        print(f"{GREEN}✓ Using selected port: {chosen}{RESET}")
+        return chosen
+
+    print(f"{RED}❌ No valid port found. Check your USB connection.{RESET}")
+    sys.exit(1)
+
+
+def wait_for_port_removed(port: str, timeout: float = 30):
+    """Wait until the serial port disappears (USB unplugged)."""
+    print(f"\n{YELLOW}⚠  REMOVE POWER:{RESET} Unplug the USB cable from your computer.")
+    print(f"   Waiting for {BOLD}{port}{RESET} to disappear...")
+    start = time.time()
+    while os.path.exists(port):
+        if time.time() - start > timeout:
+            print(f"{RED}❌ Timeout: port {port} still exists. Unplug the USB cable.{RESET}")
+            start = time.time()
+        time.sleep(0.3)
+    print(f"{GREEN}✓ USB disconnected.{RESET}")
+
+
+def wait_for_port_reconnected(port: str, timeout: float = 60):
+    """Wait until the serial port reappears (USB plugged back in)."""
+    print(f"\n{YELLOW}▶  RESTORE POWER:{RESET} Plug the USB cable back in.")
+    print(f"   Waiting for {BOLD}{port}{RESET} to reappear...")
+    start = time.time()
+    while not os.path.exists(port):
+        if time.time() - start > timeout:
+            print(f"{RED}❌ Timeout: port {port} not found. Plug in the USB cable.{RESET}")
+            start = time.time()
+        time.sleep(0.3)
+    time.sleep(0.5)
+    print(f"{GREEN}✓ USB reconnected on {port}.{RESET}")
+
+
+def feetech_safe_connect_prompt(port: str, connection_msg: str):
+    """Guide user through safe power-off motor connection for Feetech servos."""
+    wait_for_port_removed(port)
+    print(f"\n{ORANGE}🔌 {connection_msg}{RESET}")
+    input(f"\n   Press {BOLD}Enter{RESET} when the motor is connected correctly...")
+    wait_for_port_reconnected(port)
+
 
 MOTOR_TYPE_DEFAULTS = {
     'dynamixel': {'default_id': 1, 'default_baud': 57600},
@@ -226,27 +283,44 @@ def reset_loop(port: str, target_baud: int, total_motors: int, motor_type: str, 
     print(f"\n{BOLD}🔄 RESET MODE{RESET} — Scanning for configured motors to reset to factory defaults...")
     print(f"   Factory defaults: ID={default_id}, baudrate={default_baud:,}")
     print(f"   Press {BOLD}Ctrl+C{RESET} to stop.")
-    print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
 
-    known_ids = set()
-    while True:
-        client = create_config_client(motor_type, [], port, target_baud)
-        motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
-        found_ids = {m['id'] for m in motors}
-        new_motors = [m for m in motors if m['id'] not in known_ids]
-
-        if new_motors:
-            for motor in new_motors:
+    if motor_type == 'feetech':
+        while True:
+            feetech_safe_connect_prompt(port, "Connect the motor(s) you want to reset")
+            print(f"\n🔍 Scanning for motors to reset...")
+            client = create_config_client(motor_type, [], port, target_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
+            if not motors:
+                print(f"{YELLOW}   No motors found. Check connections.{RESET}")
+                continue
+            for motor in motors:
                 color = motor_color(motor['model_name'])
-                print(f"\n   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                print(f"   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
                 reset_motor_to_factory(
                     motor_type, motor['id'], port, motor['baud_rate'],
                     default_id, default_baud
                 )
-            print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
+    else:
+        print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
+        known_ids = set()
+        while True:
+            client = create_config_client(motor_type, [], port, target_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
+            found_ids = {m['id'] for m in motors}
+            new_motors = [m for m in motors if m['id'] not in known_ids]
 
-        known_ids = found_ids
-        time.sleep(1)
+            if new_motors:
+                for motor in new_motors:
+                    color = motor_color(motor['model_name'])
+                    print(f"\n   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                    reset_motor_to_factory(
+                        motor_type, motor['id'], port, motor['baud_rate'],
+                        default_id, default_baud
+                    )
+                print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
+
+            known_ids = found_ids
+            time.sleep(1)
 
 def main():
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
@@ -276,6 +350,8 @@ def main():
     except Exception as e:
         print(f"{RED}❌ Error loading config: {e}{RESET}")
         return 1
+
+    PORT = validate_or_detect_port(PORT, config_path)
 
     if motor_type not in MOTOR_TYPE_DEFAULTS:
         print(f"{RED}❌ Unknown motor_type '{motor_type}' in config. Supported: {list(MOTOR_TYPE_DEFAULTS.keys())}{RESET}")
@@ -361,13 +437,18 @@ def main():
             color = ''
 
         if target_id == max(all_target_ids):
-            connection_msg = f"{ORANGE}Connect a {color}{expected_model} {BOLD}(ID {target_id}){ORANGE} to the {BOLD}board{RESET}"
+            connection_msg = f"Connect a {color}{expected_model} {BOLD}(ID {target_id}){RESET}{ORANGE} to the {BOLD}board{RESET}"
         else:
             prev_id = target_id + 1
-            connection_msg = f"{ORANGE}Connect a {color}{expected_model} {BOLD}(ID {target_id}){RESET}{ORANGE} to the previous motor {BOLD}(ID {prev_id}){RESET}"
+            connection_msg = f"Connect a {color}{expected_model} {BOLD}(ID {target_id}){RESET}{ORANGE} to the previous motor {BOLD}(ID {prev_id}){RESET}"
 
         print(f"{UNDERLINE}{ORANGE}\nSTEP {step}/{TOTAL_MOTORS}{RESET}")
-        print(f"{connection_msg}")
+
+        if motor_type == 'feetech':
+            feetech_safe_connect_prompt(PORT, connection_msg)
+        else:
+            print(f"{connection_msg}")
+
         print(f"\n🔍 Scanning for default {color}{expected_model}{RESET} motor...")
 
         try:

@@ -480,6 +480,7 @@ class FeetechClient(MotorClient):
             port_handler.baudrate = baud_rate
             try:
                 if not port_handler.openPort():
+                    logging.warning('Failed to open port %s at %d baud', port, baud_rate)
                     continue
                 packet_handler = sms_sts(port_handler)
                 for motor_id in range(id_range[0], id_range[1] + 1):
@@ -490,7 +491,8 @@ class FeetechClient(MotorClient):
                             'model_name': FEETECH_MODELS.get(model_number, 'Feetech')
                         })
                 port_handler.closePort()
-            except Exception:
+            except Exception as e:
+                logging.warning('Error scanning port %s at %d baud: %s', port, baud_rate, e)
                 try:
                     port_handler.closePort()
                 except Exception:
