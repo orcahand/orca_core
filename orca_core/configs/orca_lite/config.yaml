@@ -1,14 +1,21 @@
+port: /dev/ttyUSB1
 model: lite
-port: /dev/tty.usbserial-FT9MISJT
+motor_type: feetech
 version: 0.1.0
 baudrate: 1000000
 max_current: 300
 type: right
 control_mode: current_based_position
-
-motor_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9]
-
-# Full anatomical joint space (same as orcahand_v1)
+motor_ids:
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
 joint_ids:
 - thumb_cmc
 - thumb_abd
@@ -27,65 +34,125 @@ joint_ids:
 - pinky_mcp
 - pinky_pip
 - wrist
-
-# Actuation types:
-#   bidirectional  — motor drives both directions (standard calibration)
-#   unidirectional — motor drives one direction, spring returns
-#   passive        — no own tendon, moves as mechanical consequence of another joint (e.g. PIP linkage)
-#   fixed          — locked at neutral, no actuation
-# motor_direction: direction the motor actively drives (flex/extend)
 joint_properties:
-  thumb_cmc:  { actuation: bidirectional }
-  thumb_abd:  { actuation: bidirectional }
-  thumb_mcp:  { actuation: unidirectional, motor_direction: flex }
-  thumb_pip:  { actuation: passive }
-  index_abd:  { actuation: unidirectional, motor_direction: extend }
-  index_mcp:  { actuation: bidirectional }
-  index_pip:  { actuation: unidirectional, motor_direction: flex }
-  middle_abd: { actuation: fixed }
-  middle_mcp: { actuation: unidirectional, motor_direction: flex }
-  middle_pip: { actuation: passive }
-  ring_abd:   { actuation: fixed }
-  ring_mcp:   { actuation: unidirectional, motor_direction: flex }
-  ring_pip:   { actuation: passive }
-  pinky_abd:  { actuation: unidirectional, motor_direction: extend }
-  pinky_mcp:  { actuation: unidirectional, motor_direction: flex }
-  pinky_pip:  { actuation: passive }
-  wrist:      { actuation: bidirectional }
-
-# Maps each motor to the joint(s) it drives
-# Joints sharing a motor are coupled (multiple tendons on same spool)
-# Coupling ratios are computed automatically from joint ROMs
+  thumb_cmc:
+    actuation: bidirectional
+  thumb_abd:
+    actuation: bidirectional
+  thumb_mcp:
+    actuation: unidirectional
+    motor_direction: flex
+  thumb_pip:
+    actuation: passive
+  index_abd:
+    actuation: unidirectional
+    motor_direction: extend
+  index_mcp:
+    actuation: bidirectional
+  index_pip:
+    actuation: unidirectional
+    motor_direction: flex
+  middle_abd:
+    actuation: fixed
+  middle_mcp:
+    actuation: unidirectional
+    motor_direction: flex
+  middle_pip:
+    actuation: passive
+  ring_abd:
+    actuation: fixed
+  ring_mcp:
+    actuation: unidirectional
+    motor_direction: flex
+  ring_pip:
+    actuation: passive
+  pinky_abd:
+    actuation: unidirectional
+    motor_direction: extend
+  pinky_mcp:
+    actuation: unidirectional
+    motor_direction: flex
+  pinky_pip:
+    actuation: passive
+  wrist:
+    actuation: bidirectional
 motor_to_joint_map:
-  1: [index_pip]
-  2: [thumb_mcp, thumb_pip]
-  3: [ring_mcp, ring_pip, pinky_mcp, pinky_pip]
-  4: [index_abd, pinky_abd]
-  5: [middle_mcp, middle_pip]
-  6: [wrist]
-  7: [thumb_cmc]
-  8: [index_mcp]
-  9: [thumb_abd]
-
+  1:
+  - index_pip
+  2:
+  - thumb_mcp
+  - thumb_pip
+  3:
+  - ring_mcp
+  - ring_pip
+  - pinky_mcp
+  - pinky_pip
+  4:
+  - index_abd
+  - pinky_abd
+  5:
+  - middle_mcp
+  - middle_pip
+  6:
+  - wrist
+  7:
+  - thumb_cmc
+  8:
+  - thumb_abd
+  9:
+  - index_mcp
 joint_roms:
-  thumb_cmc: [-45, 33]
-  thumb_abd: [-18, 55]
-  thumb_mcp: [-60, 90]
-  thumb_pip: [-55, 107]
-  index_abd: [-25, 30]
-  index_mcp: [-60, 100]
-  index_pip: [-15, 107]
-  middle_abd: [0, 0]
-  middle_mcp: [-60, 100]
-  middle_pip: [-15, 107]
-  ring_abd: [0, 0]
-  ring_mcp: [-60, 100]
-  ring_pip: [-15, 107]
-  pinky_abd: [-30, 30]
-  pinky_mcp: [-60, 100]
-  pinky_pip: [-15, 107]
-  wrist: [-65, 35]
-
+  thumb_cmc:
+  - -45
+  - 33
+  thumb_abd:
+  - -18
+  - 55
+  thumb_mcp:
+  - -60
+  - 90
+  thumb_pip:
+  - -55
+  - 107
+  index_abd:
+  - -25
+  - 30
+  index_mcp:
+  - -60
+  - 100
+  index_pip:
+  - -15
+  - 107
+  middle_abd:
+  - 0
+  - 0
+  middle_mcp:
+  - -60
+  - 100
+  middle_pip:
+  - -15
+  - 107
+  ring_abd:
+  - 0
+  - 0
+  ring_mcp:
+  - -60
+  - 100
+  ring_pip:
+  - -15
+  - 107
+  pinky_abd:
+  - -30
+  - 30
+  pinky_mcp:
+  - -60
+  - 100
+  pinky_pip:
+  - -15
+  - 107
+  wrist:
+  - -65
+  - 35
 neutral_position:
   thumb_cmc: 0
   thumb_abd: 0
@@ -104,30 +171,18 @@ neutral_position:
   pinky_mcp: 0
   pinky_pip: 0
   wrist: 0
-
-# Calibration parameters
 calib_current: 300
 calib_step_size: 0.15
 calib_step_period: 0.0001
 calib_num_stable: 10
 calib_threshold: 0.01
-
-# For unidirectional tension detection
-# Current above friction_baseline + tension_threshold = tendon engaged
 tension_threshold: 30
-
-# Optional: estimated motor travel (radians) for unidirectional joints
-# Used to drive past rest into slack before tension detection
-# If empty or missing, a default overshoot is used
 motor_range_estimate:
-  1:
-  2:
-  3:
-  4:
-  5:
-
-# Calibration order — script auto-resolves coupled joints and calibration
-# procedure (bidirectional vs unidirectional) from joint_properties
+  1: null
+  2: null
+  3: null
+  4: null
+  5: null
 calib_sequence:
 - thumb_cmc
 - thumb_abd

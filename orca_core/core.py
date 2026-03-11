@@ -826,38 +826,65 @@ class OrcaHand:
     
     def _sanity_check(self):
         """Check if the configuration is correct and the IDs are consistent."""
-        if len(self.motor_ids) != len(self.joint_ids):
-            raise ValueError("Number of motor IDs and joints do not match.")
-        
-        if len(self.motor_ids) != len(self.joint_to_motor_map):
-            raise ValueError("Number of motor IDs and joints do not match.")
-        
+        # Check if using new config format (motor_to_joint_map) or old format (joint_to_motor_map)
+        config = read_yaml(self.config_path)
+        motor_to_joint_map_new = config.get('motor_to_joint_map', {})
+
+        if motor_to_joint_map_new:
+            # New format: motors can drive multiple joints
+            # Validate motor_to_joint_map
+            for motor_id, joints in motor_to_joint_map_new.items():
+                if motor_id not in self.motor_ids:
+                    raise ValueError(f"Motor ID {motor_id} in motor_to_joint_map is not in motor_ids list.")
+                for joint in joints:
+                    if joint not in self.joint_ids:
+                        raise ValueError(f"Joint {joint} in motor_to_joint_map is not defined in joint_ids.")
+                    if joint not in self.joint_roms_dict:
+                        raise ValueError(f"ROM for joint {joint} is not defined.")
+        else:
+            # Old format: 1 motor per joint
+            if len(self.motor_ids) != len(self.joint_ids):
+                raise ValueError("Number of motor IDs and joints do not match.")
+
+            if len(self.motor_ids) != len(self.joint_to_motor_map):
+                raise ValueError("Number of motor IDs and joints do not match.")
+
+            for joint, motor_id in self.joint_to_motor_map.items():
+                if joint not in self.joint_ids:
+                    raise ValueError(f"Joint {joint} is not defined.")
+                if joint not in self.joint_roms_dict:
+                    raise ValueError(f"ROM for joint {joint} is not defined.")
+                if motor_id not in self.motor_ids:
+                    raise ValueError(f"Motor ID {motor_id} is not in the motor IDs list.")
+
+        # Common checks for both formats
         if self.control_mode not in ['current_position', 'current_velocity', 'position', 'multi_turn_position', 'current_based_position']:
             raise ValueError("Invalid control mode.")
-        
+
         if self.max_current < self.calib_current:
             raise ValueError("Max current should be greater than the calibration current.")
-                
-        for joint, motor_id in self.joint_to_motor_map.items():
-            if joint not in self.joint_ids:
-                raise ValueError(f"Joint {joint} is not defined.")
-            if joint not in self.joint_roms_dict:
-                raise ValueError(f"ROM for joint {joint} is not defined.")
-            if motor_id not in self.motor_ids:
-                raise ValueError(f"Motor ID {motor_id} is not in the motor IDs list.")
-            
+
         for joint, rom in self.joint_roms_dict.items():
-            if rom[1] - rom[0] <= 0:
+            if rom[1] - rom[0] < 0:
                 raise ValueError(f"ROM for joint {joint} is not valid.")
             if joint not in self.joint_ids:
                 raise ValueError(f"Joint {joint} in ROMs is not defined.")
-            
+
+        # Validate calibration sequence (handle both old and new formats)
         for step in self.calib_sequence:
-            for joint, direction in step["joints"].items():
-                if joint not in self.joint_ids:
-                    raise ValueError(f"Joint {joint} is not defined.")
-                if direction not in ['flex', 'extend']:
-                    raise ValueError(f"Invalid direction for joint {joint}.")
+            if isinstance(step, dict):
+                # Old format: {"joints": {"joint_name": "direction", ...}}
+                for joint, direction in step["joints"].items():
+                    if joint not in self.joint_ids:
+                        raise ValueError(f"Joint {joint} in calib_sequence is not defined.")
+                    if direction not in ['flex', 'extend']:
+                        raise ValueError(f"Invalid direction for joint {joint}.")
+            elif isinstance(step, str):
+                # New format: simple list of joint names
+                if step not in self.joint_ids:
+                    raise ValueError(f"Joint {step} in calib_sequence is not defined.")
+            else:
+                raise ValueError(f"Invalid calib_sequence format. Expected dict or str, got {type(step)}.")
           
         
         for motor_limit in self.motor_limits_dict.values():
