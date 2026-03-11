@@ -1,3 +1,4 @@
+model: lite
 port: /dev/tty.usbserial-FT9MISJT
 version: 0.1.0
 baudrate: 1000000
@@ -30,7 +31,6 @@ joint_ids:
 # Actuation types:
 #   bidirectional  — motor drives both directions (standard calibration)
 #   unidirectional — motor drives one direction, spring returns
-#   coupled        — own tendon but shares motor/spool with other joints
 #   passive        — no own tendon, moves as mechanical consequence of another joint (e.g. PIP linkage)
 #   fixed          — locked at neutral, no actuation
 # motor_direction: direction the motor actively drives (flex/extend)
@@ -46,15 +46,15 @@ joint_properties:
   middle_mcp: { actuation: unidirectional, motor_direction: flex }
   middle_pip: { actuation: passive }
   ring_abd:   { actuation: fixed }
-  ring_mcp:   { actuation: coupled, motor_direction: flex }
+  ring_mcp:   { actuation: unidirectional, motor_direction: flex }
   ring_pip:   { actuation: passive }
-  pinky_abd:  { actuation: coupled, motor_direction: extend }
-  pinky_mcp:  { actuation: coupled, motor_direction: flex }
+  pinky_abd:  { actuation: unidirectional, motor_direction: extend }
+  pinky_mcp:  { actuation: unidirectional, motor_direction: flex }
   pinky_pip:  { actuation: passive }
   wrist:      { actuation: bidirectional }
 
 # Maps each motor to the joint(s) it drives
-# For coupled joints, first entry is the active joint
+# Joints sharing a motor are coupled (multiple tendons on same spool)
 # Coupling ratios are computed automatically from joint ROMs
 motor_to_joint_map:
   1: [index_pip]
