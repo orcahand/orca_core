@@ -178,11 +178,11 @@ calib_num_stable: 10
 calib_threshold: 0.01
 tension_threshold: 30
 motor_range_estimate:
-  1: null
-  2: null
-  3: null
-  4: null
-  5: null
+  1: 2.6
+  2: 4
+  3: 3
+  4: 1
+  5: 3
 calib_sequence:
 - thumb_cmc
 - thumb_abd

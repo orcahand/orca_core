@@ -2,7 +2,7 @@ import argparse
 from orca_core import OrcaHand
 
 FINGER_TO_JOINTS = {
-    "thumb": ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"],
+    "thumb": ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_pip", "thumb_dip"],
     "index": ["index_abd", "index_mcp", "index_pip"],
     "middle": ["middle_abd", "middle_mcp", "middle_pip"],
     "ring": ["ring_abd", "ring_mcp", "ring_pip"],
