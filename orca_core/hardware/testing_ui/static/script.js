@@ -10,7 +10,7 @@ const socket = io();
 let currentMode = 'taxels';
 let taxelDisplayMode = 'direction'; // 'magnitude', 'direction', or 'arrows'
 let arrowColorScheme = 'heat'; // 'heat', 'intensity', or 'orca'
-let forceThreshold = 0; // 0 = no filtering
+let forceThreshold = 0.5; // default threshold in N
 let arrowLengthMult = 1.0;
 let arrowThicknessMult = 1.0;
 let taxelCounts = { thumb: 127, index: 52, middle: 31, ring: 31, pinky: 31 };
@@ -98,6 +98,7 @@ document.getElementById('direction-mode-toggle').addEventListener('change', () =
 document.getElementById('arrows-mode-toggle').addEventListener('change', () => setTaxelDisplayMode('arrows'));
 document.getElementById('view-2d-toggle').addEventListener('change', () => setView('2d'));
 document.getElementById('view-3d-toggle').addEventListener('change', () => setView('3d'));
+document.getElementById('view-both-toggle').addEventListener('change', () => setView('both'));
 document.getElementById('color-scheme-select').addEventListener('change', (e) => {
     arrowColorScheme = e.target.value;
 });
@@ -130,8 +131,13 @@ scanPorts();
 
 function setView(view) {
     currentView = view;
-    document.getElementById('taxels-container').style.display = view === '2d' ? 'grid' : 'none';
-    document.getElementById('taxels-3d-container').style.display = view === '3d' ? 'grid' : 'none';
+    const show2d = view === '2d' || view === 'both';
+    const show3d = view === '3d' || view === 'both';
+    document.getElementById('taxels-container').style.display = show2d ? 'grid' : 'none';
+    document.getElementById('taxels-3d-container').style.display = show3d ? 'grid' : 'none';
+    // Show row labels only in "both" mode
+    document.getElementById('label-2d').style.display = view === 'both' ? 'block' : 'none';
+    document.getElementById('label-3d').style.display = view === 'both' ? 'block' : 'none';
     // Notify 3D module
     window.dispatchEvent(new CustomEvent('taxel-view-changed', { detail: { view } }));
 }
@@ -429,8 +435,8 @@ function createCoordinateSVG(finger, coords) {
         circle.setAttribute('cx', svgX);
         circle.setAttribute('cy', svgY);
         circle.setAttribute('r', taxelRadius);
-        circle.setAttribute('fill', '#3b4050');
-        circle.setAttribute('stroke', '#4a5568');
+        circle.setAttribute('fill', '#1a1a1a');
+        circle.setAttribute('stroke', '#2a2a2a');
         circle.setAttribute('stroke-width', '0.5');
         circle.setAttribute('class', 'taxel-circle');
         circle.setAttribute('id', `taxel-${finger}-${index}`);
@@ -496,9 +502,9 @@ function updateTaxels(taxels) {
             // If below threshold, reset to default and skip
             if (forceThreshold > 0 && magnitude < forceThreshold) {
                 if (isSVG) {
-                    element.setAttribute('fill', '#3b4050');
+                    element.setAttribute('fill', '#1a1a1a');
                 } else {
-                    element.style.backgroundColor = '#3b4050';
+                    element.style.backgroundColor = '#1a1a1a';
                 }
                 return;
             }
@@ -511,7 +517,7 @@ function updateTaxels(taxels) {
                 const absX = Math.abs(fx);
                 const absY = Math.abs(fy);
 
-                let color = '#3b4050';
+                let color = '#1a1a1a';
                 if (magnitude >= 0.1) {
                     const alpha = Math.min(magnitude / MAX_TAXEL_FORCE, 1);
                     const opacity = 0.3 + alpha * 0.7;
@@ -597,7 +603,7 @@ function updateTaxelArrow(circleElement, fx, fy, fz, magnitude) {
     if (existingArrow) existingArrow.remove();
 
     // Reset circle to light gray background
-    circleElement.setAttribute('fill', '#2f3242');
+    circleElement.setAttribute('fill', '#0a0a0a');
 
     // Don't draw arrow if force is too small or below threshold
     if (magnitude < 0.1) return;

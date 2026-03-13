@@ -178,6 +178,10 @@
                         <input type="radio" name="taxel-view" id="view-3d-toggle" checked>
                         <span>3D</span>
                     </label>
+                    <label class="toggle-label">
+                        <input type="radio" name="taxel-view" id="view-both-toggle">
+                        <span>Both</span>
+                    </label>
                     <span class="view-separator">|</span>
                     <label class="toggle-label">
                         <input type="radio" name="taxel-mode" id="magnitude-mode-toggle">
@@ -213,9 +217,9 @@
                     </label>
                     <span class="view-separator">|</span>
                     <label class="toggle-label" title="Hide arrows below this force (N). 0 = show all.">
-                        <input type="checkbox" id="threshold-toggle">
+                        <input type="checkbox" id="threshold-toggle" checked>
                         <span>Threshold:</span>
-                        <input type="number" id="threshold-input" min="0" max="5" step="0.1" value="0.1" disabled>
+                        <input type="number" id="threshold-input" min="0" max="5" step="0.1" value="0.5">
                         <span>N</span>
                     </label>
                     <div class="color-legend" id="color-legend">
@@ -232,9 +236,11 @@
                     </div>
                 </div>
             </div>
+            <div class="viz-row-label" id="label-2d" style="display: none;">2D</div>
             <div class="taxels-container" id="taxels-container" style="display: none;">
                 <!-- Taxel grids will be dynamically created -->
             </div>
+            <div class="viz-row-label" id="label-3d" style="display: none;">3D</div>
             <div class="taxels-3d-container" id="taxels-3d-container" style="display: grid;">
                 <!-- Three.js canvases will be dynamically created -->
             </div>

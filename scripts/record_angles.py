@@ -29,9 +29,13 @@ def main():
         print("Failed to connect to the hand.")
         return
     
-    hand.init_joints()
-    time.sleep(1
-    )
+    hand.enable_torque()
+    hand.set_control_mode(hand.control_mode)
+    hand.set_max_current(hand.max_current)
+    if not hand.calibrated:
+        hand.calibrate()
+    hand._compute_wrap_offsets_dict()
+    hand.set_neutral_position(num_steps=150, step_size=0.02)
 
     hand.disable_torque()
     print("Torque disabled. Ready to record motor angles.")

@@ -18,7 +18,7 @@ body {
 }
 
 .container {
-    max-width: 1400px;
+    max-width: 1600px;
     margin: 0 auto;
 }
 
@@ -463,20 +463,36 @@ header h1 {
 .dir-up { background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.2) !important; }
 .dir-down { background: rgba(200, 160, 80, 0.12); color: #c8a870; border-color: rgba(200, 160, 80, 0.2) !important; }
 
+/* --- Row Labels --- */
+
+.viz-row-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #5f718b;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 6px 0 4px 0;
+}
+
 /* --- Taxel Grids (2D) --- */
 
 .taxels-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    grid-template-columns: repeat(5, 1fr);
     gap: 10px;
 }
 
 .taxel-finger {
-    background: rgba(255, 255, 255, 0.02);
+    background: #000000;
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 0;
     padding: 10px;
     text-align: center;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 }
 
 .taxel-finger-label {
@@ -504,7 +520,7 @@ header h1 {
     width: 10px;
     height: 10px;
     border-radius: 0;
-    background: rgba(255, 255, 255, 0.06);
+    background: #1a1a1a;
     transition: background-color 0.05s ease-out;
 }
 
@@ -545,23 +561,26 @@ header h1 {
 
 .taxels-3d-container {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(5, 1fr);
     gap: 10px;
 }
 
 .taxel-3d-finger {
-    background: rgba(255, 255, 255, 0.02);
+    background: #000000;
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 0;
     padding: 10px;
     text-align: center;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    flex-direction: column;
 }
 
 .taxel-3d-finger canvas {
     border-radius: 0;
     cursor: grab;
     width: 100% !important;
-    height: 300px !important;
+    flex: 1;
 }
 
 .taxel-3d-finger canvas:active {

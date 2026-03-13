@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORCA Hand Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ORCA Hand Dashboard</h1>
+            <div class="controls">
+                <button id="torque-btn" class="btn btn-enable" onclick="toggleTorque()">Enable Torque</button>
+                <button class="btn btn-secondary" onclick="goNeutral()">Go to Neutral</button>
+            </div>
+        </header>
+
+        <div class="header-row">
+            <span class="col-joint">Joint</span>
+            <span class="col-slider">Position</span>
+            <span class="col-value">Value</span>
+            <span class="col-temp">Temp</span>
+            <span class="col-current">Current</span>
+        </div>
+
+        <div class="joints-container">
+            {% for finger, joints in grouped.items() %}
+            <div class="finger-group">
+                <div class="finger-label">{{ finger.upper() }}</div>
+                {% for joint in joints %}
+                {% set info = joints_info[joint] %}
+                <div class="joint-row" data-joint="{{ joint }}">
+                    <span class="col-joint joint-name">{{ joint.split('_', 1)[1] if '_' in joint else joint }}</span>
+                    <span class="col-slider">
+                        <input type="range"
+                               class="slider"
+                               id="slider-{{ joint }}"
+                               min="{{ info.min }}"
+                               max="{{ info.max }}"
+                               step="0.1"
+                               value="0"
+                               oninput="onSlider('{{ joint }}', this.value)">
+                    </span>
+                    <span class="col-value" id="val-{{ joint }}">0.0</span>
+                    <span class="col-temp" id="temp-{{ joint }}">--</span>
+                    <span class="col-current" id="cur-{{ joint }}">--</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

@@ -23,6 +23,10 @@ def main():
     parser = argparse.ArgumentParser(description='Replay recorded hand movements')
     parser.add_argument('--step_time', type=float, default=0.02,
                       help='Timestep for interpolation (default: 0.02)')
+    parser.add_argument('--interp_time', type=float, default=3.0,
+                      help='Seconds per movement between waypoints (default: 3.0)')
+    parser.add_argument('--auto', action='store_true',
+                      help='Automatically loop through waypoints without waiting for Enter')
     parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
     parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
@@ -65,32 +69,40 @@ def main():
     print("Torque enabled. Starting replay...")
 
     # --- Parameters ---
-    interp_time = 0.5     # seconds between waypoints
+    interp_time = args.interp_time
     step_time = args.step_time     # timestep for interpolation
     mode = "ease_in_out" # can be "linear" or "ease_in_out"
 
+    def move_to(start, end):
+        n_steps = int(interp_time / step_time)
+        interp_func = linear_interp if mode == "linear" else ease_in_out
+        start_time = time.time()
+
+        for step in range(n_steps + 1):
+            t = step / n_steps
+            alpha = interp_func(t)
+            pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
+            hand.set_joint_pos(pose)
+
+            target_time = start_time + step * step_time
+            now = time.time()
+            if now < target_time:
+                time.sleep(target_time - now)
+
     try:
-        while True:  # Infinite loop
+        # Move to first waypoint from current position
+        print("Moving to waypoint 1...")
+        if not args.auto:
+            input("Press Enter to continue (Ctrl+C to stop replay)...")
+        move_to(hand.get_joint_pos(), waypoints[0])
+
+        while True:
             for i in range(len(waypoints)):
-                start = waypoints[i]
-                end = waypoints[(i + 1) % len(waypoints)]  # Loop back to the first waypoint
-                print(f"Interpolating {mode} from waypoint {i+1} to waypoint {(i+2) if (i+1) < len(waypoints) else 1}...")
-
-                n_steps = int(interp_time / step_time)
-                interp_func = linear_interp if mode == "linear" else ease_in_out
-                start_time = time.time()
-
-                for step in range(n_steps + 1):
-                    t = step / n_steps
-                    alpha = interp_func(t)
-                    pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    hand.set_joint_pos(pose)
-
-                    # Compute target time for this step and wait only if ahead
-                    target_time = start_time + step * step_time
-                    now = time.time()
-                    if now < target_time:
-                        time.sleep(target_time - now)
+                next_i = (i + 1) % len(waypoints)
+                print(f"Interpolating {mode} from waypoint {i+1} to waypoint {next_i+1}...")
+                if not args.auto:
+                    input("Press Enter to continue (Ctrl+C to stop replay)...")
+                move_to(waypoints[i], waypoints[next_i])
 
     except KeyboardInterrupt:
         print("Replay interrupted.")

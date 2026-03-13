@@ -233,13 +233,13 @@ function createFingerScene(finger, coords) {
     wrapper.appendChild(canvas);
     container.appendChild(wrapper);
 
-    const width = 280;
-    const height = 300;
+    const width = wrapper.clientWidth || 280;
+    const height = wrapper.clientHeight || 280;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setClearColor(0x1a1d26);
+    renderer.setClearColor(0x000000);
 
     const scene = new THREE.Scene();
 
@@ -338,13 +338,15 @@ function createFingerScene(finger, coords) {
     const ro = new ResizeObserver(entries => {
         for (const entry of entries) {
             const w = entry.contentRect.width;
-            const h = 300;
-            camera.aspect = w / h;
-            camera.updateProjectionMatrix();
-            renderer.setSize(w, h);
+            const h = entry.contentRect.height;
+            if (w > 0 && h > 0) {
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+                renderer.setSize(w, h);
+            }
         }
     });
-    ro.observe(wrapper);
+    ro.observe(canvas);
 }
 
 async function addSTLModelToScene(finger, modelName) {
@@ -536,7 +538,7 @@ window.addEventListener('taxel-data-update', (e) => {
 });
 
 window.addEventListener('taxel-view-changed', async (e) => {
-    if (e.detail.view === '3d') {
+    if (e.detail.view === '3d' || e.detail.view === 'both') {
         await init3D();
         Object.values(scenes).forEach(s => s.startAnimation());
     } else {
@@ -569,9 +571,10 @@ async function init3D() {
 }
 
 // Self-initialize: module scripts are deferred, so the DOM is ready.
-// Check if 3D is the active view and initialize immediately.
+// Check if 3D or Both is the active view and initialize immediately.
 const view3dToggle = document.getElementById('view-3d-toggle');
-if (view3dToggle && view3dToggle.checked) {
+const viewBothToggle = document.getElementById('view-both-toggle');
+if ((view3dToggle && view3dToggle.checked) || (viewBothToggle && viewBothToggle.checked)) {
     displayMode = readDisplayMode();
     init3D().then(() => {
         Object.values(scenes).forEach(s => s.startAnimation());
