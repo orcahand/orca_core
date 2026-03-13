@@ -1,0 +1,18 @@
+# Finger-to-sensor-model mapping
+# Change these to switch which sensor model is used on each finger.
+# Model names must match a subdirectory in this folder.
+#
+# Available models:
+#   PXSR-CMDDP18A  - ORCA Fingertip Thumb (51 taxels)
+#   PXSR-CMDDP18B  - ORCA Fingertip Middle (87 taxels)
+#   PXSR-CMDDP18C  - ORCA Fingertip Pinky (51 taxels)
+#   M2826-Omega    - Legacy Thumb (127 taxels)
+#   S2015-Elite    - Legacy Index (52 taxels)
+#   S1813-Elite    - Legacy Small Finger (31 taxels)
+
+finger_models:
+  thumb: PXSR-CMDDP18A
+  index: PXSR-CMDDP18B
+  middle: PXSR-CMDDP18B
+  ring: PXSR-CMDDP18B
+  pinky: PXSR-CMDDP18C
