@@ -40,13 +40,19 @@ class OrcaHand:
         config = read_yaml(self.config_path)
         calib = read_yaml(self.calib_path)
             
-        self.baudrate: int = config.get('baudrate', 3000000)
+        self.motor_type: str = config.get('motor_type', 'dynamixel')
+        self.baudrate: int = 1000000 if self.motor_type == 'feetech' else config.get('baudrate', 3000000)
         self.port: str = config.get('port', '/dev/ttyUSB0')
         self.max_current: int = config.get('max_current', 300)
         self.control_mode: str = config.get('control_mode', 'current_position')
         self.type: str = config.get('type', None)
-        self.motor_type: str = config.get('motor_type', 'dynamixel')
         
+        self.model: str = config.get('model', None)
+        self.joint_properties: Dict[str, dict] = config.get('joint_properties', {})
+        self.tension_threshold: float = config.get('tension_threshold', 30)
+        self.tension_approach_period: float = config.get('tension_approach_period', 0.1)
+        self.motor_range_estimate: Dict[int, float] = {int(k): v for k, v in config.get('motor_range_estimate', {}).items()}
+
         self.calib_current: str = config.get('calib_current', 200)
         self.wrist_calib_current: str = config.get('wrist_calib_current', 100)
         self.calib_step_size: float = config.get('calib_step_size', 0.1)
@@ -56,7 +62,7 @@ class OrcaHand:
         self.calib_sequence: Dict[str, Dict[str, str]] = config.get('calib_sequence', [])
         self.calibrated: bool = calib.get('calibrated', False)
         self.wrist_calibrated: bool = calib.get('wrist_calibrated', False)
-     
+
         self.neutral_position: Dict[str, float] = config.get('neutral_position', {})
         
         self.motor_ids: List[int] = config.get('motor_ids', [])
@@ -71,9 +77,20 @@ class OrcaHand:
         self.joint_to_motor_ratios_dict: Dict[int, float] = {
             motor_id: joint_to_motor_ratios_from_calib_dict.get(motor_id, 0.0) for motor_id in self.motor_ids}
             
-        self.joint_to_motor_map: Dict[str, float] = config.get('joint_to_motor_map', {})
         self.joint_roms_dict: Dict[str, List[float]] = config.get('joint_roms', {})
-        
+
+        motor_to_joint_map_config = config.get('motor_to_joint_map', {})
+        if motor_to_joint_map_config:
+            self.motor_to_joint_map: Dict[int, List[str]] = {int(k): v for k, v in motor_to_joint_map_config.items()}
+            joint_to_motor_map = {}
+            for motor_id, joints in self.motor_to_joint_map.items():
+                for joint in joints:
+                    joint_to_motor_map[joint] = motor_id
+            self.joint_to_motor_map: Dict[str, int] = joint_to_motor_map
+        else:
+            self.motor_to_joint_map: Dict[int, List[str]] = {}
+            self.joint_to_motor_map: Dict[str, int] = config.get('joint_to_motor_map', {})
+
         self.joint_inversion_dict = {}
         for joint, motor_id in self.joint_to_motor_map.items():
             if motor_id < 0 or math.copysign(1, motor_id) < 0:
@@ -81,10 +98,20 @@ class OrcaHand:
                 self.joint_to_motor_map[joint] = int(abs(motor_id))
             else:
                 self.joint_inversion_dict[joint] = False
-        
-        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()} # This is to make IDs integers
 
-        self.motor_to_joint_dict: Dict[int, str] = {v: k for k, v in self.joint_to_motor_map.items()}
+        for joint, props in self.joint_properties.items():
+            if props.get('inverted', False):
+                self.joint_inversion_dict[joint] = True
+
+        self.joint_to_motor_map = {k: int(v) for k, v in self.joint_to_motor_map.items()}
+
+        # Primary joint per motor (first joint in motor_to_joint_map, or the only joint in old format)
+        self.motor_to_joint_dict: Dict[int, str] = {}
+        if self.motor_to_joint_map:
+            for motor_id, joints in self.motor_to_joint_map.items():
+                self.motor_to_joint_dict[motor_id] = joints[0]
+        else:
+            self.motor_to_joint_dict = {v: k for k, v in self.joint_to_motor_map.items()}
 
         self._wrap_offsets_dict: Dict[int, float] = None
 
@@ -122,12 +149,18 @@ class OrcaHand:
         else:
             raise ValueError(f"Unknown motor_type: {self.motor_type}. Expected 'dynamixel' or 'feetech'.")
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, port: str = None) -> tuple[bool, str]:
         """Connect to the hand with the configured motor client.
+
+        Args:
+            port: If provided, use this port and don't fall back to interactive selection.
 
         Returns:
             tuple[bool, str]: (Success status, message).
         """
+        if port:
+            self.port = port
+
         try:
             self._motor_client = self._create_motor_client()
             with self._motor_lock:
@@ -135,6 +168,11 @@ class OrcaHand:
             return True, "Connection successful"
         except Exception as e:
             self._motor_client = None
+
+            # If port was explicitly specified, don't fall back
+            if port:
+                return False, f"Connection failed on {self.port}: {str(e)}"
+
             print(f"Connection failed on {self.port}: {str(e)}")
 
             # Try auto-detecting the port first
@@ -374,8 +412,6 @@ class OrcaHand:
                             continue
                         target_pos = target_positions[joint]
                         interpolated_positions[joint] = current_pos * (1 - t) + target_pos * t
-                    else:
-                        interpolated_positions[joint] = current_positions[joint]
                 
                 motor_pos = self._joint_to_motor_pos(interpolated_positions)
                                 
@@ -479,18 +515,120 @@ class OrcaHand:
         
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+    def calibrate(self, blocking: bool = True, force_wrist: bool = False, joints: list = None):
         if blocking:
             self._task_stop_event.clear()
-            self._calibrate(force_wrist=force_wrist)
+            self._calibrate(force_wrist=force_wrist, joints=joints)
         else:
-            self._start_task(self._calibrate, force_wrist=force_wrist)
+            self._start_task(self._calibrate, force_wrist=force_wrist, joints=joints)
 
-    def _calibrate(self, force_wrist: bool = False):
+    def _expand_calib_sequence(self, sequence):
+        """Convert lite flat list of joint names into v1-style calibration steps."""
+        expanded = []
+        for entry in sequence:
+            if isinstance(entry, dict):
+                expanded.append(entry)
+                continue
+            props = self.joint_properties.get(entry, {})
+            actuation = props.get('actuation', 'bidirectional')
+            if actuation in ('fixed', 'passive'):
+                continue
+            if actuation == 'bidirectional':
+                expanded.append({'joints': {entry: 'flex'}})
+                expanded.append({'joints': {entry: 'extend'}})
+            elif actuation == 'unidirectional':
+                direction = props.get('motor_direction', 'flex')
+                expanded.append({'joints': {entry: direction}, 'unidirectional': True})
+        return expanded
+
+    def _find_tension_onset(self, motor_id, motor_direction, stall_limit):
+        """Back off from stall limit by motor_range_estimate, then approach slowly to find tension onset."""
+        range_est = self.motor_range_estimate.get(motor_id)
+        if not range_est:
+            print(f"WARNING: No motor_range_estimate for motor {motor_id}, skipping tension detection")
+            return stall_limit
+
+        idx = self.motor_id_to_idx_dict[motor_id]
+        return_sign = -1 if motor_direction == 'flex' else 1
+        approach_sign = -return_sign
+        step_size = self.calib_step_size
+
+        self.enable_torque([motor_id])
+        self.set_control_mode('current_based_position')
+        self.set_max_current(self.calib_current)
+
+        # Step 1: Back off by motor_range_estimate
+        backoff_target = stall_limit + return_sign * range_est
+        print(f"[tension] Motor {motor_id}: backoff_target={backoff_target:.3f} (stall_limit={stall_limit:.3f} + return_sign={return_sign} * range_est={range_est:.3f})")
+        self._set_motor_pos({motor_id: backoff_target})
+        prev_pos = float(self._motor_client.read_pos_vel_cur()[0][idx])
+        initial_dist = abs(prev_pos - backoff_target)
+        made_progress = False
+        for i in range(200):  # max ~10s
+            time.sleep(0.05)
+            pos = float(self._motor_client.read_pos_vel_cur()[0][idx])
+            at_target = abs(pos - backoff_target) < self.calib_threshold
+            if abs(pos - backoff_target) < initial_dist - self.calib_threshold:
+                made_progress = True
+            stopped_moving = abs(pos - prev_pos) < self.calib_threshold
+            if at_target or (stopped_moving and (made_progress or i >= 39)):
+                print(f"[tension] Motor {motor_id}: backoff settled after {(i+1)*0.05:.2f}s (at_target={at_target}, made_progress={made_progress})")
+                break
+            prev_pos = pos
+            if self._task_stop_event.is_set():
+                return pos
+        pos_after_backoff = float(self._motor_client.read_pos_vel_cur()[0][idx])
+        print(f"[tension] Motor {motor_id}: pos_after_backoff={pos_after_backoff:.3f}, backoff_distance={abs(pos_after_backoff - stall_limit):.3f} (wanted {range_est:.3f})")
+
+        if self._task_stop_event.is_set():
+            return pos_after_backoff
+
+        # Step 2: Approach slowly until tension detected via current rise over baseline
+        time.sleep(0.3)
+        baseline_samples = []
+        for _ in range(10):
+            baseline_samples.append(abs(float(self._motor_client.read_pos_vel_cur()[2][idx])))
+            time.sleep(0.02)
+        baseline_current = float(np.mean(baseline_samples))
+        print(f"[tension] Motor {motor_id}: baseline_current={baseline_current:.1f}mA (std={float(np.std(baseline_samples)):.1f}), threshold={self.tension_threshold}mA")
+
+        current_window = []
+        while not self._task_stop_event.is_set():
+            self._set_motor_pos({motor_id: approach_sign * step_size}, rel_to_current=True)
+            time.sleep(self.tension_approach_period)
+            pos_vel_cur = self._motor_client.read_pos_vel_cur()
+            pos_after = float(pos_vel_cur[0][idx])
+            current = abs(float(pos_vel_cur[2][idx]))
+
+            current_window.append(current)
+            if len(current_window) > 5:
+                current_window.pop(0)
+            avg_current = float(np.mean(current_window))
+            current_rise = avg_current - baseline_current
+
+            # Safety: stop if we've reached or passed the stall limit
+            if (approach_sign > 0 and pos_after >= stall_limit) or \
+               (approach_sign < 0 and pos_after <= stall_limit):
+                print(f"Motor {motor_id} reached stall limit without detecting tension")
+                return pos_after
+
+            print(f"  Motor {motor_id} approach: pos={pos_after:.3f}, current={current:.1f}mA, avg={avg_current:.1f}mA (rise={current_rise:+.1f}mA)")
+
+            if len(current_window) >= 3 and current_rise >= self.tension_threshold:
+                print(f"Motor {motor_id} tension onset at {pos_after:.3f} rad (avg_current={avg_current:.1f}mA, rise={current_rise:.1f}mA over baseline {baseline_current:.1f}mA)")
+                return pos_after
+
+        return float(self._motor_client.read_pos_vel_cur()[0][idx])
+
+    def _calibrate(self, force_wrist: bool = False, joints: list = None):
+
+        # Expand lite flat sequence into v1-style steps if needed
+        calib_sequence = list(self.calib_sequence)
+        if any(isinstance(s, str) for s in calib_sequence):
+            calib_sequence = self._expand_calib_sequence(calib_sequence)
 
         # Build effective calibration sequence with wrist logic
-        wrist_in_sequence = any('wrist' in step['joints'] for step in self.calib_sequence)
-        calib_sequence = list(self.calib_sequence)
+        wrist_in_sequence = any('wrist' in step['joints'] for step in calib_sequence)
 
         if self.wrist_calibrated and not force_wrist:
             if wrist_in_sequence:
@@ -502,6 +640,19 @@ class OrcaHand:
 
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
+
+        # Filter calibration sequence if specific joints are requested
+        if joints is not None:
+            joints_set = set(joints)
+            filtered_sequence = []
+            for step in calib_sequence:
+                filtered_joints = {j: d for j, d in step["joints"].items() if j in joints_set}
+                if filtered_joints:
+                    new_step = dict(step)
+                    new_step["joints"] = filtered_joints
+                    filtered_sequence.append(new_step)
+            print(f"Calibrating {len(joints)} joints across {len(filtered_sequence)} steps (out of {len(calib_sequence)} total)")
+            calib_sequence = filtered_sequence
 
         self._compute_wrap_offsets_dict()
         for step in calib_sequence:
@@ -576,7 +727,7 @@ class OrcaHand:
                         if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(position_buffers[motor_id], position_buffers[motor_id][0], atol=self.calib_threshold):
                             motor_reached_limit[motor_id] = True
                             # disable torque for the motor
-                            if 'wrist' in joint:
+                            if 'wrist' in joint or step.get('unidirectional'):
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
@@ -600,14 +751,35 @@ class OrcaHand:
 
                             self.enable_torque([motor_id])
                 
+            # For unidirectional steps, find the other limit via manual positioning
+            if step.get('unidirectional'):
+                for joint, direction in step["joints"].items():
+                    motor_id = self.joint_to_motor_map[joint]
+                    motor_sign = directions[motor_id]
+                    stall_limit = motor_limits[motor_id][1] if motor_sign == 1 else motor_limits[motor_id][0]
+                    if stall_limit is None:
+                        continue
+                    self.disable_torque([motor_id])
+                    other_direction = 'extended' if direction == 'flex' else 'flexed'
+                    print(f"\nMove '{joint}' (motor {motor_id}) to the {other_direction} position, then press Enter.")
+                    input()
+                    manual_pos = float(self._motor_client.read_pos_vel_cur()[0][self.motor_id_to_idx_dict[motor_id]])
+                    print(f"Motor {motor_id} ({joint}) manual limit recorded at {manual_pos:.3f} rad")
+                    if motor_sign == 1:
+                        motor_limits[motor_id][0] = manual_pos
+                    else:
+                        motor_limits[motor_id][1] = manual_pos
+                    self.enable_torque([motor_id])
+
             # find ratios of all motors that have been calibrated in this step
-            for joint, direction in step["joints"].items(): 
+            for joint, direction in step["joints"].items():
                 motor_id = self.joint_to_motor_map[joint]
                 if motor_limits[motor_id][0] is None or motor_limits[motor_id][1] is None:
                     continue
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
-                delta_joint = self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][1] - self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][0]
-                self.joint_to_motor_ratios_dict[motor_id] = float(delta_motor / delta_joint) 
+                primary_joint = self.motor_to_joint_dict[motor_id]
+                delta_joint = self.joint_roms_dict[primary_joint][1] - self.joint_roms_dict[primary_joint][0]
+                self.joint_to_motor_ratios_dict[motor_id] = float(delta_motor / delta_joint)
                 print("Joint calibrated: ", joint)
                 calibrated_joints[joint] = 0.0
   
@@ -625,7 +797,7 @@ class OrcaHand:
 
         self.calibrated = self.is_calibrated()
         update_yaml(self.calib_path, 'calibrated', self.calibrated)
-        self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
+        self.set_joint_pos(calibrated_joints)
         self.set_max_current(self.max_current)
        
     def _compute_wrap_offsets_dict(self):
@@ -744,20 +916,42 @@ class OrcaHand:
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
             motor_id = self.motor_ids[idx]
-            joint_name = self.motor_to_joint_dict.get(motor_id)
+            primary_joint = self.motor_to_joint_dict.get(motor_id)
+            coupled = self.motor_to_joint_map.get(motor_id, []) if self.motor_to_joint_map else []
+
             if any(limit is None for limit in self.motor_limits_dict[motor_id]):
-                joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
-                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m")
+                joint_pos[primary_joint] = None
+                for joint in coupled[1:]:
+                    joint_pos[joint] = None
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {primary_joint}) has not been fully calibrated (missing motor limits).\033[0m")
             elif self.joint_to_motor_ratios_dict[motor_id] == 0:
-                joint_pos[joint_name] = None #TODO: Add a warning here the probably the motor is not calibrated
-                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
+                joint_pos[primary_joint] = None
+                for joint in coupled[1:]:
+                    joint_pos[joint] = None
+                print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {primary_joint}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
-                
-                if self.joint_inversion_dict.get(joint_name, False):
-                    joint_pos[joint_name] = self.joint_roms_dict[joint_name][1] - (wrapped_pos - self.motor_limits_dict[motor_id][0]) / self.joint_to_motor_ratios_dict[motor_id]
+                motor_fraction = (wrapped_pos - self.motor_limits_dict[motor_id][0]) / self.joint_to_motor_ratios_dict[motor_id]
+
+                if self.joint_inversion_dict.get(primary_joint, False):
+                    joint_pos[primary_joint] = self.joint_roms_dict[primary_joint][1] - motor_fraction
                 else:
-                    joint_pos[joint_name] = self.joint_roms_dict[joint_name][0] + (wrapped_pos - self.motor_limits_dict[motor_id][0]) / self.joint_to_motor_ratios_dict[motor_id]
+                    joint_pos[primary_joint] = self.joint_roms_dict[primary_joint][0] + motor_fraction
+
+                # Compute coupled joint positions (scaled by ROM proportion)
+                if len(coupled) > 1:
+                    primary_rom = self.joint_roms_dict[primary_joint][1] - self.joint_roms_dict[primary_joint][0]
+                    for joint in coupled[1:]:
+                        this_rom = self.joint_roms_dict[joint][1] - self.joint_roms_dict[joint][0]
+                        scale = this_rom / primary_rom if primary_rom else 0
+                        joint_pos[joint] = self.joint_roms_dict[joint][0] + motor_fraction * scale
+
+        # Add fixed joints at their fixed position (ROM min == max)
+        if self.joint_properties:
+            for joint, props in self.joint_properties.items():
+                if props.get('actuation') == 'fixed' and joint not in joint_pos:
+                    joint_pos[joint] = self.joint_roms_dict[joint][0]
+
         return joint_pos
     
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
@@ -775,68 +969,113 @@ class OrcaHand:
         motor_pos = [None] * len(self.get_motor_pos())
                 
         for joint_name, pos in joint_pos.items():
+            # Skip passive/fixed joints — they have no motor
+            if self.joint_properties:
+                props = self.joint_properties.get(joint_name, {})
+                if props.get('actuation') in ('passive', 'fixed'):
+                    continue
+
             motor_id = self.joint_to_motor_map.get(joint_name)
             if motor_id is None or pos is None:
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
             if self.motor_limits_dict[motor_id][0] is None or self.motor_limits_dict[motor_id][1] is None or self.joint_to_motor_ratios_dict[motor_id] == 0:
                 motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
                 print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
                 continue
-            
+
+            # For coupled joints, scale by ROM proportion relative to primary joint
+            primary_joint = self.motor_to_joint_dict.get(motor_id, joint_name)
+            if self.motor_to_joint_map and joint_name != primary_joint:
+                primary_rom = self.joint_roms_dict[primary_joint][1] - self.joint_roms_dict[primary_joint][0]
+                this_rom = self.joint_roms_dict[joint_name][1] - self.joint_roms_dict[joint_name][0]
+                scale = primary_rom / this_rom if this_rom else 0
+                scaled_pos = self.joint_roms_dict[primary_joint][0] + (pos - self.joint_roms_dict[joint_name][0]) * scale
+                joint_name = primary_joint
+                pos = scaled_pos
+
             min_pos, max_pos = self.joint_roms_dict[joint_name]
-            
+
             if pos < min_pos or pos > max_pos:
-                clipped_pos = max(min_pos, min(max_pos, pos))
-                pos = clipped_pos
+                pos = max(min_pos, min(max_pos, pos))
 
             if self.joint_inversion_dict.get(joint_name, False):
-                # Inverted: higher ROM value corresponds to lower motor position.
                 motor_pos[self.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (self.joint_roms_dict[joint_name][1] - pos) * self.joint_to_motor_ratios_dict[motor_id]
             else:
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (pos - self.joint_roms_dict[joint_name][0]) * self.joint_to_motor_ratios_dict[motor_id]  
-            
+                motor_pos[self.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (pos - self.joint_roms_dict[joint_name][0]) * self.joint_to_motor_ratios_dict[motor_id]
+
             motor_pos[self.motor_id_to_idx_dict[motor_id]] += self._wrap_offsets_dict.get(motor_id, 0.0)
-            
+
         return motor_pos
     
     def _sanity_check(self):
         """Check if the configuration is correct and the IDs are consistent."""
-        if len(self.motor_ids) != len(self.joint_ids):
-            raise ValueError("Number of motor IDs and joints do not match.")
-        
-        if len(self.motor_ids) != len(self.joint_to_motor_map):
-            raise ValueError("Number of motor IDs and joints do not match.")
-        
+        # Check if using new config format (motor_to_joint_map) or old format (joint_to_motor_map)
+        config = read_yaml(self.config_path)
+        motor_to_joint_map_new = config.get('motor_to_joint_map', {})
+
+        if motor_to_joint_map_new:
+            # New format: motors can drive multiple joints
+            # Validate motor_to_joint_map
+            for motor_id, joints in motor_to_joint_map_new.items():
+                if motor_id not in self.motor_ids:
+                    raise ValueError(f"Motor ID {motor_id} in motor_to_joint_map is not in motor_ids list.")
+                for joint in joints:
+                    if joint not in self.joint_ids:
+                        raise ValueError(f"Joint {joint} in motor_to_joint_map is not defined in joint_ids.")
+                    if joint not in self.joint_roms_dict:
+                        raise ValueError(f"ROM for joint {joint} is not defined.")
+        else:
+            # Old format: 1 motor per joint
+            if len(self.motor_ids) != len(self.joint_ids):
+                raise ValueError("Number of motor IDs and joints do not match.")
+
+            if len(self.motor_ids) != len(self.joint_to_motor_map):
+                raise ValueError("Number of motor IDs and joints do not match.")
+
+            for joint, motor_id in self.joint_to_motor_map.items():
+                if joint not in self.joint_ids:
+                    raise ValueError(f"Joint {joint} is not defined.")
+                if joint not in self.joint_roms_dict:
+                    raise ValueError(f"ROM for joint {joint} is not defined.")
+                if motor_id not in self.motor_ids:
+                    raise ValueError(f"Motor ID {motor_id} is not in the motor IDs list.")
+
+        # Common checks for both formats
         if self.control_mode not in ['current_position', 'current_velocity', 'position', 'multi_turn_position', 'current_based_position']:
             raise ValueError("Invalid control mode.")
-        
+
         if self.max_current < self.calib_current:
             raise ValueError("Max current should be greater than the calibration current.")
-                
-        for joint, motor_id in self.joint_to_motor_map.items():
-            if joint not in self.joint_ids:
-                raise ValueError(f"Joint {joint} is not defined.")
-            if joint not in self.joint_roms_dict:
-                raise ValueError(f"ROM for joint {joint} is not defined.")
-            if motor_id not in self.motor_ids:
-                raise ValueError(f"Motor ID {motor_id} is not in the motor IDs list.")
-            
+
         for joint, rom in self.joint_roms_dict.items():
-            if rom[1] - rom[0] <= 0:
+            if rom[1] - rom[0] < 0:
                 raise ValueError(f"ROM for joint {joint} is not valid.")
             if joint not in self.joint_ids:
                 raise ValueError(f"Joint {joint} in ROMs is not defined.")
-            
+
+        # Validate calibration sequence (handle both old and new formats)
         for step in self.calib_sequence:
-            for joint, direction in step["joints"].items():
-                if joint not in self.joint_ids:
-                    raise ValueError(f"Joint {joint} is not defined.")
-                if direction not in ['flex', 'extend']:
-                    raise ValueError(f"Invalid direction for joint {joint}.")
-          
-        
+            if isinstance(step, dict):
+                # Old format: {"joints": {"joint_name": "direction", ...}}
+                for joint, direction in step["joints"].items():
+                    if joint not in self.joint_ids:
+                        raise ValueError(f"Joint {joint} in calib_sequence is not defined.")
+                    if direction not in ['flex', 'extend']:
+                        raise ValueError(f"Invalid direction for joint {joint}.")
+            elif isinstance(step, str):
+                # New format: simple list of joint names
+                if step not in self.joint_ids:
+                    raise ValueError(f"Joint {step} in calib_sequence is not defined.")
+                if self.joint_properties:
+                    if step not in self.joint_properties:
+                        raise ValueError(f"Joint {step} in calib_sequence has no joint_properties entry.")
+                    props = self.joint_properties[step]
+                    if props.get('actuation') == 'unidirectional' and 'motor_direction' not in props:
+                        raise ValueError(f"Unidirectional joint {step} must specify motor_direction.")
+            else:
+                raise ValueError(f"Invalid calib_sequence format. Expected dict or str, got {type(step)}.")
+
         for motor_limit in self.motor_limits_dict.values():
             if any(limit is None for limit in motor_limit):
                 self.calibrated = False

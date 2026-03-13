@@ -21,6 +21,8 @@ from .feetech import (
     GroupSyncWrite,
     GroupSyncRead,
     COMM_SUCCESS,
+    SMS_STS_ID,
+    SMS_STS_BAUD_RATE,
     SMS_STS_TORQUE_ENABLE,
     SMS_STS_MODE,
     SMS_STS_PRESENT_POSITION_L,
@@ -32,6 +34,12 @@ from .feetech import (
     SMS_STS_GOAL_TIME_L,
     SMS_STS_GOAL_SPEED_L,
 )
+
+FEETECH_BAUD_RATE_MAP = {
+    1000000: 0, 500000: 1, 250000: 2, 128000: 3,
+    115200: 4, 76800: 5, 57600: 6, 38400: 7,
+}
+FEETECH_MODELS = {}
 
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
@@ -461,6 +469,77 @@ class FeetechClient(MotorClient):
             self.disconnect()
         except Exception:
             pass
+
+    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252),
+                        baud_rates: list = None) -> list:
+        """Scans for Feetech motors. Returns list of {'id', 'baud_rate', 'model_name'}."""
+        baud_rates = baud_rates or list(FEETECH_BAUD_RATE_MAP.keys())
+        detected_motors = []
+        for baud_rate in baud_rates:
+            port_handler = PortHandler(port)
+            port_handler.baudrate = baud_rate
+            try:
+                if not port_handler.openPort():
+                    logging.warning('Failed to open port %s at %d baud', port, baud_rate)
+                    continue
+                packet_handler = sms_sts(port_handler)
+                for motor_id in range(id_range[0], id_range[1] + 1):
+                    model_number, result, error = packet_handler.ping(motor_id)
+                    if result == COMM_SUCCESS:
+                        detected_motors.append({
+                            'id': motor_id, 'baud_rate': baud_rate,
+                            'model_name': FEETECH_MODELS.get(model_number, 'Feetech')
+                        })
+                port_handler.closePort()
+            except Exception as e:
+                logging.warning('Error scanning port %s at %d baud: %s', port, baud_rate, e)
+                try:
+                    port_handler.closePort()
+                except Exception:
+                    pass
+        return detected_motors
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Changes the ID of a Feetech motor."""
+        if not (0 <= new_id <= 253):
+            logging.error(f"Invalid ID {new_id}. Valid range is 0-253.")
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([current_id], False, retries=0)
+            self.packet_handler.unLockEprom(current_id)
+            result, error = self.packet_handler.write1ByteTxRx(current_id, SMS_STS_ID, new_id)
+            self.packet_handler.LockEprom(new_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info(f"Changed motor ID: {current_id} → {new_id}")
+                return True
+            logging.error(f"Failed to change motor ID: result={result}, error={error}")
+            return False
+        except Exception as e:
+            logging.error(f"Failed to change motor ID: {e}")
+            return False
+
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Changes the baud rate of a Feetech motor. Requires reconnect after change."""
+        if new_baud_rate not in FEETECH_BAUD_RATE_MAP:
+            logging.error(f"Invalid baud rate {new_baud_rate}. Valid: {list(FEETECH_BAUD_RATE_MAP.keys())}")
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([motor_id], False, retries=0)
+            self.packet_handler.unLockEprom(motor_id)
+            result, error = self.packet_handler.write1ByteTxRx(
+                motor_id, SMS_STS_BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
+            )
+            self.packet_handler.LockEprom(motor_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info(f"Changed motor {motor_id} baud rate to {new_baud_rate}")
+                return True
+            logging.error(f"Failed to change baud rate: result={result}, error={error}")
+            return False
+        except Exception as e:
+            logging.error(f"Failed to change baud rate: {e}")
+            return False
 
     def write_positions_sync(
         self,
