@@ -705,8 +705,6 @@ class OrcaHand:
                     self._motor_client.calibrate_offset(motor_id, upper=(sign < 0))
                     motors_with_initial_offset.add(motor_id)
 
-
-
             while(not all(motor_reached_limit.values()) and not self._task_stop_event.is_set()): 
 
                 for motor_id, reached_limit in motor_reached_limit.items():

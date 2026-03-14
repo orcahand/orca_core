@@ -110,6 +110,7 @@ class SliderRecorder:
         btn_frame.pack(pady=10)
 
         ttk.Button(btn_frame, text="Capture Waypoint", command=self._capture).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Capture Pose", command=self._capture_pose).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Read Hand Position", command=self._sync_from_hand).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Done", command=self.on_close).pack(side=tk.LEFT, padx=5)
 
@@ -137,6 +138,32 @@ class SliderRecorder:
         count = self.segment_count[0]
         self.status_var.set(f"Captured waypoint {count}")
         print(f"  Captured waypoint {count} (from sliders)")
+
+    def _capture_pose(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Pose Name")
+        dialog.geometry("300x100")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(dialog, text="Pose name:").pack(pady=(10, 5))
+        name_var = tk.StringVar()
+        entry = ttk.Entry(dialog, textvariable=name_var)
+        entry.pack(padx=20)
+        entry.focus_set()
+
+        def save():
+            name = name_var.get().strip().lower()
+            if not name:
+                return
+            angles = [float(self.joint_vars[j].get()) for j in self.joint_ids]
+            self.segments.append({"type": "pose", "name": name, "angles": angles})
+            self.segment_count[0] += 1
+            self.status_var.set(f"Pose '{name}' captured")
+            print(f"  Pose '{name}' captured (from sliders)")
+            dialog.destroy()
+
+        entry.bind("<Return>", lambda e: save())
+        ttk.Button(dialog, text="Save", command=save).pack(pady=5)
 
     def on_close(self):
         self.closed = True

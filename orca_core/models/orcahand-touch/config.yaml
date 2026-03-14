@@ -1,4 +1,4 @@
-port: /dev/ttyACM0
+port: /dev/ttyACM2
 version: 0.2.1
 baudrate: 1000000
 max_current: 400

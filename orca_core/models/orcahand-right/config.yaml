@@ -173,54 +173,30 @@ calib_sequence:
 - step: 11
   joints:
     index_mcp: flex
+    middle_mcp: flex
+    ring_mcp: flex
+    pinky_mcp: flex
 - step: 12
   joints:
     index_mcp: extend
+    middle_mcp: extend
+    ring_mcp: extend
+    pinky_mcp: extend
 - step: 13
   joints:
     index_pip: flex
+    middle_pip: flex
+    ring_pip: flex
+    pinky_pip: flex
 - step: 14
   joints:
     index_pip: extend
+    middle_pip: extend
+    ring_pip: extend
+    pinky_pip: extend
 - step: 15
   joints:
-    middle_mcp: flex
-- step: 16
-  joints:
-    middle_mcp: extend
-- step: 17
-  joints:
-    middle_pip: flex
-- step: 18
-  joints:
-    middle_pip: extend
-- step: 19
-  joints:
-    ring_mcp: flex
-- step: 20
-  joints:
-    ring_mcp: extend
-- step: 21
-  joints:
-    ring_pip: flex
-- step: 22
-  joints:
-    ring_pip: extend
-- step: 23
-  joints:
-    pinky_mcp: flex
-- step: 24
-  joints:
-    pinky_mcp: extend
-- step: 25
-  joints:
-    pinky_pip: flex
-- step: 26
-  joints:
-    pinky_pip: extend
-- step: 27
-  joints:
     wrist: flex
-- step: 28
+- step: 16
   joints:
     wrist: extend

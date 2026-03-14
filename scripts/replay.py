@@ -274,6 +274,31 @@ def main():
         print("No segments found in the file.")
         return
 
+    # Hardcoded thumb offset
+    joint_ids = metadata.get("joint_ids", [])
+    thumb_offsets = {"thumb_cmc": 5.0, "thumb_abd": 5.0}
+    for joint, offset in thumb_offsets.items():
+        if joint in joint_ids:
+            idx = joint_ids.index(joint)
+            for seg in segments:
+                if seg.get("type") in ("waypoint", "continuous"):
+                    a = seg["angles"]
+                    if isinstance(a[0], list):
+                        for frame in a:
+                            frame[idx] += offset
+                    else:
+                        a[idx] += offset
+                elif seg.get("type") == "group":
+                    for motion in seg.get("motions", []):
+                        a = motion["angles"]
+                        if isinstance(a[0], list):
+                            for frame in a:
+                                frame[idx] += offset
+                        else:
+                            a[idx] += offset
+                elif seg.get("type") == "pose":
+                    seg["angles"][idx] += offset
+
     sampling_freq = metadata.get("sampling_frequency_hz", 50.0)
     continuous_step_time = 1.0 / sampling_freq
 
@@ -291,6 +316,49 @@ def main():
     def prompt(msg):
         if not args.auto:
             input(msg)
+
+    # Check if this is a pose-based recording
+    poses = {seg["name"]: seg["angles"] for seg in segments if seg.get("type") == "pose"}
+
+    if poses:
+        # Pose selection mode
+        neutral = poses.get("neutral")
+        pose_names = [n for n in poses if n != "neutral"]
+
+        if neutral:
+            print("Moving to neutral...")
+            interpolate(hand, hand.get_joint_pos(), neutral, args.interp_time, args.step_time)
+
+        print(f"\nAvailable poses: {', '.join(pose_names)}")
+        print("Type a pose name to execute, or 'q' to quit.\n")
+
+        current = neutral if neutral else list(hand.get_joint_pos())
+
+        try:
+            while True:
+                choice = input("> ").strip().lower()
+                if choice == 'q':
+                    break
+                if choice not in poses:
+                    print(f"Unknown pose. Choose from: {', '.join(pose_names)}")
+                    continue
+
+                target = poses[choice]
+                print(f"  -> {choice}")
+                interpolate(hand, current, target, args.interp_time, args.step_time)
+                current = list(target)
+
+                if neutral:
+                    input("  Press Enter to return to neutral...")
+                    print(f"  -> neutral")
+                    interpolate(hand, current, neutral, args.interp_time, args.step_time)
+                    current = list(neutral)
+        except KeyboardInterrupt:
+            print("\nReplay interrupted.")
+        finally:
+            hand.disable_torque()
+            print("Torque disabled.")
+        return
 
     try:
         # Move to the start of the first segment
@@ -313,7 +381,7 @@ def main():
                 if seg["type"] == "waypoint":
                     print(f"Segment {seg_num}/{len(segments)}: waypoint")
                     if i == 0:
-                        hand.set_joint_pos(seg["angles"])
+                        interpolate(hand, hand.get_joint_pos(), seg["angles"], args.interp_time, args.step_time)
 
                 elif seg["type"] == "continuous":
                     frames = seg["angles"]
