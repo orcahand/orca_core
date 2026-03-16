@@ -672,7 +672,8 @@ class OrcaHand:
             rel_to_current (bool): If True, the desired position is relative to the current position.
         """
         with self._motor_lock:
-            current_positions = self.get_motor_pos() # np.ndarray of all motor positions
+            if rel_to_current:
+                current_positions = self.get_motor_pos() # np.ndarray of all motor positions
 
             motor_ids_to_write = []
             positions_to_write = []
@@ -711,9 +712,8 @@ class OrcaHand:
                         continue
                     else:
                         motor_ids_to_write.append(self.motor_ids[i])
-                        current_pos_of_motor = current_positions[i]
                         if rel_to_current:
-                            positions_to_write.append(float(pos_val) + current_pos_of_motor)
+                            positions_to_write.append(float(pos_val) + current_positions[i])
                         else:
                             positions_to_write.append(float(pos_val))
                 
