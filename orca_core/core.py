@@ -776,7 +776,10 @@ class OrcaHand:
                 
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
-            if motor_id is None or pos is None:
+            if motor_id is None:
+                continue
+
+            if pos is None:
                 motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
