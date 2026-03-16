@@ -772,7 +772,7 @@ class OrcaHand:
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
-        motor_pos = [None] * len(self.get_motor_pos())
+        motor_pos = [None] * len(self.motor_ids)  # Initialize with None for all motors
                 
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
