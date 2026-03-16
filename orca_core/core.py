@@ -672,7 +672,8 @@ class OrcaHand:
             rel_to_current (bool): If True, the desired position is relative to the current position.
         """
         with self._motor_lock:
-            current_positions = self.get_motor_pos() # np.ndarray of all motor positions
+            if rel_to_current:
+                current_positions = self.get_motor_pos() # np.ndarray of all motor positions
 
             motor_ids_to_write = []
             positions_to_write = []
@@ -711,9 +712,8 @@ class OrcaHand:
                         continue
                     else:
                         motor_ids_to_write.append(self.motor_ids[i])
-                        current_pos_of_motor = current_positions[i]
                         if rel_to_current:
-                            positions_to_write.append(float(pos_val) + current_pos_of_motor)
+                            positions_to_write.append(float(pos_val) + current_positions[i])
                         else:
                             positions_to_write.append(float(pos_val))
                 
@@ -772,11 +772,14 @@ class OrcaHand:
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
-        motor_pos = [None] * len(self.get_motor_pos())
+        motor_pos = [None] * len(self.motor_ids)  # Initialize with None for all motors
                 
         for joint_name, pos in joint_pos.items():
             motor_id = self.joint_to_motor_map.get(joint_name)
-            if motor_id is None or pos is None:
+            if motor_id is None:
+                continue
+
+            if pos is None:
                 motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
