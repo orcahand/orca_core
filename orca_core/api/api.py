@@ -9,7 +9,10 @@
 import os
 import sys
 import time
-from fastapi import FastAPI, HTTPException, Body
+import json
+import asyncio
+from fastapi import FastAPI, HTTPException, Body, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Union, Tuple
 import numpy as np
@@ -20,10 +23,61 @@ from orca_core import OrcaHand
 
 app = FastAPI(title="OrcaHand API", version="1.0.0")
 
+# --- Event broadcasting (WS push to bridge/local listeners) ---
+event_clients = set()
+_event_loop = None
+
+@app.on_event("startup")
+async def _capture_event_loop():
+    global _event_loop
+    _event_loop = asyncio.get_running_loop()
+
+async def broadcast_event(data):
+    """Send a JSON event to all connected /ws/events clients."""
+    payload = json.dumps(data)
+    dead = set()
+    for ws in event_clients:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            dead.add(ws)
+    event_clients.difference_update(dead)
+
+def notify_event(data):
+    """Thread-safe wrapper — schedules broadcast_event on the main event loop."""
+    if _event_loop is not None:
+        asyncio.run_coroutine_threadsafe(broadcast_event(data), _event_loop)
+
+# CORS middleware — allow frontend to call API directly during local dev
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- Global OrcaHand Instance ---
 # Ensure necessary config files are present or adjust path as needed
 
 hand = OrcaHand()
+
+# Auto-connect and calibrate on startup if hardware is available
+try:
+    if not hand.is_connected():
+        success, msg = hand.connect()
+        if success:
+            print(f"Auto-connected to hand: {msg}")
+            if not hand.is_calibrated():
+                hand.calibrate()
+                print(f"Auto-calibrated: {hand.is_calibrated()}")
+        else:
+            print(f"Auto-connect failed: {msg}")
+except Exception as e:
+    print(f"Auto-connect/calibrate skipped: {e}")
+
+# Global waypoint storage (per-client, keyed by clientId)
+waypoint_store = {}  # clientId → list of position lists
 
 class MotorList(BaseModel):
     motor_ids: Optional[List[int]] = None
@@ -32,7 +86,18 @@ class MaxCurrent(BaseModel):
     current: Union[float, List[float]]
 
 class JointPositions(BaseModel):
-    positions: Dict[str, float] = Field(..., example={"index_flex": 0.5, "thumb_flex": 0.2})
+    positions: Union[Dict[str, float], List[float]] = Field(..., example={"index_flex": 0.5, "thumb_flex": 0.2})
+
+class TensionRequest(BaseModel):
+    move_motors: bool = False
+
+class JitterRequest(BaseModel):
+    amplitude: float = 5.0
+    frequency: float = 10.0
+    duration: float = 3.0
+
+class ClientIdRequest(BaseModel):
+    clientId: str
 
 
 def handle_hand_exception(e: Exception):
@@ -254,6 +319,12 @@ def get_joint_position():
     """
     try:
         j_pos = hand.get_joint_pos()
+        # Convert numpy float32 values to native Python floats for JSON serialization
+        if j_pos is not None:
+            if isinstance(j_pos, dict):
+                j_pos = {k: float(v) if v is not None else None for k, v in j_pos.items()}
+            elif isinstance(j_pos, list):
+                j_pos = [float(v) if v is not None else None for v in j_pos]
         return {"positions": j_pos}
     except Exception as e:
         handle_hand_exception(e)
@@ -360,6 +431,235 @@ def calibrate_auto():
 #         return {"message": "Configuration updated successfully.", "updated_config": config_data}
 #     except Exception as e:
 #         handle_hand_exception(e)
+
+# --- Remote Control Endpoints ---
+
+@app.get("/joints/info", summary="Get Joint Configuration Info", tags=["Remote Control"])
+def get_joints_info():
+    """Returns joint IDs, ranges of motion, and neutral positions from config."""
+    try:
+        return {
+            "joint_ids": hand.joint_ids,
+            "joint_roms": hand.joint_roms_dict,
+            "neutral_position": hand.neutral_position,
+        }
+    except Exception as e:
+        handle_hand_exception(e)
+
+POSE_OVERRIDES = {
+    "fist": {
+        "thumb_cmc": 10, "thumb_mcp": 15, "thumb_dip": 20,
+        "index_mcp": 90, "index_pip": 70,
+        "middle_mcp": 90, "middle_pip": 70,
+        "ring_mcp": 90, "ring_pip": 70,
+        "pinky_mcp": 90, "pinky_pip": 70,
+    },
+    "swag": {
+        "ring_mcp": 90, "ring_pip": 70,
+        "middle_mcp": 90, "middle_pip": 70,
+    },
+    "peace": {
+        "index_abd": 25,
+        "ring_mcp": 90, "ring_pip": 70,
+        "pinky_mcp": 90, "pinky_pip": 70,
+    },
+}
+
+@app.post("/pose/{pose_name}", summary="Set a named pose", tags=["Remote Control"])
+def set_pose(pose_name: str):
+    """Smoothly moves the hand to a named pose (neutral + overrides)."""
+    overrides = POSE_OVERRIDES.get(pose_name)
+    if not overrides:
+        raise HTTPException(status_code=404, detail=f"Unknown pose: {pose_name}")
+    try:
+        positions = dict(hand.neutral_position)
+        positions.update(overrides)
+        hand.set_joint_pos(positions, num_steps=25, step_size=0.001)
+        return {"message": f"Pose '{pose_name}' set", "positions": positions}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/joints/zero", summary="Set Zero Position", tags=["Remote Control"])
+def set_zero_position():
+    """Moves the hand to the zero position."""
+    try:
+        hand.set_zero_position()
+        return {"message": "Hand moved to zero position."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/joints/neutral", summary="Set Neutral Position", tags=["Remote Control"])
+def set_neutral_position():
+    """Moves the hand to the neutral position."""
+    try:
+        hand.set_neutral_position()
+        return {"message": "Hand moved to neutral position."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/init", summary="Initialize Joints", tags=["Remote Control"])
+def init_joints():
+    """Enables torque, sets control mode, and moves to zero position."""
+    try:
+        hand.init_joints()
+        return {"message": "Joints initialized successfully."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/tension", summary="Apply Tension", tags=["Remote Control"])
+def apply_tension(req: TensionRequest = Body(TensionRequest())):
+    """Applies tension to the tendons. Runs in background (non-blocking)."""
+    try:
+        hand.tension(move_motors=req.move_motors, blocking=False)
+        return {"message": "Tension routine started."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/tension/stop", summary="Stop Tension", tags=["Remote Control"])
+def stop_tension():
+    """Stops any running background task (e.g., tension hold)."""
+    try:
+        hand.stop_task()
+        return {"message": "Task stopped."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/jitter", summary="Jitter Motors", tags=["Remote Control"])
+def jitter_motors(req: JitterRequest = Body(JitterRequest())):
+    """Vibrates motors to release tension. Runs in background (non-blocking)."""
+    try:
+        hand.jitter(amplitude=req.amplitude, frequency=req.frequency, duration=req.duration, blocking=False)
+        return {"message": "Jitter routine started."}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.get("/task/status", summary="Get Task Status", tags=["Remote Control"])
+def get_task_status():
+    """Returns whether a background task is currently running."""
+    try:
+        running = hasattr(hand, '_task_thread') and hand._task_thread is not None and hand._task_thread.is_alive()
+        return {"running": running}
+    except Exception as e:
+        handle_hand_exception(e)
+
+MAX_WAYPOINTS = 10
+
+@app.post("/waypoints/save", summary="Save current position as waypoint", tags=["Waypoints"])
+def save_waypoint(req: ClientIdRequest):
+    """Reads current joint positions and appends to the client's waypoint list."""
+    try:
+        wps = waypoint_store.setdefault(req.clientId, [])
+        if len(wps) >= MAX_WAYPOINTS:
+            raise HTTPException(status_code=400, detail=f"Maximum {MAX_WAYPOINTS} waypoints reached")
+        pos = hand.get_joint_pos(as_list=True)
+        wps.append(pos)
+        return {"count": len(wps)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.delete("/waypoints/last", summary="Delete last waypoint", tags=["Waypoints"])
+def delete_last_waypoint(req: ClientIdRequest):
+    """Removes the last saved waypoint for the client."""
+    wps = waypoint_store.get(req.clientId, [])
+    if wps:
+        wps.pop()
+    return {"count": len(wps)}
+
+@app.get("/waypoints/count", summary="Get waypoint count", tags=["Waypoints"])
+def get_waypoint_count(clientId: str):
+    """Returns the number of saved waypoints for the client."""
+    count = len(waypoint_store.get(clientId, []))
+    return {"count": count}
+
+@app.post("/waypoints/play", summary="Start waypoint playback", tags=["Waypoints"])
+def play_waypoints(req: ClientIdRequest):
+    """Smoothly moves to neutral, then replays saved waypoints in a background thread."""
+    wps = waypoint_store.get(req.clientId, [])
+    if len(wps) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 waypoints to play")
+    try:
+        client_id = req.clientId
+
+        def playback_sequence():
+            from orca_core.utils.utils import interpolate_waypoints
+            # Phase 1: smoothly move to neutral position
+            hand.set_neutral_position()
+            if hand._task_stop_event.is_set():
+                return
+            # Phase 2: smoothly interpolate from neutral to first waypoint
+            neutral = [hand.neutral_position[jid] for jid in hand.joint_ids]
+            for position in interpolate_waypoints(neutral, wps[0], 0.5, 0.02, "ease_in_out"):
+                if hand._task_stop_event.is_set():
+                    return
+                hand.set_joint_pos(position)
+                time.sleep(0.02)
+            if hand._task_stop_event.is_set():
+                return
+            # Phase 3: notify frontend that preparation is done, waypoint replay starting
+            notify_event({"event": "playback_started", "clientId": client_id})
+            # Phase 4: replay waypoints loop (on_finish fires in finally block)
+            hand._replay_waypoints(wps, 0.5, 0.02, 1000, "ease_in_out",
+                on_finish=lambda: notify_event({"event": "playback_finished", "clientId": client_id}))
+
+        hand._start_task(playback_sequence)
+        return {"message": "Playback started", "waypoint_count": len(wps)}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.post("/waypoints/stop", summary="Stop waypoint playback", tags=["Waypoints"])
+def stop_waypoints(req: ClientIdRequest):
+    """Stops any running waypoint playback."""
+    try:
+        hand.stop_task()
+        return {"message": "Playback stopped"}
+    except Exception as e:
+        handle_hand_exception(e)
+
+@app.delete("/waypoints/clear", summary="Clear all waypoints", tags=["Waypoints"])
+def clear_waypoints(req: ClientIdRequest):
+    """Clears all waypoints for the client."""
+    waypoint_store.pop(req.clientId, None)
+    return {"message": "Waypoints cleared"}
+
+@app.websocket("/ws/control")
+async def websocket_control(websocket: WebSocket):
+    """WebSocket endpoint for low-latency real-time joint control."""
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            positions = msg.get("positions")
+            if positions and isinstance(positions, dict):
+                try:
+                    hand.set_joint_pos(joint_pos=positions)
+                    await websocket.send_text(json.dumps({"status": "ok"}))
+                except Exception as e:
+                    await websocket.send_text(json.dumps({"status": "error", "detail": str(e)}))
+            else:
+                await websocket.send_text(json.dumps({"status": "error", "detail": "Invalid positions format"}))
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"status": "error", "detail": str(e)}))
+        except:
+            pass
+
+@app.websocket("/ws/events")
+async def websocket_events(websocket: WebSocket):
+    """WebSocket endpoint for push events (e.g. playback_finished)."""
+    await websocket.accept()
+    event_clients.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keep alive; ignore incoming
+    except WebSocketDisconnect:
+        pass
+    finally:
+        event_clients.discard(websocket)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
