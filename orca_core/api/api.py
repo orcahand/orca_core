@@ -455,10 +455,12 @@ POSE_OVERRIDES = {
         "pinky_mcp": 90, "pinky_pip": 70,
     },
     "swag": {
+        "thumb_cmc": -45,
         "ring_mcp": 90, "ring_pip": 70,
         "middle_mcp": 90, "middle_pip": 70,
     },
     "peace": {
+        "thumb_cmc": 20, "thumb_dip": 60,
         "index_abd": 25,
         "ring_mcp": 90, "ring_pip": 70,
         "pinky_mcp": 90, "pinky_pip": 70,
