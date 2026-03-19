@@ -2,7 +2,7 @@ import unittest
 import time
 import inspect
 import numpy as np
-from unittest.mock import patch, call
+from unittest.mock import patch
 from orca_core import MockOrcaHand
 
 
@@ -56,53 +56,38 @@ class TestOrcaHandJitter(unittest.TestCase):
 
     def test_custom_motor_ids(self):
         target_id = self.hand.motor_ids[0]
-        other_ids = [mid for mid in self.hand.motor_ids if mid != target_id]
-
-        positions_before = self.hand.get_motor_pos(as_dict=True)
-
-        with patch.object(self.hand, '_set_motor_pos', wraps=self.hand._set_motor_pos) as mock_set:
+        with patch.object(self.hand._motor_client, 'write_desired_pos', wraps=self.hand._motor_client.write_desired_pos) as mock_write:
             self.hand.jitter(motor_ids=[target_id], amplitude=5.0, duration=0.2)
-
-            for c in mock_set.call_args_list:
-                pos_dict = c[0][0]
-                self.assertIn(target_id, pos_dict)
-                for oid in other_ids:
-                    self.assertNotIn(oid, pos_dict)
+            self.assertGreater(len(mock_write.call_args_list), 0)
+            for call_args in mock_write.call_args_list:
+                self.assertEqual(call_args[0][0], [target_id])
 
     # ── Default excludes wrist ──
 
     def test_default_excludes_wrist(self):
         self.assertIsNotNone(self.wrist_motor_id, "Config must have a wrist motor for this test")
-
-        with patch.object(self.hand, '_set_motor_pos', wraps=self.hand._set_motor_pos) as mock_set:
+        with patch.object(self.hand._motor_client, 'write_desired_pos', wraps=self.hand._motor_client.write_desired_pos) as mock_write:
             self.hand.jitter(amplitude=5.0, duration=0.2)
-
-            for c in mock_set.call_args_list:
-                pos_dict = c[0][0]
-                self.assertNotIn(self.wrist_motor_id, pos_dict)
+            self.assertGreater(len(mock_write.call_args_list), 0)
+            for call_args in mock_write.call_args_list:
+                self.assertNotIn(self.wrist_motor_id, call_args[0][0])
 
     def test_wrist_excluded_even_with_many_motors(self):
         non_wrist_ids = [mid for mid in self.hand.motor_ids if mid != self.wrist_motor_id]
-
-        with patch.object(self.hand, '_set_motor_pos', wraps=self.hand._set_motor_pos) as mock_set:
+        with patch.object(self.hand._motor_client, 'write_desired_pos', wraps=self.hand._motor_client.write_desired_pos) as mock_write:
             self.hand.jitter(amplitude=5.0, duration=0.2)
-
-            # At least one call should have been made with all non-wrist motors
-            oscillation_calls = mock_set.call_args_list[:-1]  # exclude final return-to-start call
-            if oscillation_calls:
-                commanded_ids = set(oscillation_calls[0][0][0].keys())
-                self.assertEqual(commanded_ids, set(non_wrist_ids))
+            self.assertGreater(len(mock_write.call_args_list), 0)
+            commanded_ids = set(mock_write.call_args_list[0][0][0])
+            self.assertEqual(commanded_ids, set(non_wrist_ids))
 
     # ── Wrist included with flag ──
 
     def test_include_wrist_flag(self):
-        with patch.object(self.hand, '_set_motor_pos', wraps=self.hand._set_motor_pos) as mock_set:
+        with patch.object(self.hand._motor_client, 'write_desired_pos', wraps=self.hand._motor_client.write_desired_pos) as mock_write:
             self.hand.jitter(amplitude=5.0, duration=0.2, include_wrist=True)
-
-            oscillation_calls = mock_set.call_args_list[:-1]
-            if oscillation_calls:
-                commanded_ids = set(oscillation_calls[0][0][0].keys())
-                self.assertIn(self.wrist_motor_id, commanded_ids)
+            self.assertGreater(len(mock_write.call_args_list), 0)
+            commanded_ids = set(mock_write.call_args_list[0][0][0])
+            self.assertIn(self.wrist_motor_id, commanded_ids)
 
     # ── Works before calibration (motor level) ──
 
