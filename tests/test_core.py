@@ -1,12 +1,13 @@
 import unittest
 
-from orca_core import MockOrcaHand, OrcaHand
+from orca_core import BaseHand, MockOrcaHand, OrcaHand
 
 class TestOrcaCore(unittest.TestCase):
     def test_import_and_instantiation(self):
         try:
             hand = OrcaHand()
             self.assertIsInstance(hand, OrcaHand)
+            self.assertIsInstance(hand, BaseHand)
         except ImportError as e:
             self.fail(f"ImportError: {e}")
         except Exception as e:
