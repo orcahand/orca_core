@@ -68,40 +68,43 @@ docs/                 # Documentation
 
 ### Virtual Environment
 
-**IMPORTANT:** Always activate the virtual environment before running any Python commands or installing packages:
+**IMPORTANT:** Use `uv` for Python commands and dependency management in this repo.
 
 ```bash
-source venv/bin/activate
+uv sync --group dev
 ```
 
-Never install packages to the base/system Python environment. All dependencies should be installed within the venv.
+This creates a local `.venv`. If you prefer an activated shell, use:
+
+```bash
+source .venv/bin/activate
+```
+
+Never install packages to the base/system Python environment.
 
 ### Setup
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+uv sync --group dev
 ```
 
 ### Testing
 
 ```bash
-source venv/bin/activate
-pytest tests/
+uv run pytest tests/
 ```
 
 ### Common Scripts
 
 ```bash
 # Calibration workflow
-python scripts/tension.py orca_core/models/orcahand_v1_right
-python scripts/calibrate.py orca_core/models/orcahand_v1_right
-python scripts/neutral.py orca_core/models/orcahand_v1_right
+uv run python scripts/tension.py orca_core/models/orcahand_v1_right
+uv run python scripts/calibrate.py orca_core/models/orcahand_v1_right
+uv run python scripts/neutral.py orca_core/models/orcahand_v1_right
 
 # Manual control
-python scripts/slider_joint.py orca_core/models/orcahand_v1_right
-python scripts/slider_motor.py orca_core/models/orcahand_v1_right
+uv run python scripts/slider_joint.py orca_core/models/orcahand_v1_right
+uv run python scripts/slider_motor.py orca_core/models/orcahand_v1_right
 ```
 
 ### Configuration

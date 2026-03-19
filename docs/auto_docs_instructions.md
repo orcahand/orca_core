@@ -1,15 +1,23 @@
-Install dependencies first (had issues with poetry and users don't need to install this libraries, just pip install them)
+Install dependencies first with `uv`:
 
-```pip3 install -r requirements.txt```
+```sh
+uv sync --group dev --group docs
+```
 
 To test localy:
 
-```mkdocs serve --clean```
+```sh
+uv run mkdocs serve --clean
+```
 
 To build: 
 
-```mkdocs build``` 
+```sh
+uv run mkdocs build
+``` 
 
 To test build:
 
-```python -m http.server 8000 --directory site```
+```sh
+uv run python -m http.server 8000 --directory site
+``` 
