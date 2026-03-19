@@ -8,109 +8,64 @@
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca Core (`pip install orca_core`) is the core control package of the ORCA Hand ✋ 
+Across the entire stack, `orca_core` is the unified entry point used to abstract hardware, provide scripts for hand calibration, controlling the hand, and more.
 
-## Get Started
+It is designed to be readily extensible and easily hackable. 
+Don't be a bystander! If you see something that does not work, [open an issue](https://github.com/orcahand/orca_core/issues/new) or [submit a PR with your fix](https://github.com/orcahand/orca_core/compare)---`orca_core` is open source! ❤️
 
-To get started with Orca Core, follow these steps:
+## Getting started
 
-1. **Create a virtual environment** (recommended):
+### Install
 
-    ```sh
-    python -m venv venv
-    source venv/bin/activate
-    ```
+First, create a virtual environment.
+We tested installs with Python 3.12, and newer versions of python might be less stable.
 
-    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
-
-2. **Install dependencies**:
-
-    ```sh
-    pip install -e .
-    ```
-
-3. **Check the configuration file**:
-
-    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
-
-4. **Run the tension and calibration scripts**:
-
-    ```sh
-    python scripts/tension.py orca_core/models/orcahand_v1_right
-    python scripts/calibrate.py orca_core/models/orcahand_v1_right
-    ```
-
-    Replace the path with your specific hand model folder if needed.
-
-5. **Move the hand to the neutral position**:
-
-    ```sh
-    python scripts/neutral.py orca_core/models/orcahand_v1_right
-    ```
-
-6. **Example usage: test.py**
-
-    Here is a minimal example script you can use to test your setup:
-
-    ```python
-    from orca_core import OrcaHand
-    import time
-
-    hand = OrcaHand('orca_core/models/orcahand_v1_right')
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
-
-    hand.enable_torque()
-
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
-
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
-    hand.disconnect()
-    ```
-
----
-
-## Troubleshooting
-
-### Serial Port Permissions (Linux)
-
-On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
-
-**Permanent fix** (requires re-login):
+You can use `uv` ([installing uv](https://docs.astral.sh/uv/getting-started/installation/)) for virtualization and handle dependencies.
 
 ```sh
-sudo usermod -aG dialout $USER
+uv venv .venv --python 3.12
+source .venv/bin/activate
+uv pip install orca_core
 ```
 
-**Temporary fix** (resets on reboot/replug):
+Alternatively, you can use `conda` ([installing conda](https://www.anaconda.com/docs/getting-started/miniconda/install/overview)).
 
 ```sh
-sudo chmod 666 /dev/ttyUSB0
+conda create -n orca python=3.12 -y
+conda activate orca
+pip install orca_core
 ```
 
-### Serial Port Path
+We are constantly iterating on `orca_core`. If you want to keep up with the last and greatest, build `orca_core` from source.
+```sh
+uv pip install git+https://github.com/orcahand/orca_core.git
+```
 
-Make sure the `port` field in your `config.yaml` matches your operating system:
+> [!WARNING]
+> This will install the latest version from the main branch, and we are iterating fast. If you need stability, consider installing our latest stable release from PyPI.
 
-| OS    | Example port                    |
-|-------|---------------------------------|
-| Linux | `/dev/ttyUSB0`                  |
-| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+### Connecting to the hand
+
+[ ] TODO: both CLI and Python API
+
+### Running calibration
+
+[ ] TODO: both CLI and Python API
+
+### Running tensioning
+
+[ ] TODO: both CLI and Python API
+
+### Running a sanity check: reaching neutral position
+
+[ ] TODO: both CLI and Python API
+
+That's it! You can now use ORCA hand 🙌
+
+If you are running into issues with your installation, go ahead and [open an issue](https://github.com/orcahand/orca_core/issues/new).
+If you have questions or are running into issues, feel free to reach out to us on [Discord](https://discord.gg/xvGyxaccRa) or [X](https://x.com/orcahand).
 
 ---
 
-**Note:**
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
-
----
+Made with ❤️ by the ORCA team
