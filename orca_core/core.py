@@ -502,13 +502,9 @@ class OrcaHand:
 
         # Store the min and max values for each motor
         motor_limits = self.motor_limits_dict.copy()
+        pending_limits = {motor_id: [None, None] for motor_id in self.motor_ids}
 
         self._compute_wrap_offsets_dict()
-        for step in calib_sequence:
-            for joint in step["joints"].keys():
-                motor_id = self.joint_to_motor_map[joint]
-                motor_limits[motor_id] = [None, None]
-                self._wrap_offsets_dict[motor_id] = 0.0
 
         motors_with_initial_offset = set()
         motors_with_final_offset = set()
@@ -545,6 +541,7 @@ class OrcaHand:
                 if self.joint_inversion_dict.get(joint, False):
                     sign = -sign
                 directions[motor_id] = sign
+                self._wrap_offsets_dict[motor_id] = 0.0
                 position_buffers[motor_id] = deque(maxlen=self.calib_num_stable)
                 position_logs[motor_id] = []
                 current_log[motor_id] = []
@@ -584,9 +581,9 @@ class OrcaHand:
                                 avg_limit = float(self.get_motor_pos()[self.motor_id_to_idx_dict[motor_id]])
                             print(f"Motor {motor_id} corresponding to joint {self.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad.")
                             if directions[motor_id] == 1:
-                                motor_limits[motor_id][1] = avg_limit
+                                pending_limits[motor_id][1] = avg_limit
                             if directions[motor_id] == -1:
-                                motor_limits[motor_id][0] = avg_limit
+                                pending_limits[motor_id][0] = avg_limit
 
                             # Set final offset after first limit found, then re-read limit in new coordinate system
                             if self._motor_client.requires_offset_calibration and motor_id not in motors_with_final_offset:
@@ -594,29 +591,31 @@ class OrcaHand:
                                 self._motor_client.calibrate_offset(motor_id, upper=is_positive)
                                 time.sleep(0.05)
                                 new_limit = float(self.get_motor_pos()[self.motor_id_to_idx_dict[motor_id]])
-                                motor_limits[motor_id][1 if is_positive else 0] = new_limit
+                                pending_limits[motor_id][1 if is_positive else 0] = new_limit
                                 print(f"  (Offset adjusted: limit now at {new_limit} rad)")
                                 motors_with_final_offset.add(motor_id)
 
                             self.enable_torque([motor_id])
-                
+
             # find ratios of all motors that have been calibrated in this step
             for joint, direction in step["joints"].items(): 
                 motor_id = self.joint_to_motor_map[joint]
-                if motor_limits[motor_id][0] is None or motor_limits[motor_id][1] is None:
+                if pending_limits[motor_id][0] is None or pending_limits[motor_id][1] is None:
                     continue
+                motor_limits[motor_id] = list(pending_limits[motor_id])
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][1] - self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][0]
                 self.joint_to_motor_ratios_dict[motor_id] = float(delta_motor / delta_joint) 
                 print("Joint calibrated: ", joint)
                 calibrated_joints[joint] = 0.0
-  
-            update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios_dict)
-            update_yaml(self.calib_path, 'motor_limits', motor_limits)
-            self.motor_limits_dict = motor_limits
+
+                self.motor_limits_dict = motor_limits
+                update_yaml(self.calib_path, 'motor_limits', motor_limits)
+                update_yaml(self.calib_path, 'joint_to_motor_ratios', self.joint_to_motor_ratios_dict)
+
             if calibrated_joints:
                 self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
-            time.sleep(0.1)    
+            time.sleep(0.1)
             
         # Update wrist_calibrated if wrist was calibrated in this run
         if any('wrist' in step['joints'] for step in calib_sequence):
