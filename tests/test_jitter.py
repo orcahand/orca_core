@@ -3,13 +3,13 @@ import time
 import inspect
 import numpy as np
 from unittest.mock import patch, call
-from orca_core import MockOrcaHand
+from orca_core import InMemoryStateStore, MockOrcaHand
 
 
 class TestOrcaHandJitter(unittest.TestCase):
 
     def setUp(self):
-        self.hand = MockOrcaHand()
+        self.hand = MockOrcaHand(state_store=InMemoryStateStore())
         success, msg = self.hand.connect()
         self.assertTrue(success, f"Failed to connect mock hand: {msg}")
         self.wrist_motor_id = self.hand.joint_to_motor_map.get("wrist")
@@ -107,7 +107,7 @@ class TestOrcaHandJitter(unittest.TestCase):
     # ── Works before calibration (motor level) ──
 
     def test_works_without_calibration(self):
-        uncalibrated = MockOrcaHand()
+        uncalibrated = MockOrcaHand(state_store=InMemoryStateStore())
         uncalibrated.connect()
         try:
             uncalibrated.jitter(amplitude=5.0, duration=0.2)

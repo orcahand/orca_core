@@ -1,10 +1,10 @@
 import unittest
-from orca_core import OrcaHand, MockOrcaHand
+from orca_core import InMemoryStateStore, MockOrcaHand, OrcaHand, load_profile
 
 class TestOrcaCore(unittest.TestCase):
     def test_import_and_instantiation(self):
         try:
-            hand = OrcaHand()
+            hand = OrcaHand(profile=load_profile(), state_store=InMemoryStateStore())
             self.assertIsInstance(hand, OrcaHand)
         except ImportError as e:
             self.fail(f"ImportError: {e}")
@@ -13,7 +13,7 @@ class TestOrcaCore(unittest.TestCase):
             
     def test_mock_connection(self):
         try:
-            mock_hand = MockOrcaHand()
+            mock_hand = MockOrcaHand(state_store=InMemoryStateStore())
             status = mock_hand.connect()
             self.assertTrue(status[0], "Mock connection failed")
             self.assertEqual(status[1], "Mock connection successful")
@@ -21,6 +21,11 @@ class TestOrcaCore(unittest.TestCase):
             self.fail(f"ImportError: {e}")
         except Exception as e:
             self.fail(f"Failed to connect MockOrcaHand: {e}")
+
+    def test_object_first_constructor(self):
+        profile = load_profile("orcahand_v1_right")
+        hand = OrcaHand(profile=profile, state_store=InMemoryStateStore())
+        self.assertEqual(hand.profile.profile_id, "orcahand_v1_right")
 
 if __name__ == "__main__":
     unittest.main()

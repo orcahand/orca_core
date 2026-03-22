@@ -1,77 +1,53 @@
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioning and to control the hand with simple high-level control methods in joint space.
+Orca Core is now a library-first framework for building ORCA Hand software without cloning this repository. Install the package, load a built-in or custom profile, and use the packaged CLI for operator workflows.
 
-## Get Started
+## Install
 
-To get started with Orca Core, follow these steps:
+```sh
+pip install orca_core
+```
 
-1. **Create a virtual environment** (recommended):
+For local development in this repo, use:
 
-    ```sh
-    python -m venv venv
-    source venv/bin/activate
-    ```
+```sh
+uv sync --group dev
+```
 
-    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
+## Operator Workflows
 
-2. **Install dependencies**:
+Use the packaged CLI rather than repo-local `scripts/*.py`:
 
-    ```sh
-    pip install -e .
-    ```
+```sh
+orca-hand doctor --profile orcahand_v1_right
+orca-hand calibrate --profile orcahand_v1_right --auto-port
+orca-hand neutral --profile orcahand_v1_right --auto-port
+```
 
-3. **Check the configuration file**:
+Runtime state such as calibration results and last-known port is stored separately from the immutable hand profile.
 
-    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+## Python Usage
 
-4. **Run the tension and calibration scripts**:
+```python
+from orca_core import OrcaHand, load_profile
 
-    ```sh
-    python scripts/tension.py orca_core/orca_core/models/orcahand_v1_right
-    python scripts/calibrate.py orca_core/orca_core/models/orcahand_v1_right
-    ```
+profile = load_profile("orcahand_v1_right")
+hand = OrcaHand(profile=profile)
 
-    Replace the path with your specific hand model folder if needed.
+success, message = hand.connect()
+print(message)
+if not success:
+    raise SystemExit(1)
 
-5. **Move the hand to the neutral position**:
+hand.enable_torque()
+hand.set_joint_pos({"index_mcp": 90, "middle_pip": 30}, num_steps=25, step_size=0.001)
+hand.disable_torque()
+hand.disconnect()
+```
 
-    ```sh
-    python scripts/neutral.py orca_core/orca_core/models/orcahand_v1_right
-    ```
+To use a custom profile that lives outside the package, load it from a directory or a `config.yaml` path:
 
-6. **Example usage: test.py**
+```python
+from orca_core import OrcaHand, load_profile_from_path
 
-    Here is a minimal example script you can use to test your setup:
-
-    ```python
-    from orca_core import OrcaHand
-    import time
-
-    hand = OrcaHand('orca_core/orca_core/models/orcahand_v1_right')
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
-
-    hand.enable_torque()
-
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
-
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
-    hand.disconnect()
-    ```
-
----
-
-**Note:**  
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
-
----
+profile = load_profile_from_path("/path/to/custom_hand_profile")
+hand = OrcaHand(profile=profile)
+```

@@ -7,42 +7,35 @@
 # ==============================================================================
 
 import os
-import yaml
+from pathlib import Path
+
 import numpy as np
+import yaml
 
 ################################################################################
 ### Model path utils ##########################################################
 ################################################################################
 
 def get_model_path(model_path=None):
+    models_dir = Path(__file__).resolve().parents[1] / "models"
 
     if model_path is None or model_path == "models":
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-        if not os.path.exists(models_dir):
-            raise FileNotFoundError("\033[1;35mModels directory not found. Did you delete them?")
-        model_dirs = [d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d))]
-        model_dirs = sorted(model_dirs, key=lambda x: (x.lower() != 'right', x))
-        if len(model_dirs) == 0:
-            raise FileNotFoundError("\033[1;35mNo model files found. Did you delete them?")
-        resolved_path = os.path.join(models_dir, model_dirs[0])
+        model_dirs = sorted(path for path in models_dir.iterdir() if path.is_dir())
+        if not model_dirs:
+            raise FileNotFoundError("\033[1;35mNo built-in model files found.\033[0m")
+        resolved_path = model_dirs[0]
     else:
-        if os.path.isabs(model_path):
-            resolved_path = model_path
-        else:
-            # Check if it's a model name in the models directory
-            models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-            model_by_name = os.path.join(models_dir, model_path)
-            if os.path.isdir(model_by_name):
-                resolved_path = model_by_name
-            else:
-                package_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                resolved_path = os.path.join(package_root, model_path)
-    
-    if not os.path.exists(resolved_path):
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-        available = []
-        if os.path.isdir(models_dir):
-            available = sorted(d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d)))
+        candidate = Path(model_path).expanduser()
+        if not candidate.is_absolute():
+            builtin_candidate = models_dir / model_path
+            candidate = builtin_candidate if builtin_candidate.exists() else Path.cwd() / candidate
+
+        resolved_path = candidate.resolve()
+        if resolved_path.is_file():
+            resolved_path = resolved_path.parent
+
+    if not resolved_path.exists():
+        available = sorted(path.name for path in models_dir.iterdir() if path.is_dir()) if models_dir.is_dir() else []
         msg = f"\033[1;35mModel '{model_path}' not found."
         if available:
             msg += f" Available models: {', '.join(available)}"
@@ -50,13 +43,15 @@ def get_model_path(model_path=None):
             msg += " No models found in models directory."
         msg += "\033[0m"
         raise FileNotFoundError(msg)
-    
-    config_file = os.path.join(resolved_path, "config.yaml")
-    if not os.path.exists(config_file):
-        raise FileNotFoundError(f"\033[1;35mconfig.yaml not found in {resolved_path}. Did you specify the correct model directory?\033[0m")
-    
+
+    config_file = resolved_path / "config.yaml"
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"\033[1;35mconfig.yaml not found in {resolved_path}. Did you specify the correct model directory?\033[0m"
+        )
+
     print("Using model path: \033[1;32m{}\033[0m".format(resolved_path))
-    return resolved_path
+    return str(resolved_path)
 
 ################################################################################
 ### YAML utils #################################################################
@@ -85,6 +80,11 @@ def update_yaml(file_path, key, value):
     except FileNotFoundError:
         with open(file_path, 'w') as file:
             yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
+
+
+def write_yaml(file_path, data):
+    with open(file_path, "w") as file:
+        yaml.dump(data, file, default_flow_style=False, sort_keys=False)
 
 
 def read_yaml(file_path):

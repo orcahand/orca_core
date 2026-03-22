@@ -6,19 +6,31 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+"""Unsupported preview API.
+
+This module is kept only as a transitional surface and is not part of the
+stable Orca Core 1.0 framework contract.
+"""
+
 import os
 import sys
 import time
-from fastapi import FastAPI, HTTPException, Body
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Union, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import uvicorn
+from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
 from orca_core.utils.yaml_utils import read_yaml, update_yaml
 
 from orca_core import OrcaHand
 
-app = FastAPI(title="OrcaHand API", version="1.0.0")
+app = FastAPI(
+    title="OrcaHand API (Unsupported Preview)",
+    version="1.0.0",
+    description="Preview-only API layer kept for compatibility while the library-first framework stabilizes.",
+)
 
 # --- Global OrcaHand Instance ---
 # Ensure necessary config files are present or adjust path as needed

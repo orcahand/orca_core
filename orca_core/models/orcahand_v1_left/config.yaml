@@ -1,8 +1,15 @@
 port: /dev/cu.usbserial-FTAAMLDU
-version: 0.2.1
+version: 1.0.0
+schema_version: "1.0"
+profile_id: orcahand_v1_left
+name: ORCA Hand v1 Left
 baudrate: 3000000
 max_current: 400
-type: right
+type: left
+driver:
+  kind: dynamixel
+  baudrate: 3000000
+  port: /dev/cu.usbserial-FTAAMLDU
 control_mode: current_based_position
 motor_ids:
 - 1

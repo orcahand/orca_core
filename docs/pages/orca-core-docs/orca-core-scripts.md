@@ -1,6 +1,8 @@
 # Scripts API Documentation
 
-This document provides an overview of the available scripts in the `scripts` folder.
+This document provides an overview of the legacy scripts in the `scripts` folder.
+
+Installed users should prefer the packaged `orca-hand` CLI. The scripts documented here remain useful for development and compatibility workflows inside the repository.
 
 ### Calibration Scripts
 

@@ -1,10 +1,18 @@
-version: 0.2.1
+version: 1.0.0
+schema_version: "1.0"
+profile_id: orcahand_v1_right
+name: ORCA Hand v1 Right
 baudrate: 3000000
 #port: /dev/ttyUSB0 # linux
 port: /dev/tty.usbserial-FT9MISJT # mac
 max_current: 400
 
 type: right
+
+driver:
+  kind: dynamixel
+  baudrate: 3000000
+  port: /dev/tty.usbserial-FT9MISJT
 
 # current, velocity, position, multi-turn- position, current_based_position
 control_mode: current_based_position

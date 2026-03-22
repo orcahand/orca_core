@@ -1,28 +1,44 @@
 [project]
 name = "orca_core"
-version = "0.2.1"
-description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
+version = "1.0.0"
+description = "Library-first ORCA Hand framework with packaged profiles, runtime state, and CLI tooling."
 authors = [
-    {name = "clemens-chr", email = "cchristoph@student.ethz.ch"}
+    { name = "clemens-chr", email = "cchristoph@student.ethz.ch" },
 ]
-license = {text = "MIT"}
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "dynamixel-sdk (>=3.7.31,<4.0.0)",
-    "pyyaml (>=6.0.2,<7.0.0)",
-    "fastapi (>=0.115.12,<0.116.0)",
-    "uvicorn (>=0.34.2,<0.35.0)",
-    "pytest (>=8.3.5,<9.0.0)",
-    "httpx (>=0.28.1,<0.29.0)",
-    "requests (>=2.32.3,<3.0.0)",
-    "numpy (>=2.2.6,<3.0.0)",
+    "dynamixel-sdk>=3.7.31,<4.0.0",
+    "fastapi>=0.115.12,<0.116.0",
+    "numpy>=2.2.6,<3.0.0",
+    "pyyaml>=6.0.2,<7.0.0",
+    "uvicorn>=0.34.2,<0.35.0",
+]
+
+[project.scripts]
+orca-hand = "orca_core.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1,<0.29.0",
+    "matplotlib>=3.10.1,<4.0.0",
+    "pytest>=8.3.5,<9.0.0",
+    "requests>=2.32.3,<3.0.0",
 ]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
 
-[tool.poetry.group.dev.dependencies]
-matplotlib = "^3.10.1"
+[tool.hatch.build]
+include = [
+    "orca_core/**/*.py",
+    "orca_core/**/*.yaml",
+]
 
+[tool.hatch.build.targets.wheel]
+packages = ["orca_core"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"orca_core/models" = "orca_core/models"

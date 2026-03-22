@@ -1,12 +1,12 @@
 import unittest
 import time
-from orca_core import MockOrcaHand
+from orca_core import InMemoryStateStore, MockOrcaHand
 
 class TestOrcaHandTension(unittest.TestCase):
 
     def setUp(self):
         """Set up a mock hand and connect."""
-        self.hand = MockOrcaHand()
+        self.hand = MockOrcaHand(state_store=InMemoryStateStore())
         success, msg = self.hand.connect()
         self.assertTrue(success, f"Failed to connect mock hand: {msg}")
 
