@@ -5,19 +5,19 @@ import argparse # Added import
 
 def main(): # Added main function
     parser = argparse.ArgumentParser(
-        description="Run a demo of the ORCA Hand with abduction movements. Specify the path to the orcahand model folder."
+        description="Run a demo of the ORCA Hand with abduction movements. Specify the path to the hand config.yaml file."
     )
     parser.add_argument(
-        "model_path",
+        "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
     )
     args = parser.parse_args()
 
     # Initialize the hand
-    hand = OrcaHand(args.model_path) # Replaced hardcoded path with args.model_path
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

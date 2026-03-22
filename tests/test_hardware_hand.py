@@ -55,9 +55,10 @@ class TestHardwareHand(unittest.TestCase):
 class TestHardwareHandRoundTrip(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
-        shutil.copy(REAL_CONFIG, os.path.join(self.temp_dir, "config.yaml"))
+        self.config_path = os.path.join(self.temp_dir, "config.yaml")
+        shutil.copy(REAL_CONFIG, self.config_path)
         shutil.copy(REAL_CALIB, os.path.join(self.temp_dir, "calibration.yaml"))
-        self.hand = MockOrcaHand(self.temp_dir)
+        self.hand = MockOrcaHand(self.config_path)
         success, msg = self.hand.connect()
         self.assertTrue(success, f"Failed to connect mock hand: {msg}")
         self.hand.calibrate()

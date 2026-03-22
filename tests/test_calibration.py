@@ -51,7 +51,7 @@ class TestOrcaHandCalibration(unittest.TestCase):
 
     def test_calibration_yaml_missing(self):
         os.remove(self.calib_path)
-        hand = MockOrcaHand(self.temp_dir)
+        hand = MockOrcaHand(self.config_path)
         hand.connect()
     
         self.assertFalse(hand.calibrated, "Hand should not be marked as calibrated before calibration")

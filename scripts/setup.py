@@ -122,8 +122,8 @@ def run_motion_test(hand, step_num, duration=60):
 def main():
     parser = argparse.ArgumentParser(description="Full ORCA Hand setup workflow.")
     parser.add_argument(
-        "model_path", type=str, nargs="?", default=None,
-        help="Path to the hand model directory"
+        "config_path", type=str, nargs="?", default=None,
+        help="Path to the hand config.yaml file"
     )
     args = parser.parse_args()
 
@@ -133,7 +133,7 @@ def main():
     print("  Type 's' at any prompt or Ctrl+C to skip a step")
     print(DIVIDER)
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     success, message = hand.connect()
     if not success:
         print(f"Failed to connect: {message}")

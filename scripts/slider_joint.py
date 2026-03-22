@@ -90,10 +90,10 @@ class HandControlUI:
 
 def main():
     parser = argparse.ArgumentParser(description="Control the ORCA Hand with UI sliders.")
-    parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
+    parser.add_argument('config_path', type=str, nargs='?', default=None, help='Path to the hand config.yaml file')
     args = parser.parse_args()
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

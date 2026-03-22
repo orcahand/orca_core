@@ -165,15 +165,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Configure Dynamixel motor chain for OrcaHand Assembly. Specify the path to the config file of your OrcaHand model.")
     parser.add_argument(
-        "model_path",
+        "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
+        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)")
     args = parser.parse_args()
     
     try:
-        config_path = os.path.join(get_model_path(args.model_path), "config.yaml")
+        config_path = os.path.abspath(args.config_path) if args.config_path else os.path.join(get_model_path(), "config.yaml")
         config = read_yaml(config_path)
         TARGET_BAUD = config.get('baudrate', 3000000)
         PORT = config.get('port', '/dev/ttyUSB0')

@@ -70,13 +70,13 @@ def record_continuous_angles(hand, output_dir, sampling_frequency=50.0, duration
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Record continuous joint angles from the OrcaHand.")
-    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
+    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1_left/config.yaml)")
     parser.add_argument("--frequency", type=float, default=50.0, help="Sampling frequency in Hz")
     parser.add_argument("--duration", type=float, default=None, help="Recording duration in seconds (optional)")
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the output file, relative to the project root. Defaults to 'replay_sequences/' at project root if not specified.")
     args = parser.parse_args()
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
 
     
     script_dir = os.path.dirname(os.path.abspath(__file__))

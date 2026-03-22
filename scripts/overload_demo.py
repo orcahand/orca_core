@@ -36,13 +36,13 @@ def main():
                         help="Finger to test (default: index)")
     parser.add_argument("--duration", "-d", type=float, default=15.0,
                         help="Hold duration in seconds (default: 15)")
-    parser.add_argument("model_path", type=str, nargs="?", default=None,
-                        help="Path to the hand model directory")
+    parser.add_argument("config_path", type=str, nargs="?", default=None,
+                        help="Path to the hand config.yaml file")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     hand.connect()
 
     if not hand.calibrated:

@@ -8,13 +8,13 @@ from orca_core import OrcaHand
 
 def main():
     parser = argparse.ArgumentParser(description='Move OrcaHand joints to zero position.')
-    parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
+    parser.add_argument('config_path', type=str, nargs='?', default=None, help='Path to the hand config.yaml file')
 
     
     args = parser.parse_args()
 
     try:
-        hand = OrcaHand(model_path=args.model_path)
+        hand = OrcaHand(config_path=args.config_path)
             
         success, message = hand.connect()
         if not success:

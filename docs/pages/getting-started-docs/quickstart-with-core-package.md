@@ -26,16 +26,16 @@ To get started with Orca Core, follow these steps:
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    python scripts/tension.py orca_core/orca_core/models/orcahand_v1_right
-    python scripts/calibrate.py orca_core/orca_core/models/orcahand_v1_right
+    python scripts/tension.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
+    python scripts/calibrate.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
     ```
 
-    Replace the path with your specific hand model folder if needed.
+    Replace the path with your specific `config.yaml` file if needed.
 
 5. **Move the hand to the neutral position**:
 
     ```sh
-    python scripts/neutral.py orca_core/orca_core/models/orcahand_v1_right
+    python scripts/neutral.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
     ```
 
 6. **Example usage: test.py**
@@ -46,7 +46,7 @@ To get started with Orca Core, follow these steps:
     from orca_core import OrcaHand
     import time
 
-    hand = OrcaHand('orca_core/orca_core/models/orcahand_v1_right')
+    hand = OrcaHand('orca_core/orca_core/models/orcahand_v1_right/config.yaml')
     status = hand.connect()
     print(status)
     if not status[0]:
@@ -71,7 +71,7 @@ To get started with Orca Core, follow these steps:
 
 **Note:**  
 - Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
+- All scripts in the `scripts/` folder take the `config.yaml` path as their first argument.
 - For more advanced usage, see the other scripts and the API documentation.
 
 ---
