@@ -17,9 +17,9 @@ class TestOrcaHandCalibration(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config_path = os.path.join(self.temp_dir, "config.yaml")
-        self.calib_path = os.path.join(self.temp_dir, "calibration.yaml")
+        self.calibration_path = os.path.join(self.temp_dir, "calibration.yaml")
         shutil.copy(REAL_CONFIG, self.config_path)
-        shutil.copy(REAL_CALIB, self.calib_path)
+        shutil.copy(REAL_CALIB, self.calibration_path)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir)
@@ -27,7 +27,7 @@ class TestOrcaHandCalibration(unittest.TestCase):
     def check_calibrated(self, hand):
         self.assertTrue(hand.calibrated, "Hand should be marked as calibrated")
 
-        calib = read_yaml(self.calib_path)
+        calib = read_yaml(self.calibration_path)
         
         motor_limits_file = calib.get('motor_limits', {})
         motor_limits = hand.motor_limits_dict
@@ -50,7 +50,7 @@ class TestOrcaHandCalibration(unittest.TestCase):
 
 
     def test_calibration_yaml_missing(self):
-        os.remove(self.calib_path)
+        os.remove(self.calibration_path)
         hand = MockOrcaHand(self.config_path)
         hand.connect()
     
@@ -58,7 +58,7 @@ class TestOrcaHandCalibration(unittest.TestCase):
         
         hand.calibrate()
 
-        self.assertTrue(os.path.exists(self.calib_path), "calibration.yaml should be created")
+        self.assertTrue(os.path.exists(self.calibration_path), "calibration.yaml should be created")
         
         self.check_calibrated(hand)
 
