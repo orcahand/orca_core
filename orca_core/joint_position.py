@@ -5,7 +5,7 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class OrcaJointPosition:
+class OrcaJointPositions:
     """Immutable, typed container for ORCA hand joint positions.
 
     Stores a mapping from joint name to joint position value. The class
@@ -54,7 +54,7 @@ class OrcaJointPosition:
         cls._default_joint_ids = tuple(joint_ids)
 
     @classmethod
-    def from_dict(cls, joint_pos: dict[str, float | None]) -> "OrcaJointPosition":
+    def from_dict(cls, joint_pos: dict[str, float | None]) -> "OrcaJointPositions":
         """Construct from a mapping, silently dropping ``None`` values.
 
         Args:
@@ -72,7 +72,7 @@ class OrcaJointPosition:
         cls,
         joint_pos: np.ndarray,
         joint_ids: Sequence[str] | None = None,
-    ) -> "OrcaJointPosition":
+    ) -> "OrcaJointPositions":
         """Construct from a 1-D NumPy array.
 
         Falls back to the registered default joint ordering when *joint_ids* is
