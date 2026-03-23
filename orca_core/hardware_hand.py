@@ -6,8 +6,7 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
-from __future__ import annotations
-
+import dataclasses
 import math
 import threading
 import time
@@ -18,6 +17,7 @@ from typing import Dict, List, TYPE_CHECKING, Union
 import numpy as np
 
 from .base_hand import BaseHand
+from .calibration import CalibrationResult
 from .hardware.motor_client import MotorClient
 from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
 
@@ -25,12 +25,39 @@ if TYPE_CHECKING:
     from .hardware.dynamixel_client import DynamixelClient
     from .hardware.feetech_client import FeetechClient
 
+from .constants import (
+    SUPPORTED_MOTOR_TYPES, MODE_MAP, WRIST_MODE_VALUE, CURRENT_BASED_POSITION, CURRENT, WRIST, FLEX, EXTEND, JOINTS, STEP, TINY_SLEEP,
+    JOINT_TO_MOTOR_RATIOS, MOTOR_LIMITS_DICT, WRIST_CALIBRATED, CALIBRATED, STEPS_TO_NEUTRAL
+)
 
-class HardwareOrcaHand(BaseHand):
-    """Hardware-backed ORCA hand implementation."""
+from .joint_position import OrcaJointPositions
 
-    def __init__(self, model_path: str = None):
-        super().__init__(model_path=model_path)
+class OrcaHand(BaseHand):
+    """ORCA hand class.
+
+    Extends :class:`~orca_core.BaseHand` with a full lifecycle for a physical
+    hand: connection management, torque control, multi-mode motor control,
+    (automatic) calibration, and background task execution.
+
+    The recommended usage pattern is:
+    
+    >>> from orca_core import OrcaHand, OrcaJointPositions
+    >>> hand = OrcaHand()
+    >>> hand.connect()
+    >>> hand.init_joints()  # enables torque, calibrates if needed
+    >>> hand.set_joint_positions(OrcaJointPositions({"index_mcp": 0.5}))
+    >>> hand.disconnect()
+
+    Args:
+        config_path: Path to a ``config.yaml`` file. Defaults to the bundled
+            model when ``None``.
+    """
+
+    def __init__(
+        self,
+        config_path: str | None = None,
+    ):
+        super().__init__(config_path=config_path)
 
         self._wrap_offsets_dict: Dict[int, float] = None
         self._motor_client: MotorClient = None
@@ -41,47 +68,87 @@ class HardwareOrcaHand(BaseHand):
         self._lock = threading.Lock()
         self._current_task = None
 
-        self.spec.validate_hardware()
+        self.config.validate_hardware()
+        self.calibration = CalibrationResult.from_calibration_path(
+            self.config.calibration_path, self.config.motor_ids
+        )
         self._sanity_check()
         self.is_calibrated(verbose=True)
 
     def __del__(self):
         self.disconnect()
 
-    def _sync_spec_attr(self, name: str, value) -> None:
-        setattr(self, name, value)
-        setattr(self.spec, name, value)
+    # ------------------------------------------------------------------
+    # Calibration state — thin views onto self.calibration
+    # ------------------------------------------------------------------
+
+    @property
+    def motor_limits_dict(self) -> Dict[int, list]:
+        return self.calibration.motor_limits_dict
+
+    @property
+    def joint_to_motor_ratios_dict(self) -> Dict[int, float]:
+        return self.calibration.joint_to_motor_ratios_dict
+
+    @property
+    def calibrated(self) -> bool:
+        return self.calibration.calibrated
+
+    @property
+    def wrist_calibrated(self) -> bool:
+        return self.calibration.wrist_calibrated
 
     def _create_motor_client(self) -> MotorClient:
-        if self.motor_type == "dynamixel":
+        if self.config.motor_type == "dynamixel":
             from .hardware.dynamixel_client import DynamixelClient
 
-            return DynamixelClient(self.motor_ids, self.port, self.baudrate)
-        if self.motor_type == "feetech":
+            return DynamixelClient(self.config.motor_ids, self.config.port, self.config.baudrate)
+        
+        if self.config.motor_type == "feetech":
             from .hardware.feetech_client import FeetechClient
 
-            return FeetechClient(self.motor_ids, self.port, self.baudrate)
-        raise ValueError(f"Unknown motor_type: {self.motor_type}. Expected 'dynamixel' or 'feetech'.")
+            return FeetechClient(self.config.motor_ids, self.config.port, self.config.baudrate)
+        
+        raise ValueError(
+            f"Unknown motor_type: {self.config.motor_type}. Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
+        )
 
     def connect(self) -> tuple[bool, str]:
+        """Open connection to the motor bus.
+
+        Attempts to connect on the port in ``config.yaml``. On failure it
+        tries auto-detection via USB vendor ID, then falls back to an
+        interactive terminal port picker. A successful connection updates
+        ``config.yaml`` if the port changed.
+
+        Returns:
+            A ``(success, message)`` tuple where *success* is ``True`` on a
+            successful connection.
+        """
+        # TODO(fracapuano): Refactor: this is basically always connecting to one port and looking at multiple ports
         try:
             self._motor_client = self._create_motor_client()
             with self._motor_lock:
                 self._motor_client.connect()
+            
             return True, "Connection successful"
+        
         except Exception as e:
+            # 1. The port is not correct
             self._motor_client = None
-            print(f"Connection failed on {self.port}: {str(e)}")
+            print(f"Connection failed on {self.config.port}: {str(e)}")
 
-            chosen_port = auto_detect_port()
-            if chosen_port and chosen_port != self.port:
+            chosen_port = auto_detect_port(self.config.motor_type)
+            if chosen_port and chosen_port != self.config.port:
+                # TODO(fracapuano): Replace replace replace this try except Exception is madness
                 try:
-                    self._sync_spec_attr("port", chosen_port)
+                    self.config = dataclasses.replace(self.config, port=chosen_port)
                     self._motor_client = self._create_motor_client()
                     with self._motor_lock:
                         self._motor_client.connect()
-                    update_yaml(self.config_path, "port", chosen_port)
+                    update_yaml(self.config.config_path, "port", chosen_port)
                     return True, f"Connection successful with auto-detected port {chosen_port}"
+                
                 except Exception:
                     self._motor_client = None
 
@@ -91,17 +158,24 @@ class HardwareOrcaHand(BaseHand):
                 return False, "Connection failed: No port selected"
 
             try:
-                self._sync_spec_attr("port", chosen_port)
+                self.config = dataclasses.replace(self.config, port=chosen_port)
                 self._motor_client = self._create_motor_client()
                 with self._motor_lock:
                     self._motor_client.connect()
-                update_yaml(self.config_path, "port", chosen_port)
+                update_yaml(self.config.config_path, "port", chosen_port)
                 return True, f"Connection successful with port {chosen_port}"
             except Exception as e2:
                 self._motor_client = None
                 return False, f"Connection failed with selected port: {str(e2)}"
 
     def disconnect(self) -> tuple[bool, str]:
+        """Disable torque and close the serial connection.
+
+        Safe to call even when the hand is already disconnected.
+
+        Returns:
+            A ``(success, message)`` tuple.
+        """
         try:
             if self._motor_client is None:
                 return True, "Disconnected successfully"
@@ -114,102 +188,190 @@ class HardwareOrcaHand(BaseHand):
             return False, f"Disconnection failed: {str(e)}"
 
     def is_connected(self) -> bool:
-        return self._motor_client.is_connected if self._motor_client else False
+        """Return ``True`` if the motor client is connected.
+
+        Returns:
+            Connection status as a boolean.
+        """
+        return self._motor_client is not None and self._motor_client.is_connected
 
     def enable_torque(self, motor_ids: List[int] = None):
-        if motor_ids is None:
-            motor_ids = self.motor_ids
+        """Enable torque on the specified motors.
+
+        Args:
+            motor_ids: List of motor IDs to enable. Defaults to all motors.
+        """
+        motor_ids = self.config.motor_ids if motor_ids is None else motor_ids
+        
         with self._motor_lock:
             self._motor_client.set_torque_enabled(motor_ids, True)
 
     def disable_torque(self, motor_ids: List[int] = None):
-        if motor_ids is None:
-            motor_ids = self.motor_ids
+        """Disable torque on the specified motors.
+
+        Args:
+            motor_ids: List of motor IDs to disable. Defaults to all motors.
+        """
+        motor_ids = self.config.motor_ids if motor_ids is None else motor_ids
+        
         with self._motor_lock:
             self._motor_client.set_torque_enabled(motor_ids, False)
 
     def set_max_current(self, current: Union[float, List[float]]):
+        """Set the maximum allowable current for the motors.
+
+        Args:
+            current: Either a single float applied to all motors, or a list of
+                per-motor current values (mA). If a list, its length must match
+                the number of configured motors.
+
+        Raises:
+            ValueError: If *current* is a list with the wrong length.
+        """
         if isinstance(current, list):
-            if len(current) != len(self.motor_ids):
+            if len(current) != len(self.config.motor_ids):
                 raise ValueError("Number of currents do not match the number of motors.")
+            
             with self._motor_lock:
-                self._motor_client.write_desired_current(self.motor_ids, current)
-            return
+                self._motor_client.write_desired_current(self.config.motor_ids, current)
 
         with self._motor_lock:
-            self._motor_client.write_desired_current(self.motor_ids, current * np.ones(len(self.motor_ids)))
+            self._motor_client.write_desired_current(self.config.motor_ids, current * np.ones(len(self.config.motor_ids)))
 
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
-        mode_map = {
-            "current": 0,
-            "velocity": 1,
-            "position": 3,
-            "multi_turn_position": 4,
-            "current_based_position": 5,
-        }
+        """Switch the operating mode of the specified motors.
 
-        mode_value = mode_map.get(mode)
+        The wrist motor is always kept in ``multi_turn_position`` mode (4) when
+        *mode* would otherwise be ``current_based_position`` (5) or
+        ``current`` (0), because those modes are incompatible with the wrist
+        joint's range of motion.
+
+        Args:
+            mode: One of ``"current"``, ``"velocity"``, ``"position"``,
+                ``"multi_turn_position"``, or ``"current_based_position"``.
+            motor_ids: Motors to reconfigure. Defaults to all motors.
+
+        Raises:
+            ValueError: If *mode* is not recognised or *motor_ids* contains
+                unknown IDs.
+        """
+        mode_value = MODE_MAP.get(mode)
         if mode_value is None:
             raise ValueError("Invalid control mode.")
 
         with self._motor_lock:
             if motor_ids is None:
-                motor_ids = self.motor_ids
-            elif not all(motor_id in self.motor_ids for motor_id in motor_ids):
+                motor_ids = self.config.motor_ids
+            elif not all(motor_id in self.config.motor_ids for motor_id in motor_ids):
                 raise ValueError("Invalid motor IDs.")
 
-        if mode_value in (5, 0):
-            wrist_motor_id = self.joint_to_motor_map.get("wrist")
+        if mode_value in (MODE_MAP[CURRENT_BASED_POSITION], MODE_MAP[CURRENT]):
+            wrist_motor_id = self.config.joint_to_motor_map.get("wrist")
             if wrist_motor_id is not None:
                 motor_ids_without_wrist = [motor_id for motor_id in motor_ids if motor_id != wrist_motor_id]
                 self._motor_client.set_operating_mode(motor_ids_without_wrist, mode_value)
+                
                 if wrist_motor_id in motor_ids:
-                    self._motor_client.set_operating_mode([wrist_motor_id], 4)
+                    self._motor_client.set_operating_mode([wrist_motor_id], WRIST_MODE_VALUE)
+                
                 return
 
         self._motor_client.set_operating_mode(motor_ids, mode_value)
 
     def get_motor_pos(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """Read raw motor positions from the bus.
+
+        Args:
+            as_dict: When ``True`` returns a ``dict`` keyed by motor ID.
+                Defaults to ``False`` (returns an array ordered by
+                :attr:`motor_ids`).
+
+        Returns:
+            Motor positions in radians as an array or dict.
+        """
         with self._motor_lock:
             motor_pos = self._motor_client.read_pos_vel_cur()[0]
+            
             if as_dict:
-                return {motor_id: pos for motor_id, pos in zip(self.motor_ids, motor_pos)}
+                return {motor_id: pos for motor_id, pos in zip(self.config.motor_ids, motor_pos)}
+            
             return motor_pos
 
     def get_motor_current(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """Read the present current drawn by each motor.
+
+        Args:
+            as_dict: When ``True`` returns a ``dict`` keyed by motor ID.
+
+        Returns:
+            Motor currents (mA) as an array, or dict.
+        """
         with self._motor_lock:
             motor_current = self._motor_client.read_pos_vel_cur()[2]
+            
             if as_dict:
-                return {motor_id: current for motor_id, current in zip(self.motor_ids, motor_current)}
+                return {motor_id: current for motor_id, current in zip(self.config.motor_ids, motor_current)}
+            
             return motor_current
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """Read the present temperature of each motor.
+
+        Args:
+            as_dict: When ``True`` returns a ``dict`` keyed by motor ID.
+
+        Returns:
+            Motor temperatures in °C as an array or dict.
+        """
         with self._motor_lock:
             motor_temp = self._motor_client.read_temperature()
+            
             if as_dict:
-                return {motor_id: temp for motor_id, temp in zip(self.motor_ids, motor_temp)}
+                return {motor_id: temp for motor_id, temp in zip(self.config.motor_ids, motor_temp)}
+            
             return motor_temp
 
-    def _get_joint_pos_impl(self) -> dict:
+    def _get_joint_positions(self) -> OrcaJointPositions:
         motor_pos = self.get_motor_pos()
         return self._motor_to_joint_pos(motor_pos)
 
-    def _set_joint_pos_impl(self, joint_pos: dict) -> None:
+    def _set_joint_positions(self, joint_pos: OrcaJointPositions) -> bool:
         motor_pos = self._joint_to_motor_pos(joint_pos)
         self._set_motor_pos(motor_pos)
+        return True
 
-    def init_joints(self, calibrate: bool = False):
+    def init_joints(self, force_calibrate: bool = False):
+        """Prepare the hand for operation.
+
+        Enables torque, sets the configured control mode and current limit,
+        runs calibration if needed, computes wrap offsets, and moves to the
+        neutral position.
+
+        Args:
+            calibrate: Force a fresh calibration even if the hand is already
+                calibrated (default ``False``).
+        """
         self.enable_torque()
-        self.set_control_mode(self.control_mode)
-        self.set_max_current(self.max_current)
+        self.set_control_mode(self.config.control_mode)
+        self.set_max_current(self.config.max_current)
 
-        if not self.calibrated or calibrate:
+        if not self.calibrated or force_calibrate:
             self.calibrate()
 
         self._compute_wrap_offsets_dict()
-        self.set_joint_pos(self.neutral_position)
+        self.set_joint_positions(OrcaJointPositions.from_dict(self.config.neutral_position))
 
     def is_calibrated(self, verbose: bool = False) -> bool:
+        """Check whether all joints have been fully calibrated.
+
+        Args:
+            verbose: When ``True``, prints a warning for each uncalibrated
+                motor instead of returning early.
+
+        Returns:
+            ``True`` if every motor has valid limits and a non-zero
+            joint-to-motor ratio.
+        """
         overall_calibrated = True
         uncalibrated_messages = []
         motors_with_warnings = set()
@@ -219,19 +381,19 @@ class HardwareOrcaHand(BaseHand):
                 overall_calibrated = False
                 if not verbose:
                     return False
-                joint_name = self.motor_to_joint_dict.get(motor_id, "Unknown")
+                joint_name = self.config.motor_to_joint_dict.get(motor_id, "Unknown")
                 uncalibrated_messages.append(
                     f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m"
                 )
                 motors_with_warnings.add(motor_id)
 
-        for motor_id, ratio in self.joint_to_motor_ratios_dict.items():
+        for motor_id, ratio in self.calibration.joint_to_motor_ratios_dict.items():
             if ratio is None or ratio == 0.0:
                 overall_calibrated = False
                 if not verbose:
                     return False
                 if motor_id not in motors_with_warnings:
-                    joint_name = self.motor_to_joint_dict.get(motor_id, "Unknown")
+                    joint_name = self.config.motor_to_joint_dict.get(motor_id, "Unknown")
                     uncalibrated_messages.append(
                         f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m"
                     )
@@ -244,66 +406,100 @@ class HardwareOrcaHand(BaseHand):
         return overall_calibrated
 
     def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+        """Run the joint calibration routine.
+
+        Drives each joint to its mechanical limits in the sequence defined by
+        ``calib_sequence`` in ``config.yaml``, records the motor positions at
+        each limit, and persists the resulting motor limits and joint-to-motor
+        ratios to ``calibration.yaml``.
+
+        On completion ``self.calibration`` is replaced with a fresh
+        :class:`~orca_core.CalibrationResult`. Partial progress is written to
+        disk after every step so an interrupted run is never fully lost.
+        """
         if blocking:
             self._task_stop_event.clear()
-            self._calibrate(force_wrist=force_wrist)
+            result = self._calibrate(force_wrist=force_wrist)
+            if result is not None:
+                self.calibration = result
         else:
-            self._start_task(self._calibrate, force_wrist=force_wrist)
+            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist)
 
-    def _calibrate(self, force_wrist: bool = False):
-        wrist_in_sequence = any("wrist" in step["joints"] for step in self.calib_sequence)
-        calib_sequence = list(self.calib_sequence)
+
+    def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
+        """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
+
+        Drives each joint through its mechanical limits following ``calib_sequence``
+        from ``config.yaml``, records motor positions at each limit, and persists
+        the resulting motor limits and joint-to-motor ratios to ``calibration.yaml``
+        after every step. Returns ``None`` on early exit (stop event triggered).
+
+        Wrist calibration logic:
+        - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
+        - Uses a higher calibration current.
+        - If already calibrated (and calibration run is not forcing), skip wrist steps.
+        - If missing from sequence, is calibrated.
+        - If force_wrist=True, always include wrist in calibration steps.
+        """
+        wrist_in_sequence = any("wrist" in step[JOINTS] for step in self.config.calibration_sequence)
+        calibration_sequence = list(self.config.calibration_sequence)
 
         if self.wrist_calibrated and not force_wrist:
             if wrist_in_sequence:
                 print("WARNING: Wrist is already calibrated. Skipping wrist calibration. Use --force-wrist to override.")
-            calib_sequence = [step for step in calib_sequence if "wrist" not in step["joints"]]
+            calibration_sequence = [step for step in calibration_sequence if WRIST not in step[JOINTS]]
         elif not wrist_in_sequence:
-            calib_sequence.append({"step": len(calib_sequence) + 1, "joints": {"wrist": "flex"}})
-            calib_sequence.append({"step": len(calib_sequence) + 1, "joints": {"wrist": "extend"}})
+            # Adds wrist to calibration sequence
+            calibration_sequence.append({STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: FLEX}})
+            calibration_sequence.append({STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}})
 
-        motor_limits = self.motor_limits_dict.copy()
+        # Deep-copy current limits so per-step YAML writes reflect only the
+        # joints being calibrated, not stale data from a prior incomplete run.
+        motor_limits = {motor_id: list(limits) for motor_id, limits in self.calibration.motor_limits_dict.items()}
+        joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
 
         self._compute_wrap_offsets_dict()
-        for step in calib_sequence:
-            for joint in step["joints"].keys():
-                motor_id = self.joint_to_motor_map[joint]
+
+        for step in calibration_sequence:
+            for joint in step[JOINTS].keys():
+                motor_id = self.config.joint_to_motor_map[joint]
                 motor_limits[motor_id] = [None, None]
                 self._wrap_offsets_dict[motor_id] = 0.0
 
         motors_with_initial_offset = set()
         motors_with_final_offset = set()
 
-        self.set_control_mode("current_based_position")
-        self.set_max_current(self.calib_current)
+        # Calibration is always done in current-based position mode.
+        self.set_control_mode(CURRENT_BASED_POSITION)
+        self.set_max_current(self.config.calibration_current)
 
-        for step in calib_sequence:
+        for step in calibration_sequence:
             self.disable_torque()
 
             if self._task_stop_event.is_set():
-                return
+                return None
 
             desired_increment, motor_reached_limit, directions = {}, {}, {}
             position_buffers, calibrated_joints, position_logs, current_log = {}, {}, {}, {}
 
-            for joint, direction in step["joints"].items():
-                self.enable_torque(motor_ids=[self.joint_to_motor_map[joint]])
-                print("Enabling torque for the following motor: ", self.joint_to_motor_map[joint])
+            for joint, direction in step[JOINTS].items():
+                self.enable_torque(motor_ids=[self.config.joint_to_motor_map[joint]])
+                print("Enabling torque for the following motor: ", self.config.joint_to_motor_map[joint])
 
                 if self._task_stop_event.is_set():
-                    return
+                    return None
 
-                if joint == "wrist":
-                    self.set_max_current(self.wrist_calib_current)
-                else:
-                    self.set_max_current(self.calib_current)
+                self.set_max_current(
+                    self.config.calibration_current if joint != WRIST else self.config.wrist_calibration_current
+                )
 
-                motor_id = self.joint_to_motor_map[joint]
-                sign = 1 if direction == "flex" else -1
-                if self.joint_inversion_dict.get(joint, False):
+                motor_id = self.config.joint_to_motor_map[joint]
+                sign = 1 if direction == FLEX else -1
+                if self.config.joint_inversion_dict.get(joint, False):
                     sign = -sign
+
                 directions[motor_id] = sign
-                position_buffers[motor_id] = deque(maxlen=self.calib_num_stable)
+                position_buffers[motor_id] = deque(maxlen=self.config.calibration_num_stable)
                 position_logs[motor_id] = []
                 current_log[motor_id] = []
                 motor_reached_limit[motor_id] = False
@@ -316,34 +512,34 @@ class HardwareOrcaHand(BaseHand):
                 desired_increment = {}
                 for motor_id, reached_limit in motor_reached_limit.items():
                     if not reached_limit:
-                        desired_increment[motor_id] = directions[motor_id] * self.calib_step_size
+                        desired_increment[motor_id] = directions[motor_id] * self.config.calibration_step_size
 
                 self._set_motor_pos(desired_increment, rel_to_current=True)
-                time.sleep(self.calib_step_period)
+                time.sleep(self.config.calibration_step_period)
                 curr_pos = self.get_motor_pos()
                 curr_current = self.get_motor_current()
 
                 for motor_id in desired_increment.keys():
                     if not motor_reached_limit[motor_id]:
-                        idx = self.motor_id_to_idx_dict[motor_id]
+                        idx = self.config.motor_id_to_idx_dict[motor_id]
                         position_buffers[motor_id].append(curr_pos[idx])
                         position_logs[motor_id].append(float(curr_pos[idx]))
                         current_log[motor_id].append(float(curr_current[idx]))
 
-                        if len(position_buffers[motor_id]) == self.calib_num_stable and np.allclose(
+                        if len(position_buffers[motor_id]) == self.config.calibration_num_stable and np.allclose(
                             position_buffers[motor_id],
                             position_buffers[motor_id][0],
-                            atol=self.calib_threshold,
+                            atol=self.config.calibration_threshold,
                         ):
                             motor_reached_limit[motor_id] = True
-                            if "wrist" in self.motor_to_joint_dict[motor_id]:
+                            if WRIST in self.config.motor_to_joint_dict[motor_id]:
                                 avg_limit = float(np.mean(position_buffers[motor_id]))
                             else:
                                 self.disable_torque([motor_id])
-                                time.sleep(0.05)
+                                time.sleep(TINY_SLEEP)
                                 avg_limit = float(self.get_motor_pos()[idx])
                             print(
-                                f"Motor {motor_id} corresponding to joint {self.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
+                                f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
                             )
                             if directions[motor_id] == 1:
                                 motor_limits[motor_id][1] = avg_limit
@@ -353,7 +549,7 @@ class HardwareOrcaHand(BaseHand):
                             if self._motor_client.requires_offset_calibration and motor_id not in motors_with_final_offset:
                                 is_positive = directions[motor_id] > 0
                                 self._motor_client.calibrate_offset(motor_id, upper=is_positive)
-                                time.sleep(0.05)
+                                time.sleep(TINY_SLEEP)
                                 new_limit = float(self.get_motor_pos()[idx])
                                 motor_limits[motor_id][1 if is_positive else 0] = new_limit
                                 print(f"  (Offset adjusted: limit now at {new_limit} rad)")
@@ -361,45 +557,72 @@ class HardwareOrcaHand(BaseHand):
 
                             self.enable_torque([motor_id])
 
-            for joint in step["joints"].keys():
-                motor_id = self.joint_to_motor_map[joint]
+            for joint in step[JOINTS].keys():
+                motor_id = self.config.joint_to_motor_map[joint]
                 if motor_limits[motor_id][0] is None or motor_limits[motor_id][1] is None:
                     continue
+
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = (
-                    self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][1]
-                    - self.joint_roms_dict[self.motor_to_joint_dict[motor_id]][0]
+                    self.config.joint_roms_dict[joint][1]
+                    - self.config.joint_roms_dict[joint][0]
                 )
-                self.joint_to_motor_ratios_dict[motor_id] = float(delta_motor / delta_joint)
+                joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
                 print("Joint calibrated: ", joint)
                 calibrated_joints[joint] = 0.0
 
-            update_yaml(self.calib_path, "joint_to_motor_ratios", self.joint_to_motor_ratios_dict)
-            update_yaml(self.calib_path, "motor_limits", motor_limits)
-            self.motor_limits_dict = motor_limits
-            self.spec.motor_limits_dict = motor_limits
+            # Persist partial progress after every step so an interrupted run
+            # never loses the work already done.
+            update_yaml(self.config.calibration_path, JOINT_TO_MOTOR_RATIOS, joint_to_motor_ratios)
+            update_yaml(self.config.calibration_path, MOTOR_LIMITS_DICT, motor_limits)
+
             if calibrated_joints:
-                self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
+                self.set_joint_positions(calibrated_joints, num_steps=25, step_size=0.001)
+            
+            # TODO(fracapuano): Is this necessary?
             time.sleep(0.1)
 
-        if any("wrist" in step["joints"] for step in calib_sequence):
-            self._sync_spec_attr("wrist_calibrated", True)
-            update_yaml(self.calib_path, "wrist_calibrated", True)
+        new_wrist_calibrated = self.calibration.wrist_calibrated
+        if any(WRIST in step[JOINTS] for step in calibration_sequence):
+            new_wrist_calibrated = True
+            update_yaml(self.config.calibration_path, WRIST_CALIBRATED, True)
 
-        self._sync_spec_attr("calibrated", self.is_calibrated())
-        update_yaml(self.calib_path, "calibrated", self.calibrated)
+        new_calibrated = (
+            all(limits[0] is not None and limits[1] is not None for limits in motor_limits.values())
+            and all(ratio is not None and ratio != 0.0 for ratio in joint_to_motor_ratios.values())
+        )
+        update_yaml(self.config.calibration_path, CALIBRATED, new_calibrated)
+
         if calibrated_joints:
-            self.set_joint_pos(calibrated_joints, num_steps=25, step_size=0.001)
-        self.set_max_current(self.max_current)
+            self.set_joint_positions(calibrated_joints, num_steps=STEPS_TO_NEUTRAL, step_size=TINY_SLEEP)
+
+        self.set_max_current(self.config.max_current)
+
+        return CalibrationResult(
+            motor_limits_dict=motor_limits,
+            joint_to_motor_ratios_dict=joint_to_motor_ratios,
+            calibrated=new_calibrated,
+            wrist_calibrated=new_wrist_calibrated,
+        )
 
     def _compute_wrap_offsets_dict(self):
+        """Detect per-motor encoder wrap-arounds and store correction offsets.
+
+        Reads current motor positions and checks whether any motor has drifted
+        more than 1/4pi beyond its configured limits, which indicates the
+        rotary encoder has wrapped around a full revolution. For each such motor
+        a ±2pi offset is recorded in `_wrap_offsets_dict` so callers can shift
+        the raw reading back into the expected operating range. Motors with no
+        configured limits, or whose positions are within tolerance, receive an
+        offset of 0.
+        """
         motor_pos = self.get_motor_pos()
 
-        lower_limit = np.array([self.motor_limits_dict[motor_id][0] for motor_id in self.motor_ids])
-        higher_limit = np.array([self.motor_limits_dict[motor_id][1] for motor_id in self.motor_ids])
+        lower_limit = np.array([self.motor_limits_dict[motor_id][0] for motor_id in self.config.motor_ids])
+        higher_limit = np.array([self.motor_limits_dict[motor_id][1] for motor_id in self.config.motor_ids])
 
         offsets = {}
-        for idx, motor_id in enumerate(self.motor_ids):
+        for idx, motor_id in enumerate(self.config.motor_ids):
             if lower_limit[idx] is None or higher_limit[idx] is None:
                 offsets[motor_id] = 0.0
                 continue
@@ -418,7 +641,7 @@ class HardwareOrcaHand(BaseHand):
 
     def _set_motor_pos(self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False):
         with self._motor_lock:
-            if rel_to_current:
+            if rel_to_current:  # TODO(fracapuano): split in two methods for delta-set or absolute-set
                 current_positions = self.get_motor_pos()
 
             motor_ids_to_write = []
@@ -426,15 +649,15 @@ class HardwareOrcaHand(BaseHand):
 
             if isinstance(desired_pos, dict):
                 for motor_id, pos_val in desired_pos.items():
-                    if motor_id not in self.motor_ids:
-                        print(f"Warning: Motor ID {motor_id} in desired_pos dict is not in self.motor_ids. Skipping.")
+                    if motor_id not in self.config.motor_ids:
+                        print(f"Warning: Motor ID {motor_id} in desired_pos dict is not in self.config.motor_ids. Skipping.")
                         continue
                     if pos_val is None or math.isnan(pos_val):
                         continue
 
                     pos_to_write = float(pos_val)
                     if rel_to_current:
-                        pos_to_write += current_positions[self.motor_id_to_idx_dict[motor_id]]
+                        pos_to_write += current_positions[self.config.motor_id_to_idx_dict[motor_id]]
 
                     motor_ids_to_write.append(motor_id)
                     positions_to_write.append(pos_to_write)
@@ -444,16 +667,16 @@ class HardwareOrcaHand(BaseHand):
                 positions_to_write = np.array(positions_to_write, dtype=float)
 
             elif isinstance(desired_pos, (np.ndarray, list)):
-                if len(desired_pos) != len(self.motor_ids):
+                if len(desired_pos) != len(self.config.motor_ids):
                     raise ValueError(
-                        f"Length of desired_pos (list/ndarray) ({len(desired_pos)}) must match the number of configured motor_ids ({len(self.motor_ids)})."
+                        f"Length of desired_pos (list/ndarray) ({len(desired_pos)}) must match the number of configured motor_ids ({len(self.config.motor_ids)})."
                     )
 
                 for idx, pos_val in enumerate(desired_pos):
                     if pos_val is None or math.isnan(pos_val):
                         continue
 
-                    motor_ids_to_write.append(self.motor_ids[idx])
+                    motor_ids_to_write.append(self.config.motor_ids[idx])
                     if rel_to_current:
                         positions_to_write.append(float(pos_val) + current_positions[idx])
                     else:
@@ -476,70 +699,82 @@ class HardwareOrcaHand(BaseHand):
 
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
-            motor_id = self.motor_ids[idx]
-            joint_name = self.motor_to_joint_dict.get(motor_id)
+            motor_id = self.config.motor_ids[idx]
+            joint_name = self.config.motor_to_joint_dict.get(motor_id)
             if any(limit is None for limit in self.motor_limits_dict[motor_id]):
                 joint_pos[joint_name] = None
                 print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m")
-            elif self.joint_to_motor_ratios_dict[motor_id] == 0:
+            elif self.calibration.joint_to_motor_ratios_dict[motor_id] == 0:
                 joint_pos[joint_name] = None
                 print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
-                if self.joint_inversion_dict.get(joint_name, False):
-                    joint_pos[joint_name] = self.joint_roms_dict[joint_name][1] - (
+                if self.config.joint_inversion_dict.get(joint_name, False):
+                    joint_pos[joint_name] = self.config.joint_roms_dict[joint_name][1] - (
                         wrapped_pos - self.motor_limits_dict[motor_id][0]
-                    ) / self.joint_to_motor_ratios_dict[motor_id]
+                    ) / self.calibration.joint_to_motor_ratios_dict[motor_id]
                 else:
-                    joint_pos[joint_name] = self.joint_roms_dict[joint_name][0] + (
+                    joint_pos[joint_name] = self.config.joint_roms_dict[joint_name][0] + (
                         wrapped_pos - self.motor_limits_dict[motor_id][0]
-                    ) / self.joint_to_motor_ratios_dict[motor_id]
+                    ) / self.calibration.joint_to_motor_ratios_dict[motor_id]
         return joint_pos
 
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
-        motor_pos = [None] * len(self.motor_ids)
+        motor_pos = [None] * len(self.config.motor_ids)
 
         for joint_name, pos in joint_pos.items():
-            motor_id = self.joint_to_motor_map.get(joint_name)
+            motor_id = self.config.joint_to_motor_map.get(joint_name)
             if motor_id is None:
                 continue
 
             if pos is None:
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
+                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
             if (
                 self.motor_limits_dict[motor_id][0] is None
                 or self.motor_limits_dict[motor_id][1] is None
-                or self.joint_to_motor_ratios_dict[motor_id] == 0
+                or self.calibration.joint_to_motor_ratios_dict[motor_id] == 0
             ):
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = None
+                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = None
                 print(f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m")
                 continue
 
-            if self.joint_inversion_dict.get(joint_name, False):
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (
-                    self.joint_roms_dict[joint_name][1] - pos
-                ) * self.joint_to_motor_ratios_dict[motor_id]
+            if self.config.joint_inversion_dict.get(joint_name, False):
+                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (
+                    self.config.joint_roms_dict[joint_name][1] - pos
+                ) * self.calibration.joint_to_motor_ratios_dict[motor_id]
             else:
-                motor_pos[self.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (
-                    pos - self.joint_roms_dict[joint_name][0]
-                ) * self.joint_to_motor_ratios_dict[motor_id]
+                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = self.motor_limits_dict[motor_id][0] + (
+                    pos - self.config.joint_roms_dict[joint_name][0]
+                ) * self.calibration.joint_to_motor_ratios_dict[motor_id]
 
-            motor_pos[self.motor_id_to_idx_dict[motor_id]] += self._wrap_offsets_dict.get(motor_id, 0.0)
+            motor_pos[self.config.motor_id_to_idx_dict[motor_id]] += self._wrap_offsets_dict.get(motor_id, 0.0)
 
         return motor_pos
 
     def _sanity_check(self):
         for motor_limit in self.motor_limits_dict.values():
             if any(limit is None for limit in motor_limit):
-                self._sync_spec_attr("calibrated", False)
-                update_yaml(self.calib_path, "calibrated", False)
+                self.calibration = dataclasses.replace(self.calibration, calibrated=False)
+                update_yaml(self.config.calibration_path, "calibrated", False)
 
     def tension(self, move_motors: bool = False, blocking: bool = True):
+        """Hold motors under current to allow manual tendon tensioning.
+
+        Optionally pre-conditions the tendons with a short back-and-forth
+        motion before entering the hold phase. Torque is disabled automatically
+        on exit.
+
+        Args:
+            move_motors: When ``True``, execute a short flexion/extension cycle
+                before holding (default ``False``).
+            blocking: When ``True`` (default) blocks until the user interrupts
+                with Ctrl-C. When ``False`` runs in a background thread.
+        """
         if blocking:
             self._task_stop_event.clear()
             self._tension(move_motors)
@@ -555,6 +790,26 @@ class HardwareOrcaHand(BaseHand):
         include_wrist: bool = False,
         blocking: bool = True,
     ):
+        """Apply a sinusoidal jitter to the motors for tendon seating.
+
+        All motors oscillate around their current position with a sine wave.
+        Amplitude is capped at 10° for safety.
+
+        Args:
+            motor_ids: Motors to jitter. Defaults to all non-wrist motors (or
+                all motors when *include_wrist* is ``True``).
+            amplitude: Peak-to-peak amplitude in degrees (default ``5.0``,
+                max ``10.0``).
+            frequency: Oscillation frequency in Hz (default ``10.0``).
+            duration: Total jitter duration in seconds (default ``3.0``).
+            include_wrist: Include the wrist motor when *motor_ids* is
+                ``None`` (default ``False``).
+            blocking: When ``True`` (default) blocks until jitter completes.
+                When ``False`` runs in a background thread.
+
+        Raises:
+            ValueError: If *amplitude* exceeds 10°.
+        """
         if blocking:
             self._task_stop_event.clear()
             self._jitter(motor_ids, amplitude, frequency, duration, include_wrist)
@@ -576,8 +831,8 @@ class HardwareOrcaHand(BaseHand):
         amplitude_rad = np.deg2rad(amplitude)
 
         if motor_ids is None:
-            wrist_motor_id = self.joint_to_motor_map.get("wrist")
-            motor_ids = [mid for mid in self.motor_ids if include_wrist or mid != wrist_motor_id]
+            wrist_motor_id = self.config.joint_to_motor_map.get("wrist")
+            motor_ids = [mid for mid in self.config.motor_ids if include_wrist or mid != wrist_motor_id]
 
         start_positions = self.get_motor_pos(as_dict=True)
         start_pos_array = np.array([start_positions[mid] for mid in motor_ids])
@@ -593,14 +848,15 @@ class HardwareOrcaHand(BaseHand):
             self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
     def _tension(self, move_motors: bool = False):
-        self.set_control_mode("current_based_position")
+        # TODO(fracapuano): Move this to a standard stateless function
+        self.set_control_mode(CURRENT_BASED_POSITION)
         if move_motors:
             motors_to_move = [
                 motor_id
-                for joint, motor_id in self.joint_to_motor_map.items()
-                if "wrist" not in joint.lower() and motor_id in self.motor_ids
+                for joint, motor_id in self.config.joint_to_motor_map.items()
+                if WRIST not in joint.lower() and motor_id in self.config.motor_ids
             ]
-            self.set_max_current(self.calib_current)
+            self.set_max_current(self.config.calibration_current)
 
             duration = 8
             increment_per_step = 0.1
@@ -621,7 +877,7 @@ class HardwareOrcaHand(BaseHand):
                 self._set_motor_pos(motor_increments_right, rel_to_current=True)
                 time.sleep(0.1)
 
-        self.set_max_current(self.max_current)
+        self.set_max_current(self.config.max_current)
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
         try:
@@ -648,6 +904,7 @@ class HardwareOrcaHand(BaseHand):
         self._task_thread.start()
 
     def stop_task(self):
+        """Stops a background task like calibration, tensioning or jittering."""
         if self._task_thread and self._task_thread.is_alive():
             self._task_stop_event.set()
             self._task_thread.join()
@@ -656,10 +913,15 @@ class HardwareOrcaHand(BaseHand):
             print("No running task to stop.")
 
 
-class MockOrcaHand(HardwareOrcaHand):
-    """Hardware hand implementation backed by the mock motor client."""
+class MockOrcaHand(OrcaHand):
+    """Drop-in :class:`OrcaHand` backed by an in-memory mock motor client, 
+    for testing and prototyping.
+
+    All methods behave identically to :class:`OrcaHand` but no serial
+    port is opened and motor state is simulated in memory.
+    """
 
     def _create_motor_client(self) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
-        return MockDynamixelClient(self.motor_ids, self.port, self.baudrate)
+        return MockDynamixelClient(self.config.motor_ids, self.config.port, self.config.baudrate)
