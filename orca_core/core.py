@@ -7,25 +7,10 @@
 # ==============================================================================
 
 from .base_hand import BaseHand
-from .hardware_hand import HardwareOrcaHand, MockOrcaHand
-from .joint_position import OrcaJointPosition
+from .hardware_hand import OrcaHand, MockOrcaHand
+from .joint_position import OrcaJointPositions
 
 
-class OrcaHand(HardwareOrcaHand):
-    """Primary entry point for controlling an ORCA robotic hand.
-
-    ``OrcaHand`` is a thin alias for :class:`~orca_core.HardwareOrcaHand` kept
-    for backward compatibility. All functionality is inherited unchanged;
-    refer to :class:`~orca_core.HardwareOrcaHand` for the full API reference.
-
-    Example:
-        >>> hand = OrcaHand()
-        >>> hand.connect()
-        >>> hand.init_joints()
-        >>> hand.set_joint_pos({"index_mcp": 0.8, "thumb_pip": 0.4})
-        >>> hand.disconnect()
-    """
-    pass
 
 
 if __name__ == "__main__":
@@ -33,6 +18,6 @@ if __name__ == "__main__":
     status = hand.connect()
     hand.enable_torque()
     hand.calibrate()
-    hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+    hand.set_joint_pos({joint: 0 for joint in hand.config.joint_ids})
     hand.disable_torque()
     hand.disconnect()
