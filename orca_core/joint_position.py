@@ -108,6 +108,9 @@ class OrcaJointPosition:
 
         return cls({joint: float(val) for joint, val in zip(resolved_ids, arr) if not np.isnan(val)})
 
+    def __iter__(self):
+        return iter(self.data.items())
+
     def as_dict(self) -> dict[str, float]:
         """Return a plain :class:`dict` copy of the joint positions.
 
