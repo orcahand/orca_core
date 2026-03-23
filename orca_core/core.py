@@ -8,10 +8,24 @@
 
 from .base_hand import BaseHand
 from .hardware_hand import HardwareOrcaHand, MockOrcaHand
+from .joint_position import OrcaJointPosition
 
 
 class OrcaHand(HardwareOrcaHand):
-    """Backward-compatible hardware-backed ORCA hand entry point."""
+    """Primary entry point for controlling an ORCA robotic hand.
+
+    ``OrcaHand`` is a thin alias for :class:`~orca_core.HardwareOrcaHand` kept
+    for backward compatibility. All functionality is inherited unchanged;
+    refer to :class:`~orca_core.HardwareOrcaHand` for the full API reference.
+
+    Example:
+        >>> hand = OrcaHand()
+        >>> hand.connect()
+        >>> hand.init_joints()
+        >>> hand.set_joint_pos({"index_mcp": 0.8, "thumb_pip": 0.4})
+        >>> hand.disconnect()
+    """
+    pass
 
 
 if __name__ == "__main__":
