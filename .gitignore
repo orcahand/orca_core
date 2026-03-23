@@ -129,3 +129,6 @@ orca_core/models/*
 .DS_Store
 
 .pytest_cache/
+
+# not storing the lockfile (as of now)
+uv.lock
