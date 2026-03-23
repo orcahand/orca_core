@@ -14,7 +14,7 @@ from .constants import (
     MOTOR_IDS, JOINT_IDS, JOINT_TO_MOTOR_MAP, JOINT_ROM_DICT
 )
 
-from .joint_position import OrcaJointPosition
+from .joint_position import OrcaJointPositions
 from .utils.utils import get_model_path, read_yaml
 
 
@@ -69,8 +69,12 @@ class HandConfig:
     # ------------------------------------------------------------------
     # Static config — always required, sourced from config.yaml
     # ------------------------------------------------------------------
-    model_path: str
+    # NOTE: Shared across Hardware and Sim classes
     config_path: str
+    neutral_position: Dict[str, float]  # TODO: turn into OrcaJointPositions
+    
+    # NOTE: From here onwards, it's all hardware-specific config
+    model_path: str
     calibration_path: str
 
     baudrate: int
@@ -87,7 +91,6 @@ class HandConfig:
     joint_to_motor_map: Dict[str, int]
     joint_roms_dict: Dict[str, List[float]]
     joint_inversion_dict: Dict[str, bool]
-    neutral_position: Dict[str, float]
 
     calibration_current: int
     wrist_calibration_current: int
@@ -230,7 +233,7 @@ class HandConfig:
         return resolved_model_path, resolved_config_path, resolved_calibration_path
 
 
-    def validate(self) -> None:
+    def validate(self):
         """Validate configuration fields always required.
 
         In particular, it checks that
@@ -249,6 +252,7 @@ class HandConfig:
             
             if joint not in self.joint_ids:
                 raise ValueError(f"Joint {joint} in ROMs is not defined.")
+
 
     def validate_hardware(self) -> None:
         # TODO: Move to the hardware hand class
@@ -294,8 +298,8 @@ class HandConfig:
 
     def clamp_joint_positions(
         self,
-        joint_pos: OrcaJointPosition
-    ) -> OrcaJointPosition:
+        joint_pos: OrcaJointPositions
+    ) -> OrcaJointPositions:
         """Clamp joint positions to their configured ROM bounds.
 
         Accepts any of the common position representations and returns an
@@ -321,7 +325,7 @@ class HandConfig:
 
             normalized[joint] = self._clip_joint_value(joint, pos)
 
-        return OrcaJointPosition.from_dict(normalized)
+        return OrcaJointPositions.from_dict(normalized)
 
     def _clip_joint_value(self, joint_name: str, pos: float) -> float:
         min_pos, max_pos = self.joint_roms_dict[joint_name]
