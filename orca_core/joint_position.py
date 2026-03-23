@@ -20,17 +20,17 @@ class OrcaJointPositions:
 
     Example:
         >>> # Create a new joint position object from a dictionary of joint positions
-        >>> pos = OrcaJointPosition({"index_mcp": 0.5, "thumb_pip": 1.2})  # set keys arbitrarily
-        >>> pos.as_list()
+        >>> pos = OrcaJointPositions({"index_mcp": 0.5, "thumb_pip": 1.2})  # set keys arbitrarily
+        >>> pos.as_list(["index_mcp", "thumb_pip"])
         [0.5, 1.2]
         >>> # You can also pass in an array of joint positions using specific joint names
-        >>> pos = OrcaJointPosition.from_ndarray([0.5, 1.2], joint_ids=["thumb_pip", "index_mcp"])
+        >>> pos = OrcaJointPositions.from_ndarray([0.5, 1.2], joint_ids=["thumb_pip", "index_mcp"])
         >>> pos.as_dict()
         {'thumb_pip': 0.5, 'index_mcp': 1.2}
         >>> # Register default joint ordering for your model
-        >>> OrcaJointPosition.register_joint_names(["index_mcp", "thumb_pip"])
+        >>> OrcaJointPositions.register_joint_names(["index_mcp", "thumb_pip"])
         >>> # You can now pass in an array of joint positions without specifying the joint ids
-        >>> pos = OrcaJointPosition.from_ndarray([0.5, 1.2])
+        >>> pos = OrcaJointPositions.from_ndarray([0.5, 1.2])
     """
     data: dict[str, float]
 
