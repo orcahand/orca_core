@@ -23,47 +23,38 @@ class HandConfig:
     """Config for a single ORCA hand.
 
     All fields are populated by :meth:`from_config_path` from the hand's
-    ``config.yaml`` and ``calibration.yaml`` files. The object is also
-    applied directly to the owning hand instance via :meth:`apply_to_instance`
-    so that every attribute is accessible from the hand directly.
+    ``config.yaml`` file. Calibration state (motor limits, gear ratios,
+    calibration flags) lives in :class:`~orca_core.CalibrationResult`, which
+    is managed separately by the hardware hand.
 
     Attributes:
-        Static config (always required, sourced from ``config.yaml``):
-            model_path: Absolute path to the model directory.
-            config_path: Absolute path to ``config.yaml``.
-            calibration_path: Absolute path to ``calibration.yaml``.
-            baudrate: Serial baudrate for the motor bus.
-            port: Serial port device string (e.g. ``/dev/ttyUSB0``).
-            max_current: Maximum allowable motor current in mA.
-            control_mode: Active control mode string; one of
-                ``"current_based_position"``, ``"position"``, ``"current"``,
-                ``"velocity"``, or ``"multi_turn_position"``.
-            type: Hand variant identifier (e.g. ``"right"``).
-            motor_type: Motor driver type; ``"dynamixel"`` or ``"feetech"``.
-            motor_ids: Ordered list of motor IDs on the bus.
-            joint_ids: Ordered list of joint name strings.
-            motor_id_to_idx_dict: Maps motor ID → index in :attr:`motor_ids`.
-            motor_to_joint_dict: Maps motor ID → joint name.
-            joint_to_motor_map: Maps joint name → motor ID.
-            joint_roms_dict: Maps joint name → ``[min, max]`` ROM bounds (rad).
-            joint_inversion_dict: Maps joint name → ``True`` when the motor
-                direction is inverted relative to the joint convention.
-            neutral_position: Mapping from joint name to neutral position (rad).
-            calibration_current: Motor current used during calibration (mA).
-            wrist_calibration_current: Motor current used for wrist calibration (mA).
-            calibration_step_size: Angular increment per calibration step (rad).
-            calibration_step_period: Sleep time between calibration steps (seconds).
-            calibration_threshold: Position stability threshold for limit detection (rad).
-            calibration_num_stable: Number of stable readings required to declare a limit.
-            calibration_sequence: Ordered list of calibration steps.
-
-        Calibration state (absent until calibration runs, written to ``calibration.yaml``):
-            calibrated: ``True`` when all joints have been calibrated.
-            wrist_calibrated: ``True`` when the wrist joint has been calibrated.
-            motor_limits_dict: Maps motor ID → ``[lower, upper]`` hard limits (rad).
-                Values are ``None`` before calibration.
-            joint_to_motor_ratios_dict: Maps motor ID → rad/rad gear ratio.
-                Values are ``0.0`` before calibration.
+        model_path: Absolute path to the model directory.
+        config_path: Absolute path to ``config.yaml``.
+        calibration_path: Absolute path to ``calibration.yaml``.
+        baudrate: Serial baudrate for the motor bus.
+        port: Serial port device string (e.g. ``/dev/ttyUSB0``).
+        max_current: Maximum allowable motor current in mA.
+        control_mode: Active control mode string; one of
+            ``"current_based_position"``, ``"position"``, ``"current"``,
+            ``"velocity"``, or ``"multi_turn_position"``.
+        type: Hand variant identifier (e.g. ``"right"``).
+        motor_type: Motor driver type; ``"dynamixel"`` or ``"feetech"``.
+        motor_ids: Ordered list of motor IDs on the bus.
+        joint_ids: Ordered list of joint name strings.
+        motor_id_to_idx_dict: Maps motor ID → index in :attr:`motor_ids`.
+        motor_to_joint_dict: Maps motor ID → joint name.
+        joint_to_motor_map: Maps joint name → motor ID.
+        joint_roms_dict: Maps joint name → ``[min, max]`` ROM bounds (rad).
+        joint_inversion_dict: Maps joint name → ``True`` when the motor
+            direction is inverted relative to the joint convention.
+        neutral_position: Mapping from joint name to neutral position (rad).
+        calibration_current: Motor current used during calibration (mA).
+        wrist_calibration_current: Motor current used for wrist calibration (mA).
+        calibration_step_size: Angular increment per calibration step (rad).
+        calibration_step_period: Sleep time between calibration steps (seconds).
+        calibration_threshold: Position stability threshold for limit detection (rad).
+        calibration_num_stable: Number of stable readings required to declare a limit.
+        calibration_sequence: Ordered list of calibration steps.
     """
 
     # ------------------------------------------------------------------
@@ -100,26 +91,18 @@ class HandConfig:
     calibration_num_stable: int
     calibration_sequence: List[dict]
 
-    # ------------------------------------------------------------------
-    # Calibration state — absent until calibration runs, written to
-    # calibration.yaml by the calibration routine
-    # ------------------------------------------------------------------
-    calibrated: bool
-    wrist_calibrated: bool
-    motor_limits_dict: Dict[int, List[float | None]]
-    joint_to_motor_ratios_dict: Dict[int, float]
-
     @classmethod
     def from_config_path(
         cls,
         config_path: str | None = None,
         calibration_path: str | None = None,
     ) -> "HandConfig":
-        """Load and construct a :class:`HandConfig` from YAML files.
+        """Load and construct a :class:`HandConfig` from ``config.yaml``.
 
         When *config_path* is ``None`` the first model found under the package's
-        ``models/`` directory is used. The calibration file is expected to live
-        alongside ``config.yaml`` unless *calibration_path* is specified.
+        ``models/`` directory is used. The calibration file path is resolved and
+        stored but its contents are intentionally not loaded here — calibration
+        state is managed by :class:`~orca_core.CalibrationResult`.
 
         Args:
             config_path: Path to a ``config.yaml`` file. Pass ``None`` to use
@@ -141,7 +124,6 @@ class HandConfig:
         )
 
         config = read_yaml(resolved_config_path) or {}
-        calibration = read_yaml(resolved_calibration_path) or {}
 
         motor_ids = list(config.get(MOTOR_IDS, []))
         joint_ids = list(config.get(JOINT_IDS, []))
@@ -160,16 +142,6 @@ class HandConfig:
         motor_id_to_idx_dict = {motor_id: idx for idx, motor_id in enumerate(motor_ids)}
         motor_to_joint_dict = {motor_id: joint for joint, motor_id in joint_to_motor_map.items()}
 
-        motor_limits_from_calibration = calibration.get("motor_limits", {})
-        motor_limits_dict = {
-            motor_id: motor_limits_from_calibration.get(motor_id, [None, None]) for motor_id in motor_ids
-        }
-
-        joint_to_motor_ratios_from_calibration = calibration.get("joint_to_motor_ratios", {})
-        joint_to_motor_ratios_dict = {
-            motor_id: joint_to_motor_ratios_from_calibration.get(motor_id, 0.0) for motor_id in motor_ids
-        }
-
         return cls(
             model_path=resolved_model_path,
             config_path=resolved_config_path,
@@ -187,14 +159,10 @@ class HandConfig:
             calibration_threshold=config.get("calibration_threshold"),
             calibration_num_stable=config.get("calibration_num_stable"),
             calibration_sequence=list(config.get("calibration_sequence")),
-            calibrated=calibration.get("calibrated"),
-            wrist_calibrated=calibration.get("wrist_calibrated"),
             neutral_position=dict(config.get("neutral_position")),
             motor_ids=motor_ids,
             joint_ids=joint_ids,
             motor_id_to_idx_dict=motor_id_to_idx_dict,
-            motor_limits_dict=motor_limits_dict,
-            joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
             joint_to_motor_map=joint_to_motor_map,
             joint_roms_dict=joint_roms_dict,
             joint_inversion_dict=joint_inversion_dict,
