@@ -7,5 +7,5 @@
 # ==============================================================================
 
 from .base_hand import BaseHand
-from .hardware_hand import OrcaHand, MockOrcaHand
-from .joint_position import OrcaJointPositions
+from .hardware_hand import OrcaHand
+from .joint_position import OrcaJointPosition
