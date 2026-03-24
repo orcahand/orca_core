@@ -18,6 +18,7 @@ import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
+from .hand_config import OrcaHandConfig
 from .hardware.motor_client import MotorClient
 from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
 
@@ -42,6 +43,7 @@ from .constants import (
     WRIST_CALIBRATED,
     CALIBRATED,
     STEPS_TO_NEUTRAL,
+    POSITION,
 )
 
 from .joint_position import OrcaJointPositions
@@ -68,11 +70,19 @@ class OrcaHand(BaseHand):
             model when ``None``.
     """
 
+    config_cls = OrcaHandConfig
+
     def __init__(
         self,
         config_path: str | None = None,
+        calibration_path: str | None = None,
+        config: OrcaHandConfig | None = None,
     ):
-        super().__init__(config_path=config_path)
+        super().__init__(
+            config_path=config_path,
+            config=config,
+            calibration_path=calibration_path,
+        )
 
         self._wrap_offsets_dict: Dict[int, float] = None
         self._motor_client: MotorClient = None
@@ -83,7 +93,6 @@ class OrcaHand(BaseHand):
         self._lock = threading.Lock()
         self._current_task = None
 
-        self.config.validate_hardware()
         self.calibration = CalibrationResult.from_calibration_path(
             self.config.calibration_path, self.config.motor_ids
         )
@@ -374,10 +383,10 @@ class OrcaHand(BaseHand):
 
     def _get_joint_positions(self) -> OrcaJointPositions:
         motor_pos = self.get_motor_pos()
-        return self._motor_to_joint_pos(motor_pos)
+        return OrcaJointPositions.from_dict(self._motor_to_joint_pos(motor_pos))
 
     def _set_joint_positions(self, joint_pos: OrcaJointPositions) -> bool:
-        motor_pos = self._joint_to_motor_pos(joint_pos)
+        motor_pos = self._joint_to_motor_pos(joint_pos.as_dict())
         self._set_motor_pos(motor_pos)
         return True
 
@@ -400,9 +409,13 @@ class OrcaHand(BaseHand):
             self.calibrate()
 
         self._compute_wrap_offsets_dict()
+        control_mode = self.config.control_mode
+        self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
         self.set_joint_positions(
-            OrcaJointPositions.from_dict(self.config.neutral_position)
+            OrcaJointPositions.from_dict(self.config.neutral_position),
+            num_steps=STEPS_TO_NEUTRAL
         )
+        self.set_control_mode(control_mode)
 
     def is_calibrated(self, verbose: bool = False) -> bool:
         """Check whether all joints have been fully calibrated.
@@ -525,6 +538,8 @@ class OrcaHand(BaseHand):
 
         motors_with_initial_offset = set()
         motors_with_final_offset = set()
+        
+        calibrated_joints: dict = {}
 
         # Calibration is always done in current-based position mode.
         self.set_control_mode(CURRENT_BASED_POSITION)
@@ -985,6 +1000,11 @@ class OrcaHand(BaseHand):
         start_positions = self.get_motor_pos(as_dict=True)
         start_pos_array = np.array([start_positions[mid] for mid in motor_ids])
 
+        # Feetech (and similar) issue one bus transaction per motor per update.
+        # Without a throttle, the inner loop floods the serial link and TxRx
+        # fails ("no status packet" / "incorrect status packet").
+        jitter_period_s = 0.01
+
         start_time = time.time()
         while (
             time.time() - start_time < duration and not self._task_stop_event.is_set()
@@ -995,12 +1015,14 @@ class OrcaHand(BaseHand):
                 self._motor_client.write_desired_pos(
                     motor_ids, start_pos_array + offset
                 )
+            time.sleep(jitter_period_s)
 
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
     def _tension(self, move_motors: bool = False):
         # TODO(fracapuano): Move this to a standard stateless function
+        control_mode = self.config.control_mode
         self.set_control_mode(CURRENT_BASED_POSITION)
         if move_motors:
             motors_to_move = [
@@ -1040,6 +1062,7 @@ class OrcaHand(BaseHand):
             while not self._task_stop_event.is_set():
                 time.sleep(0.1)
         finally:
+            self.set_control_mode(control_mode)
             self.disable_torque()
 
     def _run_task(self, task_fn, *args, **kwargs):

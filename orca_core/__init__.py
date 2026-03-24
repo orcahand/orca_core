@@ -10,4 +10,6 @@ from .core import BaseHand
 from .core import MockOrcaHand
 from .core import OrcaHand
 from .core import OrcaJointPositions
+from .hand_config import BaseHandConfig
 from .hand_config import HandConfig
+from .hand_config import OrcaHandConfig

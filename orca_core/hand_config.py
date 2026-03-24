@@ -274,4 +274,3 @@ class OrcaHandConfig(BaseHandConfig):
 
 
 HandConfig = BaseHandConfig
-

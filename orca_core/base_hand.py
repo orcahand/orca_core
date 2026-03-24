@@ -14,12 +14,14 @@ import numpy as np
 from .hand_config import BaseHandConfig
 from .joint_position import OrcaJointPositions
 
+from .constants import STEPS_TO_NEUTRAL, STEP_SIZE_NEUTRAL
+
 
 class BaseHand(ABC):
     """Abstract base class defining the shared joint-space interface for all ORCA hand backends.
 
-    Concrete subclasses provide hardware-specific implementations of
-    :meth:`_get_joint_pos_impl` and :meth:`_set_joint_pos_impl`.
+    Concrete subclasses implement :meth:`_get_joint_positions` and
+    :meth:`_set_joint_positions`.
     All higher-level motion helpers (interpolation, normalisation, neutral
     position) live here so they are available regardless of backend.
 
@@ -61,11 +63,30 @@ class BaseHand(ABC):
 
     @abstractmethod
     def _get_joint_positions(self) -> OrcaJointPositions:
-        """Return the current joint positions as an :class:`~orca_core.OrcaJointPosition`."""
+        """Return the current joint configuration."""
+        pass
 
     @abstractmethod
     def _set_joint_positions(self, joint_pos: OrcaJointPositions) -> bool:
-        """Apply a joint command. Returns ``True`` if the command was successful, ``False`` otherwise."""
+        """Apply a joint-space command. Return ``True`` if the command was applied."""
+        pass
+
+    def _coerce_joint_positions(
+        self,
+        joint_pos: OrcaJointPositions | dict[str, float | None] | np.ndarray,
+    ) -> OrcaJointPositions:
+        if isinstance(joint_pos, OrcaJointPositions):
+            return joint_pos
+
+        if isinstance(joint_pos, dict):
+            return OrcaJointPositions.from_dict(joint_pos)
+
+        if isinstance(joint_pos, np.ndarray):
+            return OrcaJointPositions.from_ndarray(joint_pos, joint_ids=self.config.joint_ids)
+
+        raise TypeError(
+            "joint_pos must be an OrcaJointPositions instance, a dict, or a 1-D numpy array."
+        )
     
     def set_joint_positions(
         self,
@@ -90,12 +111,16 @@ class BaseHand(ABC):
             step_size: Sleep duration in seconds between interpolated steps.
                 Ignored when *num_steps* is ``1``.
         """
+        joint_pos = self._coerce_joint_positions(joint_pos)
         joint_pos = self.config.clamp_joint_positions(joint_pos)
         waypoints = self._linear_waypoints_to(joint_pos, num_steps)
         for i, wp in enumerate(waypoints):
             self._set_joint_positions(wp)
             if i < len(waypoints) - 1:
                 time.sleep(step_size)
+
+    def get_joint_position(self) -> OrcaJointPositions:
+        return self._get_joint_positions()
 
     def _linear_waypoints_to(
         self, target: OrcaJointPositions, num_steps: int
@@ -130,7 +155,7 @@ class BaseHand(ABC):
     def set_named_position(self, name: str, num_steps: int = 1, step_size: float = 1.0):
         self.set_joint_positions(self.recorded_positions[name], num_steps=num_steps, step_size=step_size)
 
-    def set_neutral_position(self, num_steps: int = 25, step_size: float = 0.001):
+    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
         """Move hand to neutral position."""
         self.set_joint_positions(
             OrcaJointPositions.from_dict(self.config.neutral_position),
@@ -138,3 +163,11 @@ class BaseHand(ABC):
             step_size=step_size,
         )
 
+    def set_zero_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+        self.set_joint_positions(
+            OrcaJointPositions.from_dict(
+                {joint: 0.0 for joint in self.config.joint_ids}
+            ),
+            num_steps=num_steps,
+            step_size=step_size,
+        )

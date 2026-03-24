@@ -9,15 +9,3 @@
 from .base_hand import BaseHand
 from .hardware_hand import OrcaHand, MockOrcaHand
 from .joint_position import OrcaJointPositions
-
-
-
-
-if __name__ == "__main__":
-    hand = OrcaHand()
-    status = hand.connect()
-    hand.enable_torque()
-    hand.calibrate()
-    hand.set_joint_pos({joint: 0 for joint in hand.config.joint_ids})
-    hand.disable_torque()
-    hand.disconnect()
