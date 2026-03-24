@@ -15,7 +15,20 @@ import numpy as np
 ################################################################################
 
 def get_model_path(model_path=None):
+    """Resolve and validate a hand "model" directory path (containing util files 
+    like ``config.yaml``).
 
+    When *model_path* is ``None`` or ``"models"`` the first subdirectory found
+    under the package's bundled ``models/`` folder is returned (right-hand
+    models are preferred). An absolute or relative path may also be supplied.
+
+    Args:
+        model_path: Model directory path, model name string, or ``None`` for
+            the auto-discovered default.
+
+    Returns:
+        Absolute path to the model directory (always contains ``config.yaml``).
+    """
     if model_path is None or model_path == "models":
         models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
         if not os.path.exists(models_dir):
@@ -63,7 +76,17 @@ def get_model_path(model_path=None):
 ################################################################################
 
 def update_yaml(file_path, key, value):
-    """Reads a YAML file, updates a specific key, and writes it back."""
+    """Update a single top-level key in a YAML file.
+
+    The modified key is written as the first entry to make the most recent
+    change immediately visible at the top of the file. NumPy arrays are
+    converted to plain Python lists before serialisation.
+
+    Args:
+        file_path: Path to the YAML file. Created if it does not exist.
+        key: Top-level key to update.
+        value: New value. ``np.ndarray`` instances are converted to lists.
+    """
     if isinstance(value, np.ndarray):
         value = value.tolist()
     
@@ -113,36 +136,41 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
-KNOWN_DYNAMIXEL_VIDS = [
-    0x0403,  # FTDI (U2D2, most common)
-    0x16D0,  # MCS Electronics (some Robotis boards)
-]
+def auto_detect_port(motor_type: str = "dynamixel") -> str:
+    """Auto-detect a serial adapter port for the given motor type.
 
+    Args:
+        motor_type: The motor driver type (``"dynamixel"`` or ``"feetech"``).
 
-def auto_detect_port() -> str:
-    """Auto-detect a Dynamixel adapter by USB vendor ID.
-
-    Returns the port device string if exactly one known adapter is found,
-    otherwise returns None.
+    Returns:
+        The port device string if exactly one matching adapter is found,
+        otherwise ``None``.
     """
     import serial.tools.list_ports
+    from ..constants import KNOWN_VIDS
 
+    known_vids = KNOWN_VIDS.get(motor_type, [])
     ports = serial.tools.list_ports.comports()
-    matches = [p for p in ports if p.vid in KNOWN_DYNAMIXEL_VIDS]
+    matches = [p for p in ports if p.vid in known_vids]
 
     if len(matches) == 1:
         port = matches[0]
-        print(f"Auto-detected Dynamixel adapter: {port.device} "
-              f"({port.description or 'unknown'})")
+        print(f"Auto-detected {motor_type} adapter: {port.device} ({port.description or 'unknown'})")
         return port.device
 
     return None
 
 
 def get_and_choose_port() -> str:
-    """
-    Interactive terminal UI to choose from available USB devices with arrow key navigation.
-    Returns the selected port or None if the user quits.
+    """Present an interactive terminal menu for USB port selection.
+
+    Uses ``curses`` to render an arrow-key-navigable list of all detected
+    serial ports. The user selects a port with Enter or quits with ``q`` /
+    Escape.
+
+    Returns:
+        Device string of the selected port (e.g. ``"/dev/ttyUSB0"``), or
+        ``None`` if the user cancels or no ports are found.
     """
     import curses
     import serial.tools.list_ports
