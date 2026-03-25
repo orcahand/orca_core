@@ -1,0 +1,49 @@
+# Reference calibration output for MockOrcaHand with orcahand_v1_right config.
+#
+# The mock motor client clamps all positions to [-1.0, 1.0], so every motor
+# discovers limits of exactly [-1.0, 1.0].  Ratios follow from:
+#
+#     ratio = (hi_motor - lo_motor) / (hi_joint - lo_joint)
+#           = 2.0 / (rom_hi - rom_lo)
+#
+# If any test in test_calibration_reference.py fails, calibration behavior
+# has changed and needs to be investigated.
+#
+calibrated: true
+wrist_calibrated: true
+motor_limits:
+  1: [-1.0, 1.0]
+  2: [-1.0, 1.0]
+  3: [-1.0, 1.0]
+  4: [-1.0, 1.0]
+  5: [-1.0, 1.0]
+  6: [-1.0, 1.0]
+  7: [-1.0, 1.0]
+  8: [-1.0, 1.0]
+  9: [-1.0, 1.0]
+  10: [-1.0, 1.0]
+  11: [-1.0, 1.0]
+  12: [-1.0, 1.0]
+  13: [-1.0, 1.0]
+  14: [-1.0, 1.0]
+  15: [-1.0, 1.0]
+  16: [-1.0, 1.0]
+  17: [-1.0, 1.0]
+joint_to_motor_ratios:
+  1: 0.02
+  2: 0.01639344262295082
+  3: 0.0125
+  4: 0.03636363636363636
+  5: 0.037037037037037035
+  6: 0.037037037037037035
+  7: 0.0125
+  8: 0.01639344262295082
+  9: 0.01639344262295082
+  10: 0.0125
+  11: 0.01639344262295082
+  12: 0.0125
+  13: 0.03333333333333333
+  14: 0.0273972602739726
+  15: 0.013333333333333334
+  16: 0.012345679012345678
+  17: 0.02564102564102564
