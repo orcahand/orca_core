@@ -67,7 +67,10 @@ def main() -> None:
         )
 
         print("8. Tensioning")
-        hand.tension()
+        try:
+            hand.tension()
+        except KeyboardInterrupt:
+            print("Tensioning interrupted by user. Stopping task.")
 
         print("9. Return to neutral")
         hand.set_neutral_position()
