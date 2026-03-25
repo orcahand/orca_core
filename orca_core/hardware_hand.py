@@ -77,12 +77,16 @@ class OrcaHand(BaseHand):
         self,
         config_path: str | None = None,
         calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
         config: OrcaHandConfig | None = None,
     ):
         super().__init__(
             config_path=config_path,
             config=config,
             calibration_path=calibration_path,
+            model_version=model_version,
+            model_name=model_name,
         )
 
         self._wrap_offsets_dict: Dict[int, float] = None

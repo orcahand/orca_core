@@ -45,6 +45,8 @@ class BaseHand(ABC):
         self,
         config_path: str | None = None,
         config: BaseHandConfig | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
         **config_kwargs,
     ):
         self.config = (
@@ -52,6 +54,8 @@ class BaseHand(ABC):
             if config is not None
             else self.config_cls.from_config_path(
                 config_path=config_path,
+                model_version=model_version,
+                model_name=model_name,
                 **config_kwargs,
             )
         )

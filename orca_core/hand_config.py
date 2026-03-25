@@ -19,10 +19,17 @@ class HandConfigValidationError(ValueError):
     """Raised when a hand configuration is structurally invalid."""
 
 
-def _resolve_config_path(config_path: str | None) -> str:
+def _resolve_config_path(
+    config_path: str | None,
+    model_version: str | None = None,
+    model_name: str | None = None,
+) -> str:
     """Resolve the canonical ``config.yaml`` path."""
     if config_path is None:
-        resolved = os.path.join(get_model_path(), "config.yaml")
+        resolved = os.path.join(
+            get_model_path(model_version=model_version, model_name=model_name),
+            "config.yaml",
+        )
     elif os.path.basename(config_path) != "config.yaml":
         raise ValueError("config_path must point to a config.yaml file.")
     else:
@@ -70,9 +77,18 @@ class BaseHandConfig:
         return os.path.dirname(self.config_path)
 
     @classmethod
-    def from_config_path(cls, config_path: str | None = None) -> "BaseHandConfig":
+    def from_config_path(
+        cls,
+        config_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+    ) -> "BaseHandConfig":
         """Load shared hand metadata from ``config.yaml``."""
-        resolved_config_path = _resolve_config_path(config_path)
+        resolved_config_path = _resolve_config_path(
+            config_path,
+            model_version=model_version,
+            model_name=model_name,
+        )
         config = read_yaml(resolved_config_path) or {}
 
         kwargs = {"config_path": resolved_config_path}
@@ -169,9 +185,15 @@ class OrcaHandConfig(BaseHandConfig):
         cls,
         config_path: str | None = None,
         calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
     ) -> "OrcaHandConfig":
         """Load hardware-backed ORCA hand configuration from canonical YAML keys."""
-        resolved_config_path = _resolve_config_path(config_path)
+        resolved_config_path = _resolve_config_path(
+            config_path,
+            model_version=model_version,
+            model_name=model_name,
+        )
         resolved_calibration_path = _resolve_calibration_path(
             resolved_config_path, calibration_path
         )

@@ -10,53 +10,82 @@ import os
 import yaml
 import numpy as np
 
+from ..constants import DEFAULT_MODEL_NAME, LATEST
+
 ################################################################################
 ### Model path utils ##########################################################
 ################################################################################
 
-def get_model_path(model_path=None):
+def _get_package_root() -> str:
+    return os.path.dirname(os.path.dirname(__file__))
+
+
+def _get_models_dir() -> str:
+    return os.path.join(_get_package_root(), "models")
+
+
+def _list_available_models(models_dir: str) -> list[str]:
+    available: list[str] = []
+    if not os.path.isdir(models_dir):
+        return available
+
+    for version in sorted(os.listdir(models_dir)):
+        version_dir = os.path.join(models_dir, version)
+        if not os.path.isdir(version_dir):
+            continue
+        for model_name in sorted(os.listdir(version_dir)):
+            model_dir = os.path.join(version_dir, model_name)
+            if os.path.isdir(model_dir):
+                available.append(f"{version}/{model_name}")
+
+    return available
+
+
+def get_model_path(model_path=None, model_version: str | None = None, model_name: str | None = None):
     """Resolve and validate a hand "model" directory path (containing util files 
     like ``config.yaml``).
 
-    When *model_path* is ``None`` or ``"models"`` the first subdirectory found
-    under the package's bundled ``models/`` folder is returned (right-hand
-    models are preferred). An absolute or relative path may also be supplied.
+    When *model_path* is ``None`` or ``"models"`` the bundled default model
+    directory ``models/<LATEST>/<DEFAULT_MODEL_NAME>`` is returned. An absolute
+    or relative path may also be supplied.
 
     Args:
         model_path: Model directory path, model name string, or ``None`` for
             the auto-discovered default.
+        model_version: Version folder under ``models/``. Defaults to
+            :data:`LATEST`.
+        model_name: Leaf model directory name. Defaults to
+            :data:`DEFAULT_MODEL_NAME`.
 
     Returns:
         Absolute path to the model directory (always contains ``config.yaml``).
     """
+    selected_version = model_version or LATEST
+    selected_name = model_name or DEFAULT_MODEL_NAME
+    models_dir = _get_models_dir()
+    requested_model = model_path or f"{selected_version}/{selected_name}"
+
     if model_path is None or model_path == "models":
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
         if not os.path.exists(models_dir):
             raise FileNotFoundError("\033[1;35mModels directory not found. Did you delete them?")
-        model_dirs = [d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d))]
-        model_dirs = sorted(model_dirs, key=lambda x: (x.lower() != 'right', x))
-        if len(model_dirs) == 0:
-            raise FileNotFoundError("\033[1;35mNo model files found. Did you delete them?")
-        resolved_path = os.path.join(models_dir, model_dirs[0])
+        resolved_path = os.path.join(models_dir, selected_version, selected_name)
     else:
         if os.path.isabs(model_path):
             resolved_path = model_path
         else:
-            # Check if it's a model name in the models directory
-            models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-            model_by_name = os.path.join(models_dir, model_path)
+            model_by_name = os.path.join(models_dir, selected_version, model_path)
+            model_by_versioned_path = os.path.join(models_dir, model_path)
             if os.path.isdir(model_by_name):
                 resolved_path = model_by_name
+            elif os.path.isdir(model_by_versioned_path):
+                resolved_path = model_by_versioned_path
             else:
-                package_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                package_root = os.path.dirname(_get_package_root())
                 resolved_path = os.path.join(package_root, model_path)
     
     if not os.path.exists(resolved_path):
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-        available = []
-        if os.path.isdir(models_dir):
-            available = sorted(d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d)))
-        msg = f"\033[1;35mModel '{model_path}' not found."
+        available = _list_available_models(models_dir)
+        msg = f"\033[1;35mModel '{requested_model}' not found."
         if available:
             msg += f" Available models: {', '.join(available)}"
         else:
