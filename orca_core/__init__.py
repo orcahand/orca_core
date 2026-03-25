@@ -6,10 +6,15 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 from .calibration import CalibrationResult
-from .core import BaseHand
-from .core import MockOrcaHand
-from .core import OrcaHand
-from .core import OrcaJointPositions
 from .hand_config import BaseHandConfig
-from .hand_config import HandConfig
 from .hand_config import OrcaHandConfig
+from .hardware_hand import OrcaHand
+from .joint_position import OrcaJointPositions
+
+__all__ = [
+    "CalibrationResult",
+    "BaseHandConfig",
+    "OrcaHandConfig",
+    "OrcaHand",
+    "OrcaJointPositions",
+]
