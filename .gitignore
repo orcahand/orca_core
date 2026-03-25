@@ -129,7 +129,6 @@ orca_core/models/*/*
 !orca_core/models/*/*/
 orca_core/models/*/*/*
 !orca_core/models/*/*/config.yaml
-!orca_core/models/*/*/calibration.yaml
 
 # macOS
 .DS_Store
