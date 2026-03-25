@@ -44,6 +44,7 @@ from .constants import (
     CALIBRATED,
     STEPS_TO_NEUTRAL,
     POSITION,
+    STEP_SIZE_NEUTRAL,
 )
 
 from .joint_position import OrcaJointPositions
@@ -483,6 +484,29 @@ class OrcaHand(BaseHand):
         else:
             self._start_task(self._calibrate_and_apply, force_wrist=force_wrist)
 
+    def _build_calibration_result(
+        self,
+        motor_limits: Dict[int, list],
+        joint_to_motor_ratios: Dict[int, float],
+        wrist_calibrated: bool,
+    ) -> CalibrationResult:
+        calibrated = all(
+            limits[0] is not None and limits[1] is not None
+            for limits in motor_limits.values()
+        ) and all(
+            ratio is not None and ratio != 0.0
+            for ratio in joint_to_motor_ratios.values()
+        )
+
+        return CalibrationResult(
+            motor_limits_dict={
+                motor_id: list(limits) for motor_id, limits in motor_limits.items()
+            },
+            joint_to_motor_ratios_dict=dict(joint_to_motor_ratios),
+            calibrated=calibrated,
+            wrist_calibrated=wrist_calibrated,
+        )
+
     def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
@@ -686,6 +710,25 @@ class OrcaHand(BaseHand):
             )
             update_yaml(self.config.calibration_path, MOTOR_LIMITS_DICT, motor_limits)
 
+            step_wrist_calibrated = self.calibration.wrist_calibrated or (
+                WRIST in calibrated_joints
+            )
+            self.calibration = self._build_calibration_result(
+                motor_limits=motor_limits,
+                joint_to_motor_ratios=joint_to_motor_ratios,
+                wrist_calibrated=step_wrist_calibrated,
+            )
+            update_yaml(
+                self.config.calibration_path,
+                WRIST_CALIBRATED,
+                self.calibration.wrist_calibrated,
+            )
+            update_yaml(
+                self.config.calibration_path,
+                CALIBRATED,
+                self.calibration.calibrated,
+            )
+
             if calibrated_joints:
                 self.set_joint_positions(
                     calibrated_joints, num_steps=25, step_size=0.001
@@ -699,14 +742,13 @@ class OrcaHand(BaseHand):
             new_wrist_calibrated = True
             update_yaml(self.config.calibration_path, WRIST_CALIBRATED, True)
 
-        new_calibrated = all(
-            limits[0] is not None and limits[1] is not None
-            for limits in motor_limits.values()
-        ) and all(
-            ratio is not None and ratio != 0.0
-            for ratio in joint_to_motor_ratios.values()
+        final_result = self._build_calibration_result(
+            motor_limits=motor_limits,
+            joint_to_motor_ratios=joint_to_motor_ratios,
+            wrist_calibrated=new_wrist_calibrated,
         )
-        update_yaml(self.config.calibration_path, CALIBRATED, new_calibrated)
+        self.calibration = final_result
+        update_yaml(self.config.calibration_path, CALIBRATED, final_result.calibrated)
 
         if calibrated_joints:
             self.set_joint_positions(
@@ -715,13 +757,14 @@ class OrcaHand(BaseHand):
 
         self.set_max_current(self.config.max_current)
 
-        return CalibrationResult(
-            motor_limits_dict=motor_limits,
-            joint_to_motor_ratios_dict=joint_to_motor_ratios,
-            calibrated=new_calibrated,
-            wrist_calibrated=new_wrist_calibrated,
-        )
+        return final_result
 
+    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+        control_mode = self.config.control_mode
+        self.set_control_mode(POSITION)
+        super().set_neutral_position(num_steps, step_size)
+        self.set_control_mode(control_mode)
+    
     def _compute_wrap_offsets_dict(self):
         """Detect per-motor encoder wrap-arounds and store correction offsets.
 
