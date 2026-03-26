@@ -10,13 +10,27 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
-from .constants import CONTROL_MODES, JOINT_IDS, JOINT_ROM_DICT, JOINT_TO_MOTOR_MAP, MOTOR_IDS
+from .constants import CONTROL_MODES, DEFAULT_MODEL_NAME, JOINT_IDS, JOINT_ROM_DICT, JOINT_TO_MOTOR_MAP, MOTOR_IDS
 from .joint_position import OrcaJointPositions
 from .utils.utils import get_model_path, read_yaml
 
 
 class HandConfigValidationError(ValueError):
     """Raised when a hand configuration is structurally invalid."""
+
+
+def _resolve_model_name_from_type(hand_type: str | None) -> str:
+    """Resolve a packaged model directory name from a hand type string."""
+    if hand_type is None:
+        return DEFAULT_MODEL_NAME
+
+    normalized_type = hand_type.strip().lower()
+    if not normalized_type:
+        return DEFAULT_MODEL_NAME
+    if normalized_type not in {"left", "right"}:
+        raise ValueError(f"Unsupported hand type: {hand_type!r}. Expected 'left' or 'right'.")
+
+    return f"orcahand_{normalized_type}"
 
 
 def _resolve_config_path(
@@ -46,6 +60,19 @@ def _resolve_calibration_path(config_path: str, calibration_path: str | None) ->
     if calibration_path is not None:
         return os.path.abspath(calibration_path)
     return os.path.join(os.path.dirname(config_path), "calibration.yaml")
+
+
+def canonical_joint_ids(
+    version: str | None = None,
+    type: str | None = None,
+) -> tuple[str, ...]:
+    """Return the canonical joint ordering for a packaged ORCA hand model."""
+    config = BaseHandConfig.from_config_path(
+        model_version=version,
+        model_name=_resolve_model_name_from_type(type),
+    )
+
+    return tuple(config.joint_ids)
 
 
 def _canonical_joint_to_motor_map(
