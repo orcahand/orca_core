@@ -1,78 +1,64 @@
-# Setting Up the Dynamixel Servos
+# Setting Up Dynamixel Motors
 
-This guide walks you through preparing your Dynamixel servos for use with the Orca hand control system.
+This page covers the hardware preparation required before `orca_core` can talk to a Dynamixel-based ORCA Hand.
 
-## Prerequisites
+## Goal
 
-### **Install the Dynamixel Wizard**  
-   Use the [Dynamixel Wizard 2.0](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/) to assign unique IDs and update motor settings.
+Before running the Python package, make sure:
 
----
+- every motor has a unique ID
+- every motor is on the expected baudrate
+- the full chain is visible from the host machine
 
-## Assigning Unique Motor IDs
+## Recommended tool
 
-Before using the motors, each one must have a **unique ID**.
+Use [Dynamixel Wizard 2.0](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/) to inspect the bus, assign IDs, and verify communication.
 
-### Steps:
+## Assign unique IDs
 
-1. **Connect Hardware**
-   - Connect the U2D2 to your PC using USB.
-   - Use a 3-pin cable to connect U2D2 to the Power Hub Board (PHB).
-   - Power the PHB with a 12V adapter.
-   - Connect one motor at a time to the PHB.
-   - Switch on power (red LED should light up).
+1. Connect the USB adapter and power hardware.
+2. Connect one motor at a time.
+3. Scan in Dynamixel Wizard.
+4. Assign a unique ID and label the motor physically.
+5. Set the target baudrate for the whole chain.
+6. Repeat until all motors are configured.
 
-2. **Launch Dynamixel Wizard**
-   - Open the Wizard and go to **Options**.
-   - Set:
-     - Protocol: **2.0**
-     - Baudrate: **57600** and **3Mbps**
-     - ID Range: **0–17**
-   - Click **Scan**. Your motor should appear.
+After that, connect the motors in the full daisy chain and verify they all appear on the bus together.
 
-3. **Change the ID**
-   - In the table, select the ID row (Address 7).
-   - Assign a **unique ID** and label it physically on the motor.
-   - Also update the **baudrate** to **3Mbps**.
+## Match the software config
 
-4. **Repeat for All Motors**
-   - Connect motors one-by-one (daisy-chain after setting unique IDs).
+Once hardware IDs are assigned, update the ORCA model config so that:
 
----
+- `motor_ids` matches the chain
+- `joint_to_motor_map` matches the physical routing
+- `baudrate` matches the configured motor baudrate
 
-## Verifying All Motors
+If these values do not match the actual chain, the higher-level hand API will not behave correctly.
 
-After assigning IDs:
+## Linux latency optimization
 
-- Connect all motors in a daisy chain.
-- Scan in the Dynamixel Wizard.
-- Ensure all are detected correctly.
+On Linux, FTDI-based USB serial adapters often default to a high latency timer. The current `DynamixelClient` and `FeetechClient` attempt to enable low-latency mode automatically on connect.
 
----
-
-## USB Latency (Linux)
-
-FTDI USB-serial adapters (like the U2D2) default to 16ms latency on Linux, which limits motor control to ~30 Hz. The `DynamixelClient` and `FeetechClient` automatically enable low latency mode when connecting, achieving ~500 Hz control rates without any manual configuration.
-
-### Troubleshooting
-
-If you experience slow communication, verify the latency setting:
+You can verify the adapter latency with:
 
 ```bash
 cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
-# Should output: 1 (after connecting with DynamixelClient)
 ```
 
-If low latency mode isn't being set automatically, you can create a udev rule:
+After the client enables low latency mode, this should typically read `1`.
+
+If your platform or adapter does not persist that setting, you can install a udev rule:
 
 ```bash
-# Create the udev rule
 sudo tee /etc/udev/rules.d/99-usb-serial-low-latency.rules <<< 'ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"'
-
-# Reload rules and replug the adapter
 sudo udevadm control --reload-rules
 ```
 
----
+## After the hardware scan passes
 
-Now you're ready to put your servos in the hand tower!
+Once all motors are visible and the config matches the chain, continue with:
+
+1. config review
+2. tensioning
+3. calibration
+4. neutral positioning

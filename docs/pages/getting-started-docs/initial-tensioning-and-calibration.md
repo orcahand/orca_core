@@ -1,38 +1,111 @@
-# Calibration and Tensioning
+# Tensioning And Calibration
 
-## Calibration
+This page documents the current maintenance workflow used by the refactored package.
 
-Calibration ensures the hand operates with high accuracy and precision. It should be performed regularly, especially:
+## Two files, two roles
 
-- After extended use
-- After slack has built up in the tendons
-- After tensioning, to restore precision
+The bring-up flow depends on two YAML files:
 
-The calibration sequence is defined step-by-step in the `config.py` file, as explained in the [**Setting-up Config**](setting-up-config.md) guide.
+- `config.yaml` stores the static hand description and calibration procedure.
+- `calibration.yaml` stores the results of running that procedure on a specific physical hand.
 
-**Be careful when modifying calibration steps**, some are intended to run independently and may not function correctly if grouped or reordered.
+`OrcaHand` loads both:
 
-## Tensioning
+- `OrcaHandConfig` from `config.yaml`
+- `CalibrationResult` from `calibration.yaml`
 
-Tendons should be firm (not slack), but **not overtightened**. A small amount of give is acceptable.
+## What calibration does
 
-To tension the hand:
+`hand.calibrate()` walks through the configured `calibration_sequence`, drives joints toward their mechanical limits, and writes the resulting values back to `calibration.yaml`.
 
-1. Move all servos **fully counter-clockwise (CCW)**. Instead of moving all servos by hand you can also run `tension.py --move_motors` that turns all servos CCW using the calibration current specified in `config.py`.  
-2. Run the `tension.py` script located in the `scripts` folder. This locks the servos in place and secures the bottom spools.
-3. Using the included 3D-printed **ratchet** (found in the spools print file or included in the kit), rotate the **top spool of each servo clockwise** to tighten the tendons.
-4. As you turn, you should **hear or feel a "clicking" sound**, this confirms the ratchet is engaged and the tendon is being tensioned.
+The stored result includes:
 
-> **Careful:** It’s easy to overtension the tendons when using the ratchet. Overtensioning can interfere with performance. Tighten **only until the tendon feels firm**.
+- per-motor lower and upper limits
+- per-motor joint-to-motor ratios
+- a `calibrated` flag
+- a `wrist_calibrated` flag
 
-## Initial Calibration and Tensioning (After Assembly)
+Partial progress is written during calibration, so an interrupted run is not fully lost.
 
-When the hand is first assembled, because tendons are spooled by hand, significant slack is introduced. This must be corrected before using the hand for other tasks.
+## What `init_joints()` does
 
-Recommended steps:
+For most application code, you should prefer:
 
-1. Run calibration (for all joints). Significant slack will accumulate during this step, this is expected, and calibration may seem ineffective at first.
-2. Perform the tensioning procedure as described above.
-3. Repeat steps 1 and 2 **1-2 more times**, or until **no additional slack** appears after calibration completes.
+```python
+hand.init_joints()
+```
 
-This ensures the tendons are properly tensioned and the hand is correctly calibrated.
+instead of manually calling each bring-up step.
+
+`init_joints()`:
+
+1. enables torque
+2. applies the configured control mode
+3. applies the configured current limit
+4. calibrates if the hand is not yet calibrated
+5. computes wrap offsets
+6. moves to neutral
+
+## Recommended workflow after assembly
+
+The easiest operator path is the guided script:
+
+```sh
+python scripts/setup.py orca_core/models/v2/orcahand_right/config.yaml
+```
+
+That workflow repeats tensioning and calibration with motion checks in between.
+
+## Manual workflow
+
+If you want to run the steps yourself:
+
+1. Tension the hand:
+
+```sh
+python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml --move_motors
+```
+
+2. Run calibration:
+
+```sh
+python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
+```
+
+3. Move to neutral:
+
+```sh
+python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
+```
+
+## Tensioning guidance
+
+The goal is to remove slack without overtightening.
+
+Typical procedure:
+
+1. Use `tension.py --move_motors` to drive the spools into a useful starting state.
+2. Let `tension.py` hold the motors in place.
+3. Tighten the top spools gradually with the mechanical tool.
+4. Stop as soon as the tendons feel firm and consistent.
+
+Too much tension can hurt motion quality and calibration quality.
+
+## When to recalibrate
+
+Run calibration again when:
+
+- the hand has been re-strung
+- tendon slack has changed noticeably
+- the wrist has been serviced
+- joint tracking no longer matches expectation
+
+## Wrist calibration behavior
+
+The wrist is handled slightly differently:
+
+- wrist calibration status is tracked separately
+- `--force-wrist` can force wrist recalibration
+- if wrist steps are missing from the sequence, the code can append them when needed
+
+This lets you skip unnecessary wrist passes during routine finger recalibration while still supporting a full bring-up when required.

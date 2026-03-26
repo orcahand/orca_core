@@ -8,109 +8,149 @@
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+# Orca Core
 
-## Get Started
+`orca_core` is the Python control package for the ORCA Hand. The refactored codebase is organized around a small set of explicit objects:
 
-To get started with Orca Core, follow these steps:
+- `OrcaHandConfig` loads the static hand description from `config.yaml`.
+- `CalibrationResult` loads the mutable runtime state from `calibration.yaml`.
+- `BaseHand` provides backend-agnostic joint-space helpers.
+- `OrcaHand` adds hardware connection, torque, calibration, telemetry, and maintenance tasks.
+- `OrcaJointPositions` is the typed container used for joint-space commands.
 
-1. **Create a virtual environment** (recommended):
+The practical workflow is:
 
-    ```sh
-    python -m venv venv
-    source venv/bin/activate
-    ```
+1. Choose a model config.
+2. Connect to the hardware.
+3. Call `init_joints()` to enable torque, apply motor settings, calibrate when needed, and move to neutral.
+4. Command joint-space poses through `set_joint_positions(...)`.
 
-    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
+## Install
 
-2. **Install dependencies**:
+```sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-    ```sh
-    pip install -e .
-    ```
+## Quick Start
 
-3. **Check the configuration file**:
+Start by checking the model config you want to use. The bundled models live under:
 
-    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+- `orca_core/models/v2/orcahand_right/config.yaml`
+- `orca_core/models/v1/orcahand_right/config.yaml`
+- `orca_core/models/v1/orcahand_left/config.yaml`
 
-4. **Run the tension and calibration scripts**:
+The refactored code expects `config_path` to point to the `config.yaml` file itself, not just the model directory.
+Use the `v2` config as the canonical reference for the current schema. Older `v1` configs may still need the legacy `calib_*` keys renamed to `calibration_*`.
 
-    ```sh
-    python scripts/tension.py orca_core/models/orcahand_v1_right
-    python scripts/calibrate.py orca_core/models/orcahand_v1_right
-    ```
+For a first-time hardware bring-up, the recommended operator flow is:
 
-    Replace the path with your specific hand model folder if needed.
+```sh
+python scripts/setup.py orca_core/models/v2/orcahand_right/config.yaml
+```
 
-5. **Move the hand to the neutral position**:
+If the hand is already assembled and tensioned, the shorter path is:
 
-    ```sh
-    python scripts/neutral.py orca_core/models/orcahand_v1_right
-    ```
+```sh
+python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
+python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
+```
 
-6. **Example usage: test.py**
+## Python Usage
 
-    Here is a minimal example script you can use to test your setup:
+```python
+from orca_core import OrcaHand
 
-    ```python
-    from orca_core import OrcaHand
-    import time
+hand = OrcaHand(config_path="orca_core/models/v2/orcahand_right/config.yaml")
 
-    hand = OrcaHand('orca_core/models/orcahand_v1_right')
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
+success, message = hand.connect()
+if not success:
+    raise RuntimeError(message)
 
-    hand.enable_torque()
+try:
+    hand.init_joints()
 
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
+    neutral = hand.config.neutral_position
+    hand.set_joint_positions(
+        {
+            "thumb_mcp": neutral["thumb_mcp"] + 10,
+            "index_mcp": neutral["index_mcp"] + 10,
+            "middle_mcp": neutral["middle_mcp"] + 10,
+        },
+        num_steps=25,
+        step_size=0.01,
+    )
 
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
+    print(hand.get_joint_position().as_dict())
+finally:
+    hand.stop_task()
     hand.disconnect()
-    ```
+```
 
----
+### Notes on units
+
+- Joint-space values use the same units as `joint_roms` and `neutral_position` in your model config. The bundled hand configs use degrees.
+- Low-level motor position telemetry returned by `get_motor_pos()` is in radians.
+- Motor current is reported in mA and motor temperature in C.
+
+## Key Scripts
+
+- `scripts/setup.py`: guided tension -> calibrate -> verify workflow.
+- `scripts/calibrate.py`: run calibration and persist `calibration.yaml`.
+- `scripts/tension.py`: hold the spools in place for tendon tensioning.
+- `scripts/neutral.py`: move to the configured neutral pose.
+- `scripts/zero.py`: move all configured joints to zero.
+- `scripts/record_angles.py` / `scripts/replay_angles.py`: capture and replay waypoint-based motions.
+- `scripts/record_continuous.py` / `scripts/replay_continuous.py`: capture and replay continuous trajectories.
+- `scripts/slider_joint.py` / `scripts/slider_motor.py`: manual debugging UIs.
+
+## Configuration and calibration files
+
+Each hand model directory contains:
+
+- `config.yaml`: static model and hardware metadata.
+- `calibration.yaml`: calibration output written after calibration runs.
+
+The refactored config loader expects canonical calibration keys such as:
+
+- `calibration_current`
+- `calibration_step_size`
+- `calibration_step_period`
+- `calibration_threshold`
+- `calibration_num_stable`
+- `calibration_sequence`
+
+If you are migrating an older config that still uses `calib_*` keys, rename those fields before using it with the refactored API.
 
 ## Troubleshooting
 
-### Serial Port Permissions (Linux)
+### Serial port permissions on Linux
 
-On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
+On Linux, the serial port is usually owned by the `dialout` group. If your user is not in that group, the hand may fail to connect.
 
-**Permanent fix** (requires re-login):
+Permanent fix:
 
 ```sh
 sudo usermod -aG dialout $USER
 ```
 
-**Temporary fix** (resets on reboot/replug):
+Temporary fix:
 
 ```sh
 sudo chmod 666 /dev/ttyUSB0
 ```
 
-### Serial Port Path
+### Port mismatch
 
-Make sure the `port` field in your `config.yaml` matches your operating system:
+`OrcaHand.connect()` first tries the configured port, then attempts USB auto-detection, then falls back to an interactive chooser. If connection succeeds on a different port, the package updates `config.yaml` automatically.
 
-| OS    | Example port                    |
-|-------|---------------------------------|
-| Linux | `/dev/ttyUSB0`                  |
-| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+## Documentation
 
----
+The MkDocs site in `docs/` expands on:
 
-**Note:**
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
-
----
+- hardware setup
+- the `config.yaml` schema
+- calibration and tensioning workflow
+- the package architecture
+- the current Python API
