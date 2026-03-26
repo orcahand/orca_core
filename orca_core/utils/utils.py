@@ -10,7 +10,8 @@ import os
 import yaml
 import numpy as np
 
-from ..constants import DEFAULT_MODEL_NAME, LATEST
+from ..constants import DEFAULT_MODEL_NAME
+from ..version import LATEST_VERSION
 
 ################################################################################
 ### Model path utils ##########################################################
@@ -46,21 +47,21 @@ def get_model_path(model_path=None, model_version: str | None = None, model_name
     like ``config.yaml``).
 
     When *model_path* is ``None`` or ``"models"`` the bundled default model
-    directory ``models/<LATEST>/<DEFAULT_MODEL_NAME>`` is returned. An absolute
+    directory ``models/<LATEST_VERSION>/<DEFAULT_MODEL_NAME>`` is returned. An absolute
     or relative path may also be supplied.
 
     Args:
         model_path: Model directory path, model name string, or ``None`` for
             the auto-discovered default.
         model_version: Version folder under ``models/``. Defaults to
-            :data:`LATEST`.
+            :data:`LATEST_VERSION`.
         model_name: Leaf model directory name. Defaults to
             :data:`DEFAULT_MODEL_NAME`.
 
     Returns:
         Absolute path to the model directory (always contains ``config.yaml``).
     """
-    selected_version = model_version or LATEST
+    selected_version = model_version or LATEST_VERSION
     selected_name = model_name or DEFAULT_MODEL_NAME
     models_dir = _get_models_dir()
     requested_model = model_path or f"{selected_version}/{selected_name}"
