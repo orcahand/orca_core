@@ -60,7 +60,7 @@ To get started with Orca Core, follow these steps:
         "middle_pip": 30,
     }
 
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
+    hand.set_joint_positions(joint_dict, num_steps=25, step_size=0.001)
 
     time.sleep(2)
     hand.disable_torque()
