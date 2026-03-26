@@ -1,77 +1,125 @@
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioning and to control the hand with simple high-level control methods in joint space.
+# Quickstart With `orca_core`
 
-## Get Started
+This page covers the current happy path for bringing up an ORCA Hand with the refactored package.
 
-To get started with Orca Core, follow these steps:
+## 1. Install the package
 
-1. **Create a virtual environment** (recommended):
+```sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-    ```sh
-    python -m venv venv
-    source venv/bin/activate
-    ```
+## 2. Choose the hand model
 
-    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
+Pick the `config.yaml` file that matches your hardware. Bundled examples include:
 
-2. **Install dependencies**:
+- `orca_core/models/v2/orcahand_right/config.yaml`
+- `orca_core/models/v1/orcahand_right/config.yaml`
+- `orca_core/models/v1/orcahand_left/config.yaml`
 
-    ```sh
-    pip install -e .
-    ```
+`OrcaHand(config_path=...)` expects the full path to `config.yaml`.
+For the current canonical schema, use the `v2` config as your reference. Older `v1` configs may still need the `calib_*` keys migrated to `calibration_*`.
 
-3. **Check the configuration file**:
+## 3. Check the config before moving hardware
 
-    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+At minimum, confirm:
 
-4. **Run the tension and calibration scripts**:
+- `port` matches your machine
+- `motor_type` matches your motor chain
+- `motor_ids` and `joint_to_motor_map` match the physical build
+- `neutral_position` is reasonable for your assembly
+- calibration keys use the canonical refactored names such as `calibration_current` and `calibration_sequence`
 
-    ```sh
-    python scripts/tension.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
-    python scripts/calibrate.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
-    ```
+## 4. Run the setup flow
 
-    Replace the path with your specific `config.yaml` file if needed.
+For first-time bring-up or after re-stringing / major maintenance, use the guided workflow:
 
-5. **Move the hand to the neutral position**:
+```sh
+python scripts/setup.py orca_core/models/v2/orcahand_right/config.yaml
+```
 
-    ```sh
-    python scripts/neutral.py orca_core/orca_core/models/orcahand_v1_right/config.yaml
-    ```
+This script walks through repeated rounds of:
 
-6. **Example usage: test.py**
+- tensioning
+- calibration
+- neutral positioning
+- motion verification
 
-    Here is a minimal example script you can use to test your setup:
+If the hand is already assembled and only needs a fresh calibration:
 
-    ```python
-    from orca_core import OrcaHand
-    import time
+```sh
+python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
+python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
+```
 
-    hand = OrcaHand('orca_core/orca_core/models/orcahand_v1_right/config.yaml')
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
+## 5. Minimal Python example
 
-    hand.enable_torque()
+```python
+from orca_core import OrcaHand
 
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
+hand = OrcaHand(config_path="orca_core/models/v2/orcahand_right/config.yaml")
 
-    hand.set_joint_positions(joint_dict, num_steps=25, step_size=0.001)
+success, message = hand.connect()
+if not success:
+    raise RuntimeError(message)
 
-    time.sleep(2)
-    hand.disable_torque()
+try:
+    hand.init_joints()
+
+    neutral = hand.config.neutral_position
+    hand.set_joint_positions(
+        {
+            "thumb_mcp": neutral["thumb_mcp"] + 10,
+            "index_mcp": neutral["index_mcp"] + 8,
+            "middle_mcp": neutral["middle_mcp"] + 8,
+        },
+        num_steps=25,
+        step_size=0.01,
+    )
+finally:
+    hand.stop_task()
     hand.disconnect()
-    ```
+```
 
----
+## 6. Understand the main lifecycle
 
-**Note:**  
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the `config.yaml` path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
+The recommended runtime sequence is:
 
----
+1. `hand = OrcaHand(...)`
+2. `hand.connect()`
+3. `hand.init_joints()`
+4. `hand.set_joint_positions(...)`
+5. `hand.disconnect()`
+
+`init_joints()` is the main convenience entrypoint. It:
+
+- enables torque
+- applies the configured control mode
+- applies the configured current limit
+- calibrates if needed
+- computes wrap offsets
+- moves the hand to neutral
+
+## 7. Units and command shapes
+
+- Joint-space commands accept `OrcaJointPositions`, `dict[str, float]`, or a 1-D numpy array.
+- Joint-space values use the same units as `joint_roms` in the config. The bundled configs use degrees.
+- Raw motor position telemetry is reported in radians.
+
+## 8. Common helper scripts
+
+- `scripts/tension.py`: hold spools in place during tendon tensioning
+- `scripts/zero.py`: move every joint to zero
+- `scripts/slider_joint.py`: debug joint-space control
+- `scripts/slider_motor.py`: debug motor-space control
+
+## 9. Linux serial permissions
+
+If the hand fails to connect on Linux because of serial permissions:
+
+```sh
+sudo usermod -aG dialout $USER
+```
+
+Re-log after changing group membership.
