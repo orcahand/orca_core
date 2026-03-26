@@ -84,7 +84,7 @@ def main():
                     t = step / n_steps
                     alpha = interp_func(t)
                     pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    hand.set_joint_pos(pose)
+                    hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
 
                     # Compute target time for this step and wait only if ahead
                     target_time = start_time + step * step_time

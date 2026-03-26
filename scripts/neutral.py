@@ -36,7 +36,7 @@ def main():
         # Enable torque
         hand.enable_torque()
         print("Torque enabled")
-        print("Available motor IDs:", hand.motor_ids)
+        print("Available motor IDs:", hand.config.motor_ids)
         # Move to neutral position
         print("Moving to neutral position...")
         hand.set_neutral_position()

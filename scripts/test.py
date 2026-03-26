@@ -114,7 +114,7 @@ def main():
             "wrist": -25,
         }
 
-        hand.set_joint_pos(joint_dict_open, num_steps=25, step_size=0.001)
+        hand.set_joint_positions(joint_dict_open, num_steps=25, step_size=0.001)
 
         time.sleep(2)
 
@@ -147,7 +147,7 @@ def main():
             "wrist": 10,
         }
 
-        hand.set_joint_pos(joint_dict_close, num_steps=25, step_size=0.001)
+        hand.set_joint_positions(joint_dict_close, num_steps=25, step_size=0.001)
         time.sleep(2)
 
 

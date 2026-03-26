@@ -50,12 +50,12 @@ def main():
             thread.start()
 
             while not stop_flag:
-                current_angles = hand.get_joint_pos(as_list=True) 
+                current_angles = hand.get_joint_position().as_list(hand.config.joint_ids) 
                 print("\rWaiting for input...", end="")
                 time.sleep(0.1)
 
             print()  # newline after stopping
-            current_angles = hand.get_joint_pos(as_list=True) 
+            current_angles = hand.get_joint_position().as_list(hand.config.joint_ids) 
             replay_buffer.append([float(angle) for angle in current_angles])  
             print(f"Captured waypoint: {current_angles}")
 

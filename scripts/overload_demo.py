@@ -51,7 +51,7 @@ def main():
         return
 
     joints = FINGER_JOINTS[args.finger]
-    motor_ids = [hand.joint_to_motor_map[j] for j in joints]
+    motor_ids = [hand.config.joint_to_motor_map[j] for j in joints]
 
     # Target past the hardstop (lower limit minus extra) to guarantee a stall
     targets = {}

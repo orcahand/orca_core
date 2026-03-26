@@ -54,7 +54,7 @@ def record_continuous_angles(hand, output_dir, sampling_frequency=50.0, duration
         while True:
             if duration and (time.time() - start_time) > duration:
                 break
-            angles = hand.get_joint_pos(as_list=True)
+            angles = hand.get_joint_position().as_list(hand.config.joint_ids)
             data["angles"].append([float(angle) for angle in angles])
             print("Recording...", end="\r")
             time.sleep(interval)

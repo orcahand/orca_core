@@ -71,7 +71,7 @@ def main():
     try:
         start_time = time.time()
         for i, pose in enumerate(waypoints):
-            hand.set_joint_pos(pose)
+            hand.set_joint_positions(pose)
             target_time = start_time + i * step_time
             now = time.time()
             if now < target_time:

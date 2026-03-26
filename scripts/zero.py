@@ -25,9 +25,9 @@ def main():
         
         hand.enable_torque()
         print("Torque enabled")
-        print("Available motor IDs:", hand.motor_ids)
+        print("Available motor IDs:", hand.config.motor_ids)
         print("Moving all joints to 0 position...")
-        hand.set_joint_pos({joint: 0 for joint in hand.joint_ids}, num_steps=25, step_size=0.001) # Setting pos with steps to avoid too fast movement
+        hand.set_joint_positions({joint: 0 for joint in hand.config.joint_ids}, num_steps=25, step_size=0.001) # Setting pos with steps to avoid too fast movement
         print("Reached 0 position of all joints")
         time.sleep(3)  # Wait for the hand to stabilize
         hand.disable_torque()

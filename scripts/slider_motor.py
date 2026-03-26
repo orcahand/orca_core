@@ -6,7 +6,7 @@ from orca_core import OrcaHand
 class MotorControlUI:
     def __init__(self, root, hand):
         self.hand = hand
-        self.motor_values = {motor: tk.DoubleVar() for motor in hand.motor_ids}
+        self.motor_values = {motor: tk.DoubleVar() for motor in hand.config.motor_ids}
         self.create_ui(root)
 
     def create_ui(self, root):
@@ -29,7 +29,7 @@ class MotorControlUI:
 
         # Get current motor positions for initialization
         current_motor_pos = self.hand.get_motor_pos(as_dict=True)
-        for motor in self.hand.motor_ids:
+        for motor in self.hand.config.motor_ids:
             self.motor_values[motor].set(current_motor_pos[motor])
 
             frame = ttk.Frame(sliders_frame)

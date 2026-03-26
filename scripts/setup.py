@@ -102,10 +102,10 @@ def run_motion_test(hand, step_num, duration=60):
 
             if cycle % 2 == 0:
                 print(f"  [{int(remaining):3d}s left]  OPEN")
-                hand.set_joint_pos(open_pos, num_steps=25, step_size=0.001)
+                hand.set_joint_positions(open_pos, num_steps=25, step_size=0.001)
             else:
                 print(f"  [{int(remaining):3d}s left]  CLOSE")
-                hand.set_joint_pos(closed_pos, num_steps=25, step_size=0.001)
+                hand.set_joint_positions(closed_pos, num_steps=25, step_size=0.001)
             cycle += 1
 
             hold_end = min(time.time() + 2.0, start + duration)

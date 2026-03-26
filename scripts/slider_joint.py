@@ -6,11 +6,11 @@ import argparse
 class HandControlUI:
     def __init__(self, root, hand):
         self.hand = hand
-        self.joint_roms = hand.joint_roms_dict
-        self.joint_ids = hand.joint_ids
+        self.joint_roms = hand.config.joint_roms_dict
+        self.joint_ids = hand.config.joint_ids
         self.joint_values = {joint: tk.DoubleVar() for joint in self.joint_ids}
         
-        current_joint_positions = self.hand.get_joint_pos(as_list=False)
+        current_joint_positions = self.hand.get_joint_position().as_dict()
         for joint, pos in current_joint_positions.items():
             if joint in self.joint_values:
                 self.joint_values[joint].set(pos)
@@ -61,7 +61,7 @@ class HandControlUI:
     def enable_torque(self):
         self.hand.enable_torque()
         print("Torque enabled.")
-        current_joint_positions = self.hand.get_joint_pos(as_list=False)
+        current_joint_positions = self.hand.get_joint_position().as_dict()
         for joint, pos in current_joint_positions.items():
             if joint in self.joint_values:
                 self.joint_values[joint].set(pos)
@@ -76,7 +76,7 @@ class HandControlUI:
         """
         try:
             joint_positions = {joint: float(value)}  # Only update the specific joint
-            self.hand.set_joint_pos(joint_positions)
+            self.hand.set_joint_positions(joint_positions)
             # print(f"Updated joint {joint} to position: {value}")
         except Exception as e:
             print(f"Error updating joint {joint}: {e}")
