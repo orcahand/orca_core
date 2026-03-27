@@ -18,7 +18,7 @@ import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
-from .hand_config import OrcaHandConfig
+from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.motor_client import MotorClient
 from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
 
@@ -1139,6 +1139,95 @@ class OrcaHand(BaseHand):
             print("Task stopped.")
         else:
             print("No running task to stop.")
+
+
+class OrcaHandTouch(OrcaHand):
+    """ORCA hand with integrated tactile sensing.
+
+    Extends :class:`OrcaHand` to additionally manage a tactile sensor array.
+    Connection, disconnection, and lifecycle are unified: calling
+    :meth:`connect` opens both the motor bus and the sensor serial link,
+    and :meth:`disconnect` tears down both.
+    """
+
+    config_cls = OrcaHandTouchConfig
+
+    def __init__(
+        self,
+        config_path: str | None = None,
+        calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+        config: OrcaHandTouchConfig | None = None,
+    ):
+        super().__init__(
+            config_path=config_path,
+            calibration_path=calibration_path,
+            model_version=model_version,
+            model_name=model_name,
+            config=config,
+        )
+        self._sensor_client = None
+
+    def connect(self) -> tuple[bool, str]:
+        success, msg = super().connect()
+        if not success:
+            return success, msg
+
+        from .hardware.sensing.sensor_client import SensorClient
+
+        self._sensor_client = SensorClient(
+            port=self.config.sensor_port,
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
+        try:
+            self._sensor_client.connect()
+        except Exception as e:
+            self._sensor_client = None
+            return False, f"{msg} | Sensor connection failed: {e}"
+
+        return True, f"{msg} | Sensor connected"
+
+    def disconnect(self) -> None:
+        if self._sensor_client is not None and self._sensor_client.is_connected:
+            try:
+                self._sensor_client.stop_auto_stream()
+            except Exception:
+                pass
+            self._sensor_client.disconnect()
+        self._sensor_client = None
+        super().disconnect()
+
+    def get_tactile_forces(self) -> dict[str, list[float]]:
+        """Return latest resultant force per finger ``{finger: [fx, fy, fz]}``."""
+        forces, _ = self._sensor_client.get_auto_latest()
+        return forces
+
+    def get_tactile_taxels(self) -> dict[str, list[list[float]]]:
+        """Return per-taxel forces ``{finger: [[fx, fy, fz], ...]}``."""
+        taxels, _ = self._sensor_client.get_auto_latest_taxels()
+        return taxels
+
+    def start_tactile_stream(
+        self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
+    ) -> None:
+        self._sensor_client.start_auto_stream(
+            resultant=resultant, taxels=taxels, min_sensors=min_sensors,
+        )
+
+    def stop_tactile_stream(self) -> None:
+        self._sensor_client.stop_auto_stream()
+
+    def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
+        """Capture current readings as zero baseline and return offsets."""
+        return self._sensor_client.capture_taxel_offsets(num_samples=num_samples)
+
+    def clear_tactile_zero(self) -> None:
+        self._sensor_client.clear_taxel_offsets()
+
+    def get_sensor_configuration(self):
+        return self._sensor_client.get_sensor_configuration()
 
 
 class MockOrcaHand(OrcaHand):
