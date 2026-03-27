@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description='Replay recorded hand movements')
     parser.add_argument('--step_time', type=float, default=0.02,
                       help='Timestep for interpolation (default: 0.02)')
-    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)")
+    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)")
     parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
     
@@ -53,7 +53,7 @@ def main():
         print("No waypoints found in the file.")
         return
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 
@@ -84,7 +84,7 @@ def main():
                     t = step / n_steps
                     alpha = interp_func(t)
                     pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    hand.set_joint_pos(pose)
+                    hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
 
                     # Compute target time for this step and wait only if ahead
                     target_time = start_time + step * step_time

@@ -12,18 +12,18 @@ from orca_core import OrcaHand
 def main():
     parser = argparse.ArgumentParser(description='Move OrcaHand to neutral position.')
     parser.add_argument(
-        "model_path",
+        "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
     )
     
     args = parser.parse_args()
 
     try:
         # Initialize the hand
-        hand = OrcaHand(model_path=args.model_path)
+        hand = OrcaHand(config_path=args.config_path)
             
         # Connect to the hand
         success, message = hand.connect()
@@ -36,7 +36,7 @@ def main():
         # Enable torque
         hand.enable_torque()
         print("Torque enabled")
-        print("Available motor IDs:", hand.motor_ids)
+        print("Available motor IDs:", hand.config.motor_ids)
         # Move to neutral position
         print("Moving to neutral position...")
         hand.set_neutral_position()

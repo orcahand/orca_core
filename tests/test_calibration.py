@@ -2,13 +2,12 @@ import os
 import shutil
 
 import pytest
-from orca_core import MockOrcaHand
+from orca_core.hardware_hand import MockOrcaHand
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "orcahand_v1_right")
+MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
 REAL_CONFIG = os.path.join(MODEL_DIR, "config.yaml")
-REAL_CALIB = os.path.join(MODEL_DIR, "calibration.yaml")
 
 EXPECTED_LIMITS = [-1.0, 1.0]
 
@@ -16,9 +15,7 @@ EXPECTED_LIMITS = [-1.0, 1.0]
 @pytest.fixture
 def calib_dir(tmp_path):
     config_path = tmp_path / "config.yaml"
-    calib_path = tmp_path / "calibration.yaml"
     shutil.copy(REAL_CONFIG, config_path)
-    shutil.copy(REAL_CALIB, calib_path)
     return tmp_path
 
 
@@ -43,8 +40,7 @@ def check_calibrated(hand, calib_path):
 
 def test_calibration_yaml_missing(calib_dir):
     calib_path = calib_dir / "calibration.yaml"
-    os.remove(calib_path)
-    hand = MockOrcaHand(str(calib_dir))
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
 
     assert not hand.calibrated, "Hand should not be marked as calibrated before calibration"

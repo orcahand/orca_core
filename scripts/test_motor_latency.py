@@ -5,11 +5,11 @@ Measures communication latency with various test patterns.
 Reads hand config to auto-detect port, motor type, and motor IDs (excluding wrist).
 
 Usage:
-    # Auto-detect model (uses default model path)
+    # Auto-detect config (uses default config path)
     python scripts/test_motor_latency.py
 
-    # Specify model path
-    python scripts/test_motor_latency.py /path/to/orcahand_model
+    # Specify config path
+    python scripts/test_motor_latency.py /path/to/orcahand_model/config.yaml
 
     # With optimizations
     python scripts/test_motor_latency.py --optimize
@@ -467,8 +467,8 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     parser = argparse.ArgumentParser(description="Test motor latency")
-    parser.add_argument("model_path", type=str, nargs='?', default=None,
-                        help="Path to the hand model directory (default: auto-detect)")
+    parser.add_argument("config_path", type=str, nargs='?', default=None,
+                        help="Path to the hand config.yaml file (default: auto-detect)")
     parser.add_argument("--iterations", "-n", type=int, default=100, help="Iterations per test")
     parser.add_argument("--baudrate", "-b", type=int, default=None, help="Override baudrate")
     parser.add_argument("--amplitude", "-a", type=int, default=100, help="Position amplitude for oscillation test (default: 100)")
@@ -477,8 +477,8 @@ def main():
     args = parser.parse_args()
 
     from orca_core.utils.utils import get_model_path, read_yaml
-    model_path = get_model_path(args.model_path)
-    config = read_yaml(os.path.join(model_path, 'config.yaml'))
+    config_path = os.path.abspath(args.config_path) if args.config_path else os.path.join(get_model_path(), "config.yaml")
+    config = read_yaml(config_path)
 
     port = config.get('port')
     motor_type = config.get('motor_type', 'dynamixel')

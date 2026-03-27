@@ -7,7 +7,7 @@ import os
 
 def main():
     parser = argparse.ArgumentParser(description='Replay continuous hand joint movements.')
-    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
+    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1_left/config.yaml)")
     parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
     args = parser.parse_args()
 
@@ -51,7 +51,7 @@ def main():
         print("No angles found in the file.")
         return
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 
@@ -71,7 +71,7 @@ def main():
     try:
         start_time = time.time()
         for i, pose in enumerate(waypoints):
-            hand.set_joint_pos(pose)
+            hand.set_joint_positions(pose)
             target_time = start_time + i * step_time
             now = time.time()
             if now < target_time:

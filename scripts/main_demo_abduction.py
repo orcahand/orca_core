@@ -5,19 +5,19 @@ import argparse # Added import
 
 def main(): # Added main function
     parser = argparse.ArgumentParser(
-        description="Run a demo of the ORCA Hand with abduction movements. Specify the path to the orcahand model folder."
+        description="Run a demo of the ORCA Hand with abduction movements. Specify the path to the hand config.yaml file."
     )
     parser.add_argument(
-        "model_path",
+        "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
     )
     args = parser.parse_args()
 
     # Initialize the hand
-    hand = OrcaHand(args.model_path) # Replaced hardcoded path with args.model_path
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 
@@ -108,12 +108,12 @@ def main(): # Added main function
                 current_positions.update(thumb_positions[t_idx])  # Add thumb, wrist, and abduction positions
                 
                 # Send the positions to the hand
-                hand.set_joint_pos(current_positions)
+                hand.set_joint_positions(current_positions)
                 time.sleep(step_time)
 
     except KeyboardInterrupt:
         # Reset the hand to the neutral position on exit
-        hand.set_joint_pos({joint: 0 for joint in hand.joint_ids})
+        hand.set_joint_positions({joint: 0 for joint in hand.config.joint_ids})
         print("Demo stopped and hand reset.")
 
 if __name__ == "__main__": # Added main execution block

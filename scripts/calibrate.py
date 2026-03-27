@@ -3,14 +3,14 @@ from orca_core import OrcaHand
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Calibrate the ORCA Hand. Specify the path to the orcahand model folder."
+        description="Calibrate the ORCA Hand. Specify the path to the hand config.yaml file."
     )
     parser.add_argument(
-        "model_path",
+        "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1)"
+        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
     )
     parser.add_argument(
         "--force-wrist",
@@ -19,7 +19,7 @@ def main():
     )
     args = parser.parse_args()
 
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

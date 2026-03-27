@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from orca_core import MockOrcaHand
+from orca_core.hardware_hand import MockOrcaHand
 
 
 @pytest.fixture

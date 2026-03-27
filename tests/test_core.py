@@ -1,4 +1,5 @@
-from orca_core import MockOrcaHand, OrcaHand
+from orca_core import OrcaHand
+from orca_core.hardware_hand import MockOrcaHand
 
 
 def test_import_and_instantiation():

@@ -11,12 +11,12 @@ Calibrates the ORCA Hand. This script reads the calibration sequence from the ha
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/calibrate.py /path/to/orcahand_v1_right
+python scripts/calibrate.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
@@ -51,7 +51,7 @@ Runs a demonstration of the ORCA Hand, making the fingers perform a wave-like mo
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
@@ -67,7 +67,7 @@ Runs a demonstration of the ORCA Hand, similar to `main_demo.py`, but with a foc
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
@@ -85,12 +85,12 @@ Moves the ORCA Hand to its neutral (home) position. It connects to the hand, ena
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/neutral.py /path/to/orcahand_v1_right
+python scripts/neutral.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
@@ -101,12 +101,12 @@ Moves all joints of the ORCA Hand to the zero position. It connects to the hand,
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_right`). If not provided, the script will use the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/zero.py /path/to/orcahand_v1_right
+python scripts/zero.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
@@ -119,13 +119,13 @@ Records a sequence of joint angle waypoints for the ORCA Hand. The user is promp
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_left`). If not provided, the script uses the default model path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, the script uses the default config path.</li><br>
     <li><strong>--output_dir</strong> (<strong>str</strong>, optional): Directory to save the replay sequence. Defaults to `replay_sequences/` at the project root.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_angles.py /path/to/orcahand_v1_left --output_dir my_recordings
+python scripts/record_angles.py /path/to/orcahand_v1_left/config.yaml --output_dir my_recordings
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -137,7 +137,7 @@ Continuously records joint angles from the ORCA Hand at a specified frequency an
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_left`). If not provided, uses the default model path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
     <li><strong>--frequency</strong> (<strong>float</strong>, optional): Sampling frequency in Hz (default: 50.0).</li><br>
     <li><strong>--duration</strong> (<strong>float</strong>, optional): Recording duration in seconds. Records indefinitely if not set.</li><br>
     <li><strong>--output_dir</strong> (<strong>str</strong>, optional): Directory to save the output file. Defaults to `replay_sequences/` at the project root.</li>
@@ -145,7 +145,7 @@ Continuously records joint angles from the ORCA Hand at a specified frequency an
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_continuous.py /path/to/orcahand_v1_right --frequency 100 --duration 10 --output_dir ./custom_replays
+python scripts/record_continuous.py /path/to/orcahand_v1_right/config.yaml --frequency 100 --duration 10 --output_dir ./custom_replays
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -157,14 +157,14 @@ Replays a recorded sequence of hand movements (waypoints) from a YAML file. It i
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1`). If not provided, uses the default model path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1/config.yaml`). If not provided, uses the default config path.</li><br>
     <li><strong>--step_time</strong> (<strong>float</strong>, optional): Timestep for interpolation (default: 0.02 seconds).</li><br>
     <li><strong>--replay_file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `project_root/replay_sequences/`).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_angles.py /path/to/orcahand_v1_right --replay_file my_capture_replay_sequence_TIMESTAMP.yaml --step_time 0.01
+python scripts/replay_angles.py /path/to/orcahand_v1_right/config.yaml --replay_file my_capture_replay_sequence_TIMESTAMP.yaml --step_time 0.01
 ```
 </details>
 
@@ -175,13 +175,13 @@ Replays continuously recorded hand joint movements from a YAML file. It attempts
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the OrcaHand model folder (e.g., `/path/to/orcahand_v1_left`). If not provided, uses the default model path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
     <li><strong>--replay_file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `project_root/replay_sequences/`).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_continuous.py /path/to/orcahand_v1_right --replay_file continuous_angles_YYYYMMDD_HHMMSS.yaml
+python scripts/replay_continuous.py /path/to/orcahand_v1_right/config.yaml --replay_file continuous_angles_YYYYMMDD_HHMMSS.yaml
 ```
 </details>
 
@@ -194,12 +194,12 @@ Provides a Tkinter-based GUI with sliders to control each joint of the ORCA Hand
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the hand model directory (e.g., `/path/to/orcahand_v1_right`). If not provided, uses the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/slider_joint.py /path/to/orcahand_v1_right
+python scripts/slider_joint.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
@@ -210,12 +210,12 @@ Provides a Tkinter-based GUI with sliders to control each motor of the ORCA Hand
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the hand model directory (e.g., `/path/to/orcahand_v1_right`). If not provided, uses the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/slider_motor.py /path/to/orcahand_v1_right
+python scripts/slider_motor.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
@@ -228,13 +228,13 @@ Enables torque on the ORCA Hand servos and holds the current position, effective
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the orcahand model folder (e.g., `/path/to/orcahand_v1_left`). If not provided, uses the default model path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
     <li><strong>--move_motors</strong>: Move all motors CCW with a the calibration current specified in `config.py` and then enable torque in order to hold the servos in position for tensioning.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/tension.py /path/to/orcahand_v1_left
+python scripts/tension.py /path/to/orcahand_v1_left/config.yaml
 ```
 </details>
 
@@ -245,7 +245,7 @@ A test script that connects to the ORCA Hand, enables torque, sets a specific po
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>model_path</strong> (<strong>str</strong>, optional): Path to the hand model directory (e.g., `/path/to/orcahand_v1_right`). If not provided, uses the default model path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
 </ul>
 
 <strong>Example:</strong>

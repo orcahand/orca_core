@@ -3,14 +3,14 @@ import argparse
 from orca_core import OrcaHand
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", type=str, default=None)
+parser.add_argument("--config-path", dest="config_path", type=str, default=None)
 parser.add_argument("--motor", type=int, default=3)
 parser.add_argument("--duration", type=float, default=10.0)
 parser.add_argument("--amplitude", type=float, default=5.0)
 parser.add_argument("--frequency", type=float, default=10.0)
 args = parser.parse_args()
 
-hand = OrcaHand(args.model)
+hand = OrcaHand(config_path=args.config_path)
 hand.connect()
 hand.enable_torque()
 hand.set_control_mode('current_based_position')

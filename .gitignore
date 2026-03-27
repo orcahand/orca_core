@@ -124,9 +124,12 @@ urdf/
 
 dev_scripts/
 
-orca_core/models/*
+calibration.yaml
 
 # macOS
 .DS_Store
 
 .pytest_cache/
+
+# not storing the lockfile (as of now)
+uv.lock

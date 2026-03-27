@@ -7,7 +7,7 @@ import os  # Added import
 
 def main():
     parser = argparse.ArgumentParser(description="Record waypoints for the ORCA Hand.")
-    parser.add_argument("model_path", type=str, nargs="?", default=None, help="Path to the orcahand model folder (e.g., /path/to/orcahand_v1_left)")
+    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1_left/config.yaml)")
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the replay sequence. Defaults to 'replay_sequences/' at the project root.")
 
     args = parser.parse_args()
@@ -21,7 +21,7 @@ def main():
     elif user_prefix.endswith(".yml"):
         user_prefix = user_prefix[:-4]
     
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 
@@ -50,12 +50,12 @@ def main():
             thread.start()
 
             while not stop_flag:
-                current_angles = hand.get_joint_pos(as_list=True) 
+                current_angles = hand.get_joint_position().as_list(hand.config.joint_ids) 
                 print("\rWaiting for input...", end="")
                 time.sleep(0.1)
 
             print()  # newline after stopping
-            current_angles = hand.get_joint_pos(as_list=True) 
+            current_angles = hand.get_joint_position().as_list(hand.config.joint_ids) 
             replay_buffer.append([float(angle) for angle in current_angles])  
             print(f"Captured waypoint: {current_angles}")
 

@@ -66,9 +66,9 @@ def print_temp_table(hand, temps):
 
 def main():
     parser = argparse.ArgumentParser(description="Test the ORCA Hand.")  # Added parser
-    parser.add_argument('model_path', type=str, nargs='?', default=None, help='Path to the hand model directory')
+    parser.add_argument('config_path', type=str, nargs='?', default=None, help='Path to the hand config.yaml file')
     args = parser.parse_args()
-    hand = OrcaHand(args.model_path)
+    hand = OrcaHand(config_path=args.config_path)
 
     status = hand.connect()
     print(status)
@@ -114,7 +114,7 @@ def main():
             "wrist": -25,
         }
 
-        hand.set_joint_pos(joint_dict_open, num_steps=25, step_size=0.001)
+        hand.set_joint_positions(joint_dict_open, num_steps=25, step_size=0.001)
 
         time.sleep(2)
 
@@ -147,7 +147,7 @@ def main():
             "wrist": 10,
         }
 
-        hand.set_joint_pos(joint_dict_close, num_steps=25, step_size=0.001)
+        hand.set_joint_positions(joint_dict_close, num_steps=25, step_size=0.001)
         time.sleep(2)
 
 

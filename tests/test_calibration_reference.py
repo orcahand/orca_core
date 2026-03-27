@@ -12,11 +12,11 @@ import tempfile
 import pytest
 import yaml
 
-from orca_core import MockOrcaHand
+from orca_core.hardware_hand import MockOrcaHand
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "orcahand_v1_right")
+CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
 REFERENCE_PATH = os.path.join(REPO_ROOT, "tests", "reference", "calibration_expected.yaml")
 
 
@@ -30,7 +30,7 @@ def calibration_result():
     shutil.copy(os.path.join(CONFIG_DIR, "config.yaml"), os.path.join(tmp, "config.yaml"))
     calib_path = os.path.join(tmp, "calibration.yaml")
 
-    hand = MockOrcaHand(tmp)
+    hand = MockOrcaHand(config_path=os.path.join(tmp, "config.yaml"))
     hand.connect()
     hand.calibrate()
     hand.disconnect()
