@@ -1,0 +1,15 @@
+# Finger-to-sensor-model mapping
+# Change these to switch which sensor model is used on each finger.
+# Model names must match a subdirectory in this folder.
+#
+# Available models:
+#   touch-sensor-thumb   - ORCA Fingertip Thumb (51 taxels)
+#   touch-sensor-finger  - ORCA Fingertip Finger (87 taxels)
+#   touch-sensor-pinky   - ORCA Fingertip Pinky (51 taxels)
+
+finger_models:
+  thumb: touch-sensor-thumb
+  index: touch-sensor-finger
+  middle: touch-sensor-finger
+  ring: touch-sensor-finger
+  pinky: touch-sensor-pinky

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORCA Sensor Testing UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ORCA Sensor Testing UI</h1>
+            <div class="connection-controls">
+                <div class="port-selector">
+                    <select id="port-select">
+                        <option value="/dev/ttyACM0">/dev/ttyACM0</option>
+                    </select>
+                    <button id="scan-btn" class="btn btn-scan" title="Scan for sensor adapters">Scan</button>
+                </div>
+                <select id="mode-select">
+                    <option value="resultant">Resultant Force</option>
+                    <option value="taxels" selected>Taxels Only</option>
+                    <option value="combined">Combined</option>
+                </select>
+                <button id="connect-btn" class="btn btn-primary">Connect</button>
+                <button id="disconnect-btn" class="btn btn-secondary" disabled>Disconnect</button>
+                <button id="refresh-btn" class="btn btn-info" disabled>Refresh</button>
+                <button id="zero-btn" class="btn btn-info" disabled>Zero</button>
+                <button id="reset-zero-btn" class="btn btn-secondary" disabled style="display: none;">Reset Zero</button>
+                <div class="status-badge" id="stream-status">Streaming: 100Hz</div>
+            </div>
+        </header>
+
+        <div class="status-panel">
+            <div class="status-card">
+                <h3>Connection Status</h3>
+                <div id="connection-status" class="status-indicator disconnected">Disconnected</div>
+            </div>
+            <div class="status-card">
+                <h3>Hardware Version</h3>
+                <div id="hardware-version">-</div>
+            </div>
+            <div class="status-card">
+                <h3>Stream Mode</h3>
+                <div id="current-mode">-</div>
+            </div>
+            <div class="status-card">
+                <h3>Auto Data Type</h3>
+                <div id="auto-data-type">-</div>
+            </div>
+        </div>
+
+        <div class="sensors-panel">
+            <h2>Sensor Status</h2>
+            <div class="sensors-grid" id="sensors-grid">
+                <div class="sensor-card" data-finger="thumb">
+                    <div class="sensor-name">Thumb</div>
+                    <div class="sensor-status disconnected">*</div>
+                    <div class="sensor-taxels">Taxels: <span>-</span></div>
+                </div>
+                <div class="sensor-card" data-finger="index">
+                    <div class="sensor-name">Index</div>
+                    <div class="sensor-status disconnected">*</div>
+                    <div class="sensor-taxels">Taxels: <span>-</span></div>
+                </div>
+                <div class="sensor-card" data-finger="middle">
+                    <div class="sensor-name">Middle</div>
+                    <div class="sensor-status disconnected">*</div>
+                    <div class="sensor-taxels">Taxels: <span>-</span></div>
+                </div>
+                <div class="sensor-card" data-finger="ring">
+                    <div class="sensor-name">Ring</div>
+                    <div class="sensor-status disconnected">*</div>
+                    <div class="sensor-taxels">Taxels: <span>-</span></div>
+                </div>
+                <div class="sensor-card" data-finger="pinky">
+                    <div class="sensor-name">Pinky</div>
+                    <div class="sensor-status disconnected">*</div>
+                    <div class="sensor-taxels">Taxels: <span>-</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Force Visualization Panel -->
+        <div class="forces-panel" id="forces-panel" style="display: none;">
+            <h2>Force Visualization</h2>
+            <div class="forces-container" id="forces-container">
+                <div class="force-visualization" data-finger="thumb">
+                    <div class="force-label">Thumb</div>
+                    <svg class="force-arrow" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="100" cy="100" r="80" fill="none" stroke="#3b4050" stroke-width="1"/>
+                        <circle id="force-circle-thumb" cx="100" cy="100" r="2" fill="#4a5568" opacity="0.3"/>
+                    </svg>
+                    <div class="force-values">
+                        <div>Fx: <span id="fx-thumb">0.0</span> N</div>
+                        <div>Fy: <span id="fy-thumb">0.0</span> N</div>
+                        <div>Fz: <span id="fz-thumb">0.0</span> N</div>
+                        <div class="force-magnitude">|F|: <span id="mag-thumb">0.0</span> N</div>
+                    </div>
+                </div>
+                <div class="force-visualization" data-finger="index">
+                    <div class="force-label">Index</div>
+                    <svg class="force-arrow" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="100" cy="100" r="80" fill="none" stroke="#3b4050" stroke-width="1"/>
+                        <circle id="force-circle-index" cx="100" cy="100" r="2" fill="#4a5568" opacity="0.3"/>
+                    </svg>
+                    <div class="force-values">
+                        <div>Fx: <span id="fx-index">0.0</span> N</div>
+                        <div>Fy: <span id="fy-index">0.0</span> N</div>
+                        <div>Fz: <span id="fz-index">0.0</span> N</div>
+                        <div class="force-magnitude">|F|: <span id="mag-index">0.0</span> N</div>
+                    </div>
+                </div>
+                <div class="force-visualization" data-finger="middle">
+                    <div class="force-label">Middle</div>
+                    <svg class="force-arrow" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="100" cy="100" r="80" fill="none" stroke="#3b4050" stroke-width="1"/>
+                        <circle id="force-circle-middle" cx="100" cy="100" r="2" fill="#4a5568" opacity="0.3"/>
+                    </svg>
+                    <div class="force-values">
+                        <div>Fx: <span id="fx-middle">0.0</span> N</div>
+                        <div>Fy: <span id="fy-middle">0.0</span> N</div>
+                        <div>Fz: <span id="fz-middle">0.0</span> N</div>
+                        <div class="force-magnitude">|F|: <span id="mag-middle">0.0</span> N</div>
+                    </div>
+                </div>
+                <div class="force-visualization" data-finger="ring">
+                    <div class="force-label">Ring</div>
+                    <svg class="force-arrow" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="100" cy="100" r="80" fill="none" stroke="#3b4050" stroke-width="1"/>
+                        <circle id="force-circle-ring" cx="100" cy="100" r="2" fill="#4a5568" opacity="0.3"/>
+                    </svg>
+                    <div class="force-values">
+                        <div>Fx: <span id="fx-ring">0.0</span> N</div>
+                        <div>Fy: <span id="fy-ring">0.0</span> N</div>
+                        <div>Fz: <span id="fz-ring">0.0</span> N</div>
+                        <div class="force-magnitude">|F|: <span id="mag-ring">0.0</span> N</div>
+                    </div>
+                </div>
+                <div class="force-visualization" data-finger="pinky">
+                    <div class="force-label">Pinky</div>
+                    <svg class="force-arrow" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="100" cy="100" r="80" fill="none" stroke="#3b4050" stroke-width="1"/>
+                        <circle id="force-circle-pinky" cx="100" cy="100" r="2" fill="#4a5568" opacity="0.3"/>
+                    </svg>
+                    <div class="force-values">
+                        <div>Fx: <span id="fx-pinky">0.0</span> N</div>
+                        <div>Fy: <span id="fy-pinky">0.0</span> N</div>
+                        <div>Fz: <span id="fz-pinky">0.0</span> N</div>
+                        <div class="force-magnitude">|F|: <span id="mag-pinky">0.0</span> N</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Taxel Visualization Panel -->
+        <div class="taxels-panel" id="taxels-panel">
+            <div class="taxels-header">
+                <h2>Taxel Visualization</h2>
+                <div class="taxel-controls">
+                    <label class="toggle-label">
+                        <input type="radio" name="taxel-mode" id="magnitude-mode-toggle">
+                        <span>Magnitude</span>
+                    </label>
+                    <label class="toggle-label">
+                        <input type="radio" name="taxel-mode" id="direction-mode-toggle" checked>
+                        <span>Direction</span>
+                    </label>
+                    <label class="toggle-label">
+                        <input type="radio" name="taxel-mode" id="arrows-mode-toggle">
+                        <span>Arrows</span>
+                    </label>
+                    <span class="view-separator">|</span>
+                    <label class="toggle-label" title="Arrow color scheme">
+                        <span>Color:</span>
+                        <select id="color-scheme-select">
+                            <option value="heat">Heat</option>
+                            <option value="intensity">Intensity</option>
+                            <option value="orca">ORCA</option>
+                        </select>
+                    </label>
+                    <span class="view-separator">|</span>
+                    <label class="toggle-label slider-control" title="Arrow length multiplier">
+                        <span>Length:</span>
+                        <input type="range" id="arrow-length-slider" min="0.2" max="3" step="0.1" value="1">
+                        <span id="arrow-length-value">1.0x</span>
+                    </label>
+                    <label class="toggle-label slider-control" title="Arrow thickness multiplier">
+                        <span>Thickness:</span>
+                        <input type="range" id="arrow-thickness-slider" min="0.2" max="3" step="0.1" value="1">
+                        <span id="arrow-thickness-value">1.0x</span>
+                    </label>
+                    <span class="view-separator">|</span>
+                    <label class="toggle-label" title="Hide arrows below this force (N). 0 = show all.">
+                        <input type="checkbox" id="threshold-toggle" checked>
+                        <span>Threshold:</span>
+                        <input type="number" id="threshold-input" min="0" max="5" step="0.1" value="0.5">
+                        <span>N</span>
+                    </label>
+                    <div class="color-legend" id="color-legend">
+                        <span class="legend-item magnitude-legend" style="display:none;">brighter = higher force</span>
+                        <span class="legend-item direction-legend">
+                            <span class="dir-right">Right</span>
+                            <span class="dir-up">Up</span>
+                            <span class="dir-left">Left</span>
+                            <span class="dir-down">Down</span>
+                        </span>
+                        <span class="legend-item arrows-legend" style="display:none;">
+                            arrow direction and color show force
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div class="taxels-container" id="taxels-container" style="display: grid;">
+                <!-- Taxel grids will be dynamically created -->
+            </div>
+        </div>
+
+        <div class="error-panel" id="error-panel" style="display: none;">
+            <div class="error-message" id="error-message"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
