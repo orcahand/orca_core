@@ -4,7 +4,7 @@ import inspect
 import numpy as np
 import pytest
 from unittest.mock import patch
-from orca_core import MockOrcaHand
+from orca_core.hardware_hand import MockOrcaHand
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def mock_hand():
 
 @pytest.fixture
 def wrist_motor_id(mock_hand):
-    return mock_hand.joint_to_motor_map.get("wrist")
+    return mock_hand.config.joint_to_motor_map.get("wrist")
 
 
 def test_amplitude_exceeds_max_raises_error(mock_hand):
@@ -57,7 +57,7 @@ def test_short_duration(mock_hand):
 
 
 def test_custom_motor_ids(mock_hand):
-    target_id = mock_hand.motor_ids[0]
+    target_id = mock_hand.config.motor_ids[0]
     with patch.object(mock_hand._motor_client, 'write_desired_pos', wraps=mock_hand._motor_client.write_desired_pos) as mock_write:
         mock_hand.jitter(motor_ids=[target_id], amplitude=5.0, duration=0.2)
         assert len(mock_write.call_args_list) > 0
@@ -75,7 +75,7 @@ def test_default_excludes_wrist(mock_hand, wrist_motor_id):
 
 
 def test_wrist_excluded_even_with_many_motors(mock_hand, wrist_motor_id):
-    non_wrist_ids = [mid for mid in mock_hand.motor_ids if mid != wrist_motor_id]
+    non_wrist_ids = [mid for mid in mock_hand.config.motor_ids if mid != wrist_motor_id]
     with patch.object(mock_hand._motor_client, 'write_desired_pos', wraps=mock_hand._motor_client.write_desired_pos) as mock_write:
         mock_hand.jitter(amplitude=5.0, duration=0.2)
         assert len(mock_write.call_args_list) > 0

@@ -24,7 +24,8 @@ import yaml
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from orca_core import MockOrcaHand, OrcaJointPositions
+from orca_core import OrcaJointPositions
+from orca_core.hardware_hand import MockOrcaHand
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
