@@ -14,30 +14,41 @@ Orca Core is the core control package of the ORCA Hand. It's used to abstract ha
 
 To get started with Orca Core, follow these steps:
 
-1. **Create a virtual environment** (recommended):
+1. **Sync a local development environment with `uv`**:
 
     ```sh
-    python -m venv venv
-    source venv/bin/activate
+    uv sync --group dev
     ```
 
-    You can also use **Poetry**, **pyenv**, **conda**, or any other environment manager if you prefer.
+    This creates a local `.venv` and installs the package plus development dependencies.
 
-2. **Install dependencies**:
+2. **Run commands through `uv`**:
 
     ```sh
-    pip install -e .
+    uv run pytest
+    ```
+
+    If you prefer an activated shell, you can still use:
+
+    ```sh
+    source .venv/bin/activate
+    ```
+
+    End users who do not use `uv` can still install the package with:
+
+    ```sh
+    pip install .
     ```
 
 3. **Check the configuration file**:
 
-    - Review the config file (e.g., `orca_core/orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+    - Review the config file (e.g., `orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
 
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    python scripts/tension.py orca_core/models/orcahand_v1_right
-    python scripts/calibrate.py orca_core/models/orcahand_v1_right
+    uv run python scripts/tension.py orca_core/models/orcahand_v1_right
+    uv run python scripts/calibrate.py orca_core/models/orcahand_v1_right
     ```
 
     Replace the path with your specific hand model folder if needed.
@@ -45,7 +56,7 @@ To get started with Orca Core, follow these steps:
 5. **Move the hand to the neutral position**:
 
     ```sh
-    python scripts/neutral.py orca_core/models/orcahand_v1_right
+    uv run python scripts/neutral.py orca_core/models/orcahand_v1_right
     ```
 
 6. **Example usage: test.py**
@@ -56,7 +67,7 @@ To get started with Orca Core, follow these steps:
     from orca_core import OrcaHand
     import time
 
-    hand = OrcaHand('orca_core/models/orcahand_v1_right')
+    hand = OrcaHand("orca_core/models/orcahand_v1_right")
     status = hand.connect()
     print(status)
     if not status[0]:
