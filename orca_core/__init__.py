@@ -8,8 +8,10 @@
 from .calibration import CalibrationResult
 from .hand_config import BaseHandConfig
 from .hand_config import OrcaHandConfig
+from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
 from .hardware_hand import OrcaHand
+from .hardware_hand import OrcaHandTouch
 from .joint_position import OrcaJointPositions
 from .version import LATEST_VERSION
 
@@ -17,7 +19,9 @@ __all__ = [
     "CalibrationResult",
     "BaseHandConfig",
     "OrcaHandConfig",
+    "OrcaHandTouchConfig",
     "OrcaHand",
+    "OrcaHandTouch",
     "OrcaJointPositions",
     "canonical_joint_ids",
     "LATEST_VERSION",
