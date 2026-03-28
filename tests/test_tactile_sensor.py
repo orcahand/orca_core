@@ -9,13 +9,13 @@ import time
 
 import pytest
 
-from orca_core.hardware.sensing.sensor_client import (
+from orca_core.hardware.sensor_client import (
     SensorClient,
     SensorConfiguration,
     calculate_checksum,
     FINGER_NAMES,
 )
-from orca_core.hardware.sensing.mock_sensor_client import MockSensorClient
+from orca_core.hardware.mock_sensor_client import MockSensorClient
 from orca_core.hardware.sensing.taxel_coordinates import get_all_coordinates
 
 EXPECTED_TAXEL_COUNTS = {

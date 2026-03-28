@@ -14,19 +14,14 @@ import time
 import random
 import logging
 
+from orca_core.hardware.sensing.constants import (
+    FINGER_NAMES,
+    DEFAULT_FINGER_TO_SENSOR_ID,
+    DEFAULT_TAXEL_COUNTS,
+    DEFAULT_SENSOR_BAUDRATE,
+)
+
 logger = logging.getLogger(__name__)
-
-FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]
-
-# Default taxel counts loaded from sensor model config
-def _get_default_taxel_counts() -> dict[str, int]:
-    try:
-        from orca_core.hardware.sensing.taxel_coordinates import get_taxel_counts
-        return get_taxel_counts()
-    except Exception:
-        return {"thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51}
-
-DEFAULT_TAXEL_COUNTS = _get_default_taxel_counts()
 
 
 class NoSensorsAvailableError(Exception):
@@ -58,9 +53,7 @@ class SensorConfiguration:
     expected_payload_size_taxels: int = 0
     expected_payload_size_combined: int = 0
     timestamp: float = 0.0
-    finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: {
-        "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4
-    })
+    finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
 
     @property
     def active_sensors(self) -> list[str]:
@@ -96,8 +89,8 @@ class MockSensorClient:
     """
 
     def __init__(self,
-                 port: str = '/dev/ttyUSB0',
-                 baudrate: int = 921600,
+                 port: str = '',
+                 baudrate: int = DEFAULT_SENSOR_BAUDRATE,
                  connected_sensors: Optional[list[str]] = None,
                  finger_to_sensor_id: Optional[dict[str, int]] = None):
         """Initialize mock sensor client.

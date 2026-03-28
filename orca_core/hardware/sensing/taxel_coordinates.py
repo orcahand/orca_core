@@ -5,8 +5,10 @@ The finger-to-model mapping is configured in models/sensor_models.yaml.
 """
 
 import os
-from typing import TypedDict, Optional
+from typing import TypedDict
 import yaml
+
+from orca_core.hardware.sensing.constants import FINGER_MODELS
 
 
 class TaxelCoord(TypedDict):
@@ -16,23 +18,8 @@ class TaxelCoord(TypedDict):
 
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
-SENSOR_MODELS_CONFIG = os.path.join(MODELS_DIR, "sensor_models.yaml")
 
 _model_cache: dict[str, list[TaxelCoord]] = {}
-_finger_mapping_cache: Optional[dict[str, str]] = None
-
-
-def _load_finger_mapping() -> dict[str, str]:
-    """Load the finger-to-model mapping from sensor_models.yaml."""
-    global _finger_mapping_cache
-    if _finger_mapping_cache is not None:
-        return _finger_mapping_cache
-
-    with open(SENSOR_MODELS_CONFIG, "r") as f:
-        config = yaml.safe_load(f)
-
-    _finger_mapping_cache = config["finger_models"]
-    return _finger_mapping_cache
 
 
 def _load_model_coordinates(model_name: str) -> list[TaxelCoord]:
@@ -58,7 +45,7 @@ def get_coordinates(finger: str) -> list[TaxelCoord]:
     Returns:
         List of coordinate dicts with 'x', 'y', 'z' keys (in mm)
     """
-    mapping = _load_finger_mapping()
+    mapping = FINGER_MODELS
     model_name = mapping.get(finger)
     if model_name is None:
         return []
@@ -71,7 +58,7 @@ def get_all_coordinates() -> dict[str, list[TaxelCoord]]:
     Returns:
         Dict mapping finger name to list of coordinate dicts
     """
-    mapping = _load_finger_mapping()
+    mapping = FINGER_MODELS
     return {finger: _load_model_coordinates(model) for finger, model in mapping.items()}
 
 
@@ -81,5 +68,5 @@ def get_taxel_counts() -> dict[str, int]:
     Returns:
         Dict mapping finger name to number of taxels
     """
-    mapping = _load_finger_mapping()
+    mapping = FINGER_MODELS
     return {finger: len(_load_model_coordinates(model)) for finger, model in mapping.items()}
