@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from orca_core.hardware.sensing.sensor_client import SensorClient
+from orca_core.hardware.sensor_client import SensorClient
 from orca_core.hardware.sensing.taxel_coordinates import get_all_coordinates
 from orca_core.utils.utils import read_yaml, update_yaml
 import argparse

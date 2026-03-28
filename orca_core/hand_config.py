@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
 from .constants import CONTROL_MODES, DEFAULT_MODEL_NAME, JOINT_IDS, JOINT_ROM_DICT, JOINT_TO_MOTOR_MAP, MOTOR_IDS
+from .hardware.sensing.constants import (
+    FINGER_NAMES,
+    VALID_SENSOR_IDS,
+    DEFAULT_SENSOR_PORT,
+    DEFAULT_SENSOR_BAUDRATE,
+    DEFAULT_FINGER_TO_SENSOR_ID,
+)
 from .joint_position import OrcaJointPositions
 from .utils.utils import get_model_path, read_yaml
 
@@ -323,20 +330,14 @@ class OrcaHandConfig(BaseHandConfig):
         self.validate_config()
 
 
-FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]
-VALID_SENSOR_IDS = set(range(5))
-
-
 @dataclass(frozen=True)
 class OrcaHandTouchConfig(OrcaHandConfig):
     """ORCA hand configuration with tactile sensor support."""
 
-    sensor_port: str = "/dev/ttyACM0"
-    sensor_baudrate: int = 921600
+    sensor_port: str = DEFAULT_SENSOR_PORT
+    sensor_baudrate: int = DEFAULT_SENSOR_BAUDRATE
     finger_to_sensor_id: Dict[str, int] = field(
-        default_factory=lambda: {
-            "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4,
-        }
+        default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID)
     )
 
     @classmethod

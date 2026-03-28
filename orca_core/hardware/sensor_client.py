@@ -12,42 +12,36 @@ import threading
 import time
 import logging
 
-# Configure logging
+from orca_core.hardware.sensing.constants import (
+    FINGER_NAMES,
+    DEFAULT_SENSOR_PORT,
+    DEFAULT_SENSOR_BAUDRATE,
+    DEFAULT_FINGER_TO_SENSOR_ID,
+    PROTOCOL_HEADER_REQUEST,
+    PROTOCOL_HEADER_RESPONSE,
+    PROTOCOL_HEADER_AUTO,
+    PROTOCOL_RESERVED,
+    FUNC_CODE_READ,
+    FUNC_CODE_WRITE,
+    ADDR_HARDWARE_VERSION_START,
+    ADDR_HARDWARE_VERSION_LENGTH,
+    ADDR_RESET,
+    ADDR_CONNECTED_SENSORS_START,
+    ADDR_CONNECTED_SENSORS_LENGTH,
+    ADDR_NUM_TAXELS_START,
+    ADDR_NUM_TAXELS_LENGTH,
+    ADDR_RESULTING_FORCE_START,
+    ADDR_RESULTING_FORCE_LENGTH,
+    ADDR_AUTO_DATA_TYPE,
+    ADDR_AUTO_ENABLE,
+)
+
 logger = logging.getLogger(__name__)
 
-FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]
 
-# Exceptions
 class NoSensorsAvailableError(Exception):
     """Raised when no sensors are available for communication."""
     pass
-
-
-# Protocol constants
-PROTOCOL_HEADER_REQUEST = bytes([0x55, 0xAA])
-PROTOCOL_HEADER_RESPONSE = bytes([0xAA, 0x55])
-PROTOCOL_HEADER_AUTO = bytes([0xAA, 0x56])
-PROTOCOL_RESERVED = 0x00
-FUNC_CODE_READ = 0x03
-FUNC_CODE_WRITE = 0x10
-
-# Register addresses
-ADDR_HARDWARE_VERSION_START = 0x0000
-ADDR_HARDWARE_VERSION_LENGTH = 16
-
-ADDR_RESET = 0x0022
-
-ADDR_CONNECTED_SENSORS_START = 0x0010  
-ADDR_CONNECTED_SENSORS_LENGTH = 4   
-
-ADDR_NUM_TAXELS_START = 0x0030
-ADDR_NUM_TAXELS_LENGTH = 56
-
-ADDR_RESULTING_FORCE_START = 0x0500
-ADDR_RESULTING_FORCE_LENGTH = 168
-
-ADDR_AUTO_DATA_TYPE = 0x0016
-ADDR_AUTO_ENABLE = 0x0017 
 
 
 def calculate_checksum(frame: bytes) -> int:
@@ -108,9 +102,7 @@ class SensorConfiguration:
     expected_payload_size_taxels: int = 0  # Expected bytes for taxel mode
     expected_payload_size_combined: int = 0  # Expected bytes for resultant + taxel mode
     timestamp: float = 0.0  # When this config was captured
-    finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: {
-        "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4
-    })
+    finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
 
     @property
     def active_sensors(self) -> list[str]:
@@ -137,8 +129,8 @@ class SensorClient:
     """Client for communicating with ORCA Tactile Sensors"""
 
     def __init__(self,
-                 port: str = '/dev/ttyUSB0',
-                 baudrate: int = 921600,
+                 port: str = DEFAULT_SENSOR_PORT,
+                 baudrate: int = DEFAULT_SENSOR_BAUDRATE,
                  finger_to_sensor_id: Optional[dict[str, int]] = None):
 
         self.port = port
@@ -148,9 +140,7 @@ class SensorClient:
 
         # Finger-to-sensor-id mapping (configurable wiring)
         if finger_to_sensor_id is None:
-            self._finger_to_sensor_id = {
-                "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4
-            }
+            self._finger_to_sensor_id = dict(DEFAULT_FINGER_TO_SENSOR_ID)
         else:
             expected_fingers = set(FINGER_NAMES)
             if set(finger_to_sensor_id.keys()) != expected_fingers:

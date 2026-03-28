@@ -1174,7 +1174,7 @@ class OrcaHandTouch(OrcaHand):
         if not success:
             return success, msg
 
-        from .hardware.sensing.sensor_client import SensorClient
+        from .hardware.sensor_client import SensorClient
 
         self._sensor_client = SensorClient(
             port=self.config.sensor_port,
