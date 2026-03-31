@@ -235,11 +235,6 @@ def status():
     errors = []
 
     try:
-        out['hardware_version'] = client.read_hardware_version()
-    except Exception as e:
-        errors.append(f"read_hardware_version: {e}")
-
-    try:
         out['sensors'] = client.read_connected_sensors()
     except Exception as e:
         errors.append(f"read_connected_sensors: {e}")
@@ -297,14 +292,12 @@ def refresh():
             return jsonify({'connected': False})
 
         connected = client.read_connected_sensors()
-        version = client.read_hardware_version()
         taxels = client.read_num_taxels()
         auto_data = client.read_auto_data_type()
         forces = client.read_resulting_force()
 
         return jsonify({
             'connected': True,
-            'hardware_version': version,
             'sensors': connected,
             'taxels': taxels,
             'auto_data_type': auto_data,
