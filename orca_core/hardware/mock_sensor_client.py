@@ -7,575 +7,271 @@
 # ==============================================================================
 """Mock client for simulating tactile sensors in automated tests."""
 
-from dataclasses import dataclass, field
-from typing import Optional
-import threading
+from __future__ import annotations
+
+from typing import Callable, Optional
 import time
-import random
 import logging
 
+from orca_core.hardware.sensor_client import SensorClient, NoSensorsAvailableError
 from orca_core.hardware.sensing.constants import (
     FINGER_NAMES,
-    DEFAULT_FINGER_TO_SENSOR_ID,
     DEFAULT_TAXEL_COUNTS,
     DEFAULT_SENSOR_BAUDRATE,
+    AUTO_DATA_RESULTANT,
+    AUTO_DATA_TAXELS,
 )
 
 logger = logging.getLogger(__name__)
 
-
-class NoSensorsAvailableError(Exception):
-    """Raised when no sensors are available for communication."""
-    pass
+ResultantProvider = Callable[[], dict[str, list[float]]]
+TaxelProvider = Callable[[], dict[str, list[list[float]]]]
 
 
-@dataclass
-class AutoStreamStats:
-    frames_ok: int = 0
-    frames_bad_lrc: int = 0
-    resyncs: int = 0
-    last_error_code: int = 0
-    parse_ok: int = 0
-    parse_errors: int = 0
-    last_eff_len: int = 0
-    last_payload_len: int = 0
-    consecutive_errors: int = 0
-    reconfiguration_count: int = 0
-
-
-@dataclass
-class SensorConfiguration:
-    """Snapshot of connected sensors and their properties."""
-    connected: dict[str, bool] = field(default_factory=dict)
-    num_taxels: dict[str, int] = field(default_factory=dict)
-    module_indices: dict[str, int] = field(default_factory=dict)
-    expected_payload_size_resultant: int = 0
-    expected_payload_size_taxels: int = 0
-    expected_payload_size_combined: int = 0
-    timestamp: float = 0.0
-    finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
-
-    @property
-    def active_sensors(self) -> list[str]:
-        """List of currently connected sensors sorted by hardware slot order."""
-        active = [f for f in FINGER_NAMES if self.connected.get(f, False)]
-        active.sort(key=lambda f: self.finger_to_sensor_id.get(f, FINGER_NAMES.index(f)))
-        return active
-
-    @property
-    def num_active_sensors(self) -> int:
-        """Number of currently connected sensors."""
-        return len(self.active_sensors)
-
-    def __str__(self) -> str:
-        active = ", ".join(self.active_sensors) if self.active_sensors else "none"
-        return f"SensorConfig({self.num_active_sensors} active: {active})"
-
-
-class MockSensorClient:
+class MockSensorClient(SensorClient):
     """Mock client for simulating tactile sensor communication in tests.
 
-    This class provides the same interface as SensorClient but returns
-    simulated data instead of communicating with real hardware. Useful for:
-    - Automated testing without hardware
-    - Development and debugging
-    - CI/CD pipelines
+    Subclasses SensorClient, replacing hardware I/O with deterministic data
+    sources. Inherits start_auto_stream, stop_auto_stream, offset logic, and
+    context manager support from the base class.
 
-    The simulated data can be controlled via:
+    Control simulated data via:
     - set_mock_forces(): Set specific force values to return
     - set_mock_taxels(): Set specific taxel values to return
     - set_connected_sensors(): Configure which sensors appear connected
-    - set_noise_level(): Add random noise to simulated data
+    - set_resultant_provider()/set_taxel_provider(): Inject deterministic generators
+
+    Default behavior (if no providers or mock values are set):
+    - All force components return 1.0 for every connected sensor/taxel.
     """
 
-    def __init__(self,
-                 port: str = '',
-                 baudrate: int = DEFAULT_SENSOR_BAUDRATE,
-                 connected_sensors: Optional[list[str]] = None,
-                 finger_to_sensor_id: Optional[dict[str, int]] = None):
-        """Initialize mock sensor client.
+    def __init__(
+        self,
+        port: str = "mock",
+        baudrate: int = DEFAULT_SENSOR_BAUDRATE,
+        connected_sensors: Optional[list[str]] = None,
+        finger_to_sensor_id: Optional[dict[str, int]] = None,
+        resultant_provider: Optional[ResultantProvider] = None,
+        taxel_provider: Optional[TaxelProvider] = None,
+        auto_rate_hz: Optional[float] = None,
+    ):
+        super().__init__(port=port, baudrate=baudrate, finger_to_sensor_id=finger_to_sensor_id)
 
-        Args:
-            port: Serial port (ignored, for API compatibility)
-            baudrate: Baudrate (ignored, for API compatibility)
-            connected_sensors: List of sensor names to simulate as connected.
-                             Defaults to ["thumb", "index", "middle"]
-            finger_to_sensor_id: Finger-to-sensor-id mapping (ignored, for API compatibility)
-        """
-        self.port = port
-        self.baudrate = baudrate
-        self._connected = False
-
-        # Configure which sensors appear connected
         if connected_sensors is None:
-            connected_sensors = ["thumb", "index", "middle"]
-        self._simulated_connected = {f: f in connected_sensors for f in FINGER_NAMES}
-        self._simulated_taxel_counts = {
-            f: DEFAULT_TAXEL_COUNTS[f] if self._simulated_connected[f] else 0
+            connected_sensors = list(FINGER_NAMES)
+
+        self._sim_connected: dict[str, bool] = {
+            f: f in connected_sensors for f in FINGER_NAMES
+        }
+        self._sim_taxel_counts: dict[str, int] = {
+            f: DEFAULT_TAXEL_COUNTS[f] if f in connected_sensors else 0
             for f in FINGER_NAMES
         }
 
-        # Mock data storage
         self._mock_forces: dict[str, list[float]] = {}
         self._mock_taxels: dict[str, list[list[float]]] = {}
-        self._noise_level = 0.0
-        self._hardware_version = "MOCK_V1.0.0"
 
-        # Auto-stream state
-        self._sensor_config: Optional[SensorConfiguration] = None
-        self._auto_thread: Optional[threading.Thread] = None
-        self._auto_running = threading.Event()
-        self._auto_lock = threading.Lock()
-        self._auto_latest = None
-        self._auto_latest_taxels = None
-        self._auto_latest_ts = None
-        self._auto_stats = AutoStreamStats()
-        self._auto_mode_resultant = True
-        self._auto_mode_taxels = False
-        self._auto_rate_hz = 100  # Simulated update rate
+        self._resultant_provider: ResultantProvider = (
+            resultant_provider if resultant_provider is not None else self._default_resultant_provider
+        )
+        self._taxel_provider: TaxelProvider = (
+            taxel_provider if taxel_provider is not None else self._default_taxel_provider
+        )
 
-        # Initialize default mock data
-        self._initialize_mock_data()
-
-    def _initialize_mock_data(self):
-        """Initialize default mock force and taxel data."""
-        for finger in FINGER_NAMES:
-            if self._simulated_connected[finger]:
-                self._mock_forces[finger] = [0.0, 0.0, 0.0]
-                taxel_count = self._simulated_taxel_counts[finger]
-                self._mock_taxels[finger] = [[0.0, 0.0, 0.0] for _ in range(taxel_count)]
+        # None = no sleep between frames (ideal for tests). Pass e.g. 1000
+        # to throttle to ~1kHz for demos or UI prototyping.
+        self._auto_rate_hz = auto_rate_hz
 
     # =========================================================================
-    # Mock Control Methods (for test setup)
+    # Mock Control Methods
     # =========================================================================
 
-    def set_connected_sensors(self, sensors: list[str]):
+    def set_connected_sensors(self, sensors: list[str]) -> None:
         """Configure which sensors appear as connected.
 
-        Args:
-            sensors: List of finger names to simulate as connected
+        Only clears mock data for sensors that were removed.
         """
-        self._simulated_connected = {f: f in sensors for f in FINGER_NAMES}
-        self._simulated_taxel_counts = {
-            f: DEFAULT_TAXEL_COUNTS[f] if self._simulated_connected[f] else 0
-            for f in FINGER_NAMES
-        }
-        self._initialize_mock_data()
+        removed = {f for f, on in self._sim_connected.items() if on and f not in sensors}
+        self._update_connectivity(sensors)
+        for f in removed:
+            self._mock_forces.pop(f, None)
+            self._mock_taxels.pop(f, None)
 
-        # Update configuration if already connected
-        if self._connected:
-            self._sensor_config = self._get_configuration()
+    def simulate_dropout(self, dropped: list[str]) -> None:
+        """Simulate one or more sensors dropping out."""
+        remaining = [f for f in self._sim_connected if self._sim_connected[f] and f not in dropped]
+        self.set_connected_sensors(remaining)
 
-    def set_mock_forces(self, forces: dict[str, list[float]]):
+    def set_mock_forces(self, forces: dict[str, list[float]]) -> None:
         """Set the force values to return for each sensor.
 
-        Args:
-            forces: Dict mapping finger names to [fx, fy, fz] values
-        """
-        for finger, force in forces.items():
-            if finger in FINGER_NAMES and len(force) == 3:
-                self._mock_forces[finger] = list(force)
+        Replaces all previously set mock forces.
 
-    def set_mock_taxels(self, taxels: dict[str, list[list[float]]]):
+        Raises:
+            ValueError: If any finger name is not valid or force vector is wrong length
+        """
+        self._validate_finger_vectors(forces, expected_len=3, label="Force")
+        self._mock_forces = {f: list(v) for f, v in forces.items()}
+
+    def set_mock_taxels(self, taxels: dict[str, list[list[float]]]) -> None:
         """Set the taxel values to return for each sensor.
 
-        Args:
-            taxels: Dict mapping finger names to list of [fx, fy, fz] per taxel
+        Replaces all previously set mock taxels.
+
+        Raises:
+            ValueError: If any finger name is not valid or any taxel vector is wrong length
         """
-        for finger, data in taxels.items():
-            if finger in FINGER_NAMES:
-                self._mock_taxels[finger] = [list(t) for t in data]
+        for finger, taxel_list in taxels.items():
+            for taxel in taxel_list:
+                self._validate_finger_vectors({finger: taxel}, expected_len=3, label="Taxel")
+        self._mock_taxels = {f: [list(t) for t in data] for f, data in taxels.items()}
 
-    def set_noise_level(self, level: float):
-        """Set random noise level to add to returned data.
+    def set_resultant_provider(self, provider: ResultantProvider) -> None:
+        """Inject a deterministic resultant provider (called per read)."""
+        self._resultant_provider = provider
 
-        Args:
-            level: Standard deviation of Gaussian noise to add (in Newtons)
-        """
-        self._noise_level = level
-
-    def set_hardware_version(self, version: str):
-        """Set the hardware version string to return.
-
-        Args:
-            version: Version string to return from read_hardware_version()
-        """
-        self._hardware_version = version
-
-    def set_auto_rate(self, rate_hz: float):
-        """Set the simulated auto-stream update rate.
-
-        Args:
-            rate_hz: Updates per second for auto-stream simulation
-        """
-        self._auto_rate_hz = rate_hz
+    def set_taxel_provider(self, provider: TaxelProvider) -> None:
+        """Inject a deterministic taxel provider (called per read)."""
+        self._taxel_provider = provider
 
     # =========================================================================
-    # Connection Methods
+    # Connection (no-op hardware I/O)
     # =========================================================================
 
-    @property
-    def is_connected(self) -> bool:
-        """Check if client is connected."""
-        return self._connected
-
-    def connect(self):
-        """Simulate connecting to sensor device."""
+    def connect(self) -> None:
         if self.is_connected:
             return
-
         self._connected = True
-        logger.info(f"[MOCK] Connected to sensor at {self.port}")
-
-        # Build initial configuration
         self._sensor_config = self._get_configuration()
-        logger.info(f"[MOCK] Initial configuration: {self._sensor_config}")
+        logger.info(f"[MOCK] Connected, config: {self._sensor_config}")
 
-    def disconnect(self):
-        """Simulate disconnecting from sensor device."""
+    def disconnect(self) -> None:
         if not self.is_connected:
             return
-
+        # stop_auto_stream must precede _connected = False: the base class
+        # stop_auto_stream calls disable_auto_data_transmission which checks
+        # is_connected via _write_register.
         self.stop_auto_stream()
         self._connected = False
-        logger.info("[MOCK] Disconnected from sensor")
+        logger.info("[MOCK] Disconnected")
 
     # =========================================================================
-    # Sensor Information Methods
+    # Sensor Information (return simulated state)
     # =========================================================================
-
-    def read_hardware_version(self) -> str:
-        """Return mock hardware version."""
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-        return self._hardware_version
 
     def read_connected_sensors(self) -> dict[str, bool]:
-        """Return simulated connected sensor status."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-        return dict(self._simulated_connected)
+        return dict(self._sim_connected)
 
     def read_num_taxels(self) -> dict[str, int]:
-        """Return simulated taxel counts."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-        return dict(self._simulated_taxel_counts)
+        return dict(self._sim_taxel_counts)
 
     def read_auto_data_type(self) -> dict:
-        """Return simulated auto data type configuration."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-
-        val = (0x01 if self._auto_mode_resultant else 0) | (0x02 if self._auto_mode_taxels else 0)
+        val = (AUTO_DATA_RESULTANT if self._auto_mode_resultant else 0) | (
+            AUTO_DATA_TAXELS if self._auto_mode_taxels else 0
+        )
         return {
             "raw": f"{val:08b}",
             "resulting_force": self._auto_mode_resultant,
             "individual_taxels_force": self._auto_mode_taxels,
         }
 
-    def get_sensor_configuration(self) -> Optional[SensorConfiguration]:
-        """Get the current sensor configuration snapshot."""
-        return self._sensor_config
-
-    def _get_configuration(self) -> SensorConfiguration:
-        """Build configuration from current simulated state."""
-        connected = dict(self._simulated_connected)
-        num_taxels = dict(self._simulated_taxel_counts)
-
-        module_indices = {}
-        for i, finger in enumerate(FINGER_NAMES):
-            if connected.get(finger, False):
-                module_indices[finger] = i * 4 + 2
-
-        num_active = sum(1 for c in connected.values() if c)
-        expected_resultant = num_active * 6
-        expected_taxels = sum(
-            num_taxels.get(finger, 0) * 3
-            for finger, is_connected in connected.items()
-            if is_connected
-        )
-        expected_combined = expected_resultant + expected_taxels
-
-        return SensorConfiguration(
-            connected=connected,
-            num_taxels=num_taxels,
-            module_indices=module_indices,
-            expected_payload_size_resultant=expected_resultant,
-            expected_payload_size_taxels=expected_taxels,
-            expected_payload_size_combined=expected_combined,
-            timestamp=time.time()
-        )
-
     # =========================================================================
-    # Force Reading Methods
+    # Hardware I/O overrides (no-ops)
     # =========================================================================
 
-    def _add_noise(self, value: float) -> float:
-        """Add Gaussian noise to a value."""
-        if self._noise_level > 0:
-            return value + random.gauss(0, self._noise_level)
-        return value
-
-    def _get_mock_forces(self) -> dict[str, list[float]]:
-        """Get mock forces with optional noise."""
-        result = {}
-        for finger in FINGER_NAMES:
-            if self._simulated_connected.get(finger, False):
-                base = self._mock_forces.get(finger, [0.0, 0.0, 0.0])
-                result[finger] = [
-                    round(self._add_noise(base[0]), 1),
-                    round(self._add_noise(base[1]), 1),
-                    round(self._add_noise(base[2]), 1),
-                ]
-        return result
-
-    def _get_mock_taxels(self) -> dict[str, list[list[float]]]:
-        """Get mock taxels with optional noise."""
-        result = {}
-        for finger in FINGER_NAMES:
-            if self._simulated_connected.get(finger, False):
-                base_taxels = self._mock_taxels.get(finger, [])
-                result[finger] = [
-                    [
-                        round(self._add_noise(t[0]), 2),
-                        round(self._add_noise(t[1]), 2),
-                        round(self._add_noise(t[2]), 2),
-                    ]
-                    for t in base_taxels
-                ]
-        return result
-
-    def read_resulting_force(self) -> dict[str, list[float]]:
-        """Return simulated resultant forces."""
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-        return self._get_mock_forces()
-
-    # =========================================================================
-    # Auto-Stream Control Methods
-    # =========================================================================
-
-    def set_auto_data_type(self, resultant: bool = True, taxels: bool = False) -> None:
-        """Configure data types for auto stream."""
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-        self._auto_mode_resultant = resultant
-        self._auto_mode_taxels = taxels
-
-    def enable_auto_data_transmission(self) -> None:
-        """Enable auto data transmission (no-op in mock)."""
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-
-    def disable_auto_data_transmission(self) -> None:
-        """Disable auto data transmission (no-op in mock)."""
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
+    def _write_register(self, address: int, data: bytes, response_timeout_s: float = 0.5) -> None:
+        pass
 
     def reboot(self) -> None:
-        """Simulate sensor reboot."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
         logger.info("[MOCK] Sensor reboot simulated")
 
     # =========================================================================
-    # Auto-Stream Methods
+    # Force Reading
     # =========================================================================
 
-    def _auto_reader_loop(self, parse_resultant: bool, parse_taxels: bool):
-        """Background thread that simulates auto-stream data generation."""
-        interval = 1.0 / self._auto_rate_hz
-
-        while self._auto_running.is_set():
-            try:
-                parsed_resultant = None
-                parsed_taxels = None
-
-                if parse_resultant:
-                    parsed_resultant = self._get_mock_forces()
-                if parse_taxels:
-                    parsed_taxels = self._get_mock_taxels()
-
-                with self._auto_lock:
-                    if parse_resultant:
-                        self._auto_latest = parsed_resultant
-                    if parse_taxels:
-                        self._auto_latest_taxels = parsed_taxels
-                    self._auto_latest_ts = time.time()
-                    self._auto_stats.frames_ok += 1
-                    self._auto_stats.parse_ok += 1
-
-                time.sleep(interval)
-
-            except Exception as e:
-                logger.error(f"[MOCK] Error in auto reader: {e}")
-                with self._auto_lock:
-                    self._auto_stats.parse_errors += 1
-                time.sleep(interval)
-
-        logger.info("[MOCK] Auto reader loop exited")
-
-    def start_auto_stream(self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1):
-        """Start simulated auto-stream mode.
-
-        Args:
-            resultant: Include resultant force data
-            taxels: Include taxel data
-            min_sensors: Minimum sensors required
-
-        Raises:
-            OSError: If not connected
-            NoSensorsAvailableError: If fewer than min_sensors available
-            ValueError: If neither resultant nor taxels enabled
-        """
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-
-        if not resultant and not taxels:
-            raise ValueError("At least one of resultant or taxels must be enabled")
-
-        self.stop_auto_stream()
-
-        self._auto_mode_resultant = resultant
-        self._auto_mode_taxels = taxels
-
-        self._sensor_config = self._get_configuration()
-
-        if self._sensor_config.num_active_sensors < min_sensors:
-            raise NoSensorsAvailableError(
-                f"Only {self._sensor_config.num_active_sensors} sensor(s) available, "
-                f"need at least {min_sensors}"
-            )
-
-        mode_str = []
-        if resultant:
-            mode_str.append("resultant")
-        if taxels:
-            mode_str.append("taxels")
-        logger.info(
-            f"[MOCK] Starting auto-stream with {self._sensor_config}, "
-            f"mode={'+'.join(mode_str)}"
-        )
-
-        self._auto_running.set()
-        self._auto_thread = threading.Thread(
-            target=self._auto_reader_loop,
-            args=(resultant, taxels),
-            daemon=True
-        )
-        self._auto_thread.start()
-
-    def stop_auto_stream(self):
-        """Stop simulated auto-stream mode."""
-        self._auto_running.clear()
-
-        if self._auto_thread is not None:
-            self._auto_thread.join(timeout=1.0)
-            self._auto_thread = None
-
-        with self._auto_lock:
-            self._auto_latest = None
-            self._auto_latest_taxels = None
-            self._auto_latest_ts = None
-
-    def get_auto_latest(self):
-        """Get latest simulated resultant force data."""
-        with self._auto_lock:
-            return self._auto_latest, self._auto_latest_ts
-
-    def get_auto_latest_taxels(self):
-        """Get latest simulated taxel data."""
-        with self._auto_lock:
-            return self._auto_latest_taxels, self._auto_latest_ts
-
-    def get_auto_latest_all(self):
-        """Get all latest simulated data."""
-        with self._auto_lock:
-            return self._auto_latest, self._auto_latest_taxels, self._auto_latest_ts
-
-    def get_auto_stats(self):
-        """Get auto-stream statistics."""
-        with self._auto_lock:
-            return self._auto_stats
+    def _read_raw_resultant(self) -> dict[str, list[float]]:
+        return self._resultant_provider()
 
     # =========================================================================
-    # Context Manager Support
+    # Frame Acquisition (overrides base class serial reader)
     # =========================================================================
 
-    def __enter__(self):
-        """Enable use as context manager."""
-        if not self.is_connected:
-            self.connect()
-        return self
+    def _acquire_frame(
+        self,
+        parse_resultant: bool,
+        parse_taxels: bool,
+        min_sensors: int,
+    ) -> tuple[dict | None, dict | None]:
+        """Acquire simulated frame data from mock providers."""
+        if self._sensor_config is None or self._sensor_config.num_active_sensors < min_sensors:
+            raise NoSensorsAvailableError("Insufficient sensors for auto-stream")
 
-    def __exit__(self, *args):
-        """Enable use as context manager."""
-        self.disconnect()
+        parsed_resultant = self._resultant_provider() if parse_resultant else None
+        parsed_taxels = self._taxel_provider() if parse_taxels else None
 
-    def __del__(self):
-        """Cleanup on destruction."""
-        try:
-            self.disconnect()
-        except Exception:
-            pass
+        # Rate limiting (None = no sleep, ideal for tests)
+        if self._auto_rate_hz:
+            time.sleep(1.0 / self._auto_rate_hz)
 
+        return parsed_resultant, parsed_taxels
 
-if __name__ == "__main__":
-    # Simple test of mock client
-    logging.basicConfig(level=logging.INFO)
+    # =========================================================================
+    # Internal Helpers
+    # =========================================================================
 
-    print("=== Mock Sensor Client Test ===\n")
+    def _update_connectivity(self, sensors: list[str]) -> None:
+        """Update simulated connectivity and reconfigure if connected."""
+        self._sim_connected = {f: f in sensors for f in FINGER_NAMES}
+        self._sim_taxel_counts = {
+            f: DEFAULT_TAXEL_COUNTS[f] if self._sim_connected[f] else 0
+            for f in FINGER_NAMES
+        }
+        if self._connected:
+            self._sensor_config = self._get_configuration()
 
-    with MockSensorClient(connected_sensors=["thumb", "index", "middle"]) as client:
-        print(f"Hardware version: {client.read_hardware_version()}")
-        print(f"Connected sensors: {client.read_connected_sensors()}")
-        print(f"Taxel counts: {client.read_num_taxels()}")
-        print(f"Configuration: {client.get_sensor_configuration()}")
+    def _default_resultant_provider(self) -> dict[str, list[float]]:
+        forces = self._mock_forces
+        return {
+            f: list(forces[f]) if f in forces else [1.0, 1.0, 1.0]
+            for f in FINGER_NAMES
+            if self._sim_connected.get(f, False)
+        }
 
-        # Test request-response mode
-        print("\n--- Request-Response Mode ---")
-        forces = client.read_resulting_force()
-        print(f"Forces: {forces}")
+    def _default_taxel_provider(self) -> dict[str, list[list[float]]]:
+        result = {}
+        for finger in FINGER_NAMES:
+            if not self._sim_connected.get(finger, False):
+                continue
+            expected = self._sim_taxel_counts.get(finger, 0)
+            if finger in self._mock_taxels:
+                provided = self._mock_taxels[finger]
+                if len(provided) != expected:
+                    raise ValueError(
+                        f"Mock taxel count for '{finger}' is {len(provided)}, "
+                        f"but sensor expects {expected}"
+                    )
+                result[finger] = [list(t) for t in provided]
+            else:
+                result[finger] = [[1.0, 1.0, 1.0] for _ in range(expected)]
+        return result
 
-        # Set specific mock values
-        client.set_mock_forces({
-            "thumb": [1.0, 0.5, 2.0],
-            "index": [0.0, 0.0, 1.5],
-            "middle": [-0.5, 0.2, 0.8],
-        })
-        forces = client.read_resulting_force()
-        print(f"Forces (with mock values): {forces}")
-
-        # Test with noise
-        client.set_noise_level(0.1)
-        forces = client.read_resulting_force()
-        print(f"Forces (with noise): {forces}")
-        client.set_noise_level(0.0)
-
-        # Test auto-stream mode
-        print("\n--- Auto-Stream Mode (resultant only) ---")
-        client.start_auto_stream(resultant=True, taxels=False)
-        time.sleep(0.1)
-        for _ in range(5):
-            forces, ts = client.get_auto_latest()
-            if forces:
-                print(f"[{ts:.3f}] {forces}")
-            time.sleep(0.05)
-        client.stop_auto_stream()
-
-        # Test combined mode
-        print("\n--- Auto-Stream Mode (combined) ---")
-        client.start_auto_stream(resultant=True, taxels=True)
-        time.sleep(0.1)
-        forces, taxels, ts = client.get_auto_latest_all()
-        if forces:
-            print(f"Forces: {forces}")
-            print(f"Taxel counts: {({f: len(t) for f, t in taxels.items()}) if taxels else 'None'}")
-        client.stop_auto_stream()
-
-        # Show stats
-        stats = client.get_auto_stats()
-        print(f"\nStats: frames_ok={stats.frames_ok}, parse_ok={stats.parse_ok}")
-
-    print("\n=== Test Complete ===")
+    @staticmethod
+    def _validate_finger_vectors(
+        data: dict[str, list[float]], expected_len: int, label: str
+    ) -> None:
+        for finger, vec in data.items():
+            if finger not in FINGER_NAMES:
+                raise ValueError(f"Unknown finger '{finger}'. Valid names: {FINGER_NAMES}")
+            if len(vec) != expected_len:
+                raise ValueError(
+                    f"{label} vector for '{finger}' must have {expected_len} components, "
+                    f"got {len(vec)}"
+                )

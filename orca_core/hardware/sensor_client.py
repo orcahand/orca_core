@@ -23,8 +23,6 @@ from orca_core.hardware.sensing.constants import (
     PROTOCOL_RESERVED,
     FUNC_CODE_READ,
     FUNC_CODE_WRITE,
-    ADDR_HARDWARE_VERSION_START,
-    ADDR_HARDWARE_VERSION_LENGTH,
     ADDR_RESET,
     ADDR_CONNECTED_SENSORS_START,
     ADDR_CONNECTED_SENSORS_LENGTH,
@@ -34,6 +32,8 @@ from orca_core.hardware.sensing.constants import (
     ADDR_RESULTING_FORCE_LENGTH,
     ADDR_AUTO_DATA_TYPE,
     ADDR_AUTO_ENABLE,
+    AUTO_DATA_RESULTANT,
+    AUTO_DATA_TAXELS,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,18 @@ logger = logging.getLogger(__name__)
 class NoSensorsAvailableError(Exception):
     """Raised when no sensors are available for communication."""
     pass
+
+
+class FrameError(Exception):
+    """Recoverable frame-level error in auto-stream acquisition.
+
+    Raised by _acquire_frame when a single frame is bad (LRC failure,
+    parse error, size mismatch). The auto-reader loop increments error
+    counters and continues to the next frame.
+    """
+    def __init__(self, message: str, bad_lrc: bool = False):
+        super().__init__(message)
+        self.bad_lrc = bad_lrc
 
 
 def calculate_checksum(frame: bytes) -> int:
@@ -170,6 +182,7 @@ class SensorClient:
         self._auto_stats = AutoStreamStats()
         self._auto_mode_resultant = True    # Whether to parse resultant forces
         self._auto_mode_taxels = False      # Whether to parse taxels
+        self._last_frame_debug_print: float = 0.0
 
         # Per-taxel zeroing offsets
         self._taxel_offsets: Optional[dict] = None      # {finger: [[fx, fy, fz], ...], ...}
@@ -475,23 +488,6 @@ class SensorClient:
         ]
         return {self._sensor_id_to_finger[i]: status[i] for i in range(5)}
 
-    def read_hardware_version(self) -> str:
-        """Read the hardware version.
-
-        Returns:
-            Hardware version string
-
-        Raises:
-            OSError: If not connected to sensor
-        """
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-
-        version_bytes = self._read_register(ADDR_HARDWARE_VERSION_START, ADDR_HARDWARE_VERSION_LENGTH)
-        version_string = version_bytes.decode('ascii', errors='ignore').rstrip('\x00').rstrip()
-        
-        return version_string
-
     def read_num_taxels(self) -> dict[str, int]:
         """Read the number of taxels for each fingertip sensor.
 
@@ -529,18 +525,38 @@ class SensorClient:
         byte_val = data[0]
         return {
             "raw": f"{byte_val:08b}",
-            "resulting_force": bool(byte_val & 0x01),
-            "individual_taxels_force": bool(byte_val & 0x02),
+            "resulting_force": bool(byte_val & AUTO_DATA_RESULTANT),
+            "individual_taxels_force": bool(byte_val & AUTO_DATA_TAXELS),
         }
+
+    def _read_raw_resultant(self) -> dict[str, list[float]]:
+        """Read raw resultant forces from hardware (no offset application).
+
+        Subclasses (e.g. MockSensorClient) override this to return simulated
+        data. The public read_resulting_force() method calls this, then applies
+        zeroing offsets.
+
+        Returns:
+            Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
+        """
+        # Ensure we have current configuration
+        if self._sensor_config is None:
+            try:
+                self._sensor_config = self._get_configuration()
+            except Exception as e:
+                logger.error(f"Failed to get configuration: {e}")
+                # Fall back to static parsing
+                data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
+                return self._parse_resultant_force_block(data)
+
+        data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
+        return self._parse_resultant_force_dynamic(data, self._sensor_config)
 
     def read_resulting_force(self) -> dict[str, list[float]]:
         """Read resulting force from all connected fingertip sensors.
 
-        Uses dynamic parsing based on current sensor configuration. Returns data
-        only for sensors that are currently connected (sparse dict format).
-
-        Note: This implementation assumes we only have fingertip (distal phalanx) sensors
-        for each finger, not proximal/middle phalanx or palm sensors.
+        Calls _read_raw_resultant() for data, then applies zeroing offsets.
+        Subclasses should override _read_raw_resultant(), not this method.
 
         Returns:
             Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
@@ -552,19 +568,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        # Ensure we have current configuration
-        if self._sensor_config is None:
-            try:
-                self._sensor_config = self._get_configuration()
-            except Exception as e:
-                logger.error(f"Failed to get configuration: {e}")
-                # Fall back to static parsing
-                data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
-                return self._parse_resultant_force_block(data)
-
-        # Use dynamic parsing based on configuration
-        data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
-        result = self._parse_resultant_force_dynamic(data, self._sensor_config)
+        result = self._read_raw_resultant()
         if self._resultant_offsets:
             self._apply_resultant_offsets(result)
         return result
@@ -896,7 +900,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        val = (0x01 if resultant else 0) | (0x02 if taxels else 0)
+        val = (AUTO_DATA_RESULTANT if resultant else 0) | (AUTO_DATA_TAXELS if taxels else 0)
         self._write_register(ADDR_AUTO_DATA_TYPE, bytes([val]))
 
 
@@ -1129,6 +1133,20 @@ class SensorClient:
             fvec[1] = round(fvec[1] - off[1], 1)
             fvec[2] = round(max(0, fvec[2] - off[2]), 1)
 
+    def _apply_stream_offsets(
+        self,
+        parsed_resultant: Optional[dict],
+        parsed_taxels: Optional[dict],
+    ) -> None:
+        """Apply zeroing offsets to parsed auto-stream data in-place.
+
+        Called by _auto_reader_loop implementations after parsing raw data.
+        """
+        if self._taxel_offsets and parsed_taxels:
+            self._apply_taxel_offsets(parsed_taxels)
+        if self._resultant_offsets and parsed_resultant:
+            self._apply_resultant_offsets(parsed_resultant)
+
     def _read_exact(self, n: int) -> bytes:
         """Read exactly n bytes from serial connection, blocking until complete.
 
@@ -1230,208 +1248,197 @@ class SensorClient:
             return config.expected_payload_size_taxels
         return 0
 
+    def _acquire_frame(
+        self,
+        parse_resultant: bool,
+        parse_taxels: bool,
+        min_sensors: int,
+    ) -> tuple[Optional[dict], Optional[dict]]:
+        """Acquire and return the next parsed (resultant, taxels) frame.
+
+        Reads one auto-stream frame from serial, validates LRC, handles payload
+        size mismatches with reconfiguration, and parses the data.
+
+        Subclasses (e.g. MockSensorClient) override this to provide data from
+        other sources while inheriting the loop's stats, offset, and lifecycle logic.
+
+        Returns:
+            Tuple of (parsed_resultant, parsed_taxels). Either may be None
+            if not requested.
+
+        Raises:
+            FrameError: Recoverable frame-level error (bad LRC, parse failure)
+            NoSensorsAvailableError: No sensors available after reconfiguration
+            IOError: Serial communication failure or auto stream stopped
+        """
+        # Find and consume AA 56 header
+        self._resync_to_auto_header()
+
+        # Read frame metadata
+        reserved = self._read_exact(1)
+        eff_len = int.from_bytes(self._read_exact(2), "little")
+
+        # Read payload and checksum
+        payload = self._read_exact(eff_len)
+        lrc = self._read_exact(1)[0]
+
+        # Debug print (throttled to once per second)
+        now = time.time()
+        if now - self._last_frame_debug_print > 1.0:
+            config_str = str(self._sensor_config) if self._sensor_config else "no config"
+            logger.debug(f"[auto] eff_len={eff_len}, config={config_str}")
+            self._last_frame_debug_print = now
+
+        # Validate frame integrity
+        frame_wo_lrc = bytes([0xAA, 0x56]) + reserved + int_to_little_endian(eff_len, 2) + payload
+        if not self._check_lrc(frame_wo_lrc, lrc):
+            raise FrameError("LRC mismatch", bad_lrc=True)
+
+        # Split error code and valid data
+        err_code = payload[0]
+        valid = payload[1:]
+
+        # Update serial-specific stats
+        with self._auto_lock:
+            self._auto_stats.last_error_code = err_code
+            self._auto_stats.last_eff_len = eff_len
+            self._auto_stats.last_payload_len = len(valid)
+
+        # Check for payload size mismatch (indicates config change)
+        if self._sensor_config:
+            expected_size = self._get_expected_payload_size(self._sensor_config)
+            if len(valid) != expected_size and expected_size > 0:
+                logger.warning(
+                    f"Payload size mismatch: expected {expected_size}, got {len(valid)}. "
+                    "Triggering reconfiguration..."
+                )
+                try:
+                    if self._reconfigure(force=False):
+                        logger.info("Reconfiguration successful, continuing stream")
+                except NoSensorsAvailableError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Reconfiguration failed: {e}")
+                raise FrameError("Payload size mismatch, skipping frame")
+
+        # Parse payload based on mode
+        if not self._sensor_config:
+            raise FrameError("No sensor configuration available")
+
+        expected_size = self._get_expected_payload_size(self._sensor_config)
+        if len(valid) != expected_size or expected_size == 0:
+            raise FrameError(
+                f"Unexpected payload: {len(valid)} bytes, expected {expected_size}"
+            )
+
+        if parse_resultant and parse_taxels:
+            parsed_resultant, parsed_taxels = self._parse_combined_compact(
+                valid, self._sensor_config
+            )
+        elif parse_resultant:
+            parsed_resultant = self._parse_auto_stream_compact(valid, self._sensor_config)
+            parsed_taxels = None
+        elif parse_taxels:
+            parsed_resultant = None
+            parsed_taxels = self._parse_taxels_compact(valid, self._sensor_config)
+        else:
+            parsed_resultant = None
+            parsed_taxels = None
+
+        return parsed_resultant, parsed_taxels
+
+    def _handle_error_threshold_reconfiguration(self, min_sensors: int) -> None:
+        """Attempt reconfiguration when consecutive errors exceed threshold.
+
+        Called by the auto-reader loop. Stops the stream if no sensors remain
+        or if the minimum sensor requirement is no longer met.
+        """
+        logger.warning(
+            f"Consecutive errors ({self._auto_stats.consecutive_errors}) exceeded threshold. "
+            "Attempting reconfiguration..."
+        )
+        try:
+            if self._reconfigure(force=False):
+                logger.info("Reconfiguration successful")
+                if self._sensor_config.num_active_sensors < min_sensors:
+                    logger.error(
+                        f"Only {self._sensor_config.num_active_sensors} sensor(s) available, "
+                        f"need {min_sensors}. Stopping stream."
+                    )
+                    self._auto_running.clear()
+        except NoSensorsAvailableError:
+            logger.error("No sensors available, stopping stream")
+            self._auto_running.clear()
+        except Exception as e:
+            logger.error(f"Reconfiguration failed: {e}")
+            with self._auto_lock:
+                self._auto_stats.consecutive_errors = 0
+
     def _auto_reader_loop(self, parse_resultant: bool, parse_taxels: bool, min_sensors: int):
         """Background thread that continuously reads and parses auto-stream frames.
 
-        Auto-stream frame format (when enabled via 0x0017 = 1):
-        - Header: AA 56 (2 bytes)
-        - Reserved: 0x00 (1 byte)
-        - Effective length: eff_len (2 bytes, little-endian)
-        - Error code: (1 byte) - part of eff_len
-        - Valid data: (eff_len-1 bytes) - sensor force data
-        - LRC: (1 byte) - checksum
-
-        The sensor continuously sends these frames at ~1kHz when auto mode is enabled.
-        This thread parses them and updates _auto_latest for the user to read via
-        get_auto_latest().
-
-        Supports three modes:
-        - Resultant only: 6 bytes per sensor (fx, fy, fz)
-        - Taxels only: 2 bytes per taxel for each sensor
-        - Combined: Resultant forces followed by taxels
-
-        Features error-triggered reconfiguration: if consecutive errors exceed threshold,
-        attempts to reconfigure to adapt to changed sensor configuration.
+        Calls _acquire_frame() to get parsed data, then applies offsets and updates
+        stats. Subclasses override _acquire_frame() to change the data source while
+        inheriting the shared loop logic.
 
         Args:
             parse_resultant: Whether to parse resultant force data
             parse_taxels: Whether to parse individual taxel data
             min_sensors: Minimum number of sensors required to continue streaming
         """
-        last_print = 0.0
-        ERROR_THRESHOLD = 5  # Trigger reconfiguration after 5 consecutive errors
+        ERROR_THRESHOLD = 5
 
         while self._auto_running.is_set():
             try:
-                # ===== Step 1: Find and consume AA 56 header =====
-                self._resync_to_auto_header()
+                parsed_resultant, parsed_taxels = self._acquire_frame(
+                    parse_resultant, parse_taxels, min_sensors
+                )
 
-                # ===== Step 2: Read frame metadata =====
-                reserved = self._read_exact(1)  # Typically 0x00
-                eff_len = int.from_bytes(self._read_exact(2), "little")
+                self._apply_stream_offsets(parsed_resultant, parsed_taxels)
 
-                # ===== Step 3: Read payload and checksum =====
-                # Payload includes: error_code(1) + valid_data(eff_len-1)
-                payload = self._read_exact(eff_len)
-                lrc = self._read_exact(1)[0]
-
-                # Debug print (throttled to once per second)
-                now = time.time()
-                if now - last_print > 1.0:
-                    config_str = str(self._sensor_config) if self._sensor_config else "no config"
-                    logger.debug(f"[auto] eff_len={eff_len}, config={config_str}")
-                    last_print = now
-
-                # ===== Step 4: Validate frame integrity =====
-                frame_wo_lrc = bytes([0xAA, 0x56]) + reserved + int_to_little_endian(eff_len, 2) + payload
-                if not self._check_lrc(frame_wo_lrc, lrc):
-                    with self._auto_lock:
-                        self._auto_stats.frames_bad_lrc += 1
-                        self._auto_stats.consecutive_errors += 1
-                    continue  # Skip corrupted frame, resync
-
-                # ===== Step 5: Split error code and valid data =====
-                err_code = payload[0]
-                valid = payload[1:]  # The actual sensor data
-
-                parsed_resultant = None
-                parsed_taxels = None
-                parse_success = False
-
-                # ===== Step 6: Check for payload size mismatch (indicates config change) =====
-                if self._sensor_config:
-                    expected_size = self._get_expected_payload_size(self._sensor_config)
-                    if len(valid) != expected_size and expected_size > 0:
-                        # Payload size changed! Trigger immediate reconfiguration
-                        logger.warning(
-                            f"Payload size mismatch: expected {expected_size}, got {len(valid)}. "
-                            "Triggering reconfiguration..."
-                        )
-                        try:
-                            if self._reconfigure(force=False):
-                                logger.info("Reconfiguration successful, continuing stream")
-                            continue  # Skip this frame, let next iteration use new config
-                        except NoSensorsAvailableError:
-                            logger.error("No sensors available after reconfiguration, stopping stream")
-                            self._auto_running.clear()
-                            break
-                        except Exception as e:
-                            logger.error(f"Reconfiguration failed: {e}")
-                            # Continue with old config
-
-                # ===== Step 7: Parse payload based on mode =====
-                if self._sensor_config:
-                    try:
-                        expected_size = self._get_expected_payload_size(self._sensor_config)
-
-                        if len(valid) == expected_size and expected_size > 0:
-                            # Combined mode: resultant + taxels
-                            if parse_resultant and parse_taxels:
-                                parsed_resultant, parsed_taxels = self._parse_combined_compact(
-                                    valid, self._sensor_config
-                                )
-                                parse_success = True
-
-                            # Resultant only mode
-                            elif parse_resultant:
-                                parsed_resultant = self._parse_auto_stream_compact(
-                                    valid, self._sensor_config
-                                )
-                                parse_success = True
-
-                            # Taxels only mode
-                            elif parse_taxels:
-                                parsed_taxels = self._parse_taxels_compact(
-                                    valid, self._sensor_config
-                                )
-                                parse_success = True
-
-                        else:
-                            # Unexpected size
-                            logger.warning(
-                                f"Unexpected payload: {len(valid)} bytes, expected {expected_size}"
-                            )
-                            parse_success = False
-
-                    except Exception as e:
-                        logger.error(f"Parse error: {e}", exc_info=True)
-                        parse_success = False
-
-                # ===== Step 8: Apply zeroing offsets =====
-                if parse_success:
-                    if self._taxel_offsets and parsed_taxels:
-                        self._apply_taxel_offsets(parsed_taxels)
-                    if self._resultant_offsets and parsed_resultant:
-                        self._apply_resultant_offsets(parsed_resultant)
-
-                # ===== Step 9: Publish latest data and update stats =====
                 with self._auto_lock:
-                    if parse_success:
-                        if parse_resultant:
-                            self._auto_latest = parsed_resultant
-                        if parse_taxels:
-                            self._auto_latest_taxels = parsed_taxels
-                        self._auto_latest_ts = time.time()
-                        self._auto_stats.consecutive_errors = 0  # Reset on success
-
+                    if parse_resultant and parsed_resultant is not None:
+                        self._auto_latest = parsed_resultant
+                    if parse_taxels and parsed_taxels is not None:
+                        self._auto_latest_taxels = parsed_taxels
+                    self._auto_latest_ts = time.time()
                     self._auto_stats.frames_ok += 1
-                    self._auto_stats.last_error_code = err_code
-                    self._auto_stats.last_eff_len = eff_len
-                    self._auto_stats.last_payload_len = len(valid)
+                    self._auto_stats.parse_ok += 1
+                    self._auto_stats.consecutive_errors = 0
 
-                    if parse_success:
-                        self._auto_stats.parse_ok += 1
+            except FrameError as e:
+                with self._auto_lock:
+                    if e.bad_lrc:
+                        self._auto_stats.frames_bad_lrc += 1
                     else:
+                        self._auto_stats.frames_ok += 1
                         self._auto_stats.parse_errors += 1
-                        self._auto_stats.consecutive_errors += 1
+                    self._auto_stats.consecutive_errors += 1
 
-                # ===== Step 10: Check if we should trigger reconfiguration =====
-                if self._auto_stats.consecutive_errors >= ERROR_THRESHOLD:
-                    logger.warning(
-                        f"Consecutive errors ({self._auto_stats.consecutive_errors}) exceeded threshold. "
-                        "Attempting reconfiguration..."
-                    )
-                    try:
-                        if self._reconfigure(force=False):
-                            logger.info("Reconfiguration successful")
-
-                            # Check if we still meet minimum sensor requirement
-                            if self._sensor_config.num_active_sensors < min_sensors:
-                                logger.error(
-                                    f"Only {self._sensor_config.num_active_sensors} sensor(s) available, "
-                                    f"need {min_sensors}. Stopping stream."
-                                )
-                                self._auto_running.clear()
-                                break
-                    except NoSensorsAvailableError:
-                        logger.error("No sensors available, stopping stream")
-                        self._auto_running.clear()
-                        break
-                    except Exception as e:
-                        logger.error(f"Reconfiguration failed: {e}")
-                        # Reset error counter to avoid infinite reconfiguration attempts
-                        with self._auto_lock:
-                            self._auto_stats.consecutive_errors = 0
+            except NoSensorsAvailableError:
+                logger.error("No sensors available, stopping stream")
+                self._auto_running.clear()
+                break
 
             except IOError as e:
                 if "Auto stream stopped" in str(e):
-                    # Normal shutdown, exit gracefully
                     logger.info("Auto stream stopped")
                     break
-                # Other IO errors
                 logger.warning(f"IO error in auto reader: {e}")
                 with self._auto_lock:
                     self._auto_stats.resyncs += 1
                     self._auto_stats.consecutive_errors += 1
-                time.sleep(0.01)  # Brief pause before retry
+                time.sleep(0.01)
 
             except Exception as e:
-                # Unexpected errors
                 logger.error(f"Unexpected error in auto reader: {e}", exc_info=True)
                 with self._auto_lock:
                     self._auto_stats.resyncs += 1
                     self._auto_stats.consecutive_errors += 1
-                time.sleep(0.01)  # Brief pause before retry
+                time.sleep(0.01)
+
+            if self._auto_stats.consecutive_errors >= ERROR_THRESHOLD:
+                self._handle_error_threshold_reconfiguration(min_sensors)
 
         logger.info("Auto reader loop exited")
 
@@ -1516,7 +1523,8 @@ class SensorClient:
         self.set_auto_data_type(resultant=resultant, taxels=taxels)
 
         # Clear any stale data from serial buffer before starting
-        self._serial_connection.reset_input_buffer()
+        if self._serial_connection is not None:
+            self._serial_connection.reset_input_buffer()
 
         # Enable auto transmission mode (sensor starts broadcasting)
         self.enable_auto_data_transmission()
@@ -1564,6 +1572,13 @@ class SensorClient:
             self._auto_latest_taxels = None
             self._auto_latest_ts = None
 
+    def __enter__(self):
+        if not self.is_connected:
+            self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.disconnect()
 
 
 if __name__ == "__main__":
@@ -1575,7 +1590,6 @@ if __name__ == "__main__":
     print(sensor_client._sensor_config)
     exit()
     try:
-        print("version:", sensor_client.read_hardware_version())
         print("connected sensors:", sensor_client.read_connected_sensors())
         print("num taxels:", sensor_client.read_num_taxels())
         print("config:", sensor_client.get_sensor_configuration())

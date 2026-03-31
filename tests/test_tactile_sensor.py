@@ -86,9 +86,8 @@ class TestMockResultantForces:
             assert len(result[finger]) == 3
             assert all(isinstance(v, float) for v in result[finger])
 
-    def test_values_match_no_noise(self):
+    def test_values_match(self):
         mock = MockSensorClient(connected_sensors=ALL_FINGERS)
-        mock.set_noise_level(0.0)
         mock.connect()
         mock.set_mock_forces({"thumb": [1.5, -2.0, 3.0], "index": [0.0, 0.0, 0.0]})
         mock.start_auto_stream(resultant=True, taxels=False)
