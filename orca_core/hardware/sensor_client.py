@@ -5,8 +5,9 @@
 # You may use, copy, modify, and distribute this file under the terms of the MIT License.
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Optional
 import serial
 import threading
 import time
@@ -137,12 +138,12 @@ class SensorClient:
     def __init__(self,
                  port: str = DEFAULT_SENSOR_PORT,
                  baudrate: int = DEFAULT_SENSOR_BAUDRATE,
-                 finger_to_sensor_id: Optional[dict[str, int]] = None):
+                 finger_to_sensor_id: dict[str, int] | None = None):
 
         self.port = port
         self.baudrate = baudrate
         self._connected = False
-        self._serial_connection: Optional[serial.Serial] = None
+        self._serial_connection: serial.Serial | None = None
 
         # Finger-to-sensor-id mapping (configurable wiring)
         if finger_to_sensor_id is None:
@@ -164,10 +165,10 @@ class SensorClient:
         self._sensor_id_to_finger = {v: k for k, v in self._finger_to_sensor_id.items()}
 
         # Sensor configuration (dynamic, adapts to connected sensors)
-        self._sensor_config: Optional[SensorConfiguration] = None
+        self._sensor_config: SensorConfiguration | None = None
         self._last_reconfigure_time: float = 0.0  # Rate limiting for reconfiguration
 
-        self._auto_thread: Optional[threading.Thread] = None
+        self._auto_thread: threading.Thread | None = None
         self._auto_running = threading.Event()  # Thread-safe flag for auto stream
         self._auto_lock = threading.Lock()
         self._auto_latest = None            # parsed resultant forces dict
@@ -179,8 +180,8 @@ class SensorClient:
         self._last_frame_debug_print: float = 0.0
 
         # Per-taxel zeroing offsets
-        self._taxel_offsets: Optional[dict] = None      # {finger: [[fx, fy, fz], ...], ...}
-        self._resultant_offsets: Optional[dict] = None   # {finger: [fx, fy, fz], ...}
+        self._taxel_offsets: dict | None = None      # {finger: [[fx, fy, fz], ...], ...}
+        self._resultant_offsets: dict | None = None   # {finger: [fx, fy, fz], ...}
 
     @property
     def is_connected(self) -> bool:
@@ -496,7 +497,7 @@ class SensorClient:
             self._apply_resultant_offsets(result)
         return result
 
-    def get_sensor_configuration(self) -> Optional[SensorConfiguration]:
+    def get_sensor_configuration(self) -> SensorConfiguration | None:
         """Get the current sensor configuration snapshot.
 
         Returns:
@@ -772,7 +773,7 @@ class SensorClient:
         self._taxel_offsets = None
         self._resultant_offsets = None
 
-    def get_taxel_offsets(self) -> Optional[dict]:
+    def get_taxel_offsets(self) -> dict | None:
         """Return current per-taxel offsets (for saving to YAML)."""
         return self._taxel_offsets
 
@@ -862,8 +863,8 @@ class SensorClient:
 
     def _apply_stream_offsets(
         self,
-        parsed_resultant: Optional[dict],
-        parsed_taxels: Optional[dict],
+        parsed_resultant: dict | None,
+        parsed_taxels: dict | None,
     ) -> None:
         """Apply zeroing offsets to parsed auto-stream data in-place.
 
@@ -942,7 +943,7 @@ class SensorClient:
         parse_resultant: bool,
         parse_taxels: bool,
         min_sensors: int,
-    ) -> tuple[Optional[dict], Optional[dict]]:
+    ) -> tuple[dict | None, dict | None]:
         """Acquire and return the next parsed (resultant, taxels) frame.
 
         Reads one auto-stream frame from serial, validates LRC, handles payload

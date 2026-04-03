@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 import time
 import logging
 
@@ -54,11 +54,11 @@ class MockSensorClient(SensorClient):
         self,
         port: str = "mock",
         baudrate: int = DEFAULT_SENSOR_BAUDRATE,
-        connected_sensors: Optional[list[str]] = None,
-        finger_to_sensor_id: Optional[dict[str, int]] = None,
-        resultant_provider: Optional[ResultantProvider] = None,
-        taxel_provider: Optional[TaxelProvider] = None,
-        auto_rate_hz: Optional[float] = None,
+        connected_sensors: list[str] | None = None,
+        finger_to_sensor_id: dict[str, int] | None = None,
+        resultant_provider: ResultantProvider | None = None,
+        taxel_provider: TaxelProvider | None = None,
+        auto_rate_hz: float | None = None,
     ):
         super().__init__(port=port, baudrate=baudrate, finger_to_sensor_id=finger_to_sensor_id)
 

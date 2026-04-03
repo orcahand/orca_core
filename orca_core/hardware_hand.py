@@ -1309,18 +1309,21 @@ class OrcaHandTouch(OrcaHand):
         )
         self._sensor_client = None
 
+    def _create_sensor_client(self):
+        from .hardware.sensor_client import SensorClient
+
+        return SensorClient(
+            port=self.config.sensor_port,
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
+
     def connect(self) -> tuple[bool, str]:
         success, msg = super().connect()
         if not success:
             return success, msg
 
-        from .hardware.sensor_client import SensorClient
-
-        self._sensor_client = SensorClient(
-            port=self.config.sensor_port,
-            baudrate=self.config.sensor_baudrate,
-            finger_to_sensor_id=self.config.finger_to_sensor_id,
-        )
+        self._sensor_client = self._create_sensor_client()
         try:
             self._sensor_client.connect()
         except Exception as e:
@@ -1393,4 +1396,31 @@ class MockOrcaHand(OrcaHand):
     ) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
-        return MockDynamixelClient(self.config.motor_ids, port, baudrate)
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+
+class MockOrcaHandTouch(OrcaHandTouch):
+    """Drop-in :class:`OrcaHandTouch` backed by mock motor and sensor clients,
+    for testing and prototyping.
+
+    All methods behave identically to :class:`OrcaHandTouch` but no serial
+    ports are opened and both motor and sensor state are simulated in memory.
+    """
+
+    def _create_motor_client(self) -> MotorClient:
+        from .hardware.mock_dynamixel_client import MockDynamixelClient
+
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+    def _create_sensor_client(self):
+        from .hardware.mock_sensor_client import MockSensorClient
+
+        return MockSensorClient(
+            port="mock",
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
