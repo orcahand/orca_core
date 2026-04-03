@@ -1,11 +1,11 @@
 # Setting Up Config
 
-Learn how to configure your ORCA Hand system settings. The primary configuration for the ORCA Hand is managed through the `config.yaml` file located in the model-specific directory (e.g., `orca_core/models/orcahand_v1_right/config.yaml`).
+Learn how to configure your ORCA Hand system settings. In the refactored codebase, the primary configuration for the hand is still managed through `config.yaml`, but the file is now loaded into a validated `OrcaHandConfig` object.
 
-This file defines parameters crucial for the hand's operation, including communication settings, motor and joint mappings, movement ranges, and calibration procedures.
+This file defines the static metadata needed to operate the hand: communication settings, motor and joint mappings, movement ranges, neutral pose, and the calibration procedure.
 
 !!! Warning
-    Be careful when editing this file, incorrect settings can cause unexpected behavior and make debugging more difficult.
+    Be careful when editing this file. Incorrect settings can cause unexpected behavior and make debugging more difficult.
 
 ---
 
@@ -14,30 +14,31 @@ This file defines parameters crucial for the hand's operation, including communi
 ### 1. General Settings
 
 ```yaml
-version: 0.2.0
-baudrate: 3000000
+version: 0.2.1
+baudrate: 1000000
 port: /dev/ttyUSB0
-max_current: 400
+max_current: 300
 type: right
 control_mode: current_based_position
+motor_type: dynamixel
 ```
 
 **What should be changed?**
 
-You should change the `port` to match your system (Linux or macOS). Change `type` to right or left depending on the hand assembly you have. `max_current` is set to a value found to be sufficient; you can adjust it depending on the needs of your tasks. The `baudrate` or `control_mode` should not be changed based on the current implementation in the repo. If you decide to change them you have to adapt the code accordingly. 
+You should update `port` to match your system. `type` should match your physical hand. `motor_type` and `baudrate` should match the motor chain you actually assembled. `max_current` can be tuned for your task, but the default is usually a good starting point.
 
 ---
 
-### 2. Motor and Joint Id's
+### 2. Motor and Joint IDs
 
 ```yaml
 motor_ids: [1, 2, 3, ..., 17]
-joint_ids: [thumb_mcp, thumb_abd, ..., wrist]
+joint_ids: [wrist, thumb_cmc, thumb_abd, ..., pinky_pip]
 ```
 
 **What should be changed?**
 
-If you ID'ed the servos as per our recommendation you should change nothing here.
+If you assigned IDs according to the intended assembly, this section should mostly already be correct. The key point is that the ordered `joint_ids` list is now also used to register the default ordering for `OrcaJointPositions`.
 
 ---
 
@@ -45,45 +46,33 @@ If you ID'ed the servos as per our recommendation you should change nothing here
 
 ```yaml
 joint_to_motor_map:
-  thumb_mcp: -4
-  thumb_abd: -3
-  ...
-  wrist: 17
+  thumb_cmc: 17
+  ring_mcp: -7
+  wrist: -1
 ```
 
 **What should be changed?**
 
-This section defines which motor (by ID) controls each joint and how the sign of the motor ID affects its rotation direction.
+This section defines which motor controls each joint and whether the joint direction is inverted.
 
-* The number is the **motor ID**.
-* The **sign** is determined by direction of rotation when flexing a joint.
+- The **absolute value** is the motor ID.
+- The **sign** indicates whether the joint is inverted relative to the positive flexion convention.
+
+In the refactored loader, this mapping is normalized into:
+
+- a joint-to-motor map with absolute motor IDs
+- a separate `joint_inversion_dict`
+
+So the sign still matters, but it is treated as explicit configuration metadata.
 
 #### Hand-Specific Guidelines
 
-Flexion decides the sign of an servo ID. 
+The sign should follow the flexion direction of the joint:
 
-  * If **flexion** moves the servo **CCW** then a **no sign** should be included to the motor ID. 
+- If flexion corresponds to the positive direction for your build, keep the motor ID positive.
+- If flexion is inverted relative to that convention, use a negative motor ID.
 
-  * If **flexion** moves the servo **CW** then a **negative sign** should be included to the motor ID. 
-
-**Right hand assembly:** Most joints flexions lead to **CW** rotation so mostly negative signs are found.
-
-**Left hand assembly:** Most joints flexions lead to **CCW** rotation so mostly none/positive signs are found.
-
-If tendon routing is done properly, all joints should have the same sign, except for `index_abd`, `middle_abd` and `pinky_abd` joints. 
-
-> **Note:** For abduction joints, flexion refers to movement **away from the thumb** and for the thumb flexion is **towards the fingers**. 
-
----
-
-
-For example:
-
-```yaml
-joint_to_motor_map:
-  thumb_mcp: -4   # thumb_mcp flexion moves the motor with ID 4 CW
-  index_abd: 14   # index_abd flexion moves the motor with ID 14 CCW
-```
+For abduction joints and the thumb, use the same sign logic, but make sure your chosen positive direction is consistent with the actual hand motion you want the API to expose.
 
 ---
 
@@ -91,14 +80,14 @@ joint_to_motor_map:
 
 ```yaml
 joint_roms:
-  thumb_mcp: [-50, 50]
-  ...
-  wrist: [-50, 30]
+  wrist: [-65, 35]
+  thumb_cmc: [-45, 33]
+  thumb_mcp: [-60, 90]
 ```
 
 **What should be changed?**
 
-Unless you have modified the design, you should not change the values.
+Only change these values if your physical design or tendon routing differs from the bundled model. The refactored `BaseHand` clamps joint commands against these bounds automatically.
 
 ---
 
@@ -106,51 +95,62 @@ Unless you have modified the design, you should not change the values.
 
 ```yaml
 neutral_position:
-  thumb_mcp: -13
-  ...
-  wrist: 0
+  wrist: -8
+  thumb_cmc: 0
+  thumb_mcp: 33
 ```
 
 **What should be changed?**
 
-You can adjust this section if you want the hand to return to a different default pose.
+Adjust this section if you want a different default pose for `set_neutral_position()` and `init_joints()`.
 
 ---
 
 ### 6. Calibration Parameters
 
 ```yaml
-calib_current: 350
-calib_step_size: 0.1
-calib_step_period: 0.001
-calib_num_stable: 10
-calib_threshold: 0.01
+calibration_current: 300
+wrist_calibration_current: 100
+calibration_step_size: 0.15
+calibration_step_period: 0.0001
+calibration_num_stable: 10
+calibration_threshold: 0.01
 ```
 
 **What should be changed?**
 
-These parameters should generally not be changed unless you have experience tuning the calibration behavior for a specific hardware modification.
+These parameters should usually be left alone unless you are tuning the calibration routine for a modified hardware setup.
+
+The important change relative to older docs is that the canonical keys are now `calibration_*`, not `calib_*`.
 
 ---
 
 ### 7. Calibration Sequence
 
 ```yaml
-calib_sequence:
-    - step: 1
-      joints:
-        thumb_mcp: flex
-    - step: 2
-      joints:
-        thumb_mcp: extend
-    - step: 3
-      joints:
-        thumb_abd: flex
-    ...
+calibration_sequence:
+  - step: 1
+    joints:
+      thumb_cmc: flex
+  - step: 2
+    joints:
+      thumb_cmc: extend
+  - step: 3
+    joints:
+      wrist: flex
 ```
 
 **What should be changed?**
 
-If you want to specify the sequence or calibrate only specific joints you can adapt the sequence. If you are unsure, leave this section as is. An incomplete or incorrect sequence may lead to errors when executing commands later.
+If you need to calibrate joints in a different order, or group joints differently, you can adjust the sequence. If you are unsure, keep the bundled order.
+
+An incomplete or inconsistent sequence can leave `calibration.yaml` only partially populated, which in turn affects motor-to-joint conversion later in the runtime.
 
 ---
+
+## Additional Notes for the Refactored Codebase
+
+- `OrcaHand` expects `config_path` to point to the `config.yaml` file itself.
+- `calibration.yaml` lives next to `config.yaml` by default unless you override `calibration_path`.
+- `BaseHandConfig` validates the joint-space portion of the file.
+- `OrcaHandConfig` adds motor, control-mode, and calibration validation on top.

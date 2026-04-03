@@ -8,16 +8,16 @@
 
 ## BaseHand
 
-::: orca_core.BaseHand
+::: orca_core.base_hand.BaseHand
 
 ---
 
-## OrcaJointPosition
+## OrcaJointPositions
 
-::: orca_core.OrcaJointPosition
+::: orca_core.OrcaJointPositions
 
 ---
 
 ## HandConfig
 
-::: orca_core.HandConfig
+::: orca_core.OrcaHandConfig

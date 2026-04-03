@@ -8,7 +8,13 @@
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca Core is the Python control package for the ORCA Hand. The current refactored codebase is organized around a small set of explicit pieces:
+
+- `OrcaHandConfig` loads and validates the static hand description from `config.yaml`.
+- `CalibrationResult` loads the mutable calibration state from `calibration.yaml`.
+- `BaseHand` provides the shared joint-space interface.
+- `OrcaHand` adds hardware connection, calibration, torque control, telemetry, and maintenance tasks.
+- `OrcaJointPositions` is the typed container used for joint-space commands and readback.
 
 ## Get Started
 
@@ -42,21 +48,28 @@ To get started with Orca Core, follow these steps:
 
 3. **Check the configuration file**:
 
-    - Review the config file (e.g., `orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+    - Review the config file you want to use, such as `orca_core/models/v2/orcahand_right/config.yaml`.
+    - When you pass `config_path` into `OrcaHand`, it must point to the `config.yaml` file itself.
 
-4. **Run the tension and calibration scripts**:
+4. **Run the setup, tensioning, and calibration flow**:
+
+    For a first hardware bring-up, the most complete workflow is:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/orcahand_v1_right
-    uv run python scripts/calibrate.py orca_core/models/orcahand_v1_right
+    uv run python scripts/setup.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
-    Replace the path with your specific hand model folder if needed.
+    For an already assembled hand that only needs maintenance:
+
+    ```sh
+    uv run python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml --move_motors
+    uv run python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
+    ```
 
 5. **Move the hand to the neutral position**:
 
     ```sh
-    uv run python scripts/neutral.py orca_core/models/orcahand_v1_right
+    uv run python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
 6. **Example usage: test.py**
@@ -65,27 +78,32 @@ To get started with Orca Core, follow these steps:
 
     ```python
     from orca_core import OrcaHand
-    import time
 
-    hand = OrcaHand("orca_core/models/orcahand_v1_right")
+    hand = OrcaHand(config_path="orca_core/models/v2/orcahand_right/config.yaml")
     status = hand.connect()
     print(status)
     if not status[0]:
         print("Failed to connect to the hand.")
-        exit(1)
+        raise SystemExit(1)
 
-    hand.enable_torque()
+    try:
+        hand.init_joints()
 
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
+        neutral = hand.config.neutral_position
+        hand.set_joint_positions(
+            {
+                "thumb_mcp": neutral["thumb_mcp"] + 10,
+                "index_mcp": neutral["index_mcp"] + 10,
+                "middle_mcp": neutral["middle_mcp"] + 10,
+            },
+            num_steps=25,
+            step_size=0.01,
+        )
 
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
-    hand.disconnect()
+        print(hand.get_joint_position().as_dict())
+    finally:
+        hand.stop_task()
+        hand.disconnect()
     ```
 
 ---
@@ -121,7 +139,8 @@ Make sure the `port` field in your `config.yaml` matches your operating system:
 
 **Note:**
 - Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
+- All hardware-oriented scripts in the `scripts/` folder expect a `config.yaml` path as their first argument.
+- Joint-space commands use the same units as the values in `joint_roms` and `neutral_position`.
+- For more advanced usage, see the rest of the docs and the API reference.
 
 ---
