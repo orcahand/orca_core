@@ -133,3 +133,6 @@ calibration.yaml
 
 # not storing the lockfile (as of now)
 uv.lock
+
+# Vendor reference documents
+docs/references/

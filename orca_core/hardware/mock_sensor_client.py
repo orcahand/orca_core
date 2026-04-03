@@ -21,11 +21,16 @@ from orca_core.hardware.sensing.constants import (
     AUTO_DATA_RESULTANT,
     AUTO_DATA_TAXELS,
 )
+from orca_core.hardware.sensing.protocol import (
+    ForceVector,
+    ResultantForces,
+    TaxelForces,
+)
 
 logger = logging.getLogger(__name__)
 
-ResultantProvider = Callable[[], dict[str, list[float]]]
-TaxelProvider = Callable[[], dict[str, list[list[float]]]]
+ResultantProvider = Callable[[], ResultantForces]
+TaxelProvider = Callable[[], TaxelForces]
 
 
 class MockSensorClient(SensorClient):
@@ -68,8 +73,8 @@ class MockSensorClient(SensorClient):
             for f in FINGER_NAMES
         }
 
-        self._mock_forces: dict[str, list[float]] = {}
-        self._mock_taxels: dict[str, list[list[float]]] = {}
+        self._mock_forces: ResultantForces = {}
+        self._mock_taxels: TaxelForces = {}
 
         self._resultant_provider: ResultantProvider = (
             resultant_provider if resultant_provider is not None else self._default_resultant_provider
@@ -102,7 +107,7 @@ class MockSensorClient(SensorClient):
         remaining = [f for f in self._sim_connected if self._sim_connected[f] and f not in dropped]
         self.set_connected_sensors(remaining)
 
-    def set_mock_forces(self, forces: dict[str, list[float]]) -> None:
+    def set_mock_forces(self, forces: ResultantForces) -> None:
         """Set the force values to return for each sensor.
 
         Replaces all previously set mock forces.
@@ -113,7 +118,7 @@ class MockSensorClient(SensorClient):
         self._validate_finger_vectors(forces, expected_len=3, label="Force")
         self._mock_forces = {f: list(v) for f, v in forces.items()}
 
-    def set_mock_taxels(self, taxels: dict[str, list[list[float]]]) -> None:
+    def set_mock_taxels(self, taxels: TaxelForces) -> None:
         """Set the taxel values to return for each sensor.
 
         Replaces all previously set mock taxels.
@@ -177,8 +182,8 @@ class MockSensorClient(SensorClient):
         )
         return {
             "raw": f"{val:08b}",
-            "resulting_force": self._auto_mode_resultant,
-            "individual_taxels_force": self._auto_mode_taxels,
+            "resultant": self._auto_mode_resultant,
+            "taxels": self._auto_mode_taxels,
         }
 
     # =========================================================================
@@ -197,7 +202,7 @@ class MockSensorClient(SensorClient):
     # Force Reading
     # =========================================================================
 
-    def _read_raw_resultant(self) -> dict[str, list[float]]:
+    def _read_raw_resultant(self) -> ResultantForces:
         return self._resultant_provider()
 
     # =========================================================================
@@ -237,7 +242,7 @@ class MockSensorClient(SensorClient):
         if self._connected:
             self._sensor_config = self._get_configuration()
 
-    def _default_resultant_provider(self) -> dict[str, list[float]]:
+    def _default_resultant_provider(self) -> ResultantForces:
         forces = self._mock_forces
         return {
             f: list(forces[f]) if f in forces else [1.0, 1.0, 1.0]
@@ -245,7 +250,7 @@ class MockSensorClient(SensorClient):
             if self._sim_connected.get(f, False)
         }
 
-    def _default_taxel_provider(self) -> dict[str, list[list[float]]]:
+    def _default_taxel_provider(self) -> TaxelForces:
         result = {}
         for finger in FINGER_NAMES:
             if not self._sim_connected.get(finger, False):
@@ -265,7 +270,7 @@ class MockSensorClient(SensorClient):
 
     @staticmethod
     def _validate_finger_vectors(
-        data: dict[str, list[float]], expected_len: int, label: str
+        data: ResultantForces, expected_len: int, label: str
     ) -> None:
         for finger, vec in data.items():
             if finger not in FINGER_NAMES:

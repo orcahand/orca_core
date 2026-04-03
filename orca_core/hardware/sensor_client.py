@@ -17,23 +17,45 @@ from orca_core.hardware.sensing.constants import (
     DEFAULT_SENSOR_PORT,
     DEFAULT_SENSOR_BAUDRATE,
     DEFAULT_FINGER_TO_SENSOR_ID,
-    PROTOCOL_HEADER_REQUEST,
     PROTOCOL_HEADER_RESPONSE,
     PROTOCOL_HEADER_AUTO,
-    PROTOCOL_RESERVED,
-    FUNC_CODE_READ,
-    FUNC_CODE_WRITE,
+    RESPONSE_META_SIZE,
+    AUTO_FRAME_META_SIZE,
     ADDR_RESET,
     ADDR_CONNECTED_SENSORS_START,
     ADDR_CONNECTED_SENSORS_LENGTH,
     ADDR_NUM_TAXELS_START,
     ADDR_NUM_TAXELS_LENGTH,
-    ADDR_RESULTING_FORCE_START,
-    ADDR_RESULTING_FORCE_LENGTH,
+    ADDR_RESULTANT_FORCE_START,
+    RESULTANT_BLOCK_SIZE,
     ADDR_AUTO_DATA_TYPE,
     ADDR_AUTO_ENABLE,
-    AUTO_DATA_RESULTANT,
-    AUTO_DATA_TAXELS,
+    REGISTER_ENABLE,
+    REGISTER_DISABLE,
+)
+from orca_core.hardware.sensing.protocol import (
+    validate_auto_frame_lrc,
+    build_read_request,
+    build_write_request,
+    parse_read_response,
+    parse_write_response,
+    extract_write_response_data_length,
+    read_response_body_size,
+    extract_auto_frame_eff_len,
+    unpack_auto_payload,
+    compute_resultant_payload_size,
+    compute_taxel_payload_size,
+    compute_combined_payload_size,
+    compute_expected_payload_size,
+    compute_distal_module_index,
+    decode_resultant_auto,
+    decode_taxels_auto,
+    decode_combined_auto,
+    decode_resultant_register,
+    decode_connected_sensors,
+    decode_num_taxels,
+    decode_auto_data_type,
+    encode_auto_data_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,35 +77,6 @@ class FrameError(Exception):
         super().__init__(message)
         self.bad_lrc = bad_lrc
 
-
-def calculate_checksum(frame: bytes) -> int:
-    """Calculate checksum for the protocol frame.
-    
-    Algorithm: LRC
-    
-    Args:
-        frame: The frame bytes to calculate checksum for (excluding checksum byte)
-        
-    Returns:
-        Checksum value (single byte)
-    """
-    total_sum = sum(frame)
-    lower_8_bits = total_sum & 0xFF
-    checksum = (0x100 - lower_8_bits) & 0xFF
-    
-    return checksum
-
-def int_to_little_endian(value: int, num_bytes: int = 2) -> bytes:
-    """Convert integer to little-endian bytes.
-    
-    Args:
-        value: Integer value to convert
-        num_bytes: Number of bytes to use (default: 2)
-        
-    Returns:
-        Little-endian byte representation
-    """
-    return value.to_bytes(num_bytes, byteorder='little')
 
 @dataclass
 class AutoStreamStats:
@@ -121,6 +114,7 @@ class SensorConfiguration:
         """List of currently connected sensors sorted by hardware slot order.
 
         Auto-stream data arrives in slot order, so this must match.
+        Protocol decoders in protocol.py require this ordering.
         """
         active = [f for f in FINGER_NAMES if self.connected.get(f, False)]
         active.sort(key=lambda f: self.finger_to_sensor_id.get(f, FINGER_NAMES.index(f)))
@@ -265,15 +259,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        # Build request frame: 55 AA | reserved | func(0x03=READ) | addr | count | LRC
-        request = (
-            PROTOCOL_HEADER_REQUEST  # 55 AA
-            + int_to_little_endian(PROTOCOL_RESERVED, 1)  # 0x00
-            + int_to_little_endian(FUNC_CODE_READ, 1)  # 0x03
-            + int_to_little_endian(address, 2)  # Address (little-endian)
-            + int_to_little_endian(count, 2)  # Byte count (little-endian)
-        )
-        request += bytes([calculate_checksum(request)])
+        request = build_read_request(address, count)
 
         # Clear stale data if not streaming (prevents reading old responses)
         if not self._is_streaming():
@@ -294,26 +280,11 @@ class SensorClient:
                 continue
             break  # Found AA55 response
 
-        # Parse response: AA 55 | meta(6) | data(count) | LRC(1)
-        meta = self._read_exact(6)  # reserved(1) + func(1) + addr(2) + count(2)
-        data = self._read_exact(count)
-        lrc = self._read_exact(1)
-
-        # Validate checksum
-        full = hdr + meta + data + lrc
-        if full[-1] != calculate_checksum(full[:-1]):
-            raise IOError("Read response LRC mismatch")
-
-        return data
+        body = self._read_exact(read_response_body_size(count))
+        return parse_read_response(hdr + body)
 
     def _skip_auto_frame(self) -> None:
         """Skip one complete auto-stream frame after having consumed the AA56 header.
-
-        Frame format (after AA56 header):
-        - reserved (1 byte): typically 0x00
-        - eff_len (2 bytes, little-endian): length of error_code + payload
-        - payload (eff_len bytes): error_code(1) + valid_data(eff_len-1)
-        - LRC (1 byte): checksum
 
         This is called when waiting for a request-response (AA55) frame but an
         auto-stream (AA56) frame arrives first. We skip it to continue waiting
@@ -323,15 +294,9 @@ class SensorClient:
             IOError: If serial read fails
             ValueError: If eff_len is unreasonably large (>8KB)
         """
-        _reserved = self._read_exact(1)
-        eff_len = int.from_bytes(self._read_exact(2), "little")
-
-        # Sanity check: typical payload is 6-200 bytes, max reasonable is ~8KB
-        if eff_len > 8192:
-            raise ValueError(f"Invalid eff_len in auto frame: {eff_len} (possible corruption)")
-
-        # Read and discard payload + LRC
-        _ = self._read_exact(eff_len + 1)
+        meta = self._read_exact(AUTO_FRAME_META_SIZE)
+        eff_len = extract_auto_frame_eff_len(meta)
+        _ = self._read_exact(eff_len + 1)  # payload + LRC
 
     def _read_header_resync(self, timeout_s: float) -> bytes:
         """Read bytes until we find either AA55 (response) or AA56 (auto) header.
@@ -407,16 +372,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        # Build request frame: 55 AA | reserved | func(0x10=WRITE) | addr | len | data | LRC
-        request = (
-            PROTOCOL_HEADER_REQUEST  # 55 AA
-            + int_to_little_endian(PROTOCOL_RESERVED, 1)  # 0x00
-            + int_to_little_endian(FUNC_CODE_WRITE, 1)  # 0x10
-            + int_to_little_endian(address, 2)  # Address (little-endian)
-            + int_to_little_endian(len(data), 2)  # Data length (little-endian)
-            + data  # Payload
-        )
-        request += bytes([calculate_checksum(request)])
+        request = build_write_request(address, data)
 
         # Clear stale data if not streaming (prevents reading old responses)
         if not self._is_streaming():
@@ -440,27 +396,11 @@ class SensorClient:
             # Found AA55 response
             break
 
-        # Parse response: AA 55 | meta(6) | status(1) | LRC(1)
-        # Meta fields: reserved(1) + func(1) + addr(2) + nbytes(2)
-        fixed_rest = self._read_exact(6)
-        fixed = hdr + fixed_rest  # Total 8 bytes
-
-        returned_nbytes = int.from_bytes(fixed[6:8], "little")
-
-        # Read status + LRC
-        rest = self._read_exact(returned_nbytes + 1)
-        full = fixed + rest
-
-        # Validate checksum
-        expected = calculate_checksum(full[:-1])
-        if full[-1] != expected:
-            raise IOError("Write response LRC mismatch")
-
-        # Check status byte (first byte of response payload)
-        if returned_nbytes >= 1:
-            status = rest[0]
-            if status != 0:
-                raise IOError(f"Write failed, status=0x{status:02X}")
+        # Read and parse response: header(2) + meta(6) + payload(nbytes) + LRC(1)
+        meta = self._read_exact(RESPONSE_META_SIZE)
+        data_len = extract_write_response_data_length(meta)
+        rest = self._read_exact(data_len + 1)  # payload + LRC
+        parse_write_response(hdr + meta + rest)
 
 
 
@@ -477,16 +417,7 @@ class SensorClient:
             raise OSError("Must call connect() first.")
 
         data = self._read_register(ADDR_CONNECTED_SENSORS_START, ADDR_CONNECTED_SENSORS_LENGTH)
-        if len(data) < 4:
-            raise ValueError(f'Expected 4 bytes, got {len(data)}')
-        status = [
-            bool(data[0] & (1 << 2)),
-            bool(data[0] & (1 << 6)),
-            bool(data[1] & (1 << 2)),
-            bool(data[1] & (1 << 6)),
-            bool(data[2] & (1 << 2)),
-        ]
-        return {self._sensor_id_to_finger[i]: status[i] for i in range(5)}
+        return decode_connected_sensors(data, self._sensor_id_to_finger)
 
     def read_num_taxels(self) -> dict[str, int]:
         """Read the number of taxels for each fingertip sensor.
@@ -501,13 +432,7 @@ class SensorClient:
             raise OSError("Must call connect() first.")
 
         data = self._read_register(ADDR_NUM_TAXELS_START, ADDR_NUM_TAXELS_LENGTH)
-        taxel_counts = [int.from_bytes(data[i:i+2], byteorder='little') for i in range(0, len(data), 2)]
-        SLOT_REGISTER_OFFSETS = [0x0034, 0x003C, 0x0044, 0x004C, 0x0054]
-        distal_indices = {
-            self._sensor_id_to_finger[slot]: (addr - ADDR_NUM_TAXELS_START) // 2
-            for slot, addr in enumerate(SLOT_REGISTER_OFFSETS)
-        }
-        return {finger: taxel_counts[idx] for finger, idx in distal_indices.items()}
+        return decode_num_taxels(data, self._sensor_id_to_finger)
 
     def read_auto_data_type(self) -> dict:
         """Read the auto data type register.
@@ -522,18 +447,13 @@ class SensorClient:
             raise OSError("Must call connect() first.")
 
         data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
-        byte_val = data[0]
-        return {
-            "raw": f"{byte_val:08b}",
-            "resulting_force": bool(byte_val & AUTO_DATA_RESULTANT),
-            "individual_taxels_force": bool(byte_val & AUTO_DATA_TAXELS),
-        }
+        return decode_auto_data_type(data)
 
     def _read_raw_resultant(self) -> dict[str, list[float]]:
         """Read raw resultant forces from hardware (no offset application).
 
         Subclasses (e.g. MockSensorClient) override this to return simulated
-        data. The public read_resulting_force() method calls this, then applies
+        data. The public read_resultant_force() method calls this, then applies
         zeroing offsets.
 
         Returns:
@@ -545,15 +465,18 @@ class SensorClient:
                 self._sensor_config = self._get_configuration()
             except Exception as e:
                 logger.error(f"Failed to get configuration: {e}")
-                # Fall back to static parsing
-                data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
-                return self._parse_resultant_force_block(data)
+                # Fall back to static parsing using default module indices
+                data = self._read_register(ADDR_RESULTANT_FORCE_START, RESULTANT_BLOCK_SIZE)
+                module_indices = {f: compute_distal_module_index(self._finger_to_sensor_id[f]) for f in FINGER_NAMES}
+                return decode_resultant_register(data, list(FINGER_NAMES), module_indices)
 
-        data = self._read_register(ADDR_RESULTING_FORCE_START, ADDR_RESULTING_FORCE_LENGTH)
-        return self._parse_resultant_force_dynamic(data, self._sensor_config)
+        data = self._read_register(ADDR_RESULTANT_FORCE_START, RESULTANT_BLOCK_SIZE)
+        return decode_resultant_register(
+            data, self._sensor_config.active_sensors, self._sensor_config.module_indices,
+        )
 
-    def read_resulting_force(self) -> dict[str, list[float]]:
-        """Read resulting force from all connected fingertip sensors.
+    def read_resultant_force(self) -> dict[str, list[float]]:
+        """Read resultant force from all connected fingertip sensors.
 
         Calls _read_raw_resultant() for data, then applies zeroing offsets.
         Subclasses should override _read_raw_resultant(), not this method.
@@ -602,22 +525,13 @@ class SensorClient:
             for finger in FINGER_NAMES:
                 if connected.get(finger, False):
                     sensor_id = self._finger_to_sensor_id[finger]
-                    module_indices[finger] = sensor_id * 4 + 2
+                    module_indices[finger] = compute_distal_module_index(sensor_id)
 
             # Calculate expected payload sizes
-            num_active = sum(1 for c in connected.values() if c)
-            expected_resultant = num_active * 6  # Each sensor: fx(2) + fy(2) + fz(2) = 6 bytes
-
-            # Calculate taxel payload size: sum of taxels for active sensors * 3 bytes per taxel
-            # Each taxel sends 3 bytes: fx(1) + fy(1) + fz(1) as int8 values
-            expected_taxels = sum(
-                num_taxels.get(finger, 0) * 3
-                for finger, is_connected in connected.items()
-                if is_connected
-            )
-
-            # Combined mode: resultant forces followed by taxels
-            expected_combined = expected_resultant + expected_taxels
+            active = [f for f in FINGER_NAMES if connected.get(f, False)]
+            expected_resultant = compute_resultant_payload_size(len(active))
+            expected_taxels = compute_taxel_payload_size(active, num_taxels)
+            expected_combined = compute_combined_payload_size(active, num_taxels)
 
             config = SensorConfiguration(
                 connected=connected,
@@ -700,192 +614,6 @@ class SensorClient:
             logger.error(f"Reconfiguration failed: {e}")
             raise
 
-    def _parse_auto_stream_compact(self, data: bytes, config: SensorConfiguration) -> dict[str, list[float]]:
-        """Parse auto-stream compact format (active sensors only, sequential).
-
-        Auto-stream mode sends only data for connected sensors in sequential order.
-        Each sensor is 6 bytes: fx(2) + fy(2) + fz(2).
-
-        For example, if only thumb and middle are connected:
-        - Bytes 0-5: thumb (fx, fy, fz)
-        - Bytes 6-11: middle (fx, fy, fz)
-
-        Args:
-            data: Raw byte data from auto-stream (6 * num_active_sensors bytes)
-            config: Current sensor configuration
-
-        Returns:
-            Dictionary mapping active finger names to [fx, fy, fz] force vectors
-            Uses sparse dict format (only active sensors included)
-
-        Raises:
-            ValueError: If data size doesn't match expected size
-        """
-        RESOLUTION_N_PER_LSB = 0.1
-        BYTES_PER_SENSOR = 6
-
-        expected_size = config.num_active_sensors * BYTES_PER_SENSOR
-        if len(data) != expected_size:
-            raise ValueError(
-                f"Auto-stream compact data size mismatch: "
-                f"expected {expected_size} bytes ({config.num_active_sensors} sensors), "
-                f"got {len(data)} bytes"
-            )
-
-        result = {}
-        for i, finger in enumerate(config.active_sensors):
-            offset = i * BYTES_PER_SENSOR
-
-            # Parse force data sequentially
-            fx = int.from_bytes(data[offset:offset+2], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fy = int.from_bytes(data[offset+2:offset+4], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fz = int.from_bytes(data[offset+4:offset+6], byteorder='little', signed=False) * RESOLUTION_N_PER_LSB
-
-            result[finger] = [round(float(fx), 1), round(float(fy), 1), round(float(fz), 1)]
-
-        return result
-
-    def _parse_taxels_compact(self, data: bytes, config: SensorConfiguration) -> dict[str, list[list[float]]]:
-        """Parse auto-stream taxels-only format (active sensors only, sequential).
-
-        Auto-stream taxels mode sends only taxel data for connected sensors in sequential order.
-        Each taxel is 3 bytes: fx(int8) + fy(int8) + fz(int8).
-
-        For example, if thumb (127 taxels) and index (52 taxels) are connected:
-        - Bytes 0-380: thumb taxels (127 * 3 = 381 bytes)
-        - Bytes 381-536: index taxels (52 * 3 = 156 bytes)
-
-        Args:
-            data: Raw byte data from auto-stream
-            config: Current sensor configuration
-
-        Returns:
-            Dictionary mapping active finger names to list of taxel force vectors [fx, fy, fz]
-
-        Raises:
-            ValueError: If data size doesn't match expected size
-        """
-        RESOLUTION_N_PER_LSB = 0.1
-        BYTES_PER_TAXEL = 3
-
-        expected_size = config.expected_payload_size_taxels
-        if len(data) != expected_size:
-            raise ValueError(
-                f"Auto-stream taxels data size mismatch: "
-                f"expected {expected_size} bytes, got {len(data)} bytes"
-            )
-
-        result = {}
-        offset = 0
-        for finger in config.active_sensors:
-            taxel_count = config.num_taxels.get(finger, 0)
-            taxels = []
-            for _ in range(taxel_count):
-                # Each taxel: fx(int8), fy(int8), fz(uint8)
-                fx = int.from_bytes(data[offset:offset+1], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-                fy = int.from_bytes(data[offset+1:offset+2], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-                fz = int.from_bytes(data[offset+2:offset+3], byteorder='little', signed=False) * RESOLUTION_N_PER_LSB
-                taxels.append([round(fx, 2), round(fy, 2), round(fz, 2)])
-                offset += BYTES_PER_TAXEL
-            result[finger] = taxels
-
-        return result
-
-    def _parse_combined_compact(
-        self, data: bytes, config: SensorConfiguration
-    ) -> tuple[dict[str, list[float]], dict[str, list[list[float]]]]:
-        """Parse auto-stream combined format (resultant + taxels for active sensors).
-
-        Combined mode sends data interleaved per sensor:
-        [sensor1_resultant][sensor1_taxels][sensor2_resultant][sensor2_taxels]...
-
-        Args:
-            data: Raw byte data from auto-stream
-            config: Current sensor configuration
-
-        Returns:
-            Tuple of (resultant_forces, taxels):
-            - resultant_forces: Dict mapping finger names to [fx, fy, fz]
-            - taxels: Dict mapping finger names to list of taxel values
-
-        Raises:
-            ValueError: If data size doesn't match expected size
-        """
-        BYTES_PER_RESULTANT = 6
-        BYTES_PER_TAXEL = 3
-        RESOLUTION_RESULTANT = 0.1
-        RESOLUTION_TAXEL = 0.1
-
-        expected_size = config.expected_payload_size_combined
-        if len(data) != expected_size:
-            raise ValueError(
-                f"Auto-stream combined data size mismatch: "
-                f"expected {expected_size} bytes, got {len(data)} bytes"
-            )
-
-        offset = 0
-        resultant_forces = {}
-        taxels = {}
-
-        for finger in config.active_sensors:
-            # Parse resultant (6 bytes: fx:int16, fy:int16, fz:uint16)
-            fx = int.from_bytes(data[offset:offset+2], byteorder='little', signed=True) * RESOLUTION_RESULTANT
-            fy = int.from_bytes(data[offset+2:offset+4], byteorder='little', signed=True) * RESOLUTION_RESULTANT
-            fz = int.from_bytes(data[offset+4:offset+6], byteorder='little', signed=False) * RESOLUTION_RESULTANT
-            resultant_forces[finger] = [round(fx, 1), round(fy, 1), round(fz, 1)]
-            offset += BYTES_PER_RESULTANT
-
-            # Parse taxels (taxel_count × 3 bytes: fx:int8, fy:int8, fz:uint8)
-            taxel_count = config.num_taxels.get(finger, 0)
-            finger_taxels = []
-            for _ in range(taxel_count):
-                tfx = int.from_bytes(data[offset:offset+1], byteorder='little', signed=True) * RESOLUTION_TAXEL
-                tfy = int.from_bytes(data[offset+1:offset+2], byteorder='little', signed=True) * RESOLUTION_TAXEL
-                tfz = int.from_bytes(data[offset+2:offset+3], byteorder='little', signed=False) * RESOLUTION_TAXEL
-                finger_taxels.append([round(tfx, 2), round(tfy, 2), round(tfz, 2)])
-                offset += BYTES_PER_TAXEL
-            taxels[finger] = finger_taxels
-
-        return resultant_forces, taxels
-
-    def _parse_resultant_force_dynamic(self, data: bytes, config: SensorConfiguration) -> dict[str, list[float]]:
-        """Parse resultant force data using dynamic configuration (offset-based).
-
-        This parser is used for request-response mode where the full 168-byte block
-        is returned with all 28 modules. It adapts to the actual connected sensors,
-        returning data only for available sensors. Uses sparse dict format.
-
-        Args:
-            data: Raw byte data from sensor (168 bytes for full block)
-            config: Current sensor configuration
-
-        Returns:
-            Dictionary mapping active finger names to [fx, fy, fz] force vectors
-            Only includes sensors that are currently connected
-
-        Raises:
-            ValueError: If data is too short for expected configuration
-        """
-        RESOLUTION_N_PER_LSB = 0.1
-
-        if len(data) < ADDR_RESULTING_FORCE_LENGTH:
-            raise ValueError(f"Resultant force block too short: {len(data)} bytes")
-
-        result = {}
-        for finger in config.active_sensors:
-            # Get module index for this sensor from configuration
-            module_idx = config.module_indices[finger]
-            offset = module_idx * 6  # Each module force is 6 bytes (fx, fy, fz)
-
-            # Parse force data from fixed offsets in full block
-            fx = int.from_bytes(data[offset:offset+2], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fy = int.from_bytes(data[offset+2:offset+4], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fz = int.from_bytes(data[offset+4:offset+6], byteorder='little', signed=False) * RESOLUTION_N_PER_LSB
-
-            result[finger] = [round(float(fx), 1), round(float(fy), 1), round(float(fz), 1)]
-
-        return result
-
 
     def set_auto_data_type(self, resultant: bool = True, taxels: bool = False) -> None:
         """Configure which data types to include in auto stream.
@@ -900,8 +628,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        val = (AUTO_DATA_RESULTANT if resultant else 0) | (AUTO_DATA_TAXELS if taxels else 0)
-        self._write_register(ADDR_AUTO_DATA_TYPE, bytes([val]))
+        self._write_register(ADDR_AUTO_DATA_TYPE, encode_auto_data_type(resultant, taxels))
 
 
     def enable_auto_data_transmission(self) -> None:
@@ -913,7 +640,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        self._write_register(ADDR_AUTO_ENABLE, bytes([0x01]))
+        self._write_register(ADDR_AUTO_ENABLE, REGISTER_ENABLE)
 
     def disable_auto_data_transmission(self) -> None:
         """Disable automatic data transmission mode.
@@ -924,7 +651,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        self._write_register(ADDR_AUTO_ENABLE, bytes([0x00]))
+        self._write_register(ADDR_AUTO_ENABLE, REGISTER_DISABLE)
 
 
     def reboot(self) -> None:
@@ -936,7 +663,7 @@ class SensorClient:
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
-        self._write_register(ADDR_RESET, bytes([0x01]))
+        self._write_register(ADDR_RESET, REGISTER_ENABLE)
 
     def get_auto_latest(self):
         """Get the most recently parsed auto-stream resultant force data (thread-safe).
@@ -1119,9 +846,9 @@ class SensorClient:
                 if i >= len(finger_offsets):
                     break
                 off = finger_offsets[i]
-                taxel[0] = round(taxel[0] - off[0], 2)
-                taxel[1] = round(taxel[1] - off[1], 2)
-                taxel[2] = round(max(0, taxel[2] - off[2]), 2)
+                taxel[0] = round(taxel[0] - off[0], 1)
+                taxel[1] = round(taxel[1] - off[1], 1)
+                taxel[2] = round(max(0, taxel[2] - off[2]), 1)
 
     def _apply_resultant_offsets(self, forces: dict) -> None:
         """Subtract resultant offsets in-place. Clamps fz to >= 0."""
@@ -1193,7 +920,7 @@ class SensorClient:
         b1 = self._read_exact(1)
         while self._auto_running.is_set():
             b2 = self._read_exact(1)
-            if b1 == bytes([0xAA]) and b2 == bytes([0x56]):
+            if b1 + b2 == PROTOCOL_HEADER_AUTO:
                 return  # Found the header
             # Slide window: b2 becomes new b1
             b1 = b2
@@ -1201,52 +928,14 @@ class SensorClient:
         # If we exit the loop, auto stream was stopped
         raise IOError("Auto stream stopped during resync")
 
-    def _check_lrc(self, frame_wo_lrc: bytes, lrc_byte: int) -> bool:
-        expected = calculate_checksum(frame_wo_lrc)
-        return expected == lrc_byte
-
-
-    def _parse_resultant_force_block(self, data: bytes) -> dict[str, list[float]]:
-        """Parse a resultant force data block from the sensor.
-
-        Module index calculation (module_idx = i * 4 + 2):
-        - Each finger has 4 potential modules: proximal(0), middle(1), distal(2), nail(3)
-        - We only use fingertip sensors, which are the distal phalanx (index 2)
-        - For thumb: module_idx = 0*4+2 = 2 (byte offset = 2*6 = 12)
-        - For index: module_idx = 1*4+2 = 6 (byte offset = 6*6 = 36)
-        - etc.
-
-        Args:
-            data: Raw byte data containing resultant forces (168 bytes for 28 modules)
-
-        Returns:
-            Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
-        """
-        RESOLUTION_N_PER_LSB = 0.1
-        if len(data) < ADDR_RESULTING_FORCE_LENGTH:
-            raise ValueError(f"Resultant force block too short: {len(data)} bytes")
-
-        result = {}
-        for finger in FINGER_NAMES:
-            sensor_id = self._finger_to_sensor_id[finger]
-            module_idx = sensor_id * 4 + 2
-            offset = module_idx * 6  # Each module force is 6 bytes (fx, fy, fz)
-
-            fx = int.from_bytes(data[offset:offset+2], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fy = int.from_bytes(data[offset+2:offset+4], byteorder='little', signed=True) * RESOLUTION_N_PER_LSB
-            fz = int.from_bytes(data[offset+4:offset+6], byteorder='little', signed=False) * RESOLUTION_N_PER_LSB
-            result[finger] = [round(float(fx), 1), round(float(fy), 1), round(float(fz), 1)]
-        return result
-
     def _get_expected_payload_size(self, config: SensorConfiguration) -> int:
         """Get expected payload size based on current streaming mode."""
-        if self._auto_mode_resultant and self._auto_mode_taxels:
-            return config.expected_payload_size_combined
-        elif self._auto_mode_resultant:
-            return config.expected_payload_size_resultant
-        elif self._auto_mode_taxels:
-            return config.expected_payload_size_taxels
-        return 0
+        return compute_expected_payload_size(
+            self._auto_mode_resultant,
+            self._auto_mode_taxels,
+            config.active_sensors,
+            config.num_taxels,
+        )
 
     def _acquire_frame(
         self,
@@ -1274,11 +963,9 @@ class SensorClient:
         # Find and consume AA 56 header
         self._resync_to_auto_header()
 
-        # Read frame metadata
-        reserved = self._read_exact(1)
-        eff_len = int.from_bytes(self._read_exact(2), "little")
-
-        # Read payload and checksum
+        # Read frame metadata, payload, and checksum
+        meta = self._read_exact(AUTO_FRAME_META_SIZE)
+        eff_len = extract_auto_frame_eff_len(meta)
         payload = self._read_exact(eff_len)
         lrc = self._read_exact(1)[0]
 
@@ -1290,13 +977,11 @@ class SensorClient:
             self._last_frame_debug_print = now
 
         # Validate frame integrity
-        frame_wo_lrc = bytes([0xAA, 0x56]) + reserved + int_to_little_endian(eff_len, 2) + payload
-        if not self._check_lrc(frame_wo_lrc, lrc):
+        if not validate_auto_frame_lrc(meta, payload, lrc):
             raise FrameError("LRC mismatch", bad_lrc=True)
 
-        # Split error code and valid data
-        err_code = payload[0]
-        valid = payload[1:]
+        # Split error code and force data
+        err_code, valid = unpack_auto_payload(payload)
 
         # Update serial-specific stats
         with self._auto_lock:
@@ -1331,16 +1016,19 @@ class SensorClient:
                 f"Unexpected payload: {len(valid)} bytes, expected {expected_size}"
             )
 
+        cfg = self._sensor_config
         if parse_resultant and parse_taxels:
-            parsed_resultant, parsed_taxels = self._parse_combined_compact(
-                valid, self._sensor_config
+            parsed_resultant, parsed_taxels = decode_combined_auto(
+                valid, cfg.active_sensors, cfg.num_taxels,
             )
         elif parse_resultant:
-            parsed_resultant = self._parse_auto_stream_compact(valid, self._sensor_config)
+            parsed_resultant = decode_resultant_auto(valid, cfg.active_sensors)
             parsed_taxels = None
         elif parse_taxels:
             parsed_resultant = None
-            parsed_taxels = self._parse_taxels_compact(valid, self._sensor_config)
+            parsed_taxels = decode_taxels_auto(
+                valid, cfg.active_sensors, cfg.num_taxels,
+            )
         else:
             parsed_resultant = None
             parsed_taxels = None
@@ -1447,7 +1135,7 @@ class SensorClient:
 
         In auto-stream mode, the sensor continuously broadcasts force data at ~1kHz
         without requiring request-response polling. This provides much lower latency
-        and higher throughput than repeatedly calling read_resulting_force().
+        and higher throughput than repeatedly calling read_resultant_force().
 
         The data is read by a background thread and made available via:
         - get_auto_latest(): for resultant force data
@@ -1579,62 +1267,3 @@ class SensorClient:
 
     def __exit__(self, *args):
         self.disconnect()
-
-
-if __name__ == "__main__":
-    import sys
-
-    sensor_client = SensorClient(port="/dev/ttyACM0", baudrate=921600)
-   
-    sensor_client.connect()
-    print(sensor_client._sensor_config)
-    exit()
-    try:
-        print("connected sensors:", sensor_client.read_connected_sensors())
-        print("num taxels:", sensor_client.read_num_taxels())
-        print("config:", sensor_client.get_sensor_configuration())
-
-        # Parse command line for mode selection
-        mode = sys.argv[1] if len(sys.argv) > 1 else "resultant"
-
-        if mode == "resultant":
-            print("\n=== Resultant Force Only Mode ===")
-            sensor_client.start_auto_stream(resultant=True, taxels=False)
-            for _ in range(100):
-                forces, ts = sensor_client.get_auto_latest()
-                if forces is not None:
-                    print(f"[{ts:.3f}] forces: {forces}")
-                time.sleep(0.05)
-
-        elif mode == "taxels":
-            print("\n=== Taxels Only Mode ===")
-            sensor_client.start_auto_stream(resultant=False, taxels=True)
-            for _ in range(100):
-                taxels, ts = sensor_client.get_auto_latest_taxels()
-                if taxels is not None:
-                    # Print summary: count and first taxel [fx, fy, fz] per finger
-                    summary = {f: (len(vals), vals[0] if vals else []) for f, vals in taxels.items()}
-                    print(f"[{ts:.3f}] taxels (count, first): {summary}")
-                time.sleep(0.05)
-
-        elif mode == "combined":
-            print("\n=== Combined Mode (Resultant + Taxels) ===")
-            sensor_client.start_auto_stream(resultant=True, taxels=True)
-            for _ in range(100):
-                forces, taxels, ts = sensor_client.get_auto_latest_all()
-                if forces is not None:
-                    taxel_summary = {f: len(vals) for f, vals in taxels.items()} if taxels else {}
-                    print(f"[{ts:.3f}] forces: {forces}, taxel_counts: {taxel_summary}")
-                time.sleep(0.05)
-
-        else:
-            print(f"Unknown mode: {mode}. Use 'resultant', 'taxels', or 'combined'")
-
-        print("\nstats:", sensor_client.get_auto_stats())
-
-    finally:
-        try:
-            sensor_client.stop_auto_stream()
-        except Exception:
-            pass
-        sensor_client.disconnect()
