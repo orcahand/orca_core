@@ -1,28 +1,62 @@
-"""Tests for tactile sensor data contracts and parsing.
+"""Tests for MockSensorClient integration and SensorConfiguration contracts.
 
-Validates byte formats, data shapes, payload sizes, and protocol details
-without requiring hardware. Uses MockSensorClient and direct parser calls.
+Validates the mock's lifecycle (connect → stream → read → stop), offset logic,
+dynamic reconfiguration, and configuration ordering. Pure protocol codec tests
+live in test_protocol.py; taxel coordinate tests live in test_taxel_coordinates.py.
 """
 
-import struct
 import time
 
 import pytest
 
-from orca_core.hardware.sensor_client import (
-    SensorClient,
-    SensorConfiguration,
-    calculate_checksum,
-    FINGER_NAMES,
-)
+from orca_core.hardware.sensor_client import SensorConfiguration
 from orca_core.hardware.mock_sensor_client import MockSensorClient
-from orca_core.hardware.sensing.taxel_coordinates import get_all_coordinates
+from orca_core.hardware.sensing.constants import (
+    DEFAULT_TAXEL_COUNTS,
+    BYTES_PER_RESULTANT,
+    BYTES_PER_TAXEL,
+)
+from orca_core.hardware.sensing.protocol import compute_distal_module_index
 
-EXPECTED_TAXEL_COUNTS = {
-    "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
-}
+EXPECTED_TAXEL_COUNTS = DEFAULT_TAXEL_COUNTS
 
 ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
+
+POLL_INTERVAL = 0.001
+POLL_TIMEOUT = 2.0
+
+
+def _poll_auto_latest(mock, timeout=POLL_TIMEOUT):
+    """Poll until auto-stream produces a resultant frame."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result, ts = mock.get_auto_latest()
+        if result is not None:
+            return result, ts
+        time.sleep(POLL_INTERVAL)
+    raise TimeoutError("No auto-stream frame received within timeout")
+
+
+def _poll_auto_latest_taxels(mock, timeout=POLL_TIMEOUT):
+    """Poll until auto-stream produces a taxel frame."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result, ts = mock.get_auto_latest_taxels()
+        if result is not None:
+            return result, ts
+        time.sleep(POLL_INTERVAL)
+    raise TimeoutError("No auto-stream taxel frame received within timeout")
+
+
+def _poll_auto_latest_all(mock, timeout=POLL_TIMEOUT):
+    """Poll until auto-stream produces both resultant and taxel frames."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        forces, taxels, ts = mock.get_auto_latest_all()
+        if forces is not None and taxels is not None:
+            return forces, taxels, ts
+        time.sleep(POLL_INTERVAL)
+    raise TimeoutError("No combined auto-stream frame received within timeout")
 
 
 def _make_config(
@@ -38,11 +72,11 @@ def _make_config(
 
     connected = {f: (f in connected_fingers) for f in ALL_FINGERS}
     num_taxels = {f: taxel_counts.get(f, 0) for f in connected_fingers}
-    module_indices = {f: finger_to_sensor_id[f] * 4 + 2 for f in connected_fingers}
+    module_indices = {f: compute_distal_module_index(finger_to_sensor_id[f]) for f in connected_fingers}
 
     num_active = len(connected_fingers)
-    expected_resultant = num_active * 6
-    expected_taxels = sum(num_taxels[f] * 3 for f in connected_fingers)
+    expected_resultant = num_active * BYTES_PER_RESULTANT
+    expected_taxels = sum(num_taxels[f] * BYTES_PER_TAXEL for f in connected_fingers)
 
     return SensorConfiguration(
         connected=connected,
@@ -56,312 +90,265 @@ def _make_config(
     )
 
 
-def _sensor_client_instance() -> SensorClient:
-    """Create a SensorClient without connecting (for calling parse methods)."""
-    client = SensorClient.__new__(SensorClient)
-    return client
-
-
 # ---------------------------------------------------------------------------
-# Test 1: Mock client — resultant forces shape
+# Mock client — resultant forces
 # ---------------------------------------------------------------------------
 
 class TestMockResultantForces:
-    def test_shape_all_fingers(self):
+    def test_values_round_trip(self):
+        """Values set via set_mock_forces come back through the stream."""
         mock = MockSensorClient(connected_sensors=ALL_FINGERS)
         mock.connect()
-        forces = {f: [1.0, -0.5, 2.0] for f in ALL_FINGERS}
-        mock.set_mock_forces(forces)
+        mock.set_mock_forces({
+            "thumb": [1.5, -2.0, 3.0],
+            "index": [0.0, 0.0, 0.0],
+            "middle": [-1.0, 0.5, 10.0],
+        })
         mock.start_auto_stream(resultant=True, taxels=False)
-        time.sleep(0.05)
-
-        result, ts = mock.get_auto_latest()
+        result, ts = _poll_auto_latest(mock)
         mock.stop_auto_stream()
         mock.disconnect()
 
-        assert result is not None
         assert ts is not None
-        assert set(result.keys()) == set(ALL_FINGERS)
-        for finger in ALL_FINGERS:
-            assert len(result[finger]) == 3
-            assert all(isinstance(v, float) for v in result[finger])
-
-    def test_values_match(self):
-        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
-        mock.connect()
-        mock.set_mock_forces({"thumb": [1.5, -2.0, 3.0], "index": [0.0, 0.0, 0.0]})
-        mock.start_auto_stream(resultant=True, taxels=False)
-        time.sleep(0.05)
-
-        result, _ = mock.get_auto_latest()
-        mock.stop_auto_stream()
-        mock.disconnect()
-
         assert result["thumb"] == [1.5, -2.0, 3.0]
         assert result["index"] == [0.0, 0.0, 0.0]
+        assert result["middle"] == [-1.0, 0.5, 10.0]
+        # Fingers without explicit mock data get default [1.0, 1.0, 1.0]
+        assert result["ring"] == [1.0, 1.0, 1.0]
 
-    def test_subset_of_fingers(self):
+    def test_subset_only_returns_connected(self):
+        """Only connected sensors appear in output."""
         subset = ["thumb", "pinky"]
         mock = MockSensorClient(connected_sensors=subset)
         mock.connect()
         mock.set_mock_forces({"thumb": [1.0, 0.0, 0.0], "pinky": [0.0, 1.0, 0.0]})
         mock.start_auto_stream(resultant=True, taxels=False)
-        time.sleep(0.05)
-
-        result, _ = mock.get_auto_latest()
+        result, _ = _poll_auto_latest(mock)
         mock.stop_auto_stream()
         mock.disconnect()
 
         assert set(result.keys()) == set(subset)
+        assert result["thumb"] == [1.0, 0.0, 0.0]
+        assert result["pinky"] == [0.0, 1.0, 0.0]
 
 
 # ---------------------------------------------------------------------------
-# Test 2: Mock client — taxel data shape
+# Mock client — taxel data
 # ---------------------------------------------------------------------------
 
 class TestMockTaxelData:
-    def test_shape_all_fingers(self):
+    def test_taxel_counts_match_sensor_models(self):
+        """Each finger returns the expected number of taxels."""
         mock = MockSensorClient(connected_sensors=ALL_FINGERS)
         mock.connect()
         mock.start_auto_stream(resultant=False, taxels=True)
-        time.sleep(0.05)
-
-        result, ts = mock.get_auto_latest_taxels()
+        result, _ = _poll_auto_latest_taxels(mock)
         mock.stop_auto_stream()
         mock.disconnect()
 
-        assert result is not None
         assert set(result.keys()) == set(ALL_FINGERS)
         for finger in ALL_FINGERS:
             assert len(result[finger]) == EXPECTED_TAXEL_COUNTS[finger], (
                 f"{finger}: expected {EXPECTED_TAXEL_COUNTS[finger]} taxels, "
                 f"got {len(result[finger])}"
             )
-            for taxel in result[finger]:
-                assert len(taxel) == 3
-                assert all(isinstance(v, float) for v in taxel)
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Mock client — combined mode shape
+# Mock client — combined mode
 # ---------------------------------------------------------------------------
 
 class TestMockCombinedMode:
-    def test_shape(self):
+    def test_both_resultant_and_taxels_returned(self):
         mock = MockSensorClient(connected_sensors=ALL_FINGERS)
         mock.connect()
         mock.set_mock_forces({f: [1.0, 0.0, 0.5] for f in ALL_FINGERS})
         mock.start_auto_stream(resultant=True, taxels=True)
-        time.sleep(0.05)
-
-        forces, taxels, ts = mock.get_auto_latest_all()
+        forces, taxels, ts = _poll_auto_latest_all(mock)
         mock.stop_auto_stream()
         mock.disconnect()
 
-        assert forces is not None
-        assert taxels is not None
         assert set(forces.keys()) == set(ALL_FINGERS)
         assert set(taxels.keys()) == set(ALL_FINGERS)
         for finger in ALL_FINGERS:
-            assert len(forces[finger]) == 3
+            assert forces[finger] == [1.0, 0.0, 0.5]
             assert len(taxels[finger]) == EXPECTED_TAXEL_COUNTS[finger]
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Payload size calculation
+# Mock client — provider injection
 # ---------------------------------------------------------------------------
 
-class TestPayloadSize:
-    def test_all_sensors(self):
-        config = _make_config(ALL_FINGERS)
-        total_taxels = 51 + 87 + 87 + 87 + 51  # 363
-        assert config.expected_payload_size_resultant == 5 * 6  # 30
-        assert config.expected_payload_size_taxels == total_taxels * 3  # 1089
-        assert config.expected_payload_size_combined == 30 + total_taxels * 3  # 1119
+class TestProviderInjection:
+    def test_custom_resultant_provider(self):
+        call_count = 0
+        def counting_provider():
+            nonlocal call_count
+            call_count += 1
+            return {"thumb": [float(call_count), 0.0, 0.0]}
 
-    def test_two_sensors(self):
-        config = _make_config(["thumb", "index"])
-        assert config.expected_payload_size_resultant == 2 * 6  # 12
-        assert config.expected_payload_size_taxels == (51 + 87) * 3  # 414
-        assert config.expected_payload_size_combined == 12 + 414  # 426
-
-    def test_single_sensor(self):
-        config = _make_config(["pinky"])
-        assert config.expected_payload_size_resultant == 6
-        assert config.expected_payload_size_taxels == 51 * 3  # 153
-        assert config.expected_payload_size_combined == 6 + 153  # 159
-
-    def test_no_sensors(self):
-        config = _make_config([])
-        assert config.expected_payload_size_resultant == 0
-        assert config.expected_payload_size_taxels == 0
-        assert config.expected_payload_size_combined == 0
-
-
-# ---------------------------------------------------------------------------
-# Test 5: Parse resultant compact — known bytes
-# ---------------------------------------------------------------------------
-
-class TestParseResultantCompact:
-    def test_known_values(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"])
-
-        # fx=100 (10.0N), fy=-50 (-5.0N), fz=200 (20.0N)
-        data = struct.pack("<hhH", 100, -50, 200)
-        result = client._parse_auto_stream_compact(data, config)
-
-        assert result["thumb"] == [10.0, -5.0, 20.0]
-
-    def test_two_sensors(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb", "index"])
-
-        data = struct.pack("<hhH", 10, 20, 30) + struct.pack("<hhH", -10, -20, 40)
-        result = client._parse_auto_stream_compact(data, config)
-
-        assert result["thumb"] == [1.0, 2.0, 3.0]
-        assert result["index"] == [-1.0, -2.0, 4.0]
-
-    def test_zero_forces(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"])
-
-        data = struct.pack("<hhH", 0, 0, 0)
-        result = client._parse_auto_stream_compact(data, config)
-
-        assert result["thumb"] == [0.0, 0.0, 0.0]
-
-    def test_wrong_size_raises(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"])
-
-        with pytest.raises(ValueError, match="size mismatch"):
-            client._parse_auto_stream_compact(b"\x00" * 5, config)
-
-        with pytest.raises(ValueError, match="size mismatch"):
-            client._parse_auto_stream_compact(b"\x00" * 7, config)
-
-
-# ---------------------------------------------------------------------------
-# Test 6: Parse taxels compact — known bytes
-# ---------------------------------------------------------------------------
-
-class TestParseTaxelsCompact:
-    def test_known_values(self):
-        client = _sensor_client_instance()
-        # Use small taxel count for test
-        config = _make_config(["thumb"], taxel_counts={"thumb": 2})
-
-        # taxel 0: fx=10 (1.0N), fy=-5 (-0.5N), fz=20 (2.0N)
-        # taxel 1: fx=0, fy=0, fz=50 (5.0N)
-        data = struct.pack("bbB", 10, -5, 20) + struct.pack("bbB", 0, 0, 50)
-        result = client._parse_taxels_compact(data, config)
-
-        assert len(result["thumb"]) == 2
-        assert result["thumb"][0] == [1.0, -0.5, 2.0]
-        assert result["thumb"][1] == [0.0, 0.0, 5.0]
-
-    def test_correct_taxel_count(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"], taxel_counts={"thumb": 51})
-
-        data = b"\x00" * (51 * 3)
-        result = client._parse_taxels_compact(data, config)
-
-        assert len(result["thumb"]) == 51
-
-    def test_wrong_size_raises(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"], taxel_counts={"thumb": 2})
-
-        with pytest.raises(ValueError, match="size mismatch"):
-            client._parse_taxels_compact(b"\x00" * 5, config)
-
-
-# ---------------------------------------------------------------------------
-# Test 7: Parse combined compact — known bytes
-# ---------------------------------------------------------------------------
-
-class TestParseCombinedCompact:
-    def test_interleaved_format(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb", "index"], taxel_counts={"thumb": 1, "index": 1})
-
-        # thumb: resultant(6) + taxels(3) + index: resultant(6) + taxels(3)
-        data = (
-            struct.pack("<hhH", 100, 0, 50)  # thumb resultant
-            + struct.pack("bbB", 10, 0, 5)    # thumb taxel
-            + struct.pack("<hhH", 0, -100, 200)  # index resultant
-            + struct.pack("bbB", 0, -10, 20)  # index taxel
+        mock = MockSensorClient(
+            connected_sensors=["thumb"],
+            resultant_provider=counting_provider,
         )
-        forces, taxels = client._parse_combined_compact(data, config)
+        mock.connect()
+        mock.start_auto_stream(resultant=True, taxels=False)
+        result, _ = _poll_auto_latest(mock)
+        mock.stop_auto_stream()
+        mock.disconnect()
 
-        assert forces["thumb"] == [10.0, 0.0, 5.0]
-        assert forces["index"] == [0.0, -10.0, 20.0]
-        assert len(taxels["thumb"]) == 1
-        assert len(taxels["index"]) == 1
-        assert taxels["thumb"][0] == [1.0, 0.0, 0.5]
-        assert taxels["index"][0] == [0.0, -1.0, 2.0]
+        assert call_count > 0
+        assert result["thumb"][0] > 0  # Provider was called at least once
 
-    def test_wrong_size_raises(self):
-        client = _sensor_client_instance()
-        config = _make_config(["thumb"], taxel_counts={"thumb": 1})
+    def test_custom_taxel_provider(self):
+        marker = [[99.0, 88.0, 77.0]]
+        mock = MockSensorClient(
+            connected_sensors=["thumb"],
+            taxel_provider=lambda: {"thumb": marker},
+        )
+        mock.connect()
+        mock.start_auto_stream(resultant=False, taxels=True)
+        result, _ = _poll_auto_latest_taxels(mock)
+        mock.stop_auto_stream()
+        mock.disconnect()
 
-        with pytest.raises(ValueError, match="size mismatch"):
-            client._parse_combined_compact(b"\x00" * 5, config)
-
-
-# ---------------------------------------------------------------------------
-# Test 8: Taxel coordinate counts match sensor models
-# ---------------------------------------------------------------------------
-
-class TestTaxelCoordinates:
-    def test_counts_match_models(self):
-        coords = get_all_coordinates()
-        for finger, expected_count in EXPECTED_TAXEL_COUNTS.items():
-            assert len(coords[finger]) == expected_count, (
-                f"{finger}: expected {expected_count} coordinates, got {len(coords[finger])}"
-            )
-
-    def test_coordinate_structure(self):
-        coords = get_all_coordinates()
-        for finger, taxels in coords.items():
-            for i, coord in enumerate(taxels):
-                assert "x" in coord and "y" in coord and "z" in coord, (
-                    f"{finger} taxel {i}: missing x/y/z keys"
-                )
-                assert all(isinstance(coord[k], float) for k in ("x", "y", "z"))
+        assert result["thumb"] == marker
 
 
 # ---------------------------------------------------------------------------
-# Test 9: LRC checksum
+# Mock client — dynamic reconfiguration
 # ---------------------------------------------------------------------------
 
-class TestChecksum:
-    def test_known_value(self):
-        assert calculate_checksum(b"\x01\x02\x03") == 0xFA
+class TestDynamicReconfiguration:
+    def test_simulate_dropout_removes_sensor(self):
+        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+        mock.connect()
+        assert mock._sensor_config.num_active_sensors == 5
 
-    def test_round_trip(self):
-        frame = b"\xAA\x55\x00\x03\x10\x00\x04\x00"
-        checksum = calculate_checksum(frame)
-        assert (sum(frame) + checksum) & 0xFF == 0
+        mock.simulate_dropout(["index", "ring"])
+        assert mock._sensor_config.num_active_sensors == 3
+        assert "index" not in mock._sensor_config.active_sensors
+        assert "ring" not in mock._sensor_config.active_sensors
 
-    def test_empty_frame(self):
-        assert calculate_checksum(b"") == 0
+    def test_set_connected_sensors_updates_config(self):
+        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+        mock.connect()
 
-    def test_single_byte(self):
-        assert calculate_checksum(b"\x01") == 0xFF
+        mock.set_connected_sensors(["thumb"])
+        assert mock._sensor_config.active_sensors == ["thumb"]
+        assert mock._sensor_config.num_active_sensors == 1
+
+    def test_dropout_clears_mock_data(self):
+        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+        mock.connect()
+        mock.set_mock_forces({"index": [5.0, 0.0, 0.0]})
+
+        mock.simulate_dropout(["index"])
+        # index mock data should be cleared
+        assert "index" not in mock._mock_forces
 
 
 # ---------------------------------------------------------------------------
-# Test 10: SensorConfiguration active_sensors ordering
+# Offset logic
+# ---------------------------------------------------------------------------
+
+class TestOffsets:
+    def test_resultant_offsets_applied(self):
+        mock = MockSensorClient(connected_sensors=["thumb"])
+        mock.connect()
+        mock.set_mock_forces({"thumb": [5.0, 3.0, 10.0]})
+        mock.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
+
+        # Resultant offset = sum of taxel offsets
+        result = mock.read_resultant_force()
+        assert result["thumb"][0] == pytest.approx(4.0, abs=0.1)  # 5.0 - 1.0
+        assert result["thumb"][1] == pytest.approx(2.5, abs=0.1)  # 3.0 - 0.5
+        assert result["thumb"][2] == pytest.approx(8.0, abs=0.1)  # 10.0 - 2.0
+
+    def test_fz_clamped_to_zero(self):
+        """fz should never go negative after offset subtraction."""
+        mock = MockSensorClient(connected_sensors=["thumb"])
+        mock.connect()
+        mock.set_mock_forces({"thumb": [0.0, 0.0, 1.0]})
+        mock.set_taxel_offsets({"thumb": [[0.0, 0.0, 5.0]]})
+
+        result = mock.read_resultant_force()
+        assert result["thumb"][2] == 0.0  # clamped, not -4.0
+
+    def test_clear_offsets(self):
+        mock = MockSensorClient(connected_sensors=["thumb"])
+        mock.connect()
+        mock.set_mock_forces({"thumb": [5.0, 3.0, 10.0]})
+        mock.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
+        mock.clear_taxel_offsets()
+
+        result = mock.read_resultant_force()
+        assert result["thumb"] == [5.0, 3.0, 10.0]  # No offset applied
+
+    def test_stream_offsets_applied(self):
+        """Offsets should also apply to auto-stream data."""
+        mock = MockSensorClient(connected_sensors=["thumb"])
+        mock.connect()
+        mock.set_mock_forces({"thumb": [5.0, 3.0, 10.0]})
+        mock.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
+        mock.start_auto_stream(resultant=True, taxels=False)
+        result, _ = _poll_auto_latest(mock)
+        mock.stop_auto_stream()
+        mock.disconnect()
+
+        assert result["thumb"][0] == pytest.approx(4.0, abs=0.1)
+        assert result["thumb"][2] == pytest.approx(8.0, abs=0.1)
+
+    def test_taxel_offsets_applied_in_stream(self):
+        """Per-taxel offsets should apply to taxel auto-stream data."""
+        taxels = [[2.0, 1.0, 5.0], [3.0, 2.0, 8.0]]
+        offsets = [[0.5, 0.5, 1.0], [1.0, 1.0, 2.0]]
+        mock = MockSensorClient(
+            connected_sensors=["thumb"],
+            taxel_provider=lambda: {"thumb": [list(t) for t in taxels]},
+        )
+        mock.connect()
+        mock._sim_taxel_counts["thumb"] = 2
+        mock._sensor_config = mock._get_configuration()
+        mock.set_taxel_offsets({"thumb": offsets})
+        mock.start_auto_stream(resultant=False, taxels=True)
+        result, _ = _poll_auto_latest_taxels(mock)
+        mock.stop_auto_stream()
+        mock.disconnect()
+
+        assert result["thumb"][0][0] == pytest.approx(1.5, abs=0.1)  # 2.0 - 0.5
+        assert result["thumb"][0][2] == pytest.approx(4.0, abs=0.1)  # 5.0 - 1.0
+        assert result["thumb"][1][0] == pytest.approx(2.0, abs=0.1)  # 3.0 - 1.0
+        assert result["thumb"][1][2] == pytest.approx(6.0, abs=0.1)  # 8.0 - 2.0
+
+
+# ---------------------------------------------------------------------------
+# Error paths
+# ---------------------------------------------------------------------------
+
+class TestErrorPaths:
+    def test_read_before_connect_raises(self):
+        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+        with pytest.raises(OSError, match="connect"):
+            mock.read_resultant_force()
+
+    def test_get_auto_latest_before_stream_returns_none(self):
+        mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+        mock.connect()
+        result, ts = mock.get_auto_latest()
+        mock.disconnect()
+
+        assert result is None
+        assert ts is None
+
+
+# ---------------------------------------------------------------------------
+# SensorConfiguration ordering
 # ---------------------------------------------------------------------------
 
 class TestSensorConfigOrdering:
     def test_slot_order_default(self):
         config = _make_config(ALL_FINGERS)
-        # Default mapping: thumb=0, index=1, middle=2, ring=3, pinky=4
         assert config.active_sensors == ["thumb", "index", "middle", "ring", "pinky"]
 
     def test_slot_order_custom_mapping(self):
@@ -369,10 +356,6 @@ class TestSensorConfigOrdering:
         config = _make_config(ALL_FINGERS, finger_to_sensor_id=custom_map)
         # Sorted by sensor_id: middle(0), thumb(1), ring(2), index(3), pinky(4)
         assert config.active_sensors == ["middle", "thumb", "ring", "index", "pinky"]
-
-    def test_num_active_sensors(self):
-        config = _make_config(["thumb", "middle", "pinky"])
-        assert config.num_active_sensors == 3
 
     def test_subset_preserves_order(self):
         config = _make_config(["pinky", "thumb"])

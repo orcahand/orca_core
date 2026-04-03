@@ -273,7 +273,7 @@ def forces():
         client = get_sensor_client()
         if not client.is_connected:
             return jsonify({'error': 'Not connected'}), 400
-        forces = client.read_resulting_force()
+        forces = client.read_resultant_force()
         return jsonify(forces)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -294,7 +294,7 @@ def refresh():
         connected = client.read_connected_sensors()
         taxels = client.read_num_taxels()
         auto_data = client.read_auto_data_type()
-        forces = client.read_resulting_force()
+        forces = client.read_resultant_force()
 
         return jsonify({
             'connected': True,
