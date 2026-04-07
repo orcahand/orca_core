@@ -22,7 +22,6 @@ from orca_core.hardware.sensing.constants import (
     PROTOCOL_HEADER_AUTO,
     RESPONSE_META_SIZE,
     AUTO_FRAME_META_SIZE,
-    ADDR_RESET,
     ADDR_CONNECTED_SENSORS_START,
     ADDR_CONNECTED_SENSORS_LENGTH,
     ADDR_NUM_TAXELS_START,
@@ -81,15 +80,23 @@ class FrameError(Exception):
 
 @dataclass
 class AutoStreamStats:
+    """Diagnostic counters for the auto-stream reader loop.
+
+    Attributes:
+        frames_ok: Frames received and decoded successfully.
+        frames_bad_checksum: Frames rejected due to checksum (LRC) mismatch.
+        parse_errors: Frames received intact but whose payload failed to decode.
+        resyncs: Times the reader had to resync after IO errors or bad framing.
+        reconfiguration_count: Times the sensor configuration was re-queried
+            after a payload-size mismatch.
+        last_error_code: Most recent sensor-reported error code (0 = no error).
+    """
     frames_ok: int = 0
-    frames_bad_lrc: int = 0
-    resyncs: int = 0
-    last_error_code: int = 0
-    parse_ok: int = 0
+    frames_bad_checksum: int = 0
     parse_errors: int = 0
-    last_eff_len: int = 0
-    last_payload_len: int = 0
-    reconfiguration_count: int = 0  # Number of times config was updated
+    resyncs: int = 0
+    reconfiguration_count: int = 0
+    last_error_code: int = 0
 
 
 @dataclass
@@ -215,11 +222,11 @@ class SensorClient:
             try:
                 self._sensor_config = self._get_configuration()
                 logger.info(f"Initial configuration: {self._sensor_config}")
-            except Exception as e:
+            except IOError as e:
                 logger.warning(f"Failed to get initial configuration: {e}")
                 # Don't fail connection, config will be retrieved when starting auto-stream
 
-        except Exception as e:
+        except (serial.SerialException, OSError) as e:
             raise ConnectionError(f"Failed to connect to sensor at {self.port}: {e}") from e
 
     def disconnect(self):
@@ -434,17 +441,19 @@ class SensorClient:
         return decode_num_taxels(data, self._sensor_id_to_finger)
 
     def read_auto_data_type(self) -> dict:
-        """Read the auto data type register.
+        """Read the auto-stream data-type register.
+
+        Returns the configured payload format for auto-stream frames (which of
+        resultant force / individual taxels are included).
 
         Returns:
-            Dictionary with raw binary value and parsed flags
+            Dict with the raw register byte and decoded resultant/taxels flags.
 
         Raises:
-            OSError: If not connected to sensor
+            OSError: If not connected to sensor.
         """
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-
         data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
         return decode_auto_data_type(data)
 
@@ -462,7 +471,7 @@ class SensorClient:
         if self._sensor_config is None:
             try:
                 self._sensor_config = self._get_configuration()
-            except Exception as e:
+            except IOError as e:
                 logger.error(f"Failed to get configuration: {e}")
                 # Fall back to static parsing using default module indices
                 data = self._read_register(ADDR_RESULTANT_FORCE_START, RESULTANT_BLOCK_SIZE)
@@ -546,7 +555,7 @@ class SensorClient:
             logger.info(f"Configuration captured: {config}")
             return config
 
-        except Exception as e:
+        except (IOError, FrameError) as e:
             logger.error(f"Failed to get sensor configuration: {e}")
             raise IOError(f"Failed to read sensor configuration: {e}") from e
 
@@ -632,101 +641,51 @@ class SensorClient:
         self._write_register(ADDR_AUTO_ENABLE, REGISTER_DISABLE)
 
 
-    def reboot(self) -> None:
-        """Reboot the sensor.
-
-        Raises:
-            OSError: If not connected to sensor
-        """
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-
-        self._write_register(ADDR_RESET, REGISTER_ENABLE)
-
     def get_auto_latest(self):
-        """Get the most recently parsed auto-stream resultant force data (thread-safe).
+        """Thread-safe snapshot of the most recent resultant-force frame.
 
-        Returns a snapshot of the latest force data received from the auto-stream.
-        This is updated by the background thread at ~1kHz when auto streaming is active.
+        Updated by the background reader thread while auto-stream is active.
 
         Returns:
-            Tuple of (parsed_data, timestamp):
-            - parsed_data: Dictionary mapping finger names to [fx, fy, fz] forces (Newtons)
-                          None if no data received yet or resultant mode not enabled
-            - timestamp: Unix timestamp (time.time()) when data was received
-                        None if no data received yet
-
-        Example:
-            >>> client.start_auto_stream(resultant=True)
-            >>> time.sleep(0.1)  # Let some data arrive
-            >>> forces, ts = client.get_auto_latest()
-            >>> print(forces)
-            {'index': [0.1, -0.2, 1.5]}
+            (forces, timestamp): `forces` is a {finger: [fx, fy, fz]} dict in
+            Newtons, or None if no frame has arrived or resultant mode is off.
+            `timestamp` is the wall-clock time of receipt, or None.
         """
         with self._auto_lock:
             return self._auto_latest, self._auto_latest_ts
 
     def get_auto_latest_taxels(self):
-        """Get the most recently parsed auto-stream taxel data (thread-safe).
+        """Thread-safe snapshot of the most recent per-taxel frame.
 
-        Returns a snapshot of the latest taxel data received from the auto-stream.
-        Only available when auto-stream was started with taxels=True.
+        Only populated when auto-stream was started with `taxels=True`.
 
         Returns:
-            Tuple of (parsed_data, timestamp):
-            - parsed_data: Dictionary mapping finger names to list of taxel force vectors
-                          Each taxel is [fx, fy, fz] in Newtons
-                          None if no data received yet or taxel mode not enabled
-            - timestamp: Unix timestamp (time.time()) when data was received
-                        None if no data received yet
-
-        Example:
-            >>> client.start_auto_stream(resultant=False, taxels=True)
-            >>> time.sleep(0.1)
-            >>> taxels, ts = client.get_auto_latest_taxels()
-            >>> print(taxels)
-            {'index': [[0.1, -0.2, 0.5], [0.0, 0.1, 0.3], ...]}  # list of [fx, fy, fz] per taxel
+            (taxels, timestamp): `taxels` is a {finger: [[fx, fy, fz], ...]}
+            dict (one [fx, fy, fz] per taxel, in Newtons), or None if no frame
+            has arrived or taxel mode is off. `timestamp` is the wall-clock
+            time of receipt, or None.
         """
         with self._auto_lock:
             return self._auto_latest_taxels, self._auto_latest_ts
 
     def get_auto_latest_all(self):
-        """Get both resultant forces and taxels from latest auto-stream data (thread-safe).
+        """Thread-safe snapshot of both resultant and taxel data in one call.
 
-        Returns all available data from the auto-stream. Useful when running in
-        combined mode (resultant=True, taxels=True).
+        Useful in combined mode (`resultant=True, taxels=True`) to get a
+        consistent view without two separate locked reads.
 
         Returns:
-            Tuple of (resultant_forces, taxels, timestamp):
-            - resultant_forces: Dict mapping finger names to [fx, fy, fz], or None
-            - taxels: Dict mapping finger names to taxel value lists, or None
-            - timestamp: Unix timestamp when data was received, or None
-
-        Example:
-            >>> client.start_auto_stream(resultant=True, taxels=True)
-            >>> time.sleep(0.1)
-            >>> forces, taxels, ts = client.get_auto_latest_all()
+            (forces, taxels, timestamp). Any field may be None depending on
+            the active stream mode and whether a frame has arrived yet.
         """
         with self._auto_lock:
             return self._auto_latest, self._auto_latest_taxels, self._auto_latest_ts
 
     def get_auto_stats(self):
-        """Get auto-stream statistics (thread-safe).
+        """Thread-safe snapshot of auto-stream diagnostics.
 
-        Returns diagnostic information about the auto-stream performance:
-        - frames_ok: Number of successfully received frames
-        - frames_bad_lrc: Number of frames with checksum errors
-        - resyncs: Number of times the reader had to resync after errors
-        - parse_ok: Number of successfully parsed frames
-        - parse_errors: Number of frames that couldn't be parsed
-        - last_error_code: Most recent error code from sensor (0 = no error)
-
-        Returns:
-            AutoStreamStats dataclass with statistics
-
-        Example:
-            >>> stats = client.get_auto_stats()
-            >>> print(f"Success rate: {stats.frames_ok}/{stats.frames_ok + stats.frames_bad_lrc}")
+        See `AutoStreamStats` for the meaning of each field. Useful for health
+        monitoring (frame rate, checksum errors, reconfigurations).
         """
         with self._auto_lock:
             return self._auto_stats
@@ -749,10 +708,6 @@ class SensorClient:
         """Clear all zeroing offsets."""
         self._taxel_offsets = None
         self._resultant_offsets = None
-
-    def get_taxel_offsets(self) -> dict | None:
-        """Return current per-taxel offsets (for saving to YAML)."""
-        return self._taxel_offsets
 
     def capture_taxel_offsets(self, num_samples: int = 100) -> dict:
         """Capture live baseline offsets by averaging current sensor readings.
@@ -778,6 +733,7 @@ class SensorClient:
         # Wait for at least one raw frame to flush old offset-applied data
         time.sleep(0.01)
 
+        succeeded = False
         try:
             # Collect unique frames by checking timestamps
             frames = []
@@ -807,12 +763,13 @@ class SensorClient:
                 offsets[finger] = avg
 
             self.set_taxel_offsets(offsets)
+            succeeded = True
             return offsets
-        except Exception:
-            # Restore previous offsets on failure
-            self._taxel_offsets = prev_taxel
-            self._resultant_offsets = prev_resultant
-            raise
+        finally:
+            if not succeeded:
+                # Restore previous offsets on failure
+                self._taxel_offsets = prev_taxel
+                self._resultant_offsets = prev_resultant
 
     def _apply_taxel_offsets(self, taxels: dict) -> None:
         """Subtract per-taxel offsets in-place. Clamps fz to >= 0."""
@@ -964,8 +921,6 @@ class SensorClient:
         # Update serial-specific stats
         with self._auto_lock:
             self._auto_stats.last_error_code = err_code
-            self._auto_stats.last_eff_len = eff_len
-            self._auto_stats.last_payload_len = len(valid)
 
         # Check for payload size mismatch (indicates config change)
         if self._sensor_config:
@@ -1044,14 +999,12 @@ class SensorClient:
                         self._auto_latest_taxels = parsed_taxels
                     self._auto_latest_ts = time.time()
                     self._auto_stats.frames_ok += 1
-                    self._auto_stats.parse_ok += 1
 
             except FrameError as e:
                 with self._auto_lock:
                     if e.bad_lrc:
-                        self._auto_stats.frames_bad_lrc += 1
+                        self._auto_stats.frames_bad_checksum += 1
                     else:
-                        self._auto_stats.frames_ok += 1
                         self._auto_stats.parse_errors += 1
 
             except NoSensorsAvailableError:
@@ -1124,7 +1077,7 @@ class SensorClient:
         # Get initial sensor configuration
         try:
             self._sensor_config = self._get_configuration()
-        except Exception as e:
+        except IOError as e:
             raise OSError(f"Failed to get sensor configuration: {e}") from e
 
         # Check minimum sensor requirement
@@ -1149,7 +1102,7 @@ class SensorClient:
         # Try to disable auto mode first (in case it was left enabled)
         try:
             self.disable_auto_data_transmission()
-        except Exception:
+        except IOError:
             pass  # If this fails, robust _write_register will handle AA56 frames
 
         # Configure which data types to include in auto frames
@@ -1196,7 +1149,7 @@ class SensorClient:
         if self.is_connected:
             try:
                 self.disable_auto_data_transmission()
-            except Exception:
+            except IOError:
                 pass  # Ignore errors (e.g., if sensor disconnected)
 
         # Reset cached data
