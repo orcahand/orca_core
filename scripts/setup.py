@@ -1,16 +1,27 @@
 """ORCA Hand full setup script.
 
-Runs the complete tension → calibrate → test → verify workflow.
+Runs the complete tension -> calibrate -> test -> verify workflow.
 Three rounds of tension+calibration with a 1-minute motion test in between.
 """
 
 import argparse
-import sys
 import time
-from orca_core import OrcaHand
+
+from common import connect_hand, create_hand, shutdown_hand
+from orca_core import OrcaJointPositions
 
 
 DIVIDER = "=" * 60
+
+
+def pose_from_fractions(hand, fractions: dict[str, float]) -> OrcaJointPositions:
+    pose = dict(hand.config.neutral_position)
+    for joint, fraction in fractions.items():
+        if joint not in hand.config.joint_roms_dict:
+            continue
+        joint_min, joint_max = hand.config.joint_roms_dict[joint]
+        pose[joint] = joint_min + fraction * (joint_max - joint_min)
+    return OrcaJointPositions.from_dict(pose)
 
 
 def wait_for_enter(msg="Press ENTER to continue..."):
@@ -30,15 +41,19 @@ def print_step(step_num, title):
 
 
 def run_tension(hand, step_num, label):
-    """Run tension with move_motors in background, wait for user to press Enter."""
+    """Run tension in the foreground until the user interrupts with Ctrl+C."""
     print_step(step_num, f"TENSION — {label}")
     print("  Motors will move to set initial tension, then hold.")
     print("  Use the tensioning tool or pliers to turn the top spool clockwise.")
     print("  Do NOT overtension — just enough to remove slack.")
-    hand.tension(move_motors=True, blocking=False)
-    skipped = wait_for_enter("Press ENTER when tensioning is done...")
-    hand.stop_task()
-    print("  Tension skipped." if skipped else "  Tension complete.")
+    if wait_for_enter("Press ENTER to begin tensioning, or 's' to skip..."):
+        print("  Tension skipped.")
+        return
+    print("  Press Ctrl+C when tensioning is done.")
+    try:
+        hand.tension(move_motors=True, blocking=True)
+    except KeyboardInterrupt:
+        print("\n  Tension complete.")
 
 
 def run_calibrate(hand, step_num, label, force_wrist=False):
@@ -80,17 +95,46 @@ def run_motion_test(hand, step_num, duration=60):
     hand.enable_torque()
     hand.set_control_mode('current_based_position')
 
-    open_pos = {
-        "index_pip": -10, "middle_pip": -10, "ring_pip": -10, "pinky_pip": -10,
-        "thumb_dip": -30,
-        "thumb_mcp": -40, "index_mcp": -40, "middle_mcp": -40, "ring_mcp": -40, "pinky_mcp": -40,
-        "thumb_abd": 0, "index_abd": 0, "middle_abd": 0, "ring_abd": 0, "pinky_abd": 0,
-    }
-    closed_pos = {
-        "thumb_mcp": 45, "index_mcp": 45, "middle_mcp": 45, "ring_mcp": 45, "pinky_mcp": 45,
-        "thumb_dip": 90, "index_pip": 90, "middle_pip": 90, "ring_pip": 90, "pinky_pip": 90,
-        "thumb_abd": 40,
-    }
+    open_pos = pose_from_fractions(
+        hand,
+        {
+            "thumb_cmc": 0.70,
+            "thumb_abd": 0.80,
+            "thumb_mcp": 0.85,
+            "thumb_dip": 0.80,
+            "index_abd": 0.10,
+            "middle_abd": 0.50,
+            "ring_abd": 0.70,
+            "pinky_abd": 0.85,
+            "index_mcp": 0.15,
+            "middle_mcp": 0.15,
+            "ring_mcp": 0.15,
+            "pinky_mcp": 0.15,
+            "index_pip": 0.10,
+            "middle_pip": 0.10,
+            "ring_pip": 0.10,
+            "pinky_pip": 0.10,
+            "wrist": 0.30,
+        },
+    )
+    closed_pos = pose_from_fractions(
+        hand,
+        {
+            "thumb_cmc": 0.35,
+            "thumb_abd": 0.55,
+            "thumb_mcp": 0.20,
+            "thumb_dip": 0.85,
+            "index_mcp": 0.85,
+            "middle_mcp": 0.85,
+            "ring_mcp": 0.85,
+            "pinky_mcp": 0.85,
+            "index_pip": 0.90,
+            "middle_pip": 0.90,
+            "ring_pip": 0.90,
+            "pinky_pip": 0.90,
+            "wrist": 0.55,
+        },
+    )
 
     try:
         start = time.time()
@@ -133,12 +177,9 @@ def main():
     print("  Type 's' at any prompt or Ctrl+C to skip a step")
     print(DIVIDER)
 
-    hand = OrcaHand(config_path=args.config_path)
-    success, message = hand.connect()
-    if not success:
-        print(f"Failed to connect: {message}")
-        sys.exit(1)
-    print(f"  Connected: {message}")
+    hand = create_hand(args.config_path, use_mock=False)
+    connect_hand(hand)
+    print("  Connected and ready.")
 
     try:
         # --- Round 1: Initial tension + calibration (with wrist) ---
@@ -172,7 +213,7 @@ def main():
     except KeyboardInterrupt:
         print("\n\n  Setup interrupted by user.")
     finally:
-        hand.disconnect()
+        shutdown_hand(hand)
 
 
 if __name__ == "__main__":

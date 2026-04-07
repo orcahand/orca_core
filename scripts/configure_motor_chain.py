@@ -169,7 +169,7 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)")
+        help="Path to the hand config.yaml file.")
     args = parser.parse_args()
     
     try:
