@@ -1,6 +1,13 @@
+import sys
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 import argparse
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from orca_core import OrcaHand
 
 class MotorControlUI:
@@ -94,7 +101,10 @@ def main():
         print("Failed to connect to the hand.")
         return
 
+    hand.init_joints(force_calibrate=False)
+
     root = tk.Tk()
+    root.protocol("WM_DELETE_WINDOW", lambda: (hand.disconnect(), root.destroy()))
     app = MotorControlUI(root, hand)
     root.mainloop()
 

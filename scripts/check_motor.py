@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from orca_core.hardware.dynamixel_client import DynamixelClient
 import time
 import argparse # Added import
@@ -34,13 +41,18 @@ def main(): # Added main function
 
     dxl_client.set_torque_enabled([args.motor_id], True)
 
-    while True:
-        pos = dxl_client.read_pos_vel_cur()[0]
-        increment = -0.1 if args.reverse else 0.1
-        new_pos = pos + increment
-        dxl_client.write_desired_pos([args.motor_id], new_pos)
-        print(f"Current Position: {pos}, Target Position: {new_pos}, Operating Mode: {operating_mode}") # Formatted output
-        time.sleep(0.2)
+    try:
+        while True:
+            pos = dxl_client.read_pos_vel_cur()[0]
+            increment = -0.1 if args.reverse else 0.1
+            new_pos = pos + increment
+            dxl_client.write_desired_pos([args.motor_id], new_pos)
+            print(f"Current Position: {pos}, Target Position: {new_pos}, Operating Mode: {operating_mode}") # Formatted output
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        dxl_client.disconnect()
 
 if __name__ == "__main__":
     main()

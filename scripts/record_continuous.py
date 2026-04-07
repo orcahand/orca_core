@@ -1,89 +1,83 @@
-import os
-import time
-import yaml
+
+
 import argparse
-from orca_core import OrcaHand
-from datetime import datetime
+import time
+from pathlib import Path
+
+import yaml
+
+from common import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand,
+    prepare_output_dir,
+    shutdown_hand,
+)
 
 
-def record_continuous_angles(hand, output_dir, sampling_frequency=50.0, duration=None):
-    """
-    Continuously records joint angles from the OrcaHand.
+def _build_output_path(output_dir: Path, prefix: str) -> Path:
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    stem = f"{prefix}_continuous_angles_{timestamp}" if prefix else f"continuous_angles_{timestamp}"
+    return output_dir / f"{stem}.yaml"
 
-    Args:
-        hand (OrcaHand): An instance of the OrcaHand.
-        output_dir (str): Directory to save the output file. This directory will be created if it doesn't exist.
-        sampling_frequency (float): Frequency in Hz to sample the joint angles.
-        duration (float or None): Duration in seconds to record. If None, records until KeyboardInterrupt.
-    """
 
-    os.makedirs(output_dir, exist_ok=True)
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Continuously record joint angles while manually moving the hand."
+    )
+    add_hand_arguments(parser)
+    parser.add_argument("--frequency", type=float, default=50.0)
+    parser.add_argument("--duration", type=float, default=None)
+    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument(
+        "--force-calibrate",
+        action="store_true",
+        help="Run calibration even if calibration.yaml already exists.",
+    )
+    args = parser.parse_args()
 
-    prefix = input("Enter a prefix for the output file name (optional): ").strip()
-    interval = 1.0 / sampling_frequency
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_dir, f"{prefix + '_' if prefix else ''}continuous_angles_{timestamp}.yaml")
+    output_dir = prepare_output_dir(args.output_dir)
+    prefix = input("Enter an optional filename prefix. Press Enter to skip: ").strip()
+    output_path = _build_output_path(output_dir, prefix)
+    interval = 1.0 / args.frequency
 
-    status = hand.connect()
-    print(status)
-
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        return
-
-    hand.set_neutral_position()
-    time.sleep(1)
-    hand.disable_torque()
-    
-    input("Hand is in neutral position. Press Enter to start recording...")
-    print("Recording... Press Ctrl+C to stop.")
-
+    hand = create_hand(args.config_path, use_mock=args.mock)
     data = {
         "metadata": {
             "type": "continuous",
-            "hand_type": hand.type,
-            "created_at": timestamp,
-            "sampling_frequency_hz": sampling_frequency
+            "created_at": time.strftime("%Y%m%d_%H%M%S"),
+            "sampling_frequency_hz": args.frequency,
         },
-        "angles": []
+        "angles": [],
     }
 
-    start_time = time.time()
-
     try:
-        while True:
-            if duration and (time.time() - start_time) > duration:
-                break
-            angles = hand.get_joint_position().as_list(hand.config.joint_ids)
-            data["angles"].append([float(angle) for angle in angles])
-            print("Recording...", end="\r")
-            time.sleep(interval)
+        connect_hand(hand)
+        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
+        hand.disable_torque()
 
+        data["metadata"]["joint_ids"] = hand.config.joint_ids
+        data["metadata"]["hand_type"] = hand.config.type
+
+        input("Press Enter to start recording. Press Ctrl+C to stop.\n")
+        start_time = time.time()
+        while True:
+            if args.duration is not None and (time.time() - start_time) > args.duration:
+                break
+            pose = hand.get_joint_position().as_list(hand.config.joint_ids)
+            data["angles"].append([float(value) for value in pose])
+            print(f"Recording... captured {len(data['angles'])} frames", end="\r")
+            time.sleep(interval)
     except KeyboardInterrupt:
         print("\nRecording stopped by user.")
+    finally:
+        if data["angles"]:
+            output_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+            print(f"Saved {len(data['angles'])} frames to {output_path}")
+        shutdown_hand(hand)
 
-    with open(filename, "w") as f:
-        yaml.dump(data, f)
-
-    print(f"Continuous angle recording saved to {filename}")
+    return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Record continuous joint angles from the OrcaHand.")
-    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1_left/config.yaml)")
-    parser.add_argument("--frequency", type=float, default=50.0, help="Sampling frequency in Hz")
-    parser.add_argument("--duration", type=float, default=None, help="Recording duration in seconds (optional)")
-    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the output file, relative to the project root. Defaults to 'replay_sequences/' at project root if not specified.")
-    args = parser.parse_args()
-
-    hand = OrcaHand(config_path=args.config_path)
-
-    
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, '..'))
-    if args.output_dir:
-        final_output_dir = os.path.abspath(os.path.join(project_root, args.output_dir))
-    else:
-        final_output_dir = os.path.join(project_root, 'replay_sequences')
-    
-    record_continuous_angles(hand, output_dir=final_output_dir, sampling_frequency=args.frequency, duration=args.duration)
+    raise SystemExit(main())
