@@ -89,7 +89,6 @@ class AutoStreamStats:
     parse_errors: int = 0
     last_eff_len: int = 0
     last_payload_len: int = 0
-    consecutive_errors: int = 0  # For error-triggered reconfiguration
     reconfiguration_count: int = 0  # Number of times config was updated
 
 
@@ -166,7 +165,6 @@ class SensorClient:
 
         # Sensor configuration (dynamic, adapts to connected sensors)
         self._sensor_config: SensorConfiguration | None = None
-        self._last_reconfigure_time: float = 0.0  # Rate limiting for reconfiguration
 
         self._auto_thread: threading.Thread | None = None
         self._auto_running = threading.Event()  # Thread-safe flag for auto stream
@@ -552,68 +550,47 @@ class SensorClient:
             logger.error(f"Failed to get sensor configuration: {e}")
             raise IOError(f"Failed to read sensor configuration: {e}") from e
 
-    def _reconfigure(self, force: bool = False) -> bool:
-        """Attempt to reconfigure sensor client with current hardware state.
+    def _reconfigure(self) -> bool:
+        """Re-query the sensor board and update the cached configuration.
 
-        This is called when errors indicate the sensor configuration may have changed
-        (e.g., sensor disconnected or reconnected). It rate-limits reconfiguration
-        to avoid thrashing on flaky connections.
-
-        Args:
-            force: If True, bypass rate limiting and reconfigure immediately
+        Called by `_acquire_frame` when a payload-size mismatch indicates the
+        hardware reconfigured itself (sensor connected or disconnected).
 
         Returns:
-            True if reconfiguration succeeded and configuration changed, False otherwise
+            True if the active-sensor set changed, False if unchanged.
 
         Raises:
-            NoSensorsAvailableError: If no sensors are connected after reconfiguration
+            NoSensorsAvailableError: If no sensors are connected after reconfiguration.
         """
-        # Rate limiting: don't reconfigure more than once per 2 seconds (unless forced)
-        now = time.time()
-        if not force and (now - self._last_reconfigure_time) < 2.0:
-            logger.debug("Reconfiguration rate-limited, skipping")
-            return False
+        logger.info("Attempting reconfiguration...")
+        new_config = self._get_configuration()
 
-        try:
-            logger.info("Attempting reconfiguration...")
-            new_config = self._get_configuration()
+        if self._sensor_config is not None:
+            old_active = set(self._sensor_config.active_sensors)
+            new_active = set(new_config.active_sensors)
 
-            # Check if configuration actually changed
-            if self._sensor_config is not None:
-                old_active = set(self._sensor_config.active_sensors)
-                new_active = set(new_config.active_sensors)
+            if old_active == new_active:
+                logger.debug("Configuration unchanged, no reconfiguration needed")
+                return False
 
-                if old_active == new_active:
-                    logger.debug("Configuration unchanged, no reconfiguration needed")
-                    return False
+            added = new_active - old_active
+            removed = old_active - new_active
+            if added:
+                logger.info(f"Sensors added: {', '.join(added)}")
+            if removed:
+                logger.warning(f"Sensors removed: {', '.join(removed)}")
 
-                # Log configuration changes
-                added = new_active - old_active
-                removed = old_active - new_active
-                if added:
-                    logger.info(f"Sensors added: {', '.join(added)}")
-                if removed:
-                    logger.warning(f"Sensors removed: {', '.join(removed)}")
+        self._sensor_config = new_config
 
-            # Update configuration
-            self._sensor_config = new_config
-            self._last_reconfigure_time = now
+        with self._auto_lock:
+            self._auto_stats.reconfiguration_count += 1
 
-            with self._auto_lock:
-                self._auto_stats.reconfiguration_count += 1
-                self._auto_stats.consecutive_errors = 0  # Reset error counter
+        if new_config.num_active_sensors == 0:
+            logger.error("No sensors available after reconfiguration")
+            raise NoSensorsAvailableError("All sensors disconnected")
 
-            # Check if we have any sensors left
-            if new_config.num_active_sensors == 0:
-                logger.error("No sensors available after reconfiguration")
-                raise NoSensorsAvailableError("All sensors disconnected")
-
-            logger.info(f"Reconfiguration successful: {new_config}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Reconfiguration failed: {e}")
-            raise
+        logger.info(f"Reconfiguration successful: {new_config}")
+        return True
 
 
     def set_auto_data_type(self, resultant: bool = True, taxels: bool = False) -> None:
@@ -998,13 +975,8 @@ class SensorClient:
                     f"Payload size mismatch: expected {expected_size}, got {len(valid)}. "
                     "Triggering reconfiguration..."
                 )
-                try:
-                    if self._reconfigure(force=False):
-                        logger.info("Reconfiguration successful, continuing stream")
-                except NoSensorsAvailableError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Reconfiguration failed: {e}")
+                if self._reconfigure():
+                    logger.info("Reconfiguration successful, continuing stream")
                 raise FrameError("Payload size mismatch, skipping frame")
 
         # Parse payload based on mode
@@ -1036,33 +1008,6 @@ class SensorClient:
 
         return parsed_resultant, parsed_taxels
 
-    def _handle_error_threshold_reconfiguration(self, min_sensors: int) -> None:
-        """Attempt reconfiguration when consecutive errors exceed threshold.
-
-        Called by the auto-reader loop. Stops the stream if no sensors remain
-        or if the minimum sensor requirement is no longer met.
-        """
-        logger.warning(
-            f"Consecutive errors ({self._auto_stats.consecutive_errors}) exceeded threshold. "
-            "Attempting reconfiguration..."
-        )
-        try:
-            if self._reconfigure(force=False):
-                logger.info("Reconfiguration successful")
-                if self._sensor_config.num_active_sensors < min_sensors:
-                    logger.error(
-                        f"Only {self._sensor_config.num_active_sensors} sensor(s) available, "
-                        f"need {min_sensors}. Stopping stream."
-                    )
-                    self._auto_running.clear()
-        except NoSensorsAvailableError:
-            logger.error("No sensors available, stopping stream")
-            self._auto_running.clear()
-        except Exception as e:
-            logger.error(f"Reconfiguration failed: {e}")
-            with self._auto_lock:
-                self._auto_stats.consecutive_errors = 0
-
     def _auto_reader_loop(self, parse_resultant: bool, parse_taxels: bool, min_sensors: int):
         """Background thread that continuously reads and parses auto-stream frames.
 
@@ -1070,13 +1015,20 @@ class SensorClient:
         stats. Subclasses override _acquire_frame() to change the data source while
         inheriting the shared loop logic.
 
+        Error handling:
+        - FrameError: recoverable (bad LRC / parse error / size mismatch). Count
+          and continue. Size-mismatch frames trigger reconfiguration inside
+          _acquire_frame.
+        - NoSensorsAvailableError: terminal. Stop the stream cleanly.
+        - IOError: serial-level hiccup. Count, back off briefly, continue.
+        - Any other Exception: unexpected (likely a programming bug). Log the
+          traceback and stop the stream loudly rather than rotting silently.
+
         Args:
             parse_resultant: Whether to parse resultant force data
             parse_taxels: Whether to parse individual taxel data
             min_sensors: Minimum number of sensors required to continue streaming
         """
-        ERROR_THRESHOLD = 5
-
         while self._auto_running.is_set():
             try:
                 parsed_resultant, parsed_taxels = self._acquire_frame(
@@ -1093,7 +1045,6 @@ class SensorClient:
                     self._auto_latest_ts = time.time()
                     self._auto_stats.frames_ok += 1
                     self._auto_stats.parse_ok += 1
-                    self._auto_stats.consecutive_errors = 0
 
             except FrameError as e:
                 with self._auto_lock:
@@ -1102,7 +1053,6 @@ class SensorClient:
                     else:
                         self._auto_stats.frames_ok += 1
                         self._auto_stats.parse_errors += 1
-                    self._auto_stats.consecutive_errors += 1
 
             except NoSensorsAvailableError:
                 logger.error("No sensors available, stopping stream")
@@ -1116,18 +1066,12 @@ class SensorClient:
                 logger.warning(f"IO error in auto reader: {e}")
                 with self._auto_lock:
                     self._auto_stats.resyncs += 1
-                    self._auto_stats.consecutive_errors += 1
                 time.sleep(0.01)
 
-            except Exception as e:
-                logger.error(f"Unexpected error in auto reader: {e}", exc_info=True)
-                with self._auto_lock:
-                    self._auto_stats.resyncs += 1
-                    self._auto_stats.consecutive_errors += 1
-                time.sleep(0.01)
-
-            if self._auto_stats.consecutive_errors >= ERROR_THRESHOLD:
-                self._handle_error_threshold_reconfiguration(min_sensors)
+            except Exception:
+                logger.exception("Unexpected error in auto reader, stopping stream")
+                self._auto_running.clear()
+                break
 
         logger.info("Auto reader loop exited")
 
