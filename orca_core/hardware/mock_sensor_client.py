@@ -193,12 +193,7 @@ class MockSensorClient(SensorClient):
     def _write_register(self, address: int, data: bytes, response_timeout_s: float = 0.5) -> None:
         pass
 
-    def reboot(self) -> None:
-        if not self.is_connected:
-            raise OSError("Must call connect() first.")
-        logger.info("[MOCK] Sensor reboot simulated")
-
-    # =========================================================================
+# =========================================================================
     # Force Reading
     # =========================================================================
 
