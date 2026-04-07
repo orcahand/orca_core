@@ -20,6 +20,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.motor_client import MotorClient
+from .hardware.sensing.types import ResultantReading, TaxelReading
 from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
 
 if TYPE_CHECKING:
@@ -1202,15 +1203,33 @@ class OrcaHandTouch(OrcaHand):
         self._sensor_client = None
         super().disconnect()
 
-    def get_tactile_forces(self) -> dict[str, list[float]]:
-        """Return latest resultant force per finger ``{finger: [fx, fy, fz]}``."""
-        forces, _ = self._sensor_client.get_auto_latest()
-        return forces
+    def get_tactile_forces(self) -> ResultantReading | None:
+        """Return latest resultant force per finger, or ``None`` if unavailable.
 
-    def get_tactile_taxels(self) -> dict[str, list[list[float]]]:
-        """Return per-taxel forces ``{finger: [[fx, fy, fz], ...]}``."""
-        taxels, _ = self._sensor_client.get_auto_latest_taxels()
-        return taxels
+        The returned object supports dict-style access by finger name::
+
+            reading["thumb"]  # -> [fx, fy, fz]
+
+        Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
+        """
+        forces, ts = self._sensor_client.get_auto_latest()
+        if forces is None:
+            return None
+        return ResultantReading(forces=forces, timestamp=ts)
+
+    def get_tactile_taxels(self) -> TaxelReading | None:
+        """Return per-taxel forces, or ``None`` if unavailable.
+
+        The returned object supports dict-style access by finger name::
+
+            reading["thumb"]  # -> [[fx, fy, fz], ...] per taxel
+
+        Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
+        """
+        taxels, ts = self._sensor_client.get_auto_latest_taxels()
+        if taxels is None:
+            return None
+        return TaxelReading(taxels=taxels, timestamp=ts)
 
     def start_tactile_stream(
         self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1

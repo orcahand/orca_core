@@ -2,7 +2,7 @@
 
 Validates the mock's lifecycle (connect → stream → read → stop), offset logic,
 dynamic reconfiguration, and configuration ordering. Pure protocol codec tests
-live in test_protocol.py; taxel coordinate tests live in test_taxel_coordinates.py.
+live in test_protocol.py.
 """
 
 import time
