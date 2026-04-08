@@ -8,9 +8,11 @@
 
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 
+from .demo_presets import DEMO_POSE_FRACTIONS, DEMO_SEQUENCES
 from .hand_config import BaseHandConfig
 from .joint_position import OrcaJointPositions
 
@@ -61,9 +63,8 @@ class BaseHand(ABC):
         )
         self.config.validate()
         OrcaJointPositions.register_joint_names(self.config.joint_ids)
-        
+
         self.recorded_positions: dict[str, OrcaJointPositions] = {}
-    
 
     @abstractmethod
     def _get_joint_positions(self) -> OrcaJointPositions:
@@ -77,27 +78,44 @@ class BaseHand(ABC):
 
     def _coerce_joint_positions(
         self,
-        joint_pos: OrcaJointPositions | dict[str, float | None] | np.ndarray,
+        joint_pos: OrcaJointPositions | Mapping[str, float | None] | np.ndarray,
     ) -> OrcaJointPositions:
         if isinstance(joint_pos, OrcaJointPositions):
             return joint_pos
 
-        if isinstance(joint_pos, dict):
-            return OrcaJointPositions.from_dict(joint_pos)
+        if isinstance(joint_pos, Mapping):
+            return OrcaJointPositions.from_dict(dict(joint_pos))
 
         if isinstance(joint_pos, np.ndarray):
             return OrcaJointPositions.from_ndarray(joint_pos, joint_ids=self.config.joint_ids)
 
         raise TypeError(
-            "joint_pos must be an OrcaJointPositions instance, a dict, or a 1-D numpy array."
+            "joint_pos must be an OrcaJointPositions instance, a mapping, or a 1-D numpy array."
         )
-    
+
+    def pose_from_fractions(
+        self,
+        fractions: Mapping[str, float],
+    ) -> OrcaJointPositions:
+        """Build a pose by specifying joints as fractions of their ROM, read from config."""
+        pose_dict = {joint: 0.0 for joint in self.config.joint_ids}
+        pose_dict.update(self.config.neutral_position)
+
+        for joint, fraction in fractions.items():
+            if joint not in self.config.joint_roms_dict:
+                continue
+
+            joint_min, joint_max = self.config.joint_roms_dict[joint]
+            pose_dict[joint] = joint_min + float(fraction) * (joint_max - joint_min)
+
+        return self.config.clamp_joint_positions(OrcaJointPositions.from_dict(pose_dict))
+
     def set_joint_positions(
         self,
-        joint_pos: OrcaJointPositions | dict[str, float | None] | np.ndarray,
+        joint_pos: OrcaJointPositions | Mapping[str, float | None] | np.ndarray,
         num_steps: int = 1,
         step_size: float = 1e-2,
-):
+    ):
         """Command the hand to a target joint configuration.
 
         Positions are clamped to configured ROM bounds before being sent to
@@ -146,18 +164,67 @@ class BaseHand(ABC):
                 })
             )
         return out
-    
+
     def register_position(self, name: str, joint_pos: OrcaJointPositions):
-        self.recorded_positions[name] = joint_pos
-    
+        self.recorded_positions[name] = self.config.clamp_joint_positions(joint_pos)
+
     def remove_position(self, name: str):
         try:
             del self.recorded_positions[name]
         except KeyError:
             pass  # position was not among recorded positions
-    
+
     def set_named_position(self, name: str, num_steps: int = 1, step_size: float = 1.0):
         self.set_joint_positions(self.recorded_positions[name], num_steps=num_steps, step_size=step_size)
+
+    def play_named_positions(
+        self,
+        names: Sequence[str],
+        cycles: int = 1,
+        num_steps: int = 1,
+        step_size: float = 1.0,
+        return_to_neutral: bool = False,
+        neutral_num_steps: int | None = None,
+        neutral_step_size: float | None = None,
+    ) -> None:
+        if cycles < 0:
+            raise ValueError("cycles must be non-negative.")
+
+        for _ in range(cycles):
+            for name in names:
+                self.set_named_position(name, num_steps=num_steps, step_size=step_size)
+            if return_to_neutral:
+                self.set_neutral_position(
+                    num_steps=num_steps if neutral_num_steps is None else neutral_num_steps,
+                    step_size=step_size if neutral_step_size is None else neutral_step_size,
+                )
+
+    def run_demo(
+        self,
+        demo_name: str = "main",
+        cycles: int = 1,
+        num_steps: int = STEPS_TO_NEUTRAL,
+        step_size: float = STEP_SIZE_NEUTRAL,
+        return_to_neutral: bool = True,
+    ) -> tuple[str, ...]:
+        if demo_name not in DEMO_POSE_FRACTIONS or demo_name not in DEMO_SEQUENCES:
+            available = ", ".join(sorted(DEMO_SEQUENCES))
+            raise ValueError(f"Unknown demo '{demo_name}'. Available demos: {available}.")
+
+        poses = {
+            name: self.pose_from_fractions(fractions)
+            for name, fractions in DEMO_POSE_FRACTIONS[demo_name].items()
+        }
+        sequence = DEMO_SEQUENCES[demo_name]
+
+        for _ in range(cycles):
+            for name in sequence:
+                self.set_joint_positions(poses[name], num_steps=num_steps, step_size=step_size)
+            
+            if return_to_neutral:
+                self.set_neutral_position(num_steps=num_steps, step_size=step_size)
+
+        return sequence
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
         """Move hand to neutral position."""
