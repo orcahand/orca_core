@@ -1,4 +1,4 @@
-port: /dev/cu.usbserial-FTAK89H0
+port: /dev/cu.usbmodem1101
 version: 0.2.1
 baudrate: 1000000
 max_current: 300
