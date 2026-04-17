@@ -5,6 +5,7 @@ import argparse
 
 from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 from orca_core import OrcaJointPositions
+from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 # Max operating temp (°C) — conservative across XC330 (70°C) and XC430 (72°C)
 MAX_TEMP = 70
@@ -140,9 +141,9 @@ def main() -> int:
                 last_temp_check = now
                 print_temp_table(hand, hand.get_motor_temp(as_dict=True))
 
-            hand.set_joint_positions(open_pose, num_steps=25, step_size=0.001)
+            hand.set_joint_positions(open_pose, num_steps=NUM_STEPS, step_size=STEP_SIZE)
             time.sleep(2.0)
-            hand.set_joint_positions(close_pose, num_steps=25, step_size=0.001)
+            hand.set_joint_positions(close_pose, num_steps=NUM_STEPS, step_size=STEP_SIZE)
             time.sleep(2.0)
 
             if cycles_remaining > 0:
