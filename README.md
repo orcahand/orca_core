@@ -42,13 +42,13 @@ To get started with Orca Core, follow these steps:
 
 3. **Check the configuration file**:
 
-    - Review the config file (e.g., `orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+    - Review the config file (e.g., `orca_core/models/v2/orcahand_right/config.yaml`) and make sure it matches your hardware setup.
 
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/orcahand_v1_right
-    uv run python scripts/calibrate.py orca_core/models/orcahand_v1_right
+    uv run python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml
+    uv run python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
     Replace the path with your specific hand model folder if needed.
@@ -56,36 +56,7 @@ To get started with Orca Core, follow these steps:
 5. **Move the hand to the neutral position**:
 
     ```sh
-    uv run python scripts/neutral.py orca_core/models/orcahand_v1_right
-    ```
-
-6. **Example usage: test.py**
-
-    Here is a minimal example script you can use to test your setup:
-
-    ```python
-    from orca_core import OrcaHand
-    import time
-
-    hand = OrcaHand("orca_core/models/orcahand_v1_right")
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
-
-    hand.enable_torque()
-
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
-
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
-    hand.disconnect()
+    uv run python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
 ---
