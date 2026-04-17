@@ -477,7 +477,7 @@ class OrcaHand(BaseHand):
         """Run the joint calibration routine.
 
         Drives each joint to its mechanical limits in the sequence defined by
-        ``calib_sequence`` in ``config.yaml``, records the motor positions at
+        ``calibration_sequence`` in ``config.yaml``, records the motor positions at
         each limit, and persists the resulting motor limits and joint-to-motor
         ratios to ``calibration.yaml``.
 
@@ -519,7 +519,7 @@ class OrcaHand(BaseHand):
     def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
-        Drives each joint through its mechanical limits following ``calib_sequence``
+        Drives each joint through its mechanical limits following ``calibration_sequence``
         from ``config.yaml``, records motor positions at each limit, and persists
         the resulting motor limits and joint-to-motor ratios to ``calibration.yaml``
         after every step. Returns ``None`` on early exit (stop event triggered).

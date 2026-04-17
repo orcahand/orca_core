@@ -120,11 +120,11 @@ You can adjust this section if you want the hand to return to a different defaul
 ### 6. Calibration Parameters
 
 ```yaml
-calib_current: 350
-calib_step_size: 0.1
-calib_step_period: 0.001
-calib_num_stable: 10
-calib_threshold: 0.01
+calibration_current: 350
+calibration_step_size: 0.1
+calibration_step_period: 0.001
+calibration_num_stable: 10
+calibration_threshold: 0.01
 ```
 
 **What should be changed?**
@@ -136,7 +136,7 @@ These parameters should generally not be changed unless you have experience tuni
 ### 7. Calibration Sequence
 
 ```yaml
-calib_sequence:
+calibration_sequence:
     - step: 1
       joints:
         thumb_mcp: flex

@@ -70,13 +70,13 @@ neutral_position:
   pinky_pip: 0
   wrist: 0
 
-calib_current: 350
-calib_step_size: 0.1
-calib_step_period: 0.001
-calib_num_stable: 10  # should be period * num_stable > 1
-calib_threshold: 0.01
+calibration_current: 350
+calibration_step_size: 0.1
+calibration_step_period: 0.001
+calibration_num_stable: 10  # should be period * num_stable > 1
+calibration_threshold: 0.01
 
-calib_sequence:
+calibration_sequence:
   - step: 1
     joints:
       thumb_mcp: flex
@@ -168,7 +168,7 @@ calib_sequence:
     joints:
       wrist: extend
 
-# calib_sequence:
+# calibration_sequence:
 #   - step: 1
 #     joints:
 #       pinky_pip: flex
