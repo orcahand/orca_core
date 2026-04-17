@@ -2,7 +2,7 @@ port: /dev/cu.usbmodem3101
 version: 0.2.1
 baudrate: 1000000
 max_current: 300
-type: right
+type: left
 control_mode: current_based_position
 motor_ids:
 - 1
@@ -41,22 +41,22 @@ joint_ids:
 - pinky_mcp
 - pinky_pip
 joint_to_motor_map:
-  thumb_cmc: 17
-  thumb_abd: 14
-  thumb_mcp: 15
-  thumb_dip: 16
-  index_abd: 4
-  index_mcp: 3
-  index_pip: 2
-  middle_abd: 5
-  middle_mcp: 10
-  middle_pip: 9
-  ring_abd: 6
-  ring_mcp: -7
-  ring_pip: 8
-  pinky_abd: -13
-  pinky_mcp: 12
-  pinky_pip: -11
+  thumb_cmc: -10
+  thumb_abd: -13
+  thumb_mcp: 12
+  thumb_dip: 11
+  index_abd: -7
+  index_mcp: -8
+  index_pip: -9
+  middle_abd: -6
+  middle_mcp: -17
+  middle_pip: -2
+  ring_abd: -5
+  ring_mcp: 4
+  ring_pip: -3
+  pinky_abd: 14
+  pinky_mcp: -15
+  pinky_pip: 16
   wrist: -1
 joint_roms:
   wrist:
@@ -200,3 +200,10 @@ calibration_sequence:
 - step: 16
   joints:
     wrist: extend
+sensors:
+  finger_to_sensor_id:
+    thumb: 2
+    index: 4
+    middle: 0
+    ring: 1
+    pinky: 3

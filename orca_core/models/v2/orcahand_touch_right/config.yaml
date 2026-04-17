@@ -200,3 +200,10 @@ calibration_sequence:
 - step: 16
   joints:
     wrist: extend
+sensors:
+  finger_to_sensor_id:
+    thumb: 1
+    index: 3
+    middle: 0
+    ring: 2
+    pinky: 4
