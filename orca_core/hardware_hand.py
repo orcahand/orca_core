@@ -42,9 +42,9 @@ from .constants import (
     MOTOR_LIMITS_DICT,
     WRIST_CALIBRATED,
     CALIBRATED,
-    STEPS_TO_NEUTRAL,
+    NUM_STEPS,
     POSITION,
-    STEP_SIZE_NEUTRAL,
+    STEP_SIZE,
 )
 
 from .joint_position import OrcaJointPositions
@@ -395,16 +395,19 @@ class OrcaHand(BaseHand):
         self._set_motor_pos(motor_pos)
         return True
 
-    def init_joints(self, force_calibrate: bool = False):
+    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
         Enables torque, sets the configured control mode and current limit,
-        runs calibration if needed, computes wrap offsets, and moves to the
-        neutral position.
+        runs calibration if needed, computes wrap offsets, and optionally
+        moves to the neutral position.
 
         Args:
-            calibrate: Force a fresh calibration even if the hand is already
-                calibrated (default ``False``).
+            force_calibrate: Force a fresh calibration even if the hand is
+                already calibrated (default ``False``).
+            move_to_neutral: Move to the configured neutral pose at the end
+                of initialization (default ``True``). Set to ``False`` when
+                the caller will immediately command a different pose.
         """
         self.enable_torque()
         self.set_control_mode(self.config.control_mode)
@@ -414,13 +417,15 @@ class OrcaHand(BaseHand):
             self.calibrate()
 
         self._compute_wrap_offsets_dict()
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
-        self.set_joint_positions(
-            OrcaJointPositions.from_dict(self.config.neutral_position),
-            num_steps=STEPS_TO_NEUTRAL
-        )
-        self.set_control_mode(control_mode)
+
+        if move_to_neutral:
+            control_mode = self.config.control_mode
+            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
+            self.set_joint_positions(
+                OrcaJointPositions.from_dict(self.config.neutral_position),
+                num_steps=NUM_STEPS
+            )
+            self.set_control_mode(control_mode)
 
     def is_calibrated(self, verbose: bool = False) -> bool:
         """Check whether all joints have been fully calibrated.
@@ -735,7 +740,7 @@ class OrcaHand(BaseHand):
 
             if calibrated_joints:
                 self.set_joint_positions(
-                    calibrated_joints, num_steps=25, step_size=0.001
+                    calibrated_joints, num_steps=NUM_STEPS, step_size=STEP_SIZE
                 )
 
             # TODO(fracapuano): Is this necessary?
@@ -756,14 +761,14 @@ class OrcaHand(BaseHand):
 
         if calibrated_joints:
             self.set_joint_positions(
-                calibrated_joints, num_steps=STEPS_TO_NEUTRAL, step_size=TINY_SLEEP
+                calibrated_joints, num_steps=NUM_STEPS, step_size=TINY_SLEEP
             )
 
         self.set_max_current(self.config.max_current)
 
         return final_result
 
-    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
