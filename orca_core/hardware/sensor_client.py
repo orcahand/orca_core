@@ -460,7 +460,7 @@ class SensorClient:
     def _read_raw_resultant(self) -> dict[str, list[float]]:
         """Read raw resultant forces from hardware (no offset application).
 
-        Subclasses (e.g. MockSensorClient) override this to return simulated
+        MockSensorClient overrides this to return simulated
         data. The public read_resultant_force() method calls this, then applies
         zeroing offsets.
 
@@ -487,7 +487,6 @@ class SensorClient:
         """Read resultant force from all connected fingertip sensors.
 
         Calls _read_raw_resultant() for data, then applies zeroing offsets.
-        Subclasses should override _read_raw_resultant(), not this method.
 
         Returns:
             Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
@@ -795,6 +794,10 @@ class SensorClient:
             fvec[1] = round(fvec[1] - off[1], 1)
             fvec[2] = round(max(0, fvec[2] - off[2]), 1)
 
+    def _on_frame_stored(self) -> None:
+        """Hook called after a frame is stored in _auto_latest. Subclasses
+        may override to signal frame availability (e.g. for tests)."""
+
     def _apply_stream_offsets(
         self,
         parsed_resultant: dict | None,
@@ -999,6 +1002,7 @@ class SensorClient:
                         self._auto_latest_taxels = parsed_taxels
                     self._auto_latest_ts = time.time()
                     self._auto_stats.frames_ok += 1
+                self._on_frame_stored()
 
             except FrameError as e:
                 with self._auto_lock:

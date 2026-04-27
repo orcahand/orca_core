@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import threading
 import time
 import logging
 
@@ -55,6 +56,7 @@ class MockSensorClient(SensorClient):
         port: str = "mock",
         baudrate: int = DEFAULT_SENSOR_BAUDRATE,
         connected_sensors: list[str] | None = None,
+        taxel_counts: dict[str, int] | None = None,
         finger_to_sensor_id: dict[str, int] | None = None,
         resultant_provider: ResultantProvider | None = None,
         taxel_provider: TaxelProvider | None = None,
@@ -65,11 +67,15 @@ class MockSensorClient(SensorClient):
         if connected_sensors is None:
             connected_sensors = list(FINGER_NAMES)
 
+        self._taxel_counts_per_finger: dict[str, int] = (
+            dict(taxel_counts) if taxel_counts is not None else dict(DEFAULT_TAXEL_COUNTS)
+        )
+
         self._sim_connected: dict[str, bool] = {
             f: f in connected_sensors for f in FINGER_NAMES
         }
         self._sim_taxel_counts: dict[str, int] = {
-            f: DEFAULT_TAXEL_COUNTS[f] if f in connected_sensors else 0
+            f: self._taxel_counts_per_finger[f] if f in connected_sensors else 0
             for f in FINGER_NAMES
         }
 
@@ -86,6 +92,10 @@ class MockSensorClient(SensorClient):
         # None = no sleep between frames (ideal for tests). Pass e.g. 1000
         # to throttle to ~1kHz for demos or UI prototyping.
         self._auto_rate_hz = auto_rate_hz
+
+        # Set by _acquire_frame after the first frame is produced. Lets tests
+        # synchronize on stream start without polling/sleeping.
+        self._first_frame_event = threading.Event()
 
     # =========================================================================
     # Mock Control Methods
@@ -204,6 +214,22 @@ class MockSensorClient(SensorClient):
     # Frame Acquisition (overrides base class serial reader)
     # =========================================================================
 
+    def start_auto_stream(self, *args, **kwargs):
+        self._first_frame_event.clear()
+        super().start_auto_stream(*args, **kwargs)
+
+    def wait_for_first_frame(self, timeout: float = 2.0) -> None:
+        """Block until the auto-stream loop has stored its first frame.
+
+        Lets tests synchronize on stream startup without polling or sleeps.
+        Raises TimeoutError if no frame arrives in `timeout` seconds.
+        """
+        if not self._first_frame_event.wait(timeout):
+            raise TimeoutError(f"No auto-stream frame within {timeout}s")
+
+    def _on_frame_stored(self) -> None:
+        self._first_frame_event.set()
+
     def _acquire_frame(
         self,
         parse_resultant: bool,
@@ -231,7 +257,7 @@ class MockSensorClient(SensorClient):
         """Update simulated connectivity and reconfigure if connected."""
         self._sim_connected = {f: f in sensors for f in FINGER_NAMES}
         self._sim_taxel_counts = {
-            f: DEFAULT_TAXEL_COUNTS[f] if self._sim_connected[f] else 0
+            f: self._taxel_counts_per_finger[f] if self._sim_connected[f] else 0
             for f in FINGER_NAMES
         }
         if self._connected:
