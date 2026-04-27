@@ -42,8 +42,10 @@ FEETECH_BAUD_RATE_MAP = {
 FEETECH_MODELS = {}
 
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
-DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
-DEFAULT_VEL_SCALE = 0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
+# Sign is inverted to match the Dynamixel rotation convention so a positive
+# command tensions the tendons on both backends.
+DEFAULT_POS_SCALE = -2.0 * np.pi / 4096  # 4096 steps for 360°
+DEFAULT_VEL_SCALE = -0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
 DEFAULT_CUR_SCALE = 6.5  # mA per unit
 
 # Position limits for STS servo mode (0-4095, one full rotation)
