@@ -534,16 +534,12 @@ class FeetechClient(MotorClient):
     ) -> None:
         """Writes positions to multiple motors using sync write.
 
-        When ``speed`` is None (the default), per-motor speeds are scaled
-        proportional to each motor's distance-to-target, so motors with longer
-        trips run faster and all motors finish in sync. Pass an explicit
-        ``speed`` to disable the scaling and use a uniform speed.
+        More efficient than individual writes for multiple motors.
 
         Args:
             motor_ids: Motor IDs to write to.
             positions: Target positions in radians.
-            speed: Optional uniform speed (0.732 RPM/unit). If None, scales
-                per motor for synchronized arrival.
+            speed: Movement speed (0.732 RPM per unit). Default ~60 = 44 RPM.
             acc: Acceleration (0-254). Default 50.
             torque: Torque limit (0-1000). Default 500.
         """
@@ -552,28 +548,23 @@ class FeetechClient(MotorClient):
         if len(motor_ids) != len(positions):
             raise ValueError('motor_ids and positions must have the same length')
 
+        speed = speed if speed is not None else self._default_speed
         acc = acc if acc is not None else self._default_acc
         torque = torque if torque is not None else self._default_torque
-
-        positions_arr = np.asarray(positions, dtype=float)
-        if speed is None:
-            speeds = self._compute_sync_speeds(motor_ids, positions_arr)
-        else:
-            speeds = np.full(len(motor_ids), int(speed), dtype=int)
 
         # Clear any existing sync write params
         self.packet_handler.groupSyncWrite.clearParam()
 
-        for motor_id, pos_rad, mspeed in zip(motor_ids, positions_arr, speeds):
+        for motor_id, pos_rad in zip(motor_ids, positions):
             pos_raw = int(pos_rad * POSITION_DIRECTION / self.pos_scale)
             pos_raw = self._clamp_position(pos_raw)
 
             logging.debug(
                 'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
-                motor_id, pos_raw, int(mspeed), acc, torque
+                motor_id, pos_raw, speed, acc, torque
             )
 
-            self.packet_handler.SyncWritePosEx(motor_id, pos_raw, int(mspeed), acc, torque)
+            self.packet_handler.SyncWritePosEx(motor_id, pos_raw, speed, acc, torque)
 
         # Send the sync write packet
         result = self.packet_handler.groupSyncWrite.txPacket()
@@ -582,34 +573,6 @@ class FeetechClient(MotorClient):
 
         # Clear params for next use
         self.packet_handler.groupSyncWrite.clearParam()
-
-    def _compute_sync_speeds(
-        self,
-        motor_ids: Sequence[int],
-        target_positions: np.ndarray,
-    ) -> np.ndarray:
-        """Per-motor speeds (raw units) scaled so motors arrive together.
-
-        Reads current positions once, scales each motor's speed by its share
-        of the largest absolute delta. The motor with the largest move runs at
-        ``self._default_speed``; smaller moves run proportionally slower.
-        """
-        current = self.read_pos_vel_cur()[0]
-        motor_to_idx = {mid: i for i, mid in enumerate(self.motor_ids)}
-        deltas = np.array([
-            target_positions[i] - current[motor_to_idx[motor_ids[i]]]
-            for i in range(len(motor_ids))
-        ])
-        abs_deltas = np.abs(deltas)
-        max_delta = abs_deltas.max() if abs_deltas.size else 0.0
-        if max_delta < 1e-6:
-            return np.full(len(motor_ids), self._default_speed, dtype=int)
-        ratios = abs_deltas / max_delta
-        # Clamp to [1, 1023]: 0 stalls the motor; 1023 is the protocol max.
-        return np.clip(
-            (ratios * self._default_speed).round().astype(int),
-            1, 1023,
-        )
 
     def read_pos_vel_cur_sync(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Reads position, velocity, and current for all motors using sync read.
