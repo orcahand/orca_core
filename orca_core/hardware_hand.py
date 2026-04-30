@@ -366,21 +366,6 @@ class OrcaHand(BaseHand):
 
             return motor_current
 
-    def wait_for_motion(self, timeout: float = 5.0) -> bool:
-        """Block until all motors have settled at their commanded position.
-
-        No-op for motor types fast enough that callers don't need to wait
-        (e.g., Dynamixel). Feetech polls a per-motor moving flag.
-
-        Args:
-            timeout: Max seconds to wait.
-
-        Returns:
-            True if all motors stopped within the timeout, False otherwise.
-        """
-        with self._motor_lock:
-            return self._motor_client.wait_for_motion_complete(timeout=timeout)
-
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
 

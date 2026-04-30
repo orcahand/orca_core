@@ -116,23 +116,6 @@ class MotorClient(ABC):
         """
         ...
 
-    def wait_for_motion_complete(self, timeout: float = 5.0) -> bool:
-        """Block until all motors finish their commanded motion.
-
-        Default implementation is a no-op for motor families that respond
-        fast enough that callers don't need to wait (e.g., Dynamixel, mock).
-        Slower buses like Feetech override this to poll a per-motor moving
-        flag.
-
-        Args:
-            timeout: Max seconds to wait.
-
-        Returns:
-            True if motion completed (or no waiting was needed), False on
-            timeout.
-        """
-        return True
-
     @property
     def requires_offset_calibration(self) -> bool:
         """Returns True if this motor type needs offset calibration during joint calibration."""
