@@ -106,10 +106,11 @@ class FeetechClient(MotorClient):
         self._connected = False
 
         # Default motion parameters
-        # Speed unit is 0.732 RPM per value. In practice, motor tops out around
-        # 1500 steps/sec (~22 RPM) due to hardware limits.
-        self._default_speed = 60  # Good balance of speed and control
-        self._default_acc = 50  # Acceleration (0-254)
+        # Speed unit is 0.732 RPM per value; the motor's firmware caps speed
+        # to whatever its hardware can sustain, so passing a large value just
+        # means "go as fast as you can".
+        self._default_speed = 1500  # Effectively "max speed" for STS-class
+        self._default_acc = 150  # Acceleration (0-254): faster ramp-up
         self._default_torque = 500  # Torque limit (0-1000), required for motion
 
         self.OPEN_CLIENTS.add(self)
