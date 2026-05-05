@@ -20,6 +20,9 @@ KNOWN_VIDS: dict[str, list[int]] = {
         0x1A86,  # QinHeng Electronics CH340 (most Feetech USB adapters)
         0x10C4,  # Silicon Labs CP210x (some Feetech boards)
     ],
+    "tactile_sensor": [
+        0x28E9,  # Paxini tactile sensor USB adapter
+    ],
 }
 
 """
