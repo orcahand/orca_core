@@ -149,9 +149,10 @@ def test_combined_mode_returns_both_streams(mock):
 )
 def test_custom_provider_is_used(kind):
     if kind == "resultant":
+        marker = [4.2, -3.0, 20.0]
         mock = MockSensorClient(
             connected_sensors=["thumb"],
-            resultant_provider=lambda: {"thumb": [42.0, 0.0, 0.0]},
+            resultant_provider=lambda: {"thumb": marker},
         )
         mock.connect()
         mock.start_auto_stream(resultant=True, taxels=False)
@@ -159,11 +160,12 @@ def test_custom_provider_is_used(kind):
         result, _ = mock.get_auto_latest()
         mock.stop_auto_stream()
         mock.disconnect()
-        assert result["thumb"] == [42.0, 0.0, 0.0]
+        assert result["thumb"] == marker
     else:
-        marker = [[99.0, 88.0, 77.0]]
+        marker = [[9.9, -8.8, 7.7]]
         mock = MockSensorClient(
             connected_sensors=["thumb"],
+            taxel_counts={"thumb": 1},
             taxel_provider=lambda: {"thumb": marker},
         )
         mock.connect()
