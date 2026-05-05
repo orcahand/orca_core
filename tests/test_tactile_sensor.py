@@ -1,21 +1,14 @@
 """Tests for MockSensorClient integration and SensorConfiguration contracts.
 
 Validates the mock's lifecycle (connect → stream → read → stop), offset logic,
-dynamic reconfiguration, and configuration ordering. Pure protocol codec tests
-live in test_protocol.py.
+and configuration ordering. Pure protocol codec tests live in test_protocol.py.
 """
-
-import time
 
 import pytest
 
 from orca_core.hardware.sensor_client import SensorConfiguration
 from orca_core.hardware.mock_sensor_client import MockSensorClient
-from orca_core.hardware.sensing.constants import (
-    DEFAULT_TAXEL_COUNTS,
-    BYTES_PER_RESULTANT,
-    BYTES_PER_TAXEL,
-)
+from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
 from orca_core.hardware.sensing.protocol import compute_distal_module_index
 
 ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
@@ -60,18 +53,10 @@ def _make_config(
     num_taxels = {f: taxel_counts.get(f, 0) for f in connected_fingers}
     module_indices = {f: compute_distal_module_index(finger_to_sensor_id[f]) for f in connected_fingers}
 
-    num_active = len(connected_fingers)
-    expected_resultant = num_active * BYTES_PER_RESULTANT
-    expected_taxels = sum(num_taxels[f] * BYTES_PER_TAXEL for f in connected_fingers)
-
     return SensorConfiguration(
         connected=connected,
         num_taxels=num_taxels,
         module_indices=module_indices,
-        expected_payload_size_resultant=expected_resultant,
-        expected_payload_size_taxels=expected_taxels,
-        expected_payload_size_combined=expected_resultant + expected_taxels,
-        timestamp=time.time(),
         finger_to_sensor_id=finger_to_sensor_id,
     )
 
@@ -175,30 +160,6 @@ def test_custom_provider_is_used(kind):
         mock.stop_auto_stream()
         mock.disconnect()
         assert result["thumb"] == marker
-
-
-# ---------------------------------------------------------------------------
-# Dynamic reconfiguration
-# ---------------------------------------------------------------------------
-
-def test_simulate_dropout_removes_sensors(mock):
-    assert mock._sensor_config.num_active_sensors == 5
-    mock.simulate_dropout(["index", "ring"])
-    assert mock._sensor_config.num_active_sensors == 3
-    assert "index" not in mock._sensor_config.active_sensors
-    assert "ring" not in mock._sensor_config.active_sensors
-
-
-def test_set_connected_sensors_updates_config(mock):
-    mock.set_connected_sensors(["thumb"])
-    assert mock._sensor_config.active_sensors == ["thumb"]
-    assert mock._sensor_config.num_active_sensors == 1
-
-
-def test_dropout_clears_mock_data(mock):
-    mock.set_mock_forces({"index": [5.0, 0.0, 0.0]})
-    mock.simulate_dropout(["index"])
-    assert "index" not in mock._mock_forces
 
 
 # ---------------------------------------------------------------------------
