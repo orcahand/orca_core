@@ -26,6 +26,8 @@ from orca_core.hardware.sensing.protocol import (
     decode_num_taxels,
     decode_auto_data_type,
     encode_auto_data_type,
+    encode_combined_auto_for_mock,
+    encode_resultant_auto_for_mock,
 )
 from orca_core.hardware.sensing.constants import (
     PROTOCOL_HEADER_REQUEST,
@@ -328,24 +330,43 @@ def test_compute_combined_payload_size():
 # ---------------------------------------------------------------------------
 # Payload decoders — auto-stream
 #
-# Wire format reminder:
-#   Resultant per sensor: <int16 fx, int16 fy, uint16 fz>, little-endian, ÷10 → N
-#   Taxel per element:    <int8  fx, int8  fy, uint8  fz>,                ÷10 → N
+# Wire format:
+#   Resultant per sensor: 6 bytes — 3 axes (fx, fy, fz) × 2-byte slot.
+#       Only the low byte carries data (signed int8 for fx/fy, unsigned uint8
+#       for fz). High byte is padding the firmware fills with sign-extension
+#       of the low byte cast to int8 — must be ignored regardless of value.
+#   Taxel per element:    3 bytes — int8 fx, int8 fy, uint8 fz
 #   Combined frames interleave: [resultant_sensor_i, taxels_sensor_i, ...]
+#   Newtons = LSB count × 0.1
 # ---------------------------------------------------------------------------
 
+def _resultant_slot(fx: int, fy: int, fz: int, hi: int = 0x00) -> bytes:
+    """Build a 6-byte resultant slot from raw axis bytes plus a high-byte filler.
+
+    Uses two's-complement low-byte encoding for fx/fy. The same `hi` byte goes
+    into all three high-byte positions, which lets parametrize cases prove the
+    decoder ignores high-byte content.
+    """
+    return bytes([fx & 0xFF, hi, fy & 0xFF, hi, fz & 0xFF, hi])
+
+
+@pytest.mark.parametrize("hi_byte", [0x00, 0xFF, 0xA5])
 @pytest.mark.parametrize(
     "raw,expected",
     [
         ([(100, -50, 200)], {"thumb": [10.0, -5.0, 20.0]}),
+        ([(0, 0, 110)], {"thumb": [0.0, 0.0, 11.0]}),       # fz < 128 (unambiguous)
+        ([(0, 0, 200)], {"thumb": [0.0, 0.0, 20.0]}),       # fz > 127 (firmware sign-extends)
+        ([(0, 0, 250)], {"thumb": [0.0, 0.0, 25.0]}),       # fz near uint8 saturation
+        ([(0, 0, 255)], {"thumb": [0.0, 0.0, 25.5]}),       # fz at uint8 saturation
         (
             [(10, 20, 30), (-10, -20, 40)],
             {"thumb": [1.0, 2.0, 3.0], "index": [-1.0, -2.0, 4.0]},
         ),
     ],
 )
-def test_decode_resultant_auto(raw, expected):
-    data = b"".join(struct.pack("<hhH", *triplet) for triplet in raw)
+def test_decode_resultant_auto(raw, expected, hi_byte):
+    data = b"".join(_resultant_slot(fx, fy, fz, hi=hi_byte) for (fx, fy, fz) in raw)
     fingers = list(expected.keys())
     assert decode_resultant_auto(data, fingers) == expected
 
@@ -375,9 +396,9 @@ def test_decode_taxels_auto_wrong_size_raises():
 
 def test_decode_combined_auto_interleaved():
     data = (
-        struct.pack("<hhH", 100, 0, 50)
+        _resultant_slot(100, 0, 50)
         + struct.pack("bbB", 10, 0, 5)
-        + struct.pack("<hhH", 0, -100, 200)
+        + _resultant_slot(0, -100, 200, hi=0xFF)  # index fz > 127, firmware sign-extends
         + struct.pack("bbB", 0, -10, 20)
     )
     forces, taxels = decode_combined_auto(
@@ -389,6 +410,32 @@ def test_decode_combined_auto_interleaved():
     assert taxels["index"][0] == [0.0, -1.0, 2.0]
 
 
+@pytest.mark.parametrize("forces", [
+    {"thumb": [0.0, 0.0, 0.0]},
+    {"thumb": [10.0, -5.0, 20.0]},
+    {"thumb": [-12.8, 12.7, 25.5]},                          # all axes at signed-byte boundary
+    {"thumb": [0.0, 0.0, 12.8]},                             # fz where firmware high byte flips
+    {"thumb": [0.0, 0.0, 25.5]},                             # fz at uint8 saturation
+    {"thumb": [4.2, -3.0, 20.0], "index": [-1.0, 0.5, 0.1]},
+])
+def test_resultant_encode_decode_roundtrip(forces):
+    fingers = list(forces.keys())
+    wire = encode_resultant_auto_for_mock(forces, fingers)
+    assert decode_resultant_auto(wire, fingers) == forces
+
+
+def test_combined_encode_decode_roundtrip():
+    forces = {"thumb": [10.0, -5.0, 20.0], "index": [-1.0, 0.5, 25.5]}
+    taxels = {"thumb": [[1.0, -0.5, 2.0]], "index": [[0.0, 0.0, 0.5]]}
+    fingers = ["thumb", "index"]
+    wire = encode_combined_auto_for_mock(forces, taxels, fingers)
+    decoded_forces, decoded_taxels = decode_combined_auto(
+        wire, fingers, {"thumb": 1, "index": 1},
+    )
+    assert decoded_forces == forces
+    assert decoded_taxels == taxels
+
+
 # ---------------------------------------------------------------------------
 # Payload decoders — register block
 # ---------------------------------------------------------------------------
@@ -396,8 +443,8 @@ def test_decode_combined_auto_interleaved():
 def test_decode_resultant_register_known_values():
     # Module index for thumb (slot 0): 0*4+2 = 2, byte offset = 12
     data = bytearray(168)
-    struct.pack_into("<hhH", data, 12, 100, -50, 200)
-    result = decode_resultant_register(data, ["thumb"], {"thumb": 2})
+    data[12:18] = _resultant_slot(100, -50, 200, hi=0xFF)  # fz > 127
+    result = decode_resultant_register(bytes(data), ["thumb"], {"thumb": 2})
     assert result["thumb"] == [10.0, -5.0, 20.0]
 
 

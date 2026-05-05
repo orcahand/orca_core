@@ -26,6 +26,12 @@ from orca_core.hardware.sensing.protocol import (
     ForceVector,
     ResultantForces,
     TaxelForces,
+    decode_combined_auto,
+    decode_resultant_auto,
+    decode_taxels_auto,
+    encode_combined_auto_for_mock,
+    encode_resultant_auto_for_mock,
+    encode_taxels_auto_for_mock,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,7 +214,18 @@ class MockSensorClient(SensorClient):
     # =========================================================================
 
     def _read_raw_resultant(self) -> ResultantForces:
-        return self._resultant_provider()
+        forces = self._resultant_provider()
+        active = self._active_in_slot_order(forces)
+        return decode_resultant_auto(
+            encode_resultant_auto_for_mock(forces, active), active,
+        )
+
+    def _active_in_slot_order(self, forces: dict) -> list[str]:
+        """Sort the provider's fingers by hardware slot ID, matching SensorConfiguration."""
+        return sorted(
+            forces.keys(),
+            key=lambda f: self._finger_to_sensor_id.get(f, FINGER_NAMES.index(f)),
+        )
 
     # =========================================================================
     # Frame Acquisition (overrides base class serial reader)
@@ -236,14 +253,37 @@ class MockSensorClient(SensorClient):
         parse_taxels: bool,
         min_sensors: int,
     ) -> tuple[dict | None, dict | None]:
-        """Acquire simulated frame data from mock providers."""
+        """Acquire simulated frame data, round-tripped through the real wire codec.
+
+        Provider output is encoded into wire bytes and decoded back. This
+        ensures mock-driven tests exercise the actual protocol decoders
+        instead of bypassing them.
+        """
         if self._sensor_config is None or self._sensor_config.num_active_sensors < min_sensors:
             raise NoSensorsAvailableError("Insufficient sensors for auto-stream")
 
-        parsed_resultant = self._resultant_provider() if parse_resultant else None
-        parsed_taxels = self._taxel_provider() if parse_taxels else None
+        active = self._sensor_config.active_sensors
+        num_taxels = self._sensor_config.num_taxels
 
-        # Rate limiting (None = no sleep, ideal for tests)
+        if parse_resultant and parse_taxels:
+            forces = self._resultant_provider()
+            taxels = self._taxel_provider()
+            wire = encode_combined_auto_for_mock(forces, taxels, active)
+            parsed_resultant, parsed_taxels = decode_combined_auto(wire, active, num_taxels)
+        elif parse_resultant:
+            forces = self._resultant_provider()
+            wire = encode_resultant_auto_for_mock(forces, active)
+            parsed_resultant = decode_resultant_auto(wire, active)
+            parsed_taxels = None
+        elif parse_taxels:
+            taxels = self._taxel_provider()
+            wire = encode_taxels_auto_for_mock(taxels, active)
+            parsed_resultant = None
+            parsed_taxels = decode_taxels_auto(wire, active, num_taxels)
+        else:
+            parsed_resultant = None
+            parsed_taxels = None
+
         if self._auto_rate_hz:
             time.sleep(1.0 / self._auto_rate_hz)
 

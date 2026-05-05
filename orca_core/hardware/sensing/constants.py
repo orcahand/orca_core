@@ -67,7 +67,7 @@ AUTO_DATA_TAXELS = 0x02
 RESOLUTION_N_PER_LSB = 0.1
 
 # Byte sizes per data element
-BYTES_PER_RESULTANT = 6  # fx(int16) + fy(int16) + fz(uint16)
+BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
 BYTES_PER_TAXEL = 3      # fx(int8) + fy(int8) + fz(uint8)
 
 # Frame metadata sizes

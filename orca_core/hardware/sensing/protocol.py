@@ -355,28 +355,27 @@ def _validate_payload_size(data: bytes, expected: int, context: str) -> None:
         )
 
 
-def _unpack_force_vector(data: bytes, offset: int, width: int) -> ForceVector:
-    """Unpack a force vector (fx signed, fy signed, fz unsigned) from packed bytes.
-
-    Args:
-        data: Raw byte buffer
-        offset: Start position in data
-        width: Bytes per component (1 for taxels, 2 for resultants)
-    """
-    fx = int.from_bytes(data[offset:offset + width], "little", signed=True) * RESOLUTION_N_PER_LSB
-    fy = int.from_bytes(data[offset + width:offset + 2 * width], "little", signed=True) * RESOLUTION_N_PER_LSB
-    fz = int.from_bytes(data[offset + 2 * width:offset + 3 * width], "little", signed=False) * RESOLUTION_N_PER_LSB
+def _unpack_taxel(data: bytes, offset: int) -> ForceVector:
+    """Unpack one taxel force vector: 3 contiguous bytes (int8 fx, int8 fy, uint8 fz)."""
+    fx_byte, fy_byte, fz_byte = data[offset], data[offset + 1], data[offset + 2]
+    fx = (fx_byte - 256 if fx_byte > 127 else fx_byte) * RESOLUTION_N_PER_LSB
+    fy = (fy_byte - 256 if fy_byte > 127 else fy_byte) * RESOLUTION_N_PER_LSB
+    fz = fz_byte * RESOLUTION_N_PER_LSB
     return [round(fx, FORCE_DECIMAL_PLACES), round(fy, FORCE_DECIMAL_PLACES), round(fz, FORCE_DECIMAL_PLACES)]
 
 
 def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
-    """Unpack one resultant force vector: fx(int16), fy(int16), fz(uint16)."""
-    return _unpack_force_vector(data, offset, width=2)
+    """Unpack one resultant force vector from a 6-byte module slot.
 
-
-def _unpack_taxel(data: bytes, offset: int) -> ForceVector:
-    """Unpack one taxel force vector: fx(int8), fy(int8), fz(uint8)."""
-    return _unpack_force_vector(data, offset, width=1)
+    Each axis occupies a 2-byte slot; only the low byte carries data
+    (signed int8 for fx/fy, unsigned uint8 for fz). The high byte is
+    sign-extension of the low byte cast to int8 and must be discarded.
+    """
+    fx_lo, fy_lo, fz_lo = data[offset], data[offset + 2], data[offset + 4]
+    fx = (fx_lo - 256 if fx_lo > 127 else fx_lo) * RESOLUTION_N_PER_LSB
+    fy = (fy_lo - 256 if fy_lo > 127 else fy_lo) * RESOLUTION_N_PER_LSB
+    fz = fz_lo * RESOLUTION_N_PER_LSB
+    return [round(fx, FORCE_DECIMAL_PLACES), round(fy, FORCE_DECIMAL_PLACES), round(fz, FORCE_DECIMAL_PLACES)]
 
 
 def decode_resultant_auto(
@@ -640,3 +639,66 @@ def encode_auto_data_type(resultant: bool, taxels: bool) -> bytes:
     """Encode auto-data-type register value."""
     val = (AUTO_DATA_RESULTANT if resultant else 0) | (AUTO_DATA_TAXELS if taxels else 0)
     return bytes([val])
+
+
+# =========================================================================
+# Wire-format encoders — fake-hardware fixtures only
+#
+# Production code never encodes resultant or taxel wire bytes (the sensor
+# board is the only encoder on the real bus). These exist so the mock
+# client and decoder unit tests can round-trip through the real decoders,
+# exercising the wire-format logic instead of bypassing it. Do NOT import
+# from runtime code paths.
+# =========================================================================
+
+def _pack_resultant_for_mock(force: ForceVector) -> bytes:
+    """Encode one [fx, fy, fz] vector into a 6-byte module slot.
+
+    Each axis is packed as low_byte + sign-extended high byte (0xFF when
+    low byte > 127, else 0x00) for fx, fy, AND fz — matching the firmware.
+    """
+    def _pack_axis(value_n: float) -> bytes:
+        lo = round(value_n / RESOLUTION_N_PER_LSB) & 0xFF
+        hi = 0xFF if lo > 127 else 0x00
+        return bytes([lo, hi])
+
+    return _pack_axis(force[0]) + _pack_axis(force[1]) + _pack_axis(force[2])
+
+
+def _pack_taxel_for_mock(force: ForceVector) -> bytes:
+    """Encode one [fx, fy, fz] taxel vector into 3 contiguous bytes."""
+    return bytes([
+        round(force[0] / RESOLUTION_N_PER_LSB) & 0xFF,
+        round(force[1] / RESOLUTION_N_PER_LSB) & 0xFF,
+        round(force[2] / RESOLUTION_N_PER_LSB) & 0xFF,
+    ])
+
+
+def encode_resultant_auto_for_mock(
+    forces: ResultantForces,
+    active_sensors: list[str],
+) -> bytes:
+    """Encode resultant-only auto-stream payload for mock use."""
+    return b"".join(_pack_resultant_for_mock(forces[f]) for f in active_sensors)
+
+
+def encode_taxels_auto_for_mock(
+    taxels: TaxelForces,
+    active_sensors: list[str],
+) -> bytes:
+    """Encode taxel-only auto-stream payload for mock use."""
+    return b"".join(_pack_taxel_for_mock(t) for f in active_sensors for t in taxels[f])
+
+
+def encode_combined_auto_for_mock(
+    forces: ResultantForces,
+    taxels: TaxelForces,
+    active_sensors: list[str],
+) -> bytes:
+    """Encode interleaved (resultant + taxels) auto-stream payload for mock use."""
+    out = bytearray()
+    for f in active_sensors:
+        out += _pack_resultant_for_mock(forces[f])
+        for t in taxels[f]:
+            out += _pack_taxel_for_mock(t)
+    return bytes(out)
