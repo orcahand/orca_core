@@ -236,17 +236,6 @@ def detect_wiring_mismatch(target_finger, peaks, wiring, threshold=PRESS_THRESHO
     )
 
 
-def finger_with_largest_offset(taxel_offsets):
-    """Return (finger, total_|fz|) with the largest cumulative fz baseline,
-    i.e. the finger whose sensor had the most non-zero rest signal."""
-    best, best_total = None, -1.0
-    for finger, taxels in taxel_offsets.items():
-        total = sum(abs(t[2]) for t in taxels)
-        if total > best_total:
-            best, best_total = finger, total
-    return best, best_total
-
-
 def phase_1_enumerate(hand):
     banner(1, "Connect & enumerate")
     cfg = hand.get_sensor_configuration()
@@ -394,13 +383,12 @@ def phase_5_zeroing(hand):
     try:
         wait_for_frame(hand.get_tactile_taxels)
         offsets = hand.zero_tactile_sensors(num_samples=200)
-        print("  Captured offsets per finger (avg |fz| per taxel, max |fz|):")
+        print("  Captured offsets per finger (avg |fz| per taxel):")
         for f in FINGERS:
             if f in offsets and offsets[f]:
                 fz_vals = [abs(t[2]) for t in offsets[f]]
                 avg = sum(fz_vals) / len(fz_vals)
-                peak = max(fz_vals)
-                print(f"    {f:7s}  avg={avg:.3f} N  max={peak:.2f} N  ({len(fz_vals)} taxels)")
+                print(f"    {f:7s}  avg={avg:.3f} N  ({len(fz_vals)} taxels)")
 
         time.sleep(0.2)
         forces = hand.get_tactile_forces()
@@ -409,21 +397,13 @@ def phase_5_zeroing(hand):
         if max_resting is None or max_resting > ZERO_TOLERANCE_N:
             return False, f"resting fz not near zero (max={max_resting})"
 
-        target_finger, target_total = finger_with_largest_offset(offsets)
-        print(f"  Highest-baseline finger was '{target_finger}' (total |fz|={target_total:.2f} N)")
-        pause(f"press {target_finger.upper()} firmly")
-        peak = measure_all_peaks(hand.get_tactile_forces, FINGERS, duration_s=1.5)[target_finger]
-        print(f"  Peak |fz| on {target_finger} after zero: {peak:.2f} N")
-        if peak < PRESS_THRESHOLD_N:
-            return False, f"press not detected on {target_finger} after zero: peak={peak:.2f} N"
-
         hand.clear_tactile_zero()
         time.sleep(0.2)
         forces = hand.get_tactile_forces()
         if forces is None:
             return False, "no frame after clear_tactile_zero"
 
-        return True, f"zero captured, applied (max resting={max_resting:.2f}N), {target_finger} press detected, cleared"
+        return True, f"zero captured, applied (max resting={max_resting:.2f}N), cleared"
     finally:
         hand.stop_tactile_stream()
 

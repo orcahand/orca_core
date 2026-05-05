@@ -1300,7 +1300,7 @@ class OrcaHandTouch(OrcaHand):
         """Return ``AutoStreamStats`` for the running auto-stream.
 
         Useful for monitoring stream health (``frames_ok``, ``frames_bad_checksum``,
-        ``parse_errors``, ``resyncs``, ``reconfiguration_count``, ``last_error_code``).
+        ``parse_errors``, ``resyncs``, ``last_error_code``).
         """
         return self._sensor_client.get_auto_stats()
 

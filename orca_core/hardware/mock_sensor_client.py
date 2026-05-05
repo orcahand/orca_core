@@ -14,7 +14,7 @@ import threading
 import time
 import logging
 
-from orca_core.hardware.sensor_client import SensorClient, NoSensorsAvailableError
+from orca_core.hardware.sensor_client import SensorClient
 from orca_core.hardware.sensing.constants import (
     FINGER_NAMES,
     DEFAULT_TAXEL_COUNTS,
@@ -50,7 +50,6 @@ class MockSensorClient(SensorClient):
     Control simulated data via:
     - set_mock_forces(): Set specific force values to return
     - set_mock_taxels(): Set specific taxel values to return
-    - set_connected_sensors(): Configure which sensors appear connected
     - set_resultant_provider()/set_taxel_provider(): Inject deterministic generators
 
     Default behavior (if no providers or mock values are set):
@@ -73,15 +72,13 @@ class MockSensorClient(SensorClient):
         if connected_sensors is None:
             connected_sensors = list(FINGER_NAMES)
 
-        self._taxel_counts_per_finger: dict[str, int] = (
-            dict(taxel_counts) if taxel_counts is not None else dict(DEFAULT_TAXEL_COUNTS)
-        )
+        full_taxel_counts = dict(taxel_counts) if taxel_counts is not None else dict(DEFAULT_TAXEL_COUNTS)
 
         self._sim_connected: dict[str, bool] = {
             f: f in connected_sensors for f in FINGER_NAMES
         }
         self._sim_taxel_counts: dict[str, int] = {
-            f: self._taxel_counts_per_finger[f] if f in connected_sensors else 0
+            f: full_taxel_counts[f] if f in connected_sensors else 0
             for f in FINGER_NAMES
         }
 
@@ -106,22 +103,6 @@ class MockSensorClient(SensorClient):
     # =========================================================================
     # Mock Control Methods
     # =========================================================================
-
-    def set_connected_sensors(self, sensors: list[str]) -> None:
-        """Configure which sensors appear as connected.
-
-        Only clears mock data for sensors that were removed.
-        """
-        removed = {f for f, on in self._sim_connected.items() if on and f not in sensors}
-        self._update_connectivity(sensors)
-        for f in removed:
-            self._mock_forces.pop(f, None)
-            self._mock_taxels.pop(f, None)
-
-    def simulate_dropout(self, dropped: list[str]) -> None:
-        """Simulate one or more sensors dropping out."""
-        remaining = [f for f in self._sim_connected if self._sim_connected[f] and f not in dropped]
-        self.set_connected_sensors(remaining)
 
     def set_mock_forces(self, forces: ResultantForces) -> None:
         """Set the force values to return for each sensor.
@@ -251,7 +232,6 @@ class MockSensorClient(SensorClient):
         self,
         parse_resultant: bool,
         parse_taxels: bool,
-        min_sensors: int,
     ) -> tuple[dict | None, dict | None]:
         """Acquire simulated frame data, round-tripped through the real wire codec.
 
@@ -259,9 +239,6 @@ class MockSensorClient(SensorClient):
         ensures mock-driven tests exercise the actual protocol decoders
         instead of bypassing them.
         """
-        if self._sensor_config is None or self._sensor_config.num_active_sensors < min_sensors:
-            raise NoSensorsAvailableError("Insufficient sensors for auto-stream")
-
         active = self._sensor_config.active_sensors
         num_taxels = self._sensor_config.num_taxels
 
@@ -292,16 +269,6 @@ class MockSensorClient(SensorClient):
     # =========================================================================
     # Internal Helpers
     # =========================================================================
-
-    def _update_connectivity(self, sensors: list[str]) -> None:
-        """Update simulated connectivity and reconfigure if connected."""
-        self._sim_connected = {f: f in sensors for f in FINGER_NAMES}
-        self._sim_taxel_counts = {
-            f: self._taxel_counts_per_finger[f] if self._sim_connected[f] else 0
-            for f in FINGER_NAMES
-        }
-        if self._connected:
-            self._sensor_config = self._get_configuration()
 
     def _default_resultant_provider(self) -> ResultantForces:
         forces = self._mock_forces
