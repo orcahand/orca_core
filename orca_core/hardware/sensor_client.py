@@ -7,6 +7,7 @@
 # ==============================================================================
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 import serial
 import threading
@@ -683,11 +684,14 @@ class SensorClient:
     def get_auto_stats(self):
         """Thread-safe snapshot of auto-stream diagnostics.
 
+        Returns a copy so callers can compare values across calls without
+        racing the reader thread.
+
         See `AutoStreamStats` for the meaning of each field. Useful for health
         monitoring (frame rate, checksum errors, reconfigurations).
         """
         with self._auto_lock:
-            return self._auto_stats
+            return dataclasses.replace(self._auto_stats)
     
     def set_taxel_offsets(self, offsets: dict) -> None:
         """Set per-taxel zeroing offsets and compute resultant offsets.

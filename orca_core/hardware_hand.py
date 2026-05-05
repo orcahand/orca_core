@@ -22,7 +22,7 @@ from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.types import ResultantReading, TaxelReading
-from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
+from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
 
 if TYPE_CHECKING:
     from .hardware.dynamixel_client import DynamixelClient
@@ -1319,19 +1319,64 @@ class OrcaHandTouch(OrcaHand):
             finger_to_sensor_id=self.config.finger_to_sensor_id,
         )
 
+    def _persist_sensor_port(self, chosen_port: str) -> None:
+        """Write a new ``sensors.port`` value to ``config.yaml`` while preserving
+        the rest of the ``sensors`` block (baudrate, finger_to_sensor_id)."""
+        existing = read_yaml(self.config.config_path) or {}
+        sensors = dict(existing.get("sensors") or {})
+        sensors["port"] = chosen_port
+        update_yaml(self.config.config_path, "sensors", sensors)
+
+    def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
+        """Open the sensor serial link, mirroring the motor cascade.
+
+        Tries the configured port first, then USB-VID auto-detection
+        (``KNOWN_VIDS["tactile_sensor"]``). On a successful auto-detect the
+        new port is written back to ``config.yaml``.
+        """
+        self._sensor_client = self._create_sensor_client()
+        try:
+            self._sensor_client.connect()
+            return True, f"Sensor connected on {self.config.sensor_port}"
+        except Exception as e:
+            print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
+            self._sensor_client = None
+
+        chosen = auto_detect_port("tactile_sensor")
+        if chosen and chosen != self.config.sensor_port:
+            try:
+                self.config = dataclasses.replace(self.config, sensor_port=chosen)
+                self._sensor_client = self._create_sensor_client()
+                self._sensor_client.connect()
+                self._persist_sensor_port(chosen)
+                return True, f"Sensor connected on auto-detected {chosen}"
+            except Exception as e:
+                print(f"Auto-detected sensor port {chosen} also failed: {e}")
+                self._sensor_client = None
+
+        return False, (
+            "Sensor connection failed: no usable port (set sensors.port in config.yaml "
+            "or check that the sensor adapter is plugged in)"
+        )
+
     def connect(self) -> tuple[bool, str]:
         success, msg = super().connect()
         if not success:
             return success, msg
 
-        self._sensor_client = self._create_sensor_client()
-        try:
-            self._sensor_client.connect()
-        except Exception as e:
-            self._sensor_client = None
-            return False, f"{msg} | Sensor connection failed: {e}"
+        sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
+        if not sensor_ok:
+            return False, f"{msg} | {sensor_msg}"
+        return True, f"{msg} | {sensor_msg}"
 
-        return True, f"{msg} | Sensor connected"
+    def connect_sensors_only(self) -> tuple[bool, str]:
+        """Connect only the tactile sensor, skipping the motor bus.
+
+        Useful for sensor bring-up and testing on a hand whose motors are not
+        powered. After this call, tactile methods work; motor-control methods
+        will fail because the motor client is not initialised.
+        """
+        return self._connect_sensor_with_fallback()
 
     def disconnect(self) -> None:
         if self._sensor_client is not None and self._sensor_client.is_connected:
@@ -1390,6 +1435,14 @@ class OrcaHandTouch(OrcaHand):
 
     def get_sensor_configuration(self):
         return self._sensor_client.get_sensor_configuration()
+
+    def get_tactile_stats(self):
+        """Return ``AutoStreamStats`` for the running auto-stream.
+
+        Useful for monitoring stream health (``frames_ok``, ``frames_bad_checksum``,
+        ``parse_errors``, ``resyncs``, ``reconfiguration_count``, ``last_error_code``).
+        """
+        return self._sensor_client.get_auto_stats()
 
 
 class MockOrcaHand(OrcaHand):
