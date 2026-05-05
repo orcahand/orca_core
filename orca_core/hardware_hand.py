@@ -366,7 +366,7 @@ class OrcaHand(BaseHand):
 
             return motor_current
 
-    def wait_for_motion(self, timeout: float = 5.0) -> bool:
+    def wait_for_motion(self, timeout: float = 5.0) -> None:
         """Block until all motors have settled at their commanded position.
 
         No-op for motor types fast enough that callers don't need to wait
@@ -375,11 +375,13 @@ class OrcaHand(BaseHand):
         Args:
             timeout: Max seconds to wait.
 
-        Returns:
-            True if all motors stopped within the timeout, False otherwise.
+        Raises:
+            MotionTimeoutError: If motors fail to settle within ``timeout``.
         """
+        if not self._motor_client.waits_for_motion:
+            return
         with self._motor_lock:
-            return self._motor_client.wait_for_motion_complete(timeout=timeout)
+            self._motor_client.wait_for_motion_complete(timeout=timeout)
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.

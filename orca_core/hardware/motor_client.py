@@ -13,12 +13,24 @@ from typing import Sequence, Tuple
 import numpy as np
 
 
+class MotorError(Exception):
+    """Raised when a motor operation cannot be completed."""
+
+
+class MotionTimeoutError(MotorError):
+    """Raised when motors fail to settle within the requested timeout."""
+
+
 class MotorClient(ABC):
     """Abstract base class for motor communication clients.
 
     This defines the interface that all motor clients (Dynamixel, Feetech, etc.)
     must implement to work with OrcaHand.
     """
+
+    # Subclasses set this to True when ``wait_for_motion_complete`` actually
+    # blocks; callers can use it to skip locking around no-op waits.
+    waits_for_motion: bool = False
 
     @property
     @abstractmethod
@@ -116,22 +128,15 @@ class MotorClient(ABC):
         """
         ...
 
-    def wait_for_motion_complete(self, timeout: float = 5.0) -> bool:
+    def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
         """Block until all motors finish their commanded motion.
 
         Default implementation is a no-op for motor families that respond
         fast enough that callers don't need to wait (e.g., Dynamixel, mock).
-        Slower buses like Feetech override this to poll a per-motor moving
-        flag.
-
-        Args:
-            timeout: Max seconds to wait.
-
-        Returns:
-            True if motion completed (or no waiting was needed), False on
-            timeout.
+        Subclasses that actually block (e.g., Feetech) must set
+        ``waits_for_motion = True`` and override this to poll a per-motor
+        moving flag, raising ``MotionTimeoutError`` on timeout.
         """
-        return True
 
     @property
     def requires_offset_calibration(self) -> bool:

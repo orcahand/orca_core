@@ -14,7 +14,7 @@ import time
 from typing import Optional, Sequence, Tuple
 import numpy as np
 
-from .motor_client import MotorClient
+from .motor_client import MotionTimeoutError, MotorClient
 from .feetech import (
     PortHandler,
     sms_sts,
@@ -66,6 +66,8 @@ class FeetechClient(MotorClient):
     This implements the MotorClient interface for Feetech motors,
     providing compatibility with the OrcaHand control system.
     """
+
+    waits_for_motion = True
 
     OPEN_CLIENTS = set()
 
@@ -249,16 +251,8 @@ class FeetechClient(MotorClient):
         # Re-enable torque
         self.set_torque_enabled(motor_ids, True)
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads position, velocity, and current for all motors.
-
-        Tries sync read first (one packet for all motors); falls back to
-        per-motor reads only if the sync transaction fails.
-        """
-        return self.read_pos_vel_cur_sync()
-
-    def _read_pos_vel_cur_individual(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Per-motor fallback used only when sync read fails."""
+    def _read_state_per_motor_fallback(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Per-motor read of position/velocity/current; used only when sync read fails."""
         self._check_connected()
 
         positions = np.zeros(len(self.motor_ids), dtype=np.float32)
@@ -273,7 +267,7 @@ class FeetechClient(MotorClient):
             if result == COMM_SUCCESS and error == 0:
                 pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                 pos_normalized = self._normalize_position(pos_signed)
-                positions[i] = pos_normalized * self.pos_scale * POSITION_DIRECTION
+                positions[i] = self._raw_to_rad(pos_normalized, self.pos_scale)
             else:
                 logging.warning(
                     'Failed to read position for motor %d: result=%d, error=%d',
@@ -286,7 +280,7 @@ class FeetechClient(MotorClient):
             )
             if result == COMM_SUCCESS and error == 0:
                 vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
-                velocities[i] = vel_signed * self.vel_scale * POSITION_DIRECTION
+                velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
             else:
                 logging.warning(
                     'Failed to read velocity for motor %d: result=%d, error=%d',
@@ -320,7 +314,7 @@ class FeetechClient(MotorClient):
 
         if sync_read.txRxPacket() != COMM_SUCCESS:
             logging.warning('Sync temp read failed, falling back to individual reads')
-            return self._read_temperature_individual()
+            return self._read_temperature_per_motor_fallback()
 
         for i, motor_id in enumerate(self.motor_ids):
             available, _ = sync_read.isAvailable(motor_id, SMS_STS_PRESENT_TEMPERATURE, 1)
@@ -331,8 +325,8 @@ class FeetechClient(MotorClient):
 
         return temperatures
 
-    def _read_temperature_individual(self) -> np.ndarray:
-        """Per-motor fallback used only when sync temp read fails."""
+    def _read_temperature_per_motor_fallback(self) -> np.ndarray:
+        """Per-motor read of temperature; used only when sync read fails."""
         temperatures = np.zeros(len(self.motor_ids), dtype=np.float32)
         for i, motor_id in enumerate(self.motor_ids):
             temp, result, error = self.packet_handler.read1ByteTxRx(
@@ -352,8 +346,8 @@ class FeetechClient(MotorClient):
         self,
         timeout: float = 5.0,
         poll_interval: float = 0.02,
-    ) -> bool:
-        """Block until every motor reports it has stopped, or timeout elapses.
+    ) -> None:
+        """Block until every motor reports it has stopped.
 
         Reads each motor's MOVING flag (register 66) via sync read; the bit
         is 1 while the servo is travelling toward its goal position and 0
@@ -363,8 +357,9 @@ class FeetechClient(MotorClient):
             timeout: Max seconds to wait before giving up.
             poll_interval: Seconds between polls.
 
-        Returns:
-            True if all motors stopped within the timeout, False otherwise.
+        Raises:
+            MotionTimeoutError: If any motor is still moving when the
+                timeout elapses.
         """
         self._check_connected()
         deadline = time.monotonic() + timeout
@@ -388,11 +383,12 @@ class FeetechClient(MotorClient):
                     break
 
             if all_stopped:
-                return True
+                return
             time.sleep(poll_interval)
 
-        logging.warning('wait_for_motion_complete: timed out after %.1fs', timeout)
-        return False
+        raise MotionTimeoutError(
+            f'Motors did not settle within {timeout:.1f}s'
+        )
 
     def write_desired_pos(
         self,
@@ -465,6 +461,16 @@ class FeetechClient(MotorClient):
         """Clamp position to valid servo range (0-4095)."""
         return max(POS_MIN, min(POS_MAX, pos_raw))
 
+    @staticmethod
+    def _raw_to_rad(raw: float, scale: float) -> float:
+        """Convert raw motor units to radians (applies direction inversion)."""
+        return raw * scale * POSITION_DIRECTION
+
+    @staticmethod
+    def _rad_to_raw(rad: float, scale: float) -> int:
+        """Convert radians to raw motor units (applies direction inversion)."""
+        return int((rad * POSITION_DIRECTION) / scale)
+
     @property
     def requires_offset_calibration(self) -> bool:
         return True
@@ -484,14 +490,10 @@ class FeetechClient(MotorClient):
         """
         self._check_connected()
 
-        # OrcaHand's "upper" means the FLEX-side limit in its read frame. With
-        # POSITION_DIRECTION = -1 that maps to LOW raw (since raw → -raw·scale),
-        # so we flip which raw end gets the buffer; otherwise the next-direction
-        # motion saturates against the encoder boundary after only ~44°.
+        # When POSITION_DIRECTION inverts the read frame, "upper" maps to low raw.
         if POSITION_DIRECTION < 0:
             upper = not upper
 
-        # Buffer of 500 (~44°) ensures room for tendon loosening over time
         target_position = 3595 if upper else 500
 
         result, error = self.packet_handler.reOfsCal(motor_id, target_position)
@@ -557,8 +559,7 @@ class FeetechClient(MotorClient):
         self.packet_handler.groupSyncWrite.clearParam()
 
         for motor_id, pos_rad in zip(motor_ids, positions):
-            pos_raw = int(pos_rad * POSITION_DIRECTION / self.pos_scale)
-            pos_raw = self._clamp_position(pos_raw)
+            pos_raw = self._clamp_position(self._rad_to_raw(pos_rad, self.pos_scale))
 
             logging.debug(
                 'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
@@ -575,10 +576,10 @@ class FeetechClient(MotorClient):
         # Clear params for next use
         self.packet_handler.groupSyncWrite.clearParam()
 
-    def read_pos_vel_cur_sync(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads position, velocity, and current for all motors using sync read.
+    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Read position, velocity, and current for all motors in one sync packet.
 
-        More efficient than individual reads for multiple motors.
+        Falls back to per-motor reads only if the sync transaction fails.
         """
         self._check_connected()
 
@@ -596,7 +597,7 @@ class FeetechClient(MotorClient):
         result = sync_read.txRxPacket()
         if result != COMM_SUCCESS:
             logging.warning('Sync read failed, falling back to individual reads')
-            return self._read_pos_vel_cur_individual()
+            return self._read_state_per_motor_fallback()
 
         for i, motor_id in enumerate(self.motor_ids):
             available, error = sync_read.isAvailable(
@@ -606,11 +607,11 @@ class FeetechClient(MotorClient):
                 pos_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_POSITION_L, 2)
                 pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                 pos_normalized = self._normalize_position(pos_signed)
-                positions[i] = pos_normalized * self.pos_scale * POSITION_DIRECTION
+                positions[i] = self._raw_to_rad(pos_normalized, self.pos_scale)
 
                 vel_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_SPEED_L, 2)
                 vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
-                velocities[i] = vel_signed * self.vel_scale * POSITION_DIRECTION
+                velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
 
                 cur_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_CURRENT_L, 2)
                 cur_signed = self.packet_handler.scs_tohost(cur_raw, 15)
