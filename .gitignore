@@ -93,7 +93,6 @@ celerybeat-schedule
 # Environments
 .env
 .venv
-uv.lock
 env/
 venv/
 ENV/
@@ -124,15 +123,9 @@ urdf/
 
 dev_scripts/
 
-calibration.yaml
+orca_core/models/*
 
 # macOS
 .DS_Store
 
 .pytest_cache/
-
-# not storing the lockfile (as of now)
-uv.lock
-
-# Vendor reference documents
-docs/references/
