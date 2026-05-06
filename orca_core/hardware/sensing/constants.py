@@ -95,12 +95,9 @@ MODULES_PER_SLOT = 4
 DISTAL_MODULE_OFFSET = 2
 """Offset of the distal phalanx module within a slot's module group."""
 
-# Hardware slot bit positions in the connected-sensors register.
-# Each slot has a fixed (byte_index, bit_position) in the 4-byte register block.
-# These describe physical board layout — independent of finger_to_sensor_id mapping.
-# The finger_to_sensor_id mapping is applied on top to translate slot → finger name.
+# Slot bit positions (byte_idx, bit_pos) in the connected-sensors register.
+# Hardware-fixed; finger mapping is applied on top via finger_to_sensor_id.
 SLOT_CONNECTED_BIT_POSITIONS = [(0, 2), (0, 6), (1, 2), (1, 6), (2, 2)]
 
-# Hardware register addresses for each slot's distal-phalanx taxel count.
-# Same as above: fixed board layout, finger mapping applied separately.
+# Register address per slot for distal-phalanx taxel count. Hardware-fixed.
 SLOT_DISTAL_TAXEL_REGISTER_OFFSETS = [0x0034, 0x003C, 0x0044, 0x004C, 0x0054]

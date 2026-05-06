@@ -19,11 +19,8 @@ import time
 
 from orca_core import OrcaHandTouch
 
-# All thresholds, taxel layouts, and role mappings below live here rather
-# than in orca_core.constants because they are only used by this health-
-# check script — to decide pass/fail and to render a barebones ASCII view.
-# They are not part of the OrcaHandTouch API and have no meaning at
-# runtime for downstream code.
+# Thresholds and taxel layouts are intentionally script-local — they only
+# drive pass/fail decisions and the ASCII renderer here, not the runtime API.
 
 FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 

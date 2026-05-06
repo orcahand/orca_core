@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import threading
-import time
 import logging
 
 from orca_core.hardware.tactile_client import TactileClient
@@ -23,7 +22,6 @@ from orca_core.hardware.sensing.constants import (
     AUTO_DATA_TAXELS,
 )
 from orca_core.hardware.sensing.protocol import (
-    ForceVector,
     ResultantForces,
     TaxelForces,
     decode_combined_auto,
@@ -65,7 +63,6 @@ class MockTactileClient(TactileClient):
         finger_to_sensor_id: dict[str, int] | None = None,
         resultant_provider: ResultantProvider | None = None,
         taxel_provider: TaxelProvider | None = None,
-        auto_rate_hz: float | None = None,
     ):
         super().__init__(port=port, baudrate=baudrate, finger_to_sensor_id=finger_to_sensor_id)
 
@@ -92,12 +89,7 @@ class MockTactileClient(TactileClient):
             taxel_provider if taxel_provider is not None else self._default_taxel_provider
         )
 
-        # None = no sleep between frames (ideal for tests). Pass e.g. 1000
-        # to throttle to ~1kHz for demos or UI prototyping.
-        self._auto_rate_hz = auto_rate_hz
-
-        # Set by _acquire_frame after the first frame is produced. Lets tests
-        # synchronize on stream start without polling/sleeping.
+        # Lets tests synchronize on stream start without polling.
         self._first_frame_event = threading.Event()
 
     # =========================================================================
@@ -105,24 +97,12 @@ class MockTactileClient(TactileClient):
     # =========================================================================
 
     def set_mock_forces(self, forces: ResultantForces) -> None:
-        """Set the force values to return for each sensor.
-
-        Replaces all previously set mock forces.
-
-        Raises:
-            ValueError: If any finger name is not valid or force vector is wrong length
-        """
+        """Replace the resultant-force values returned by ``_default_resultant_provider``."""
         self._validate_finger_vectors(forces, expected_len=3, label="Force")
         self._mock_forces = {f: list(v) for f, v in forces.items()}
 
     def set_mock_taxels(self, taxels: TaxelForces) -> None:
-        """Set the taxel values to return for each sensor.
-
-        Replaces all previously set mock taxels.
-
-        Raises:
-            ValueError: If any finger name is not valid or any taxel vector is wrong length
-        """
+        """Replace the taxel values returned by ``_default_taxel_provider``."""
         for finger, taxel_list in taxels.items():
             for taxel in taxel_list:
                 self._validate_finger_vectors({finger: taxel}, expected_len=3, label="Taxel")
@@ -190,7 +170,7 @@ class MockTactileClient(TactileClient):
     def _write_register(self, address: int, data: bytes, response_timeout_s: float = 0.5) -> None:
         pass
 
-# =========================================================================
+    # =========================================================================
     # Force Reading
     # =========================================================================
 
@@ -217,11 +197,7 @@ class MockTactileClient(TactileClient):
         super().start_auto_stream(*args, **kwargs)
 
     def wait_for_first_frame(self, timeout: float = 2.0) -> None:
-        """Block until the auto-stream loop has stored its first frame.
-
-        Lets tests synchronize on stream startup without polling or sleeps.
-        Raises TimeoutError if no frame arrives in `timeout` seconds.
-        """
+        """Block until the auto-stream loop has stored its first frame, or raise ``TimeoutError``."""
         if not self._first_frame_event.wait(timeout):
             raise TimeoutError(f"No auto-stream frame within {timeout}s")
 
@@ -260,9 +236,6 @@ class MockTactileClient(TactileClient):
         else:
             parsed_resultant = None
             parsed_taxels = None
-
-        if self._auto_rate_hz:
-            time.sleep(1.0 / self._auto_rate_hz)
 
         return parsed_resultant, parsed_taxels
 
