@@ -1,10 +1,16 @@
 """Constants for ORCA tactile sensing."""
 
+from typing import Literal
+
 # ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
 
-FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]
+FingerName = Literal["thumb", "index", "middle", "ring", "pinky"]
+"""Type alias for valid finger names. Use in public APIs that take a single
+finger name so type checkers flag typos like ``reading["thmub"]``."""
+
+FINGER_NAMES: list[FingerName] = ["thumb", "index", "middle", "ring", "pinky"]
 VALID_SENSOR_IDS = set(range(5))
 DEFAULT_SENSOR_PORT = "/dev/ttyACM1"
 DEFAULT_SENSOR_BAUDRATE = 921600
