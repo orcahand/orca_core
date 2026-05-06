@@ -238,7 +238,7 @@ def detect_wiring_mismatch(target_finger, peaks, wiring, threshold=PRESS_THRESHO
 
 def phase_1_enumerate(hand):
     banner(1, "Connect & enumerate")
-    cfg = hand.get_sensor_configuration()
+    cfg = hand.get_tactile_configuration()
     print(f"  {cfg}")
     print("  Per-finger status (canonical order):")
     for f in FINGERS:
@@ -323,7 +323,7 @@ def phase_3_taxels_press(hand):
         for f in FINGERS:
             if f not in reading:
                 return False, f"{f} missing from taxel frame"
-            n_expected = hand.get_sensor_configuration().num_taxels[f]
+            n_expected = hand.get_tactile_configuration().num_taxels[f]
             if len(reading[f]) != n_expected:
                 return False, (f"{f} taxel array length {len(reading[f])} "
                                f"!= reported {n_expected}")
@@ -336,7 +336,7 @@ def phase_3_taxels_press(hand):
         warnings = []
         for f in FINGERS:
             pause(f"press {f.upper()} (move your finger around to light up different taxels)")
-            n = hand.get_sensor_configuration().num_taxels[f]
+            n = hand.get_tactile_configuration().num_taxels[f]
             all_peaks = live_press_taxels(hand, f, FINGER_TO_ROLE[f], n, FINGERS, duration_s=2.5)
             peaks_per_press[f] = all_peaks[f]
             mismatch = detect_wiring_mismatch(f, all_peaks, wiring)

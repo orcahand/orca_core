@@ -14,7 +14,7 @@ import threading
 import time
 import logging
 
-from orca_core.hardware.sensor_client import SensorClient
+from orca_core.hardware.tactile_client import TactileClient
 from orca_core.hardware.sensing.constants import (
     FINGER_NAMES,
     DEFAULT_TAXEL_COUNTS,
@@ -40,10 +40,10 @@ ResultantProvider = Callable[[], ResultantForces]
 TaxelProvider = Callable[[], TaxelForces]
 
 
-class MockSensorClient(SensorClient):
+class MockTactileClient(TactileClient):
     """Mock client for simulating tactile sensor communication in tests.
 
-    Subclasses SensorClient, replacing hardware I/O with deterministic data
+    Subclasses TactileClient, replacing hardware I/O with deterministic data
     sources. Inherits start_auto_stream, stop_auto_stream, offset logic, and
     context manager support from the base class.
 
@@ -144,8 +144,8 @@ class MockSensorClient(SensorClient):
         if self.is_connected:
             return
         self._connected = True
-        self._sensor_config = self._get_configuration()
-        logger.info(f"[MOCK] Connected, config: {self._sensor_config}")
+        self._tactile_config = self._get_configuration()
+        logger.info(f"[MOCK] Connected, config: {self._tactile_config}")
 
     def disconnect(self) -> None:
         if not self.is_connected:
@@ -202,7 +202,7 @@ class MockSensorClient(SensorClient):
         )
 
     def _active_in_slot_order(self, forces: dict) -> list[str]:
-        """Sort the provider's fingers by hardware slot ID, matching SensorConfiguration."""
+        """Sort the provider's fingers by hardware slot ID, matching TactileSensorConfiguration."""
         return sorted(
             forces.keys(),
             key=lambda f: self._finger_to_sensor_id.get(f, FINGER_NAMES.index(f)),
@@ -239,8 +239,8 @@ class MockSensorClient(SensorClient):
         ensures mock-driven tests exercise the actual protocol decoders
         instead of bypassing them.
         """
-        active = self._sensor_config.active_sensors
-        num_taxels = self._sensor_config.num_taxels
+        active = self._tactile_config.active_sensors
+        num_taxels = self._tactile_config.num_taxels
 
         if parse_resultant and parse_taxels:
             forces = self._resultant_provider()

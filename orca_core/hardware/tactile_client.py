@@ -95,7 +95,7 @@ class AutoStreamStats:
 
 
 @dataclass
-class SensorConfiguration:
+class TactileSensorConfiguration:
     """Snapshot of connected sensors and their properties.
 
     Captured at stream start. The Paxini PX-6AX GEN3 firmware enumerates
@@ -129,7 +129,7 @@ class SensorConfiguration:
         return f"SensorConfig({self.num_active_sensors} active: {active})"
 
 
-class SensorClient:
+class TactileClient:
     """Client for communicating with ORCA Tactile Sensors"""
 
     def __init__(self,
@@ -162,7 +162,7 @@ class SensorClient:
         self._sensor_id_to_finger = {v: k for k, v in self._finger_to_sensor_id.items()}
 
         # Sensor configuration (dynamic, adapts to connected sensors)
-        self._sensor_config: SensorConfiguration | None = None
+        self._tactile_config: TactileSensorConfiguration | None = None
 
         self._auto_thread: threading.Thread | None = None
         self._auto_running = threading.Event()  # Thread-safe flag for auto stream
@@ -211,8 +211,8 @@ class SensorClient:
 
             # Get initial sensor configuration
             try:
-                self._sensor_config = self._get_configuration()
-                logger.info(f"Initial configuration: {self._sensor_config}")
+                self._tactile_config = self._get_configuration()
+                logger.info(f"Initial configuration: {self._tactile_config}")
             except IOError as e:
                 logger.warning(f"Failed to get initial configuration: {e}")
                 # Don't fail connection, config will be retrieved when starting auto-stream
@@ -451,7 +451,7 @@ class SensorClient:
     def _read_raw_resultant(self) -> dict[str, list[float]]:
         """Read raw resultant forces from hardware (no offset application).
 
-        MockSensorClient overrides this to return simulated
+        MockTactileClient overrides this to return simulated
         data. The public read_resultant_force() method calls this, then applies
         zeroing offsets.
 
@@ -459,9 +459,9 @@ class SensorClient:
             Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
         """
         # Ensure we have current configuration
-        if self._sensor_config is None:
+        if self._tactile_config is None:
             try:
-                self._sensor_config = self._get_configuration()
+                self._tactile_config = self._get_configuration()
             except IOError as e:
                 logger.error(f"Failed to get configuration: {e}")
                 # Fall back to static parsing using default module indices
@@ -471,7 +471,7 @@ class SensorClient:
 
         data = self._read_register(ADDR_RESULTANT_FORCE_START, RESULTANT_BLOCK_SIZE)
         return decode_resultant_register(
-            data, self._sensor_config.active_sensors, self._sensor_config.module_indices,
+            data, self._tactile_config.active_sensors, self._tactile_config.module_indices,
         )
 
     def read_resultant_force(self) -> dict[str, list[float]]:
@@ -494,21 +494,21 @@ class SensorClient:
             self._apply_resultant_offsets(result)
         return result
 
-    def get_sensor_configuration(self) -> SensorConfiguration | None:
+    def get_tactile_configuration(self) -> TactileSensorConfiguration | None:
         """Get the current sensor configuration snapshot.
 
         Returns:
-            SensorConfiguration object with current sensor state, or None if not yet configured
+            TactileSensorConfiguration object with current sensor state, or None if not yet configured
         """
-        return self._sensor_config
+        return self._tactile_config
 
-    def _get_configuration(self) -> SensorConfiguration:
+    def _get_configuration(self) -> TactileSensorConfiguration:
         """Snapshot the current sensor configuration at stream start.
 
         Reads connected sensors and their properties from the hardware.
 
         Returns:
-            SensorConfiguration with current hardware state
+            TactileSensorConfiguration with current hardware state
 
         Raises:
             IOError: If unable to read configuration from sensor
@@ -523,7 +523,7 @@ class SensorClient:
                     sensor_id = self._finger_to_sensor_id[finger]
                     module_indices[finger] = compute_distal_module_index(sensor_id)
 
-            config = SensorConfiguration(
+            config = TactileSensorConfiguration(
                 connected=connected,
                 num_taxels=num_taxels,
                 module_indices=module_indices,
@@ -805,7 +805,7 @@ class SensorClient:
         # If we exit the loop, auto stream was stopped
         raise IOError("Auto stream stopped during resync")
 
-    def _get_expected_payload_size(self, config: SensorConfiguration) -> int:
+    def _get_expected_payload_size(self, config: TactileSensorConfiguration) -> int:
         """Get expected payload size based on current streaming mode."""
         return compute_expected_payload_size(
             self._auto_mode_resultant,
@@ -824,7 +824,7 @@ class SensorClient:
         Reads one auto-stream frame from serial, validates LRC, and parses
         the data.
 
-        Subclasses (e.g. MockSensorClient) override this to provide data from
+        Subclasses (e.g. MockTactileClient) override this to provide data from
         other sources while inheriting the loop's stats, offset, and lifecycle logic.
 
         Returns:
@@ -844,7 +844,7 @@ class SensorClient:
 
         now = time.time()
         if now - self._last_frame_debug_print > 1.0:
-            config_str = str(self._sensor_config) if self._sensor_config else "no config"
+            config_str = str(self._tactile_config) if self._tactile_config else "no config"
             logger.debug(f"[auto] eff_len={eff_len}, config={config_str}")
             self._last_frame_debug_print = now
 
@@ -856,16 +856,16 @@ class SensorClient:
         with self._auto_lock:
             self._auto_stats.last_error_code = err_code
 
-        if not self._sensor_config:
+        if not self._tactile_config:
             raise FrameError("No sensor configuration available")
 
-        expected_size = self._get_expected_payload_size(self._sensor_config)
+        expected_size = self._get_expected_payload_size(self._tactile_config)
         if len(valid) != expected_size or expected_size == 0:
             raise FrameError(
                 f"Unexpected payload: {len(valid)} bytes, expected {expected_size}"
             )
 
-        cfg = self._sensor_config
+        cfg = self._tactile_config
         if parse_resultant and parse_taxels:
             parsed_resultant, parsed_taxels = decode_combined_auto(
                 valid, cfg.active_sensors, cfg.num_taxels,
@@ -990,26 +990,26 @@ class SensorClient:
 
         # Get initial sensor configuration
         try:
-            self._sensor_config = self._get_configuration()
+            self._tactile_config = self._get_configuration()
         except IOError as e:
             raise OSError(f"Failed to get sensor configuration: {e}") from e
 
         # Check minimum sensor requirement
-        if self._sensor_config.num_active_sensors < min_sensors:
+        if self._tactile_config.num_active_sensors < min_sensors:
             raise NoSensorsAvailableError(
-                f"Only {self._sensor_config.num_active_sensors} sensor(s) available, "
+                f"Only {self._tactile_config.num_active_sensors} sensor(s) available, "
                 f"need at least {min_sensors}"
             )
 
         # Log expected payload size for debugging
-        expected_size = self._get_expected_payload_size(self._sensor_config)
+        expected_size = self._get_expected_payload_size(self._tactile_config)
         mode_str = []
         if resultant:
             mode_str.append("resultant")
         if taxels:
             mode_str.append("taxels")
         logger.info(
-            f"Starting auto-stream with {self._sensor_config}, "
+            f"Starting auto-stream with {self._tactile_config}, "
             f"mode={'+'.join(mode_str)}, expected_payload={expected_size} bytes"
         )
 

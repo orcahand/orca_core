@@ -56,3 +56,17 @@ class TaxelReading:
     def as_array(self, finger: str) -> np.ndarray:
         """Return an ``(n_taxels, 3)`` array for *finger*."""
         return np.array(self.taxels[finger])
+
+
+@dataclass(frozen=True)
+class TactileReading:
+    """Atomic snapshot of resultant + per-taxel forces from a single frame.
+
+    Either field may be ``None`` if the matching stream mode is disabled.
+    Use this when you need forces and taxels guaranteed to come from the
+    same frame (one lock acquisition, one timestamp).
+    """
+
+    forces: ResultantReading | None
+    taxels: TaxelReading | None
+    timestamp: float | None = None
