@@ -1147,10 +1147,8 @@ class OrcaHand(BaseHand):
 class OrcaHandTouch(OrcaHand):
     """ORCA hand with integrated tactile sensing.
 
-    Extends :class:`OrcaHand` to additionally manage a tactile sensor array.
-    Connection, disconnection, and lifecycle are unified: calling
-    :meth:`connect` opens both the motor bus and the sensor serial link,
-    and :meth:`disconnect` tears down both.
+    ``connect()`` opens both the motor bus and the sensor serial link;
+    ``disconnect()`` tears down both.
     """
 
     config_cls = OrcaHandTouchConfig
@@ -1321,12 +1319,7 @@ class MockOrcaHand(OrcaHand):
 
 
 class MockOrcaHandTouch(OrcaHandTouch):
-    """Drop-in :class:`OrcaHandTouch` backed by mock motor and sensor clients,
-    for testing and prototyping.
-
-    All methods behave identically to :class:`OrcaHandTouch` but no serial
-    ports are opened and both motor and sensor state are simulated in memory.
-    """
+    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
 
     def _create_motor_client(self) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient

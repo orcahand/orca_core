@@ -23,7 +23,6 @@ DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
 }
 
-# Finger-to-sensor-model mapping (replaces sensor_models.yaml)
 FINGER_MODELS = {
     "thumb": "touch-sensor-thumb",
     "index": "touch-sensor-finger",
