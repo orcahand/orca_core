@@ -1249,28 +1249,14 @@ class OrcaHandTouch(OrcaHand):
         super().disconnect()
 
     def get_tactile_forces(self) -> ResultantReading | None:
-        """Return latest resultant force per finger, or ``None`` if unavailable.
-
-        The returned object supports dict-style access by finger name::
-
-            reading["thumb"]  # -> [fx, fy, fz]
-
-        Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
-        """
+        """Return the latest resultant ``ResultantReading``, or ``None`` if no frame yet."""
         forces, ts = self._tactile_client.get_auto_latest()
         if forces is None:
             return None
         return ResultantReading(forces=forces, timestamp=ts)
 
     def get_tactile_taxels(self) -> TaxelReading | None:
-        """Return per-taxel forces, or ``None`` if unavailable.
-
-        The returned object supports dict-style access by finger name::
-
-            reading["thumb"]  # -> [[fx, fy, fz], ...] per taxel
-
-        Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
-        """
+        """Return the latest per-taxel ``TaxelReading``, or ``None`` if no frame yet."""
         taxels, ts = self._tactile_client.get_auto_latest_taxels()
         if taxels is None:
             return None
@@ -1314,11 +1300,7 @@ class OrcaHandTouch(OrcaHand):
         return self._tactile_client.get_tactile_configuration()
 
     def get_tactile_stats(self):
-        """Return ``AutoStreamStats`` for the running auto-stream.
-
-        Useful for monitoring stream health (``frames_ok``, ``frames_bad_checksum``,
-        ``parse_errors``, ``resyncs``, ``last_error_code``).
-        """
+        """Return ``AutoStreamStats`` for the running auto-stream."""
         return self._tactile_client.get_auto_stats()
 
 

@@ -161,39 +161,30 @@ class TactileClient:
             self._finger_to_sensor_id = dict(finger_to_sensor_id)
         self._sensor_id_to_finger = {v: k for k, v in self._finger_to_sensor_id.items()}
 
-        # Sensor configuration (dynamic, adapts to connected sensors)
         self._tactile_config: TactileSensorConfiguration | None = None
 
         self._auto_thread: threading.Thread | None = None
-        self._auto_running = threading.Event()  # Thread-safe flag for auto stream
+        self._auto_running = threading.Event()
         self._auto_lock = threading.Lock()
-        self._auto_latest = None            # parsed resultant forces dict
-        self._auto_latest_taxels = None     # parsed taxels dict
+        self._auto_latest = None
+        self._auto_latest_taxels = None
         self._auto_latest_ts = None
         self._auto_stats = AutoStreamStats()
-        self._auto_mode_resultant = True    # Whether to parse resultant forces
-        self._auto_mode_taxels = False      # Whether to parse taxels
+        self._auto_mode_resultant = True
+        self._auto_mode_taxels = False
         self._last_frame_debug_print: float = 0.0
 
-        # Per-taxel zeroing offsets
-        self._taxel_offsets: dict | None = None      # {finger: [[fx, fy, fz], ...], ...}
-        self._resultant_offsets: dict | None = None   # {finger: [fx, fy, fz], ...}
+        # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
+        self._taxel_offsets: dict | None = None
+        # {finger: [fx, fy, fz], ...} sum of taxel offsets per finger.
+        self._resultant_offsets: dict | None = None
 
     @property
     def is_connected(self) -> bool:
-        """Check if client is connected."""
         return self._connected
 
     def connect(self):
-        """Connect to the sensor device and get initial configuration.
-
-        This method establishes serial communication and reads the initial sensor
-        configuration (which sensors are connected, taxel counts, etc.).
-
-        Raises:
-            ConnectionError: If serial connection fails
-            IOError: If unable to read sensor configuration
-        """
+        """Open the serial link and capture the initial sensor configuration."""
         if self.is_connected:
             return
 
@@ -209,13 +200,12 @@ class TactileClient:
             self._connected = True
             logger.info(f"Connected to sensor at {self.port}")
 
-            # Get initial sensor configuration
+            # Initial config is best-effort; start_auto_stream will read it again.
             try:
                 self._tactile_config = self._get_configuration()
                 logger.info(f"Initial configuration: {self._tactile_config}")
             except IOError as e:
                 logger.warning(f"Failed to get initial configuration: {e}")
-                # Don't fail connection, config will be retrieved when starting auto-stream
 
         except (serial.SerialException, OSError) as e:
             raise ConnectionError(f"Failed to connect to sensor at {self.port}: {e}") from e
@@ -230,41 +220,22 @@ class TactileClient:
         self._connected = False
 
     def _read_register(self, address: int, count: int = 1, response_timeout_s: float = 0.5) -> bytes:
-        """Read one or more registers
+        """Send a read request and return the data bytes from the response.
 
-        Protocol flow:
-        1. Send request frame: 55 AA | reserved | 0x03 | addr(2) | count(2) | LRC
-        2. Wait for response frame: AA 55 | reserved | 0x03 | addr(2) | count(2) | data(count) | LRC
-        3. Handle auto frames (AA 56) that may arrive while waiting for response
-
-        This method is robust against auto-stream mode: while waiting for the AA55
-        response, any AA56 auto frames that arrive are skipped automatically.
-
-        Args:
-            address: Register address to read from
-            count: Number of bytes to read
-            response_timeout_s: Maximum time to wait for response (default: 0.5s)
-
-        Returns:
-            Raw bytes read from registers
-
-        Raises:
-            OSError: If not connected
-            TimeoutError: If no response received within timeout
-            IOError: If response checksum fails
+        Tolerates auto-stream mode: AA56 frames arriving before the AA55
+        response are skipped instead of treated as the response.
         """
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
         request = build_read_request(address, count)
 
-        # Clear stale data if not streaming (prevents reading old responses)
+        # Stale bytes in the input buffer would otherwise be treated as the response.
         if not self._is_streaming():
             self._serial_connection.reset_input_buffer()
 
         self._serial_connection.write(request)
 
-        # Wait for AA55 response header, skipping any AA56 auto frames
         deadline = time.time() + response_timeout_s
         while True:
             remaining = deadline - time.time()
@@ -272,66 +243,41 @@ class TactileClient:
                 raise TimeoutError("Timed out waiting for read response (AA55).")
 
             hdr = self._read_header_resync(timeout_s=remaining)
-            if hdr == PROTOCOL_HEADER_AUTO:  # AA56 auto frame
+            if hdr == PROTOCOL_HEADER_AUTO:
                 self._skip_auto_frame()
                 continue
-            break  # Found AA55 response
+            break
 
         body = self._read_exact(read_response_body_size(count))
         return parse_read_response(hdr + body)
 
     def _skip_auto_frame(self) -> None:
-        """Skip one complete auto-stream frame after having consumed the AA56 header.
-
-        This is called when waiting for a request-response (AA55) frame but an
-        auto-stream (AA56) frame arrives first. We skip it to continue waiting
-        for the AA55 response.
-
-        Raises:
-            IOError: If serial read fails
-            ValueError: If eff_len is unreasonably large (>8KB)
-        """
+        """Discard one auto-stream frame after the AA56 header has been consumed."""
         meta = self._read_exact(AUTO_FRAME_META_SIZE)
         eff_len = extract_auto_frame_eff_len(meta)
         _ = self._read_exact(eff_len + 1)  # payload + LRC
 
     def _read_header_resync(self, timeout_s: float) -> bytes:
-        """Read bytes until we find either AA55 (response) or AA56 (auto) header.
+        """Slide a 2-byte window until AA55 (response) or AA56 (auto) is found.
 
-        Uses a sliding 2-byte window to locate frame headers even if the byte
-        stream starts mid-frame or is misaligned. This is critical for robustness
-        when auto-stream frames (AA56) can arrive at any time, even when waiting
-        for request-response frames (AA55).
-
-        Args:
-            timeout_s: Maximum time to search for a header before giving up
-
-        Returns:
-            The 2-byte header (either AA55 or AA56)
-
-        Raises:
-            TimeoutError: If no valid header found within timeout_s
+        Needed because the bus may begin mid-frame and AA56 frames can interleave
+        with AA55 responses at any time. Returns the 2-byte header.
         """
         deadline = time.time() + timeout_s
-
-        # Sliding 2-byte window: [b1, b]
         b1 = b""
         while time.time() < deadline:
             b = self._serial_connection.read(1)
             if not b:
-                continue  # Serial timeout tick, keep trying until deadline
+                continue
 
-            # Build up 2-byte window
             if not b1:
                 b1 = b
                 continue
 
             hdr = b1 + b
-            # Check if we found a valid header
             if hdr == PROTOCOL_HEADER_RESPONSE or hdr == PROTOCOL_HEADER_AUTO:
                 return hdr
 
-            # Slide window: b becomes new b1
             b1 = b
 
         raise TimeoutError("Timed out waiting for AA55/AA56 header.")
@@ -345,39 +291,21 @@ class TactileClient:
         data: bytes,
         response_timeout_s: float = 0.5,
     ) -> None:
-        """Write bytes to registers
+        """Send a write request and validate the status byte in the response.
 
-        Protocol flow:
-        1. Send request: 55 AA | reserved | 0x10 | addr(2) | len(2) | data | LRC
-        2. Wait for response: AA 55 | reserved | 0x10 | addr(2) | len(2) | status | LRC
-        3. Handle auto frames (AA 56) that may arrive while waiting for response
-        4. Check status byte (0x00 = success)
-
-        This method is robust against auto-stream mode: while waiting for the AA55
-        response, any AA56 auto frames that arrive are skipped automatically.
-
-        Args:
-            address: Register address to write to
-            data: Bytes to write (max 10 bytes according to manual)
-            response_timeout_s: Maximum time to wait for response (default: 0.5s)
-
-        Raises:
-            OSError: If not connected
-            TimeoutError: If no response received within timeout
-            IOError: If response checksum fails or status byte indicates failure
+        Tolerates auto-stream mode the same way as ``_read_register``.
+        Per Paxini manual, ``data`` is capped at 10 bytes.
         """
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
         request = build_write_request(address, data)
 
-        # Clear stale data if not streaming (prevents reading old responses)
         if not self._is_streaming():
             self._serial_connection.reset_input_buffer()
 
         self._serial_connection.write(request)
 
-        # Wait for AA55 response header, skipping any AA56 auto frames
         deadline = time.time() + response_timeout_s
         while True:
             remaining = deadline - time.time()
@@ -385,15 +313,11 @@ class TactileClient:
                 raise TimeoutError("Timed out waiting for write response (AA55).")
 
             hdr = self._read_header_resync(timeout_s=remaining)
-
-            if hdr == PROTOCOL_HEADER_AUTO:  # AA56 auto frame
+            if hdr == PROTOCOL_HEADER_AUTO:
                 self._skip_auto_frame()
                 continue
-
-            # Found AA55 response
             break
 
-        # Read and parse response: header(2) + meta(6) + payload(nbytes) + LRC(1)
         meta = self._read_exact(RESPONSE_META_SIZE)
         data_len = extract_write_response_data_length(meta)
         rest = self._read_exact(data_len + 1)  # payload + LRC
@@ -402,14 +326,7 @@ class TactileClient:
 
 
     def read_connected_sensors(self) -> dict[str, bool]:
-        """Read the connected sensors.
-
-        Returns:
-            Dictionary of sensor names and their status
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Return ``{finger: is_connected}`` from the connected-sensors register."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
@@ -417,14 +334,7 @@ class TactileClient:
         return decode_connected_sensors(data, self._sensor_id_to_finger)
 
     def read_num_taxels(self) -> dict[str, int]:
-        """Read the number of taxels for each fingertip sensor.
-
-        Returns:
-            Dictionary mapping finger names to taxel counts
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Return ``{finger: taxel_count}`` from the taxel-count register block."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
@@ -432,39 +342,20 @@ class TactileClient:
         return decode_num_taxels(data, self._sensor_id_to_finger)
 
     def read_auto_data_type(self) -> dict:
-        """Read the auto-stream data-type register.
-
-        Returns the configured payload format for auto-stream frames (which of
-        resultant force / individual taxels are included).
-
-        Returns:
-            Dict with the raw register byte and decoded resultant/taxels flags.
-
-        Raises:
-            OSError: If not connected to sensor.
-        """
+        """Return the decoded auto-stream data-type register."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
         data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
         return decode_auto_data_type(data)
 
     def _read_raw_resultant(self) -> dict[str, list[float]]:
-        """Read raw resultant forces from hardware (no offset application).
-
-        MockTactileClient overrides this to return simulated
-        data. The public read_resultant_force() method calls this, then applies
-        zeroing offsets.
-
-        Returns:
-            Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
-        """
-        # Ensure we have current configuration
+        """Read raw resultant forces from hardware. Overridden by MockTactileClient."""
         if self._tactile_config is None:
             try:
                 self._tactile_config = self._get_configuration()
             except IOError as e:
                 logger.error(f"Failed to get configuration: {e}")
-                # Fall back to static parsing using default module indices
+                # Fall back to assuming all 5 sensors are connected.
                 data = self._read_register(ADDR_RESULTANT_FORCE_START, RESULTANT_BLOCK_SIZE)
                 module_indices = {f: compute_distal_module_index(self._finger_to_sensor_id[f]) for f in FINGER_NAMES}
                 return decode_resultant_register(data, list(FINGER_NAMES), module_indices)
@@ -475,17 +366,7 @@ class TactileClient:
         )
 
     def read_resultant_force(self) -> dict[str, list[float]]:
-        """Read resultant force from all connected fingertip sensors.
-
-        Calls _read_raw_resultant() for data, then applies zeroing offsets.
-
-        Returns:
-            Dictionary mapping finger names to [fx, fy, fz] force vectors in Newtons
-            Only includes sensors that are currently connected
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Read resultant force from all connected fingertip sensors, applying offsets."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
@@ -495,24 +376,11 @@ class TactileClient:
         return result
 
     def get_tactile_configuration(self) -> TactileSensorConfiguration | None:
-        """Get the current sensor configuration snapshot.
-
-        Returns:
-            TactileSensorConfiguration object with current sensor state, or None if not yet configured
-        """
+        """Return the cached sensor configuration, or ``None`` if never read."""
         return self._tactile_config
 
     def _get_configuration(self) -> TactileSensorConfiguration:
-        """Snapshot the current sensor configuration at stream start.
-
-        Reads connected sensors and their properties from the hardware.
-
-        Returns:
-            TactileSensorConfiguration with current hardware state
-
-        Raises:
-            IOError: If unable to read configuration from sensor
-        """
+        """Read the current connected-sensors and taxel-count registers from hardware."""
         try:
             connected = self.read_connected_sensors()
             num_taxels = self.read_num_taxels()
@@ -538,15 +406,7 @@ class TactileClient:
             raise IOError(f"Failed to read sensor configuration: {e}") from e
 
     def set_auto_data_type(self, resultant: bool = True, taxels: bool = False) -> None:
-        """Configure which data types to include in auto stream.
-
-        Args:
-            resultant: Include resultant force data
-            taxels: Include individual taxel force data
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Configure which data types are included in auto-stream frames."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
@@ -554,22 +414,14 @@ class TactileClient:
 
 
     def enable_auto_data_transmission(self) -> None:
-        """Enable automatic data transmission mode.
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Enable automatic data transmission mode."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
         self._write_register(ADDR_AUTO_ENABLE, REGISTER_ENABLE)
 
     def disable_auto_data_transmission(self) -> None:
-        """Disable automatic data transmission mode.
-
-        Raises:
-            OSError: If not connected to sensor
-        """
+        """Disable automatic data transmission mode."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
 
@@ -577,63 +429,30 @@ class TactileClient:
 
 
     def get_auto_latest(self):
-        """Thread-safe snapshot of the most recent resultant-force frame.
-
-        Updated by the background reader thread while auto-stream is active.
-
-        Returns:
-            (forces, timestamp): `forces` is a {finger: [fx, fy, fz]} dict in
-            Newtons, or None if no frame has arrived or resultant mode is off.
-            `timestamp` is the wall-clock time of receipt, or None.
-        """
+        """Return ``(forces, timestamp)`` for the most recent resultant frame, or ``(None, None)``."""
         with self._auto_lock:
             return self._auto_latest, self._auto_latest_ts
 
     def get_auto_latest_taxels(self):
-        """Thread-safe snapshot of the most recent per-taxel frame.
-
-        Only populated when auto-stream was started with `taxels=True`.
-
-        Returns:
-            (taxels, timestamp): `taxels` is a {finger: [[fx, fy, fz], ...]}
-            dict (one [fx, fy, fz] per taxel, in Newtons), or None if no frame
-            has arrived or taxel mode is off. `timestamp` is the wall-clock
-            time of receipt, or None.
-        """
+        """Return ``(taxels, timestamp)`` for the most recent taxel frame, or ``(None, None)``."""
         with self._auto_lock:
             return self._auto_latest_taxels, self._auto_latest_ts
 
     def get_auto_latest_all(self):
-        """Thread-safe snapshot of both resultant and taxel data in one call.
+        """Return ``(forces, taxels, timestamp)`` from a single locked read.
 
-        Useful in combined mode (`resultant=True, taxels=True`) to get a
-        consistent view without two separate locked reads.
-
-        Returns:
-            (forces, taxels, timestamp). Any field may be None depending on
-            the active stream mode and whether a frame has arrived yet.
+        Use this in combined mode so forces and taxels share one timestamp.
         """
         with self._auto_lock:
             return self._auto_latest, self._auto_latest_taxels, self._auto_latest_ts
 
     def get_auto_stats(self):
-        """Thread-safe snapshot of auto-stream diagnostics.
-
-        Returns a copy so callers can compare values across calls without
-        racing the reader thread.
-
-        See `AutoStreamStats` for the meaning of each field. Useful for health
-        monitoring (frame rate, checksum errors, parse errors).
-        """
+        """Return a snapshot copy of ``AutoStreamStats`` for the current loop."""
         with self._auto_lock:
             return dataclasses.replace(self._auto_stats)
-    
-    def set_taxel_offsets(self, offsets: dict) -> None:
-        """Set per-taxel zeroing offsets and compute resultant offsets.
 
-        Args:
-            offsets: {finger: [[fx, fy, fz], ...], ...} per-taxel offsets
-        """
+    def set_taxel_offsets(self, offsets: dict) -> None:
+        """Store per-taxel zeroing offsets and derive matching resultant offsets."""
         self._taxel_offsets = offsets
         self._resultant_offsets = {}
         for finger, taxel_list in offsets.items():
@@ -648,32 +467,25 @@ class TactileClient:
         self._resultant_offsets = None
 
     def capture_taxel_offsets(self, num_samples: int = 100) -> dict:
-        """Capture live baseline offsets by averaging current sensor readings.
+        """Average ``num_samples`` taxel frames and apply the result as zeroing offsets.
 
-        Requires active auto-stream with taxels enabled. Temporarily clears
-        any existing offsets so raw sensor data is captured.
-
-        Args:
-            num_samples: Number of unique frames to average
-
-        Returns:
-            Per-taxel offsets dict: {finger: [[fx, fy, fz], ...], ...}
+        Requires an active auto-stream with taxels enabled. Existing offsets
+        are temporarily cleared so the average reflects raw readings.
         """
         if not self._is_streaming() or not self._auto_mode_taxels:
             raise RuntimeError("Auto-stream with taxels must be active to capture offsets")
 
-        # Temporarily clear offsets to capture raw data
+        # Clear any current offsets so we average raw frames, not offset-corrected ones.
         prev_taxel = self._taxel_offsets
         prev_resultant = self._resultant_offsets
         self._taxel_offsets = None
         self._resultant_offsets = None
 
-        # Wait for at least one raw frame to flush old offset-applied data
+        # Let the reader thread emit at least one new frame past the offset clear.
         time.sleep(0.01)
 
         succeeded = False
         try:
-            # Collect unique frames by checking timestamps
             frames = []
             last_ts = None
             while len(frames) < num_samples:
@@ -683,7 +495,6 @@ class TactileClient:
                     last_ts = ts
                 time.sleep(0.002)
 
-            # Average per-taxel [fx, fy, fz] across all frames
             fingers = list(frames[0].keys())
             offsets = {}
             for finger in fingers:
@@ -705,7 +516,6 @@ class TactileClient:
             return offsets
         finally:
             if not succeeded:
-                # Restore previous offsets on failure
                 self._taxel_offsets = prev_taxel
                 self._resultant_offsets = prev_resultant
 
@@ -734,75 +544,42 @@ class TactileClient:
             fvec[2] = round(max(0, fvec[2] - off[2]), 1)
 
     def _on_frame_stored(self) -> None:
-        """Hook called after a frame is stored in _auto_latest. Subclasses
-        may override to signal frame availability (e.g. for tests)."""
+        """Hook for subclasses to signal frame availability (e.g. for tests)."""
 
     def _apply_stream_offsets(
         self,
         parsed_resultant: dict | None,
         parsed_taxels: dict | None,
     ) -> None:
-        """Apply zeroing offsets to parsed auto-stream data in-place.
-
-        Called by _auto_reader_loop implementations after parsing raw data.
-        """
+        """Apply zeroing offsets to parsed auto-stream data in-place."""
         if self._taxel_offsets and parsed_taxels:
             self._apply_taxel_offsets(parsed_taxels)
         if self._resultant_offsets and parsed_resultant:
             self._apply_resultant_offsets(parsed_resultant)
 
     def _read_exact(self, n: int) -> bytes:
-        """Read exactly n bytes from serial connection, blocking until complete.
-
-        This is a fundamental building block for the protocol implementation.
-        Unlike serial.read(n) which may return fewer bytes, this guarantees
-        exactly n bytes are read or an error is raised.
-
-        The serial connection has a 1.0s timeout (set in connect()). If no data
-        arrives within that window, this raises IOError. This prevents infinite
-        blocking on sensor disconnect or communication failure.
-
-        Args:
-            n: Number of bytes to read
-
-        Returns:
-            Exactly n bytes read from serial connection
-
-        Raises:
-            IOError: If serial read times out (1.0s) or connection is closed
-        """
+        """Read exactly n bytes, raising IOError if the serial 1.0s timeout fires."""
         out = bytearray()
         while len(out) < n:
             chunk = self._serial_connection.read(n - len(out))
             if chunk is None or len(chunk) == 0:
-                # Serial timeout or disconnect
                 raise IOError(f"Serial read timeout after reading {len(out)}/{n} bytes")
             out.extend(chunk)
         return bytes(out)
 
     def _resync_to_auto_header(self) -> None:
-        """Scan byte stream until we see 0xAA 0x56 auto-stream header.
+        """Slide a 2-byte window over the stream until 0xAA 0x56 is found.
 
-        Uses a sliding 2-byte window to find the header even if the stream
-        starts mid-frame or becomes misaligned. Exits cleanly when auto stream
-        is stopped via _auto_running.clear().
-
-        Performance note: Checking is_set() adds <0.01% overhead since serial I/O
-        (milliseconds) dominates over the flag check (microseconds).
-
-        Raises:
-            IOError: If auto stream is stopped while resyncing
+        Exits and raises IOError when ``_auto_running`` is cleared, so a
+        stop request unblocks this loop instead of hanging on the next read.
         """
-        # Sliding 2-byte window to find AA 56 header
         b1 = self._read_exact(1)
         while self._auto_running.is_set():
             b2 = self._read_exact(1)
             if b1 + b2 == PROTOCOL_HEADER_AUTO:
-                return  # Found the header
-            # Slide window: b2 becomes new b1
+                return
             b1 = b2
 
-        # If we exit the loop, auto stream was stopped
         raise IOError("Auto stream stopped during resync")
 
     def _get_expected_payload_size(self, config: TactileSensorConfiguration) -> int:
@@ -819,21 +596,10 @@ class TactileClient:
         parse_resultant: bool,
         parse_taxels: bool,
     ) -> tuple[dict | None, dict | None]:
-        """Acquire and return the next parsed (resultant, taxels) frame.
+        """Read one frame from serial, validate LRC, decode according to mode.
 
-        Reads one auto-stream frame from serial, validates LRC, and parses
-        the data.
-
-        Subclasses (e.g. MockTactileClient) override this to provide data from
-        other sources while inheriting the loop's stats, offset, and lifecycle logic.
-
-        Returns:
-            Tuple of (parsed_resultant, parsed_taxels). Either may be None
-            if not requested.
-
-        Raises:
-            FrameError: Recoverable frame-level error (bad LRC, parse failure)
-            IOError: Serial communication failure or auto stream stopped
+        Overridden by ``MockTactileClient`` to swap the data source while
+        keeping the surrounding stats, offset, and lifecycle logic.
         """
         self._resync_to_auto_header()
 
@@ -885,11 +651,7 @@ class TactileClient:
         return parsed_resultant, parsed_taxels
 
     def _auto_reader_loop(self, parse_resultant: bool, parse_taxels: bool):
-        """Background thread that continuously reads and parses auto-stream frames.
-
-        Calls _acquire_frame() to get parsed data, then applies offsets and updates
-        stats. Subclasses override _acquire_frame() to change the data source while
-        inheriting the shared loop logic.
+        """Background thread: acquire → offset → store → repeat.
 
         Error handling:
         - FrameError: recoverable (bad LRC / parse error). Count and continue.
@@ -938,42 +700,16 @@ class TactileClient:
         logger.info("Auto reader loop exited")
 
     def start_auto_stream(self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1):
-        """Start continuous auto-stream mode for real-time force data.
+        """Start the ~1 kHz auto-stream and the background reader thread.
 
-        In auto-stream mode, the sensor continuously broadcasts force data at ~1kHz
-        without requiring request-response polling. This provides much lower latency
-        and higher throughput than repeatedly calling read_resultant_force().
+        Read the latest frame via ``get_auto_latest`` / ``get_auto_latest_taxels`` /
+        ``get_auto_latest_all``. ``min_sensors`` gates startup: if fewer sensors
+        enumerate at power-on, ``NoSensorsAvailableError`` is raised.
 
-        The data is read by a background thread and made available via:
-        - get_auto_latest(): for resultant force data
-        - get_auto_latest_taxels(): for taxel data
-        - get_auto_latest_all(): for both
-
-        Sensor presence is determined at stream start. Paxini PX-6AX GEN3
-        firmware enumerates sensors at power-on and does not report mid-stream
-        disconnects — a physically disconnected sensor's slot continues to
-        emit its last bytes until power-cycle. Restart the host process and
-        power-cycle the board to pick up wiring changes.
-
-        Setup sequence:
-        1. Stop any existing stream
-        2. Get sensor configuration (which sensors are connected)
-        3. Configure data type (0x0016: resultant and/or taxels)
-        4. Clear serial buffer to remove stale data
-        5. Enable auto transmission (0x0017 = 1)
-        6. Start background reader thread
-
-        Args:
-            resultant: Include resultant force data (fx, fy, fz per sensor)
-            taxels: Include individual taxel force data
-            min_sensors: Minimum number of sensors required at stream start
-                        (default: 1). If fewer sensors are enumerated,
-                        raises NoSensorsAvailableError.
-
-        Raises:
-            OSError: If not connected to sensor
-            NoSensorsAvailableError: If fewer than min_sensors are available
-            ValueError: If neither resultant nor taxels is enabled
+        Sensor presence is fixed at stream start. The Paxini PX-6AX GEN3 board
+        enumerates at power-on and does not report mid-stream disconnects —
+        an unplugged slot keeps emitting its last bytes until the board is
+        power-cycled.
         """
         if not self.is_connected:
             raise OSError("Must call connect() first.")
@@ -981,27 +717,22 @@ class TactileClient:
         if not resultant and not taxels:
             raise ValueError("At least one of resultant or taxels must be enabled")
 
-        # Stop any existing stream to ensure clean state
         self.stop_auto_stream()
 
-        # Store mode settings for the reader loop
         self._auto_mode_resultant = resultant
         self._auto_mode_taxels = taxels
 
-        # Get initial sensor configuration
         try:
             self._tactile_config = self._get_configuration()
         except IOError as e:
             raise OSError(f"Failed to get sensor configuration: {e}") from e
 
-        # Check minimum sensor requirement
         if self._tactile_config.num_active_sensors < min_sensors:
             raise NoSensorsAvailableError(
                 f"Only {self._tactile_config.num_active_sensors} sensor(s) available, "
                 f"need at least {min_sensors}"
             )
 
-        # Log expected payload size for debugging
         expected_size = self._get_expected_payload_size(self._tactile_config)
         mode_str = []
         if resultant:
@@ -1013,60 +744,46 @@ class TactileClient:
             f"mode={'+'.join(mode_str)}, expected_payload={expected_size} bytes"
         )
 
-        # Try to disable auto mode first (in case it was left enabled)
+        # Disable in case the sensor was left in auto mode from a prior run;
+        # _write_register tolerates incoming AA56 frames if it is still streaming.
         try:
             self.disable_auto_data_transmission()
         except IOError:
-            pass  # If this fails, robust _write_register will handle AA56 frames
+            pass
 
-        # Configure which data types to include in auto frames
         self.set_auto_data_type(resultant=resultant, taxels=taxels)
 
-        # Clear any stale data from serial buffer before starting
         if self._serial_connection is not None:
             self._serial_connection.reset_input_buffer()
 
-        # Enable auto transmission mode (sensor starts broadcasting)
         self.enable_auto_data_transmission()
 
-        # Start background reader thread
-        self._auto_running.set()  # Signal thread to run
+        self._auto_running.set()
         self._auto_thread = threading.Thread(
             target=self._auto_reader_loop,
             args=(resultant, taxels),
-            daemon=True  # Thread exits when main program exits
+            daemon=True,
         )
         self._auto_thread.start()
 
 
     def stop_auto_stream(self):
-        """Stop auto-stream mode and clean up background thread.
+        """Stop auto-stream mode and clean up the background thread.
 
-        Sequence:
-        1. Signal thread to stop (_auto_running.clear())
-        2. Wait up to 1.0s for thread to exit gracefully
-        3. Disable auto transmission on sensor (0x0017 = 0)
-        4. Reset cached data
-
-        This method is safe to call multiple times and handles cases where
-        the sensor is disconnected or the thread is already stopped.
+        Safe to call multiple times and when the sensor is already disconnected.
         """
-        # Signal background thread to stop
         self._auto_running.clear()
 
-        # Wait for thread to exit (up to 1 second)
         if self._auto_thread is not None:
             self._auto_thread.join(timeout=1.0)
             self._auto_thread = None
 
-        # Disable auto mode on sensor (if still connected)
         if self.is_connected:
             try:
                 self.disable_auto_data_transmission()
             except IOError:
-                pass  # Ignore errors (e.g., if sensor disconnected)
+                pass
 
-        # Reset cached data
         with self._auto_lock:
             self._auto_latest = None
             self._auto_latest_taxels = None
