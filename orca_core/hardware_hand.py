@@ -659,21 +659,21 @@ class OrcaHand(BaseHand):
             )
             calibration_sequence = filtered
 
-        # Deep-copy current limits so per-step YAML writes reflect only the
-        # joints being calibrated, not stale data from a prior incomplete run.
+        # Deep-copy current limits. Joints not touched by this run keep their
+        # values; joints in this run accumulate their new limits in
+        # ``pending_limits`` and only overwrite ``motor_limits`` once both
+        # flex AND extend have been measured. That way an interrupted run
+        # never destroys a previously-good calibration.
         motor_limits = {
             motor_id: list(limits)
             for motor_id, limits in self.calibration.motor_limits_dict.items()
         }
+        pending_limits: Dict[int, list] = {
+            motor_id: [None, None] for motor_id in self.config.motor_ids
+        }
         joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
 
         self._compute_wrap_offsets_dict()
-
-        for step in calibration_sequence:
-            for joint in step[JOINTS].keys():
-                motor_id = self.config.joint_to_motor_map[joint]
-                motor_limits[motor_id] = [None, None]
-                self._wrap_offsets_dict[motor_id] = 0.0
 
         motors_with_initial_offset = set()
         motors_with_final_offset = set()
@@ -720,6 +720,7 @@ class OrcaHand(BaseHand):
                     sign = -sign
 
                 directions[motor_id] = sign
+                self._wrap_offsets_dict[motor_id] = 0.0
                 position_buffers[motor_id] = deque(
                     maxlen=self.config.calibration_num_stable
                 )
@@ -775,9 +776,9 @@ class OrcaHand(BaseHand):
                                 f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
                             )
                             if directions[motor_id] == 1:
-                                motor_limits[motor_id][1] = avg_limit
+                                pending_limits[motor_id][1] = avg_limit
                             if directions[motor_id] == -1:
-                                motor_limits[motor_id][0] = avg_limit
+                                pending_limits[motor_id][0] = avg_limit
 
                             if (
                                 self._motor_client.requires_offset_calibration
@@ -789,7 +790,7 @@ class OrcaHand(BaseHand):
                                 )
                                 time.sleep(TINY_SLEEP)
                                 new_limit = float(self.get_motor_pos()[idx])
-                                motor_limits[motor_id][1 if is_positive else 0] = (
+                                pending_limits[motor_id][1 if is_positive else 0] = (
                                     new_limit
                                 )
                                 print(
@@ -802,11 +803,16 @@ class OrcaHand(BaseHand):
             for joint in step[JOINTS].keys():
                 motor_id = self.config.joint_to_motor_map[joint]
                 if (
-                    motor_limits[motor_id][0] is None
-                    or motor_limits[motor_id][1] is None
+                    pending_limits[motor_id][0] is None
+                    or pending_limits[motor_id][1] is None
                 ):
+                    # Only one direction has completed for this joint; leave
+                    # motor_limits alone so an interrupted run doesn't lose
+                    # the previously-known good values.
                     continue
 
+                # Both directions measured — commit to motor_limits.
+                motor_limits[motor_id] = list(pending_limits[motor_id])
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = (
                     self.config.joint_roms_dict[joint][1]
