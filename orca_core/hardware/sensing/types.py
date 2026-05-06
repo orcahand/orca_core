@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from orca_core.hardware.sensing.constants import FingerName
+
 
 @dataclass(frozen=True)
 class ResultantReading:
@@ -17,10 +19,10 @@ class ResultantReading:
     forces: dict[str, list[float]]
     timestamp: float | None = None
 
-    def __getitem__(self, finger: str) -> list[float]:
+    def __getitem__(self, finger: FingerName) -> list[float]:
         return self.forces[finger]
 
-    def __contains__(self, finger: str) -> bool:
+    def __contains__(self, finger: FingerName) -> bool:
         return finger in self.forces
 
     @property
@@ -43,17 +45,17 @@ class TaxelReading:
     taxels: dict[str, list[list[float]]]
     timestamp: float | None = None
 
-    def __getitem__(self, finger: str) -> list[list[float]]:
+    def __getitem__(self, finger: FingerName) -> list[list[float]]:
         return self.taxels[finger]
 
-    def __contains__(self, finger: str) -> bool:
+    def __contains__(self, finger: FingerName) -> bool:
         return finger in self.taxels
 
     @property
     def fingers(self) -> list[str]:
         return list(self.taxels.keys())
 
-    def as_array(self, finger: str) -> np.ndarray:
+    def as_array(self, finger: FingerName) -> np.ndarray:
         """Return an ``(n_taxels, 3)`` array for *finger*."""
         return np.array(self.taxels[finger])
 

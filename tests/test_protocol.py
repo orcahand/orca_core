@@ -30,6 +30,9 @@ from orca_core.hardware.sensing.protocol import (
     encode_resultant_auto_for_mock,
 )
 from orca_core.hardware.sensing.constants import (
+    ADDR_NUM_TAXELS_LENGTH,
+    ADDR_NUM_TAXELS_START,
+    DEFAULT_TAXEL_COUNTS,
     PROTOCOL_HEADER_REQUEST,
     PROTOCOL_HEADER_RESPONSE,
     PROTOCOL_HEADER_AUTO,
@@ -40,6 +43,7 @@ from orca_core.hardware.sensing.constants import (
     BYTES_PER_RESULTANT,
     BYTES_PER_TAXEL,
     MAX_AUTO_FRAME_EFF_LEN,
+    SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
 )
 
 
@@ -62,70 +66,59 @@ def _build_write_response(status: int) -> bytes:
 # Checksum
 # ---------------------------------------------------------------------------
 
-def test_checksum_known_value():
-    assert calculate_checksum(b"\x01\x02\x03") == 0xFA
-
-
-def test_checksum_round_trip():
-    frame = b"\xAA\x55\x00\x03\x10\x00\x04\x00"
+@pytest.mark.parametrize("frame,expected", [
+    (b"\x01\x02\x03", 0xFA),
+    (b"", 0),
+    (b"\x01", 0xFF),
+    (b"\xAA\x55\x00\x03\x10\x00\x04\x00", 0xEA),
+])
+def test_calculate_checksum(frame, expected):
+    """Each case checks the concrete LRC value AND the LRC invariant
+    (frame + checksum sums to 0 mod 256)."""
     checksum = calculate_checksum(frame)
+    assert checksum == expected
     assert (sum(frame) + checksum) & 0xFF == 0
 
 
-def test_checksum_empty_frame():
-    assert calculate_checksum(b"") == 0
-
-
-def test_checksum_single_byte():
-    assert calculate_checksum(b"\x01") == 0xFF
-
-
-def test_validate_auto_frame_lrc_valid():
+@pytest.mark.parametrize("lrc,expected", [
+    pytest.param(None, True, id="matching"),   # None = compute the correct LRC
+    pytest.param(0xFF, False, id="bad"),
+])
+def test_validate_auto_frame_lrc(lrc, expected):
     meta = b"\x00" + (3).to_bytes(2, "little")
     payload = b"\x00\x01\x02"
-    frame_wo_lrc = b"\xAA\x56" + meta + payload
-    lrc = calculate_checksum(frame_wo_lrc)
-    assert validate_auto_frame_lrc(meta, payload, lrc) is True
-
-
-def test_validate_auto_frame_lrc_invalid():
-    meta = b"\x00" + (3).to_bytes(2, "little")
-    payload = b"\x00\x01\x02"
-    assert validate_auto_frame_lrc(meta, payload, 0xFF) is False
+    if lrc is None:
+        lrc = calculate_checksum(PROTOCOL_HEADER_AUTO + meta + payload)
+    assert validate_auto_frame_lrc(meta, payload, lrc) is expected
 
 
 # ---------------------------------------------------------------------------
 # Frame size helpers
 # ---------------------------------------------------------------------------
 
-def test_read_response_body_size_known_value():
-    # count=4 → meta(6) + data(4) + LRC(1) = 11
-    assert read_response_body_size(4) == 11
-
-
-def test_read_response_body_size_single_byte():
-    assert read_response_body_size(1) == 8
+@pytest.mark.parametrize("count,expected", [
+    (4, 11),  # meta(6) + data(4) + LRC(1)
+    (1, 8),
+])
+def test_read_response_body_size(count, expected):
+    assert read_response_body_size(count) == expected
 
 
 # ---------------------------------------------------------------------------
 # Frame builders
 # ---------------------------------------------------------------------------
 
-def test_build_read_request_structure():
+def test_build_read_request():
     frame = build_read_request(address=0x0010, count=4)
     assert frame[:2] == PROTOCOL_HEADER_REQUEST
     assert frame[2] == 0x00
     assert frame[3] == FUNC_CODE_READ
     assert int.from_bytes(frame[4:6], "little") == 0x0010
     assert int.from_bytes(frame[6:8], "little") == 4
-
-
-def test_build_read_request_lrc_valid():
-    frame = build_read_request(address=0x0010, count=4)
     assert calculate_checksum(frame[:-1]) == frame[-1]
 
 
-def test_build_write_request_structure():
+def test_build_write_request():
     frame = build_write_request(address=0x0017, data=b"\x01")
     assert frame[:2] == PROTOCOL_HEADER_REQUEST
     assert frame[2] == 0x00
@@ -133,55 +126,40 @@ def test_build_write_request_structure():
     assert int.from_bytes(frame[4:6], "little") == 0x0017
     assert int.from_bytes(frame[6:8], "little") == 1
     assert frame[8] == 0x01
-
-
-def test_build_write_request_lrc_valid():
-    frame = build_write_request(address=0x0017, data=b"\x01")
     assert calculate_checksum(frame[:-1]) == frame[-1]
 
 
-def test_build_read_request_zero_count_raises():
-    with pytest.raises(ValueError, match="count must be > 0"):
-        build_read_request(address=0x0010, count=0)
+@pytest.mark.parametrize("address,count,error_match", [
+    (0x0010, 0, "count must be > 0"),
+    (0x0010, -1, "count must be > 0"),
+    (0x10000, 1, "address"),
+    (-1, 1, "address"),
+])
+def test_build_read_request_invalid_inputs(address, count, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        build_read_request(address=address, count=count)
 
 
-def test_build_read_request_negative_count_raises():
-    with pytest.raises(ValueError, match="count must be > 0"):
-        build_read_request(address=0x0010, count=-1)
-
-
-def test_build_read_request_address_overflow_raises():
-    with pytest.raises(ValueError, match="address"):
-        build_read_request(address=0x10000, count=1)
-
-
-def test_build_read_request_negative_address_raises():
-    with pytest.raises(ValueError, match="address"):
-        build_read_request(address=-1, count=1)
-
-
-def test_build_write_request_empty_data_raises():
-    with pytest.raises(ValueError, match="data must not be empty"):
-        build_write_request(address=0x0017, data=b"")
-
-
-def test_build_write_request_address_overflow_raises():
-    with pytest.raises(ValueError, match="address"):
-        build_write_request(address=0x10000, data=b"\x01")
+@pytest.mark.parametrize("address,data,error_match", [
+    (0x0017, b"", "data must not be empty"),
+    (0x10000, b"\x01", "address"),
+])
+def test_build_write_request_invalid_inputs(address, data, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        build_write_request(address=address, data=data)
 
 
 # ---------------------------------------------------------------------------
 # Response frame parsers
 # ---------------------------------------------------------------------------
 
-def test_parse_read_response_extracts_data():
-    frame = _build_read_response(b"\xAB\xCD\xEF\x01")
-    assert parse_read_response(frame) == b"\xAB\xCD\xEF\x01"
-
-
-def test_parse_read_response_single_byte():
-    frame = _build_read_response(b"\x42")
-    assert parse_read_response(frame) == b"\x42"
+@pytest.mark.parametrize("data", [
+    b"\xAB\xCD\xEF\x01",
+    b"\x42",
+])
+def test_parse_read_response_extracts_data(data):
+    frame = _build_read_response(data)
+    assert parse_read_response(frame) == data
 
 
 def test_parse_read_response_bad_lrc_raises():
@@ -265,15 +243,11 @@ def test_extract_write_response_data_length_wrong_size_raises():
 # Auto-stream frame parsers
 # ---------------------------------------------------------------------------
 
-def test_extract_auto_frame_eff_len_known_value():
-    # reserved(1) + eff_len(2 LE) = 3 bytes
-    meta = b"\x00" + (42).to_bytes(2, "little")
-    assert extract_auto_frame_eff_len(meta) == 42
-
-
-def test_extract_auto_frame_eff_len_max_valid():
-    meta = b"\x00" + MAX_AUTO_FRAME_EFF_LEN.to_bytes(2, "little")
-    assert extract_auto_frame_eff_len(meta) == MAX_AUTO_FRAME_EFF_LEN
+@pytest.mark.parametrize("value", [42, MAX_AUTO_FRAME_EFF_LEN])
+def test_extract_auto_frame_eff_len_valid(value):
+    # meta layout: reserved(1) + eff_len(2 LE) = 3 bytes
+    meta = b"\x00" + value.to_bytes(2, "little")
+    assert extract_auto_frame_eff_len(meta) == value
 
 
 def test_extract_auto_frame_eff_len_exceeds_max_raises():
@@ -282,22 +256,15 @@ def test_extract_auto_frame_eff_len_exceeds_max_raises():
         extract_auto_frame_eff_len(meta)
 
 
-def test_unpack_auto_payload_splits_error_and_data():
-    err, data = unpack_auto_payload(b"\x00\x01\x02\x03")
-    assert err == 0
-    assert data == b"\x01\x02\x03"
-
-
-def test_unpack_auto_payload_nonzero_error_code():
-    err, data = unpack_auto_payload(b"\x05\xAB")
-    assert err == 5
-    assert data == b"\xAB"
-
-
-def test_unpack_auto_payload_error_code_only():
-    err, data = unpack_auto_payload(b"\x01")
-    assert err == 1
-    assert data == b""
+@pytest.mark.parametrize("payload,expected_err,expected_data", [
+    (b"\x00\x01\x02\x03", 0, b"\x01\x02\x03"),
+    (b"\x05\xAB", 5, b"\xAB"),
+    (b"\x01", 1, b""),
+])
+def test_unpack_auto_payload(payload, expected_err, expected_data):
+    err, data = unpack_auto_payload(payload)
+    assert err == expected_err
+    assert data == expected_data
 
 
 # ---------------------------------------------------------------------------
@@ -457,26 +424,27 @@ def test_decode_resultant_register_too_short_raises():
 # Register decoders — connected sensors
 # ---------------------------------------------------------------------------
 
-def test_decode_connected_sensors_all_connected():
-    # Slot i bit mask: slot 0 → byte 0 bit 2, slot 1 → byte 0 bit 6,
-    # slot 2 → byte 1 bit 2, slot 3 → byte 1 bit 6, slot 4 → byte 2 bit 2.
-    data = bytes([0x44, 0x44, 0x04, 0x00])
-    result = decode_connected_sensors(data, ID_TO_FINGER)
-    assert all(result.values())
-
-
-def test_decode_connected_sensors_none_connected():
-    result = decode_connected_sensors(bytes([0x00, 0x00, 0x00, 0x00]), ID_TO_FINGER)
-    assert not any(result.values())
-
-
-def test_decode_connected_sensors_partial():
-    # Only slot 0 (bit 2 of byte 0) and slot 4 (bit 2 of byte 2)
-    data = bytes([0x04, 0x00, 0x04, 0x00])
-    result = decode_connected_sensors(data, ID_TO_FINGER)
-    assert result["thumb"] is True
-    assert result["index"] is False
-    assert result["pinky"] is True
+# Slot i bit mask: slot 0 → byte 0 bit 2, slot 1 → byte 0 bit 6,
+# slot 2 → byte 1 bit 2, slot 3 → byte 1 bit 6, slot 4 → byte 2 bit 2.
+@pytest.mark.parametrize("data,expected", [
+    pytest.param(
+        bytes([0x44, 0x44, 0x04, 0x00]),
+        {"thumb": True, "index": True, "middle": True, "ring": True, "pinky": True},
+        id="all_connected",
+    ),
+    pytest.param(
+        bytes([0x00, 0x00, 0x00, 0x00]),
+        {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False},
+        id="none_connected",
+    ),
+    pytest.param(
+        bytes([0x04, 0x00, 0x04, 0x00]),
+        {"thumb": True, "index": False, "middle": False, "ring": False, "pinky": True},
+        id="partial",
+    ),
+])
+def test_decode_connected_sensors(data, expected):
+    assert decode_connected_sensors(data, ID_TO_FINGER) == expected
 
 
 def test_decode_connected_sensors_too_short_raises():
@@ -494,14 +462,16 @@ def test_decode_connected_sensors_wrong_mapping_size_raises():
 # ---------------------------------------------------------------------------
 
 def test_decode_num_taxels_known_values():
-    # 28 uint16 values (56 bytes total). The distal register offsets
-    # [0x0034, 0x003C, 0x0044, 0x004C, 0x0054] at base 0x0030 correspond
-    # to indices [2, 6, 10, 14, 18] in the uint16 array.
-    data = bytearray(56)
-    for idx, count in zip([2, 6, 10, 14, 18], [51, 87, 87, 87, 51]):
-        struct.pack_into("<H", data, idx * 2, count)
+    """Pack DEFAULT_TAXEL_COUNTS at the configured slot register offsets, decode,
+    assert round-trip. Both the byte offsets and the values are derived from
+    constants the decoder reads, so the test follows the source of truth."""
+    data = bytearray(ADDR_NUM_TAXELS_LENGTH)
+    for slot_id, addr in enumerate(SLOT_DISTAL_TAXEL_REGISTER_OFFSETS):
+        finger = ID_TO_FINGER[slot_id]
+        byte_offset = addr - ADDR_NUM_TAXELS_START
+        struct.pack_into("<H", data, byte_offset, DEFAULT_TAXEL_COUNTS[finger])
     result = decode_num_taxels(bytes(data), ID_TO_FINGER)
-    assert result == {"thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51}
+    assert result == {f: DEFAULT_TAXEL_COUNTS[f] for f in ID_TO_FINGER.values()}
 
 
 def test_decode_num_taxels_wrong_data_length_raises():
@@ -545,11 +515,7 @@ def test_auto_data_type_round_trip(resultant, taxels, encoded):
     assert decoded["taxels"] is taxels
 
 
-def test_decode_auto_data_type_empty_raises():
+@pytest.mark.parametrize("data", [b"", b"\x01\x02"])
+def test_decode_auto_data_type_wrong_size_raises(data):
     with pytest.raises(ValueError, match="exactly 1 byte"):
-        decode_auto_data_type(b"")
-
-
-def test_decode_auto_data_type_oversized_raises():
-    with pytest.raises(ValueError, match="exactly 1 byte"):
-        decode_auto_data_type(b"\x01\x02")
+        decode_auto_data_type(data)
