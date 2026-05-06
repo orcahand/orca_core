@@ -32,7 +32,31 @@ from .feetech import (
     SMS_STS_GOAL_POSITION_L,
     SMS_STS_GOAL_TIME_L,
     SMS_STS_GOAL_SPEED_L,
+    SMS_STS_ID,
+    SMS_STS_BAUD_RATE,
 )
+
+# Map host-facing baud rates to the firmware's register code.
+FEETECH_BAUD_RATE_MAP: dict[int, int] = {
+    1_000_000: 0,
+    500_000: 1,
+    250_000: 2,
+    128_000: 3,
+    115_200: 4,
+    76_800: 5,
+    57_600: 6,
+    38_400: 7,
+}
+
+# Model-number → human name. The string is used by configure_motor_chain
+# for substring-matching, so multiple raw model numbers can share a label
+# (e.g., HLS3915 ships in two firmware revisions reporting different
+# model_number values; both are functionally HLS3915).
+FEETECH_MODELS: dict[int, str] = {
+    4106: 'HLS3930',
+    6922: 'HLS3915',
+    5130: 'HLS3915',
+}
 
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
@@ -172,6 +196,101 @@ class FeetechClient(MotorClient):
 
         if self in self.OPEN_CLIENTS:
             self.OPEN_CLIENTS.remove(self)
+
+    @staticmethod
+    def scan_for_motors(
+        port: str = '/dev/ttyUSB0',
+        id_range: tuple = (0, 252),
+        baud_rates: list = None,
+    ) -> list:
+        """Scan ``port`` for any responding Feetech motors.
+
+        Tries each baud in ``baud_rates`` (defaults to all known rates), pings
+        every ID in ``id_range``, and returns a list of dicts with keys
+        ``id``, ``baud_rate``, ``model_name``. Doesn't change motor state.
+        """
+        baud_rates = baud_rates or list(FEETECH_BAUD_RATE_MAP.keys())
+        detected_motors = []
+        for baud_rate in baud_rates:
+            port_handler = PortHandler(port)
+            port_handler.baudrate = baud_rate
+            try:
+                if not port_handler.openPort():
+                    logging.warning(
+                        'Failed to open port %s at %d baud', port, baud_rate
+                    )
+                    continue
+                packet_handler = sms_sts(port_handler)
+                for motor_id in range(id_range[0], id_range[1] + 1):
+                    model_number, result, _ = packet_handler.ping(motor_id)
+                    if result == COMM_SUCCESS:
+                        detected_motors.append({
+                            'id': motor_id,
+                            'baud_rate': baud_rate,
+                            'model_name': FEETECH_MODELS.get(model_number, 'Feetech'),
+                        })
+                port_handler.closePort()
+            except Exception as e:
+                logging.warning(
+                    'Error scanning port %s at %d baud: %s', port, baud_rate, e
+                )
+                try:
+                    port_handler.closePort()
+                except Exception:
+                    pass
+        return detected_motors
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Re-program a motor's bus ID. Persists in EEPROM."""
+        if not (0 <= new_id <= 253):
+            logging.error("Invalid ID %d. Valid range is 0-253.", new_id)
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([current_id], False, retries=0)
+            self.packet_handler.unLockEprom(current_id)
+            result, error = self.packet_handler.write1ByteTxRx(
+                current_id, SMS_STS_ID, new_id
+            )
+            self.packet_handler.LockEprom(new_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info("Changed motor ID: %d -> %d", current_id, new_id)
+                return True
+            logging.error(
+                "Failed to change motor ID: result=%d, error=%d", result, error
+            )
+            return False
+        except Exception as e:
+            logging.error("Failed to change motor ID: %s", e)
+            return False
+
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Re-program a motor's UART baud. Caller must reconnect at the new rate."""
+        if new_baud_rate not in FEETECH_BAUD_RATE_MAP:
+            logging.error(
+                "Invalid baud rate %d. Valid: %s",
+                new_baud_rate,
+                list(FEETECH_BAUD_RATE_MAP.keys()),
+            )
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([motor_id], False, retries=0)
+            self.packet_handler.unLockEprom(motor_id)
+            result, error = self.packet_handler.write1ByteTxRx(
+                motor_id, SMS_STS_BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
+            )
+            self.packet_handler.LockEprom(motor_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info("Changed motor %d baud rate to %d", motor_id, new_baud_rate)
+                return True
+            logging.error(
+                "Failed to change baud rate: result=%d, error=%d", result, error
+            )
+            return False
+        except Exception as e:
+            logging.error("Failed to change baud rate: %s", e)
+            return False
 
     def set_torque_enabled(
         self,

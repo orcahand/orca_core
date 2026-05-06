@@ -548,7 +548,12 @@ class OrcaHand(BaseHand):
 
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+    def calibrate(
+        self,
+        blocking: bool = True,
+        force_wrist: bool = False,
+        joints: list | None = None,
+    ):
         """Run the joint calibration routine.
 
         Drives each joint to its mechanical limits in the sequence defined by
@@ -556,17 +561,24 @@ class OrcaHand(BaseHand):
         each limit, and persists the resulting motor limits and joint-to-motor
         ratios to ``calibration.yaml``.
 
+        Args:
+            blocking: When True, runs to completion before returning.
+            force_wrist: Recalibrate the wrist even if it's already calibrated.
+            joints: When given, only calibrate steps that touch any of these
+                joint names (others are skipped). Useful for re-running just
+                one finger or joint without re-calibrating the whole hand.
+
         On completion ``self.calibration`` is replaced with a fresh
         :class:`~orca_core.CalibrationResult`. Partial progress is written to
         disk after every step so an interrupted run is never fully lost.
         """
         if blocking:
             self._task_stop_event.clear()
-            result = self._calibrate(force_wrist=force_wrist)
+            result = self._calibrate(force_wrist=force_wrist, joints=joints)
             if result is not None:
                 self.calibration = result
         else:
-            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist)
+            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist, joints=joints)
 
     def _build_calibration_result(
         self,
@@ -591,7 +603,11 @@ class OrcaHand(BaseHand):
             wrist_calibrated=wrist_calibrated,
         )
 
-    def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
+    def _calibrate(
+        self,
+        force_wrist: bool = False,
+        joints: list | None = None,
+    ) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
         Drives each joint through its mechanical limits following ``calibration_sequence``
@@ -627,6 +643,21 @@ class OrcaHand(BaseHand):
             calibration_sequence.append(
                 {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}}
             )
+
+        if joints is not None:
+            joints_set = set(joints)
+            filtered = []
+            for step in calibration_sequence:
+                step_joints = {
+                    j: d for j, d in step[JOINTS].items() if j in joints_set
+                }
+                if step_joints:
+                    filtered.append({STEP: step[STEP], JOINTS: step_joints})
+            print(
+                f"Calibrating {len(joints_set)} joint(s) across {len(filtered)} "
+                f"step(s) (out of {len(calibration_sequence)} total)."
+            )
+            calibration_sequence = filtered
 
         # Deep-copy current limits so per-step YAML writes reflect only the
         # joints being calibrated, not stale data from a prior incomplete run.

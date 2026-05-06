@@ -6,10 +6,10 @@ import os
 import subprocess
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from orca_core.hardware.dynamixel_client import DynamixelClient
-from orca_core.utils import read_yaml, get_model_path
+from orca_core.hardware.dynamixel_client import DynamixelClient, BAUD_RATE_MAP as DYNAMIXEL_BAUD_RATE_MAP
+from orca_core.hardware.feetech_client import FeetechClient, FEETECH_BAUD_RATE_MAP
+from orca_core.utils import read_yaml, get_model_path, auto_detect_port, get_and_choose_port
 
-DEFAULT_ID, DEFAULT_BAUD = 1, 57600
 RED = '\033[91m'
 GREEN = '\033[92m'
 BLUE = '\033[94m'
@@ -20,8 +20,124 @@ BOLD = '\033[1m'
 UNDERLINE = '\033[4m'
 RESET = '\033[0m'
 
+def validate_or_detect_port(port: str, config_path: str, motor_type: str) -> str:
+    """Check if port exists, auto-detect or prompt if not."""
+    if os.path.exists(port):
+        return port
+
+    print(f"{YELLOW}⚠ Port {port} not found.{RESET}")
+
+    detected = auto_detect_port(motor_type)
+    if detected and os.path.exists(detected):
+        print(f"{GREEN}✓ Using auto-detected port: {detected}{RESET}")
+        return detected
+
+    print("Please select a port from available devices:")
+    chosen = get_and_choose_port()
+    if chosen:
+        print(f"{GREEN}✓ Using selected port: {chosen}{RESET}")
+        return chosen
+
+    print(f"{RED}❌ No valid port found. Check your USB connection.{RESET}")
+    sys.exit(1)
+
+
+def wait_for_port_removed(port: str, timeout: float = 30):
+    """Wait until the serial port disappears (USB unplugged)."""
+    print(f"\n{YELLOW}⚠  REMOVE POWER:{RESET} Unplug the USB cable from your computer.")
+    print(f"   Waiting for {BOLD}{port}{RESET} to disappear...")
+    start = time.time()
+    while os.path.exists(port):
+        if time.time() - start > timeout:
+            print(f"{RED}❌ Timeout: port {port} still exists. Unplug the USB cable.{RESET}")
+            start = time.time()
+        time.sleep(0.3)
+    print(f"{GREEN}✓ USB disconnected.{RESET}")
+
+
+def wait_for_port_reconnected(port: str, timeout: float = 60):
+    """Wait until the serial port reappears (USB plugged back in)."""
+    print(f"\n{YELLOW}▶  RESTORE POWER:{RESET} Plug the USB cable back in.")
+    print(f"   Waiting for {BOLD}{port}{RESET} to reappear...")
+    start = time.time()
+    while not os.path.exists(port):
+        if time.time() - start > timeout:
+            print(f"{RED}❌ Timeout: port {port} not found. Plug in the USB cable.{RESET}")
+            start = time.time()
+        time.sleep(0.3)
+    time.sleep(0.5)
+    print(f"{GREEN}✓ USB reconnected on {port}.{RESET}")
+
+
+def feetech_safe_connect_prompt(port: str, connection_msg: str):
+    """Guide user through safe power-off motor connection for Feetech servos."""
+    wait_for_port_removed(port)
+    print(f"\n{ORANGE}🔌 {connection_msg}{RESET}")
+    input(f"\n   Press {BOLD}Enter{RESET} when the motor is connected correctly...")
+    wait_for_port_reconnected(port)
+
+
+MOTOR_TYPE_DEFAULTS = {
+    'dynamixel': {'default_id': 1, 'default_baud': 57600},
+    'feetech':   {'default_id': 1, 'default_baud': 1000000},
+}
+
+def create_config_client(motor_type, motor_ids, port, baudrate):
+    if motor_type == 'feetech':
+        return FeetechClient(motor_ids, port=port, baudrate=baudrate)
+    return DynamixelClient(motor_ids, port=port, baudrate=baudrate)
+
+
+def _close_silently(client) -> None:
+    """Close the port without sending torque-disable.
+
+    During motor (re)configuration the motor's bus ID or baudrate changes
+    mid-session, so a normal ``client.disconnect()`` would fire a torque-
+    disable packet at an address the motor no longer answers on, producing
+    spurious "no status packet" errors. Closing the port directly avoids
+    the failed write while still releasing the OS handle.
+    """
+    try:
+        client.port_handler.closePort()
+    except Exception:
+        pass
+
+
+def detect_motor_type(port: str) -> str | None:
+    """Probe ``port`` at each family's factory defaults to identify motors.
+
+    Fresh motors ship at known (baud, ID) pairs that differ between families:
+    Dynamixel @ 57600 ID 1, Feetech @ 1M ID 1. Pinging at these defaults
+    tells us which protocol the bus speaks without needing user input.
+
+    Returns ``"dynamixel"``, ``"feetech"``, or ``None`` when nothing responds
+    (no motor connected, motor not at factory defaults, or wiring issue).
+    """
+    for motor_type, defaults in MOTOR_TYPE_DEFAULTS.items():
+        baud = defaults['default_baud']
+        default_id = defaults['default_id']
+        print(
+            f"  Probing {motor_type} at factory defaults "
+            f"(ID {default_id} @ {baud} baud)...",
+            end=' ',
+            flush=True,
+        )
+        try:
+            client = create_config_client(motor_type, [], port, baud)
+            motors = client.scan_for_motors(
+                port=port,
+                id_range=(default_id, default_id),
+                baud_rates=[baud],
+            )
+            if motors:
+                print(f"{GREEN}found.{RESET}")
+                return motor_type
+            print("nothing.")
+        except Exception as e:
+            print(f"{YELLOW}error ({e}).{RESET}")
+    return None
+
 def play_success_beep():
-    """Play a short beep to indicate successful motor configuration."""
     try:
         subprocess.run(['paplay', '/usr/share/sounds/freedesktop/stereo/complete.oga'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
     except:
@@ -30,15 +146,24 @@ def play_success_beep():
         except:
             print('\a', end='', flush=True)
 
-def scan_for_default_motor(expected_type: str, port: str) -> bool:
+def motor_color(model_name):
+    # Finger motors → blue; wrist motors → purple. Both motor families
+    # share the same role split, so the colour scheme matches.
+    if 'XC330' in model_name or 'HLS3915' in model_name:
+        return BLUE
+    if 'XC430' in model_name or 'HLS3930' in model_name:
+        return PURPLE
+    return ''
+
+def scan_for_default_motor(expected_type: str, port: str, motor_type: str, default_id: int, default_baud: int) -> bool:
     try:
-        client = DynamixelClient([], port=port, baudrate=DEFAULT_BAUD)
-        motors = client.scan_for_motors(port=port, id_range=(DEFAULT_ID, DEFAULT_ID), baud_rates=[DEFAULT_BAUD])
+        client = create_config_client(motor_type, [], port, default_baud)
+        motors = client.scan_for_motors(port=port, id_range=(default_id, default_id), baud_rates=[default_baud])
         if not motors:
             return False
-        motor=motors[0]
-        expected_color = BLUE if 'XC330' in expected_type else PURPLE if 'XC430' in expected_type else ''
-        actual_color = BLUE if 'XC330' in motor['model_name'] else PURPLE if 'XC430' in motor['model_name'] else ''
+        motor = motors[0]
+        expected_color = motor_color(expected_type)
+        actual_color = motor_color(motor['model_name'])
         if expected_type in motor['model_name']:
             print(f"{GREEN}✓ Found default {actual_color}{motor['model_name']}{GREEN} motor{RESET}")
             return True
@@ -49,24 +174,26 @@ def scan_for_default_motor(expected_type: str, port: str) -> bool:
         print(f"{RED}❌ Scan error: {e}{RESET}")
         return False
 
-def configure_default_motor(target_id: int, port: str, target_baud: int) -> bool:
-    """Configure motor with default settings (ID=1, baudrate=57600) to Target ID and Target Baudrate."""
+def configure_default_motor(target_id: int, port: str, target_baud: int, motor_type: str, default_id: int, default_baud: int) -> bool:
     try:
-        client = DynamixelClient([DEFAULT_ID], port=port, baudrate=DEFAULT_BAUD)
+        client = create_config_client(motor_type, [default_id], port, default_baud)
         client.connect()
-        if not client.change_motor_id(DEFAULT_ID, target_id):
+        if not client.change_motor_id(default_id, target_id):
             print(f"{RED}❌ Failed to change ID to {target_id}{RESET}")
-            client.port_handler.closePort()
+            _close_silently(client)
             return False
-        client.port_handler.closePort()
+        _close_silently(client)
         time.sleep(0.5)
-        client = DynamixelClient([target_id], port=port, baudrate=DEFAULT_BAUD)
-        client.connect()
-        if not client.change_motor_baudrate(target_id, target_baud):
-            print(f"{RED}❌ Failed to change baud rate to {target_baud}{RESET}")
-            client.port_handler.closePort()
-            return False
-        client.port_handler.closePort()
+
+        if target_baud != default_baud:
+            client = create_config_client(motor_type, [target_id], port, default_baud)
+            client.connect()
+            if not client.change_motor_baudrate(target_id, target_baud):
+                print(f"{RED}❌ Failed to change baud rate to {target_baud}{RESET}")
+                _close_silently(client)
+                return False
+            _close_silently(client)
+
         print(f"{GREEN}✓ Successfully configured the new motor to ID={target_id}, baudrate={target_baud}{RESET}")
         play_success_beep()
         return True
@@ -74,66 +201,95 @@ def configure_default_motor(target_id: int, port: str, target_baud: int) -> bool
         print(f"{RED}❌ Error configuring motor: {e}{RESET}")
         return False
 
-def scan_already_configured_motors(port: str, target_baud: int, total_motors: int, xc430_id: int = None) -> list:
-    """Scan for pre-configured motors and validate sequence."""
+def scan_already_configured_motors(port: str, target_baud: int, total_motors: int, motor_type: str, default_id: int, default_baud: int, xc430_id: int = None) -> list:
     print(f"\n🔍 Pre-Scanning for {YELLOW}already configured{RESET} motors...")
     try:
-        client = DynamixelClient([], port=port, baudrate=target_baud)
+        client = create_config_client(motor_type, [], port, target_baud)
         motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
+        # When target_baud == default_baud (Feetech), a factory-default motor
+        # sits at default_id with the finger model (HLS3915), so we drop it
+        # from the pre-scan to avoid mistaking it for a configured wrist.
+        # A genuine wrist (HLS3930 at ID 1) is kept — the model name disambiguates.
+        if target_baud == default_baud:
+            motors = [
+                m for m in motors
+                if m['id'] != default_id or 'HLS3930' in m['model_name']
+            ]
         if not motors:
             print("   No pre-configured motors detected")
             return []
         motor_by_id = {m['id']: m for m in motors}
         valid_sequence, expected_id = [], total_motors
-        min_xc330_id = 2 if xc430_id is not None else 1
-        
-        for motor_id in sorted(motor_by_id.keys(), reverse=True):
-            if motor_id in range(min_xc330_id, total_motors + 1) and motor_id == expected_id:
-                if 'XC330' in motor_by_id[motor_id]['model_name']:
-                    valid_sequence.append(motor_id)
-                    expected_id -= 1
-                else:
+
+        if motor_type == 'feetech':
+            min_finger_id = 2 if xc430_id is not None else 1
+            for mid in sorted(motor_by_id.keys(), reverse=True):
+                if mid in range(min_finger_id, total_motors + 1) and mid == expected_id:
+                    if 'HLS3915' in motor_by_id[mid]['model_name']:
+                        valid_sequence.append(mid)
+                        expected_id -= 1
+                    else:
+                        break
+                elif mid not in range(min_finger_id, total_motors + 1):
                     break
-            elif motor_id not in range(min_xc330_id, total_motors + 1):
-                break
-        if xc430_id is not None and xc430_id in motor_by_id and expected_id == 1:
-            if 'XC430' in motor_by_id[xc430_id]['model_name']:
-                valid_sequence.append(xc430_id)            
-        invalid_motors = [id for id in motor_by_id.keys() if id not in valid_sequence]
-        
-        # Output results
+            if xc430_id is not None and xc430_id in motor_by_id and expected_id == 1:
+                if 'HLS3930' in motor_by_id[xc430_id]['model_name']:
+                    valid_sequence.append(xc430_id)
+        else:
+            min_xc330_id = 2 if xc430_id is not None else 1
+            for mid in sorted(motor_by_id.keys(), reverse=True):
+                if mid in range(min_xc330_id, total_motors + 1) and mid == expected_id:
+                    if 'XC330' in motor_by_id[mid]['model_name']:
+                        valid_sequence.append(mid)
+                        expected_id -= 1
+                    else:
+                        break
+                elif mid not in range(min_xc330_id, total_motors + 1):
+                    break
+            if xc430_id is not None and xc430_id in motor_by_id and expected_id == 1:
+                if 'XC430' in motor_by_id[xc430_id]['model_name']:
+                    valid_sequence.append(xc430_id)
+
+        invalid_motors = [mid for mid in motor_by_id.keys() if mid not in valid_sequence]
+
         if valid_sequence:
             print(f"{GREEN}\nFound {len(valid_sequence)} valid, pre-configured motors with correct ID order:{RESET}")
-            for motor_id in sorted(valid_sequence, reverse=True):
-                motor = motor_by_id[motor_id]
-                color = BLUE if 'XC330' in motor['model_name'] else PURPLE if 'XC430' in motor['model_name'] else ''
-                print(f"   • ID {motor_id:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps{RESET}")
+            for mid in sorted(valid_sequence, reverse=True):
+                motor = motor_by_id[mid]
+                color = motor_color(motor['model_name'])
+                print(f"   • ID {mid:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps{RESET}")
         if invalid_motors:
             print(f"{RED}Found {len(invalid_motors)} motors with invalid configuration:{RESET}")
-            for motor_id in sorted(invalid_motors, reverse=True):
-                motor = motor_by_id[motor_id]
-                color = BLUE if 'XC330' in motor['model_name'] else PURPLE if 'XC430' in motor['model_name'] else ''
-                print(f"   • ID {motor_id:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps{RESET}")
+            for mid in sorted(invalid_motors, reverse=True):
+                motor = motor_by_id[mid]
+                color = motor_color(motor['model_name'])
+                print(f"   • ID {mid:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps{RESET}")
             print(f"{YELLOW}\nExpected sequence for {len(motor_by_id)} connected motors: {RESET}")
             for i in range(total_motors, total_motors - len(motor_by_id), -1):
                 if xc430_id is not None and i == 1:
-                    print(f"   • ID  1: {PURPLE}XC430-T240BB-T{RESET} @ {target_baud:,} bps")
+                    if motor_type == 'feetech':
+                        print(f"   • ID  1: {PURPLE}HLS3930{RESET} @ {target_baud:,} bps")
+                    else:
+                        print(f"   • ID  1: {PURPLE}XC430-T240BB-T{RESET} @ {target_baud:,} bps")
                 else:
-                    print(f"   • ID {i:2d}: {BLUE}XC330-T288-T{RESET} @ {target_baud:,} bps")
+                    if motor_type == 'feetech':
+                        print(f"   • ID {i:2d}: {BLUE}HLS3915{RESET} @ {target_baud:,} bps")
+                    else:
+                        print(f"   • ID {i:2d}: {BLUE}XC330-T288-T{RESET} @ {target_baud:,} bps")
+            defaults = MOTOR_TYPE_DEFAULTS[motor_type]
             print(f"{RED}\n🚫 CONFIGURATION CANNOT CONTINUE{RESET}")
-            print(f"   {RED}Please reset the relevant motors to factory default (ID=1, baud=57,600) and restart.{RESET}")
+            print(f"   {RED}Please reset the relevant motors to factory default (ID={defaults['default_id']}, baud={defaults['default_baud']:,}) and restart.{RESET}")
             sys.exit(1)
         return valid_sequence
     except Exception as e:
         print(f"{RED}❌ Error scanning: {e}{RESET}")
         return []
 
-def verify_all_motors(configured_ids: list, port: str, target_baud: int, total_motors: int) -> bool:
-    """Verify that all previously configured motors are still detected."""
+def verify_all_motors(configured_ids: list, port: str, target_baud: int, total_motors: int, motor_type: str) -> bool:
     if not configured_ids:
-        return True      
+        return True
     try:
-        client = DynamixelClient([], port=port, baudrate=target_baud)
+        client = create_config_client(motor_type, [], port, target_baud)
         motors = client.scan_for_motors(
             port=port,
             id_range=(1, total_motors),
@@ -148,57 +304,281 @@ def verify_all_motors(configured_ids: list, port: str, target_baud: int, total_m
             print(f"   Expected: {expected_ids}")
             print(f"   Found:    {found_ids}")
             print("\n🔍 Possible causes:")
-            print("   • Multiple motors with same ID=1 were connected (causes conflicts)")
-            print("   • Motor lost power or connection during configuration)")
-            print("Check wiring and/or use Dynamixel Wizard to inspect motor settings and connections.")
-            return False  
+            print("   • Multiple motors with same default ID were connected (causes conflicts)")
+            print("   • Motor lost power or connection during configuration")
+            if motor_type == 'dynamixel':
+                print("Check wiring and/or use Dynamixel Wizard to inspect motor settings and connections.")
+            else:
+                print("Check wiring and inspect motor settings.")
+            return False
     except Exception as e:
         print(f"{RED}❌ Error verifying motors: {e}{RESET}")
         return False
 
+def get_valid_baudrates(motor_type: str) -> list:
+    """Get list of valid baudrates for the given motor type."""
+    if motor_type == 'feetech':
+        return sorted(FEETECH_BAUD_RATE_MAP.keys(), reverse=True)
+    return sorted(DYNAMIXEL_BAUD_RATE_MAP.keys(), reverse=True)
+
+def change_motor_baudrate_only(motor_type: str, motor_id: int, port: str, current_baud: int, new_baud: int) -> bool:
+    """Change only the baudrate of a motor, leaving ID unchanged."""
+    try:
+        if current_baud == new_baud:
+            print(f"{YELLOW}   Motor {motor_id} already at {new_baud:,} bps{RESET}")
+            return True
+
+        client = create_config_client(motor_type, [motor_id], port, current_baud)
+        client.connect()
+        if not client.change_motor_baudrate(motor_id, new_baud):
+            print(f"{RED}❌ Failed to change baud rate for motor {motor_id}{RESET}")
+            _close_silently(client)
+            return False
+        _close_silently(client)
+
+        print(f"{GREEN}✓ Changed motor {motor_id} baudrate: {current_baud:,} → {new_baud:,}{RESET}")
+        return True
+    except Exception as e:
+        print(f"{RED}❌ Error changing baudrate for motor {motor_id}: {e}{RESET}")
+        return False
+
+def reset_motor_to_factory(motor_type: str, motor_id: int, port: str, current_baud: int, default_id: int, default_baud: int) -> bool:
+    try:
+        if current_baud != default_baud:
+            client = create_config_client(motor_type, [motor_id], port, current_baud)
+            client.connect()
+            if not client.change_motor_baudrate(motor_id, default_baud):
+                print(f"{RED}❌ Failed to change baud rate for motor {motor_id}{RESET}")
+                _close_silently(client)
+                return False
+            _close_silently(client)
+            time.sleep(0.5)
+
+        client = create_config_client(motor_type, [motor_id], port, default_baud)
+        client.connect()
+        if not client.change_motor_id(motor_id, default_id):
+            print(f"{RED}❌ Failed to change ID for motor {motor_id}{RESET}")
+            _close_silently(client)
+            return False
+        _close_silently(client)
+
+        print(f"{GREEN}✓ Reset motor {motor_id} → ID={default_id}, baudrate={default_baud:,}{RESET}")
+        return True
+    except Exception as e:
+        print(f"{RED}❌ Error resetting motor {motor_id}: {e}{RESET}")
+        return False
+
+def baudrate_change_loop(port: str, current_baud: int, new_baud: int, total_motors: int, motor_type: str):
+    """Scan for motors and change their baudrate without modifying IDs."""
+    print(f"\n{BOLD}🔄 BAUDRATE CHANGE MODE{RESET} — Changing all motors to {new_baud:,} bps...")
+    print(f"   Press {BOLD}Ctrl+C{RESET} to stop.")
+
+    if motor_type == 'feetech':
+        while True:
+            feetech_safe_connect_prompt(port, "Connect the motor(s) you want to change baudrate")
+            print(f"\n🔍 Scanning for motors at {current_baud:,} bps...")
+            client = create_config_client(motor_type, [], port, current_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[current_baud])
+            if not motors:
+                print(f"{YELLOW}   No motors found at {current_baud:,} bps. Check connections.{RESET}")
+                continue
+            for motor in motors:
+                color = motor_color(motor['model_name'])
+                print(f"   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                change_motor_baudrate_only(
+                    motor_type, motor['id'], port, motor['baud_rate'], new_baud
+                )
+    else:
+        print(f"\n🔍 Waiting for motors to be connected at {current_baud:,} bps... (Ctrl+C to stop)")
+        known_ids = set()
+        while True:
+            client = create_config_client(motor_type, [], port, current_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[current_baud])
+            found_ids = {m['id'] for m in motors}
+            new_motors = [m for m in motors if m['id'] not in known_ids]
+
+            if new_motors:
+                for motor in new_motors:
+                    color = motor_color(motor['model_name'])
+                    print(f"\n   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                    change_motor_baudrate_only(
+                        motor_type, motor['id'], port, motor['baud_rate'], new_baud
+                    )
+                print(f"\n🔍 Waiting for motors to be connected at {current_baud:,} bps... (Ctrl+C to stop)")
+
+            known_ids = found_ids
+            time.sleep(1)
+
+def reset_loop(port: str, target_baud: int, total_motors: int, motor_type: str, default_id: int, default_baud: int):
+    print(f"\n{BOLD}🔄 RESET MODE{RESET} — Scanning for configured motors to reset to factory defaults...")
+    print(f"   Factory defaults: ID={default_id}, baudrate={default_baud:,}")
+    print(f"   Press {BOLD}Ctrl+C{RESET} to stop.")
+
+    if motor_type == 'feetech':
+        while True:
+            feetech_safe_connect_prompt(port, "Connect the motor(s) you want to reset")
+            print(f"\n🔍 Scanning for motors to reset...")
+            client = create_config_client(motor_type, [], port, target_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
+            if not motors:
+                print(f"{YELLOW}   No motors found. Check connections.{RESET}")
+                continue
+            for motor in motors:
+                color = motor_color(motor['model_name'])
+                print(f"   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                reset_motor_to_factory(
+                    motor_type, motor['id'], port, motor['baud_rate'],
+                    default_id, default_baud
+                )
+    else:
+        print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
+        known_ids = set()
+        while True:
+            client = create_config_client(motor_type, [], port, target_baud)
+            motors = client.scan_for_motors(port=port, id_range=(1, total_motors), baud_rates=[target_baud])
+            found_ids = {m['id'] for m in motors}
+            new_motors = [m for m in motors if m['id'] not in known_ids]
+
+            if new_motors:
+                for motor in new_motors:
+                    color = motor_color(motor['model_name'])
+                    print(f"\n   Found motor: ID {motor['id']:2d}: {color}{motor['model_name']}{RESET} @ {motor['baud_rate']:,} bps")
+                    reset_motor_to_factory(
+                        motor_type, motor['id'], port, motor['baud_rate'],
+                        default_id, default_baud
+                    )
+                print(f"\n🔍 Waiting for a configured motor to be connected... (Ctrl+C to stop)")
+
+            known_ids = found_ids
+            time.sleep(1)
+
 def main():
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
-    print("\n" + "=" * 60)
-    print(f"{BOLD}⚙️  ORCAHAND DYNAMIXEL CHAIN CONFIGURATION ⚙️{RESET}")
-    print()
-    
+
     parser = argparse.ArgumentParser(
-        description="Configure Dynamixel motor chain for OrcaHand Assembly. Specify the path to the config file of your OrcaHand model.")
+        description="Configure motor chain for OrcaHand Assembly. Specify the path to the config file of your OrcaHand model.")
     parser.add_argument(
         "config_path",
         type=str,
         nargs="?",
         default=None,
-        help="Path to the hand config.yaml file.")
+        help="Path to config.yaml (e.g., orca_core/models/v2/orcahand_right/config.yaml). "
+             "Defaults to the bundled model when omitted.")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset configured motors back to factory defaults (runs in a loop until Ctrl+C)")
+    parser.add_argument(
+        "--baudrate",
+        type=int,
+        metavar="BAUD",
+        help="Change all motors to the specified baudrate without modifying IDs (runs in a loop until Ctrl+C)")
+    parser.add_argument(
+        "--motor-type",
+        type=str,
+        choices=list(MOTOR_TYPE_DEFAULTS.keys()),
+        help="Override motor family. Auto-detected from factory defaults "
+             "(Dynamixel @ 57600 / Feetech @ 1M, both ID 1) when omitted.")
     args = parser.parse_args()
-    
+
     try:
-        config_path = os.path.abspath(args.config_path) if args.config_path else os.path.join(get_model_path(), "config.yaml")
+        if args.config_path is None:
+            config_path = os.path.join(get_model_path(), "config.yaml")
+        else:
+            config_path = os.path.abspath(args.config_path)
+            if not os.path.exists(config_path):
+                print(f"{RED}❌ config.yaml not found: {config_path}{RESET}")
+                return 1
         config = read_yaml(config_path)
-        TARGET_BAUD = config.get('baudrate', 3000000)
         PORT = config.get('port', '/dev/ttyUSB0')
         motor_ids = config.get('motor_ids', list(range(17, 0, -1)))
         TOTAL_MOTORS = len(motor_ids)
-        if 'wrist' in config.get('joint_to_motor_map', {}):
-            XC430_ID = 1
-            XC330_IDS = sorted([id for id in motor_ids if id != 1], reverse=True)  # All except wrist ID, highest to lowest
-        else:
-            XC430_ID = None
-            XC330_IDS = sorted(motor_ids, reverse=True)  # All motor IDs, highest to lowest
     except Exception as e:
         print(f"{RED}❌ Error loading config: {e}{RESET}")
         return 1
-    
+
+    # Pick a port before probing — auto-detect needs an actual device path.
+    PORT = validate_or_detect_port(PORT, config_path, args.motor_type or 'dynamixel')
+
+    motor_type = args.motor_type
+    if motor_type is None:
+        print(f"\n{BOLD}Auto-detecting motor family on {PORT}...{RESET}")
+        motor_type = detect_motor_type(PORT)
+        if motor_type is None:
+            print(f"\n{RED}❌ No motors responded at either family's factory defaults.{RESET}")
+            print("   - Check that one motor is connected and powered.")
+            print("   - Confirm motors are still at factory defaults (re-runs of this script change them).")
+            print("   - Or pass --motor-type {dynamixel,feetech} to skip auto-detection.")
+            return 1
+        print(f"{GREEN}✓ Detected {motor_type} motors.{RESET}\n")
+
+    TARGET_BAUD = config.get('baudrate') or 1000000
+
+    defaults = MOTOR_TYPE_DEFAULTS[motor_type]
+    default_id = defaults['default_id']
+    default_baud = defaults['default_baud']
+
+    motor_type_label = 'Dynamixel' if motor_type == 'dynamixel' else 'Feetech'
+
+    if args.reset:
+        print("\n" + "=" * 60)
+        print(f"{BOLD}🔄 ORCAHAND {motor_type_label.upper()} CHAIN RESET 🔄{RESET}")
+        print("=" * 60)
+        try:
+            reset_loop(PORT, TARGET_BAUD, TOTAL_MOTORS, motor_type, default_id, default_baud)
+        except KeyboardInterrupt:
+            print(f"\n\n{GREEN}Reset mode stopped.{RESET}\n")
+        return 0
+
+    if args.baudrate is not None:
+        valid_baudrates = get_valid_baudrates(motor_type)
+        if args.baudrate not in valid_baudrates:
+            print(f"{RED}❌ Invalid baudrate {args.baudrate:,} for {motor_type_label} motors{RESET}")
+            print(f"\n{YELLOW}Valid baudrates for {motor_type_label}:{RESET}")
+            for baud in valid_baudrates:
+                print(f"   • {baud:,} bps")
+            return 1
+
+        print("\n" + "=" * 60)
+        print(f"{BOLD}🔄 ORCAHAND {motor_type_label.upper()} BAUDRATE CHANGE 🔄{RESET}")
+        print("=" * 60)
+        print(f"\nChanging all motors to baudrate: {BOLD}{args.baudrate:,} bps{RESET}")
+        print(f"Current baudrate in config: {BOLD}{TARGET_BAUD:,} bps{RESET}")
+        print(f"\n{YELLOW}Note: Motor IDs will NOT be changed, only baudrate.{RESET}")
+        try:
+            baudrate_change_loop(PORT, TARGET_BAUD, args.baudrate, TOTAL_MOTORS, motor_type)
+        except KeyboardInterrupt:
+            print(f"\n\n{GREEN}Baudrate change mode stopped.{RESET}\n")
+        return 0
+
+    print("\n" + "=" * 60)
+    print(f"{BOLD}⚙️  ORCAHAND {motor_type_label.upper()} CHAIN CONFIGURATION ⚙️{RESET}")
+    print()
+
+    has_wrist = 'wrist' in config.get('joint_to_motor_map', {})
+    if has_wrist:
+        WRIST_ID = 1
+        FINGER_IDS = sorted([mid for mid in motor_ids if mid != 1], reverse=True)
+    else:
+        WRIST_ID = None
+        FINGER_IDS = sorted(motor_ids, reverse=True)
+
+    if motor_type == 'dynamixel':
+        finger_model, wrist_model = 'XC330-T288-T', 'XC430-T240BB-T'
+    else:
+        finger_model, wrist_model = 'HLS3915', 'HLS3930'
+
     print(f"\nFor the chosen hand model, we need to configure {TOTAL_MOTORS} motors in total:")
-    print(f"   • {len(XC330_IDS)} {BLUE}XC330-T288-T{RESET} motors:    {BOLD}IDs {min(XC330_IDS)}-{max(XC330_IDS)}{RESET} @ {TARGET_BAUD:,} bps")
-    if XC430_ID is not None:
-        print(f"   • 1 {PURPLE}XC430-T240BB-T{RESET} motor:    {BOLD}ID 1{RESET} @ {TARGET_BAUD:,} bps")
+    print(f"   • {len(FINGER_IDS)} {BLUE}{finger_model}{RESET} motors:    {BOLD}IDs {min(FINGER_IDS)}-{max(FINGER_IDS)}{RESET} @ {TARGET_BAUD:,} bps")
+    if WRIST_ID is not None:
+        print(f"   • 1 {PURPLE}{wrist_model}{RESET} motor:    {BOLD}ID 1{RESET} @ {TARGET_BAUD:,} bps")
     print("=" * 60)
 
+    all_target_ids = FINGER_IDS + ([WRIST_ID] if WRIST_ID is not None else [])
+    XC430_ID = WRIST_ID  # back-compat: scan helpers still use the old name
 
-    already_configured = scan_already_configured_motors(PORT, TARGET_BAUD, TOTAL_MOTORS, XC430_ID).copy()
+    already_configured = scan_already_configured_motors(PORT, TARGET_BAUD, TOTAL_MOTORS, motor_type, default_id, default_baud, XC430_ID).copy()
     configured_ids = already_configured.copy()
-    all_target_ids = XC330_IDS + ([XC430_ID] if XC430_ID is not None else [])
     remaining_ids = [id for id in all_target_ids if id not in already_configured]
 
     if remaining_ids:
@@ -207,7 +587,7 @@ def main():
         print(f"\n🔧 {BOLD}Troubleshooting guide:{RESET}")
         print("   ✓ Board connection: Properly connected to power and computer")
         print("   ✓ Motor connection: Properly wired to daisy chain")
-        print("   ✓ Motor settings: ID=1, baudrate=57600 (factory default)")
+        print(f"   ✓ Motor settings: ID={default_id}, baudrate={default_baud:,} (factory default)")
         print(f"   ✓ Serial port permissions (Linux): Your user must have read/write access to the serial port.")
         print(f"     Run {BOLD}sudo usermod -aG dialout $USER{RESET} and re-login, or {BOLD}sudo chmod 666 /dev/ttyUSB0{RESET} for a quick fix.")
         print(f"   ✓ Serial port path: Ensure {BOLD}config.yaml{RESET} has the correct port for your OS")
@@ -220,34 +600,38 @@ def main():
         print(f"🚀 {ORANGE}{BOLD}Ready for operation!{RESET}")
         print()
         return 0
-    
+
     for step, target_id in enumerate(remaining_ids, len(already_configured) + 1):
-        is_xc430 = (XC430_ID is not None and target_id == 1)
-        motor_type = 'XC430-T240BB-T' if is_xc430 else 'XC330-T288-T'
-        motor_color = BLUE if 'XC330' in motor_type else PURPLE if 'XC430' in motor_type else ''
-        
+        is_wrist = (WRIST_ID is not None and target_id == 1)
+        expected_model = wrist_model if is_wrist else finger_model
+        color = motor_color(expected_model)
+
         if target_id == max(all_target_ids):
-            connection_msg = f"{ORANGE}Connect a {motor_color}{motor_type} {BOLD}(ID {target_id}){ORANGE} to the {BOLD}board{RESET}"
+            connection_msg = f"Connect a {color}{expected_model} {BOLD}(ID {target_id}){RESET}{ORANGE} to the {BOLD}board{RESET}"
         else:
             prev_id = target_id + 1
-            connection_msg = f"{ORANGE}Connect a {motor_color}{motor_type} {BOLD}(ID {target_id}){RESET}{ORANGE} to the previous motor {BOLD}(ID {prev_id}){RESET}"
-        
+            connection_msg = f"Connect a {color}{expected_model} {BOLD}(ID {target_id}){RESET}{ORANGE} to the previous motor {BOLD}(ID {prev_id}){RESET}"
+
         print(f"{UNDERLINE}{ORANGE}\nSTEP {step}/{TOTAL_MOTORS}{RESET}")
-        print(f"{connection_msg}")
-        print(f"\n🔍 Scanning for default {motor_color}{motor_type}{RESET} motor...")
+
+        if motor_type == 'feetech':
+            feetech_safe_connect_prompt(PORT, connection_msg)
+        else:
+            print(f"{connection_msg}")
+
+        print(f"\n🔍 Scanning for default {color}{expected_model}{RESET} motor...")
 
         try:
             while True:
-                if scan_for_default_motor(motor_type, PORT):
-                    if configure_default_motor(target_id, PORT, TARGET_BAUD):
+                if scan_for_default_motor(expected_model, PORT, motor_type, default_id, default_baud):
+                    if configure_default_motor(target_id, PORT, TARGET_BAUD, motor_type, default_id, default_baud):
                         configured_ids.append(target_id)
-                        if not verify_all_motors(configured_ids, PORT, TARGET_BAUD, TOTAL_MOTORS):
+                        if not verify_all_motors(configured_ids, PORT, TARGET_BAUD, TOTAL_MOTORS, motor_type):
                             return 1
-                        break  # Move to next motor
+                        break
                     else:
                         return 1
                 else:
-                    # Wait a bit before scanning again
                     time.sleep(1)
         except Exception as e:
             print(f"\n ERROR: {e}")

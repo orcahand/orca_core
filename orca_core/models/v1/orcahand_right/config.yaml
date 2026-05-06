@@ -1,3 +1,5 @@
+# port: /dev/cu.usbmodemXXXX # Uncomment to override auto-detection (e.g. multiple hands plugged in)
+# baudrate: 3000000  # Uncomment to override default baudrate (e.g. custom hand)
 version: 0.2.1
 max_current: 400
 
