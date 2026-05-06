@@ -5,7 +5,7 @@ import time
 
 from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
-from orca_core.hardware.motor_client import MotionTimeoutError
+from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
 MAX_TEMP = 70  # °C — conservative across Dynamixel XC330/430 and Feetech STS3215
@@ -110,20 +110,16 @@ def main() -> int:
     )
     add_hand_arguments(parser)
     parser.add_argument(
-        "--num-steps", type=int, default=25,
-        help="Interpolation steps per move (default 25)."
+        "--num-steps", type=int, default=NUM_STEPS,
+        help=f"Interpolation steps per move (default {NUM_STEPS})."
     )
     parser.add_argument(
-        "--step-size", type=float, default=0.001,
-        help="Sleep between interpolation steps in seconds (default 0.001)."
+        "--step-size", type=float, default=STEP_SIZE,
+        help=f"Sleep between interpolation steps in seconds (default {STEP_SIZE})."
     )
     parser.add_argument(
-        "--hold", type=float, default=0.0,
-        help="Extra seconds to hold each pose AFTER motion completes (default 0)."
-    )
-    parser.add_argument(
-        "--motion-timeout", type=float, default=5.0,
-        help="Max seconds to wait for a pose to be reached (default 5)."
+        "--hold", type=float, default=2.0,
+        help="Seconds to hold each pose AFTER motion completes (default 2)."
     )
     args = parser.parse_args()
 
@@ -147,20 +143,12 @@ def main() -> int:
                 hand.set_joint_positions(
                     JOINT_OPEN, num_steps=args.num_steps, step_size=args.step_size
                 )
-                try:
-                    hand.wait_for_motion(timeout=args.motion_timeout)
-                except MotionTimeoutError as exc:
-                    print(f"{YELLOW}Motion timed out: {exc}{RST}")
                 if args.hold:
                     time.sleep(args.hold)
 
                 hand.set_joint_positions(
                     JOINT_CLOSE, num_steps=args.num_steps, step_size=args.step_size
                 )
-                try:
-                    hand.wait_for_motion(timeout=args.motion_timeout)
-                except MotionTimeoutError as exc:
-                    print(f"{YELLOW}Motion timed out: {exc}{RST}")
                 if args.hold:
                     time.sleep(args.hold)
         except KeyboardInterrupt:

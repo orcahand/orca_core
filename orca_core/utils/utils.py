@@ -227,6 +227,36 @@ def auto_detect_port(motor_type: str = "dynamixel") -> str:
     return None
 
 
+def motor_type_for_port(port_device: str) -> str | None:
+    """Return the motor family whose USB VID matches ``port_device``, or None."""
+    import serial.tools.list_ports
+    from ..constants import KNOWN_VIDS
+
+    for port in serial.tools.list_ports.comports():
+        if port.device != port_device:
+            continue
+        for motor_type, vids in KNOWN_VIDS.items():
+            if port.vid in vids:
+                return motor_type
+        return None
+    return None
+
+
+def find_single_usb_serial_port() -> str | None:
+    """Return the device path of the only attached USB serial adapter, or None.
+
+    Filters out built-in / non-USB serial endpoints (Bluetooth, debug console)
+    by requiring a USB VID. Used as a last-resort port pick when no VID is
+    in :data:`~orca_core.constants.KNOWN_VIDS`.
+    """
+    import serial.tools.list_ports
+
+    ports = [p for p in serial.tools.list_ports.comports() if p.vid is not None]
+    if len(ports) == 1:
+        return ports[0].device
+    return None
+
+
 def get_and_choose_port() -> str:
     """Present an interactive terminal menu for USB port selection.
 

@@ -1,6 +1,4 @@
-port: /dev/cu.usbmodem3101
 version: 0.2.1
-baudrate: 1000000
 max_current: 300
 type: right
 control_mode: current_based_position

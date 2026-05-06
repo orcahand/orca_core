@@ -8,6 +8,7 @@
 
 import dataclasses
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -20,7 +21,13 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
 from .hardware.motor_client import MotorClient
-from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
+from .utils.utils import (
+    auto_detect_port,
+    find_single_usb_serial_port,
+    get_and_choose_port,
+    motor_type_for_port,
+    update_yaml,
+)
 
 if TYPE_CHECKING:
     from .hardware.dynamixel_client import DynamixelClient
@@ -28,6 +35,7 @@ if TYPE_CHECKING:
 
 from .constants import (
     SUPPORTED_MOTOR_TYPES,
+    MOTOR_BAUD_RATES,
     MODE_MAP,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -127,82 +135,132 @@ class OrcaHand(BaseHand):
     def wrist_calibrated(self) -> bool:
         return self.calibration.wrist_calibrated
 
-    def _create_motor_client(self) -> MotorClient:
-        if self.config.motor_type == "dynamixel":
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
+        if motor_type == "dynamixel":
             from .hardware.dynamixel_client import DynamixelClient
 
-            return DynamixelClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
+            return DynamixelClient(self.config.motor_ids, port, baudrate)
 
-        if self.config.motor_type == "feetech":
+        if motor_type == "feetech":
             from .hardware.feetech_client import FeetechClient
 
-            return FeetechClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
+            return FeetechClient(self.config.motor_ids, port, baudrate)
 
         raise ValueError(
-            f"Unknown motor_type: {self.config.motor_type}. Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
+            f"Unknown motor_type: {motor_type}. "
+            f"Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
         )
+
+    def _resolve_port(self) -> str | None:
+        """Pick the serial port to talk to: explicit yaml > VID match > sole adapter."""
+        if self.config.port and os.path.exists(self.config.port):
+            return self.config.port
+        if self.config.port:
+            print(
+                f"Configured port {self.config.port} not present; "
+                "falling back to USB auto-detection."
+            )
+        # No yaml port (or the configured one is gone). Try VID-based detection
+        # for any motor family, then fall back to "the only adapter present".
+        for motor_type in SUPPORTED_MOTOR_TYPES:
+            port = auto_detect_port(motor_type)
+            if port:
+                return port
+        return find_single_usb_serial_port()
+
+    def _trial_probe(self, port: str) -> tuple[str | None, int | None]:
+        """Probe ``port`` until a (motor_type, baudrate) combination responds.
+
+        Iterates each motor family × the baudrates listed in
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
+        ``baudrate`` is pinned in yaml, that dimension is fixed and the
+        probe only iterates the other.
+        """
+        from .hardware.dynamixel_client import DynamixelClient
+        from .hardware.feetech_client import FeetechClient
+
+        candidates = {
+            "dynamixel": DynamixelClient,
+            "feetech": FeetechClient,
+        }
+        motor_types = (
+            [self.config.motor_type]
+            if self.config.motor_type
+            else list(SUPPORTED_MOTOR_TYPES)
+        )
+        for motor_type in motor_types:
+            client_cls = candidates.get(motor_type)
+            if client_cls is None:
+                continue
+            baudrates = (
+                [self.config.baudrate]
+                if self.config.baudrate is not None
+                else list(MOTOR_BAUD_RATES.get(motor_type, []))
+            )
+            for baudrate in baudrates:
+                print(f"Probing {motor_type} on {port} @ {baudrate} baud...")
+                try:
+                    if client_cls.probe(port, baudrate, self.config.motor_ids):
+                        print(f"  -> {motor_type} responded at {baudrate} baud.")
+                        return motor_type, baudrate
+                except Exception as e:
+                    print(f"  -> probe errored: {e}")
+        return None, None
 
     def connect(self) -> tuple[bool, str]:
         """Open connection to the motor bus.
 
-        Attempts to connect on the port in ``config.yaml``. On failure it
-        tries auto-detection via USB vendor ID, then falls back to an
-        interactive terminal port picker. A successful connection updates
-        ``config.yaml`` if the port changed.
+        Resolves (motor_type, port, baudrate) at connect time:
+
+        1. Find a port: explicit ``port`` in yaml wins; else VID-based
+           auto-detection; else the lone attached USB serial adapter; else
+           an interactive picker.
+        2. Find the motor family / baudrate by pinging each candidate from
+           :data:`~orca_core.constants.MOTOR_BAUD_RATES` until one responds.
+           Explicit ``motor_type``/``baudrate`` in yaml short-circuit the
+           corresponding axis.
 
         Returns:
             A ``(success, message)`` tuple where *success* is ``True`` on a
             successful connection.
         """
-        # TODO(fracapuano): Refactor: this is basically always connecting to one port and looking at multiple ports
+        port = self._resolve_port()
+        if port is None:
+            print("Please select a port from available devices:")
+            port = get_and_choose_port()
+            if port is None:
+                return False, "Connection failed: No port selected"
+
+        motor_type, baudrate = self._trial_probe(port)
+        if motor_type is None or baudrate is None:
+            return False, (
+                f"Connection failed: no motor responded on {port}. "
+                "Check power and wiring."
+            )
+
         try:
-            self._motor_client = self._create_motor_client()
+            self._motor_client = self._create_motor_client(motor_type, port, baudrate)
             with self._motor_lock:
                 self._motor_client.connect()
 
-            return True, "Connection successful"
+            self._persist_resolved_port(port)
+            return True, f"Connection successful ({motor_type} @ {port}, {baudrate} baud)"
 
         except Exception as e:
-            # 1. The port is not correct
             self._motor_client = None
-            print(f"Connection failed on {self.config.port}: {str(e)}")
+            return False, f"Connection failed on {port}: {str(e)}"
 
-            chosen_port = auto_detect_port(self.config.motor_type)
-            if chosen_port and chosen_port != self.config.port:
-                # TODO(fracapuano): Replace replace replace this try except Exception is madness
-                try:
-                    self.config = dataclasses.replace(self.config, port=chosen_port)
-                    self._motor_client = self._create_motor_client()
-                    with self._motor_lock:
-                        self._motor_client.connect()
-                    update_yaml(self.config.config_path, "port", chosen_port)
-                    return (
-                        True,
-                        f"Connection successful with auto-detected port {chosen_port}",
-                    )
-
-                except Exception:
-                    self._motor_client = None
-
-            print("Please select a port from available devices:")
-            chosen_port = get_and_choose_port()
-            if chosen_port is None:
-                return False, "Connection failed: No port selected"
-
-            try:
-                self.config = dataclasses.replace(self.config, port=chosen_port)
-                self._motor_client = self._create_motor_client()
-                with self._motor_lock:
-                    self._motor_client.connect()
-                update_yaml(self.config.config_path, "port", chosen_port)
-                return True, f"Connection successful with port {chosen_port}"
-            except Exception as e2:
-                self._motor_client = None
-                return False, f"Connection failed with selected port: {str(e2)}"
+    def _persist_resolved_port(self, port: str) -> None:
+        """Write the resolved port back to config.yaml when it differs."""
+        if self.config.port == port:
+            return
+        self.config = dataclasses.replace(self.config, port=port)
+        update_yaml(self.config.config_path, "port", port)
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque and close the serial connection.
@@ -1171,9 +1229,19 @@ class MockOrcaHand(OrcaHand):
     port is opened and motor state is simulated in memory.
     """
 
-    def _create_motor_client(self) -> MotorClient:
+    def _resolve_port(self) -> str:
+        return self.config.port or "/dev/null"
+
+    def _trial_probe(self, port: str) -> tuple[str, int]:
+        # Mock hand has no real bus to probe — pretend Dynamixel @ 1M.
+        return "dynamixel", 1_000_000
+
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
-        return MockDynamixelClient(
-            self.config.motor_ids, self.config.port, self.config.baudrate
-        )
+        return MockDynamixelClient(self.config.motor_ids, port, baudrate)
