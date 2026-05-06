@@ -1,4 +1,4 @@
-"""Tests for MockSensorClient integration and SensorConfiguration contracts.
+"""Tests for MockTactileClient integration and TactileSensorConfiguration contracts.
 
 Validates the mock's lifecycle (connect → stream → read → stop), offset logic,
 and configuration ordering. Pure protocol codec tests live in test_protocol.py.
@@ -6,8 +6,8 @@ and configuration ordering. Pure protocol codec tests live in test_protocol.py.
 
 import pytest
 
-from orca_core.hardware.sensor_client import SensorConfiguration
-from orca_core.hardware.mock_sensor_client import MockSensorClient
+from orca_core.hardware.tactile_client import TactileSensorConfiguration
+from orca_core.hardware.mock_tactile_client import MockTactileClient
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
 from orca_core.hardware.sensing.protocol import compute_distal_module_index
 
@@ -16,8 +16,8 @@ ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 
 @pytest.fixture
 def mock():
-    """Connected MockSensorClient with all fingers, cleaned up on teardown."""
-    client = MockSensorClient(connected_sensors=ALL_FINGERS)
+    """Connected MockTactileClient with all fingers, cleaned up on teardown."""
+    client = MockTactileClient(connected_sensors=ALL_FINGERS)
     client.connect()
     yield client
     client.disconnect()
@@ -29,7 +29,7 @@ def mock_factory():
     created = []
 
     def _make(connected_sensors, **kwargs):
-        client = MockSensorClient(connected_sensors=connected_sensors, **kwargs)
+        client = MockTactileClient(connected_sensors=connected_sensors, **kwargs)
         client.connect()
         created.append(client)
         return client
@@ -43,7 +43,7 @@ def _make_config(
     connected_fingers: list[str],
     taxel_counts: dict[str, int] | None = None,
     finger_to_sensor_id: dict[str, int] | None = None,
-) -> SensorConfiguration:
+) -> TactileSensorConfiguration:
     if taxel_counts is None:
         taxel_counts = DEFAULT_TAXEL_COUNTS
     if finger_to_sensor_id is None:
@@ -53,7 +53,7 @@ def _make_config(
     num_taxels = {f: taxel_counts.get(f, 0) for f in connected_fingers}
     module_indices = {f: compute_distal_module_index(finger_to_sensor_id[f]) for f in connected_fingers}
 
-    return SensorConfiguration(
+    return TactileSensorConfiguration(
         connected=connected,
         num_taxels=num_taxels,
         module_indices=module_indices,
@@ -135,7 +135,7 @@ def test_combined_mode_returns_both_streams(mock):
 def test_custom_provider_is_used(kind):
     if kind == "resultant":
         marker = [4.2, -3.0, 20.0]
-        mock = MockSensorClient(
+        mock = MockTactileClient(
             connected_sensors=["thumb"],
             resultant_provider=lambda: {"thumb": marker},
         )
@@ -148,7 +148,7 @@ def test_custom_provider_is_used(kind):
         assert result["thumb"] == marker
     else:
         marker = [[9.9, -8.8, 7.7]]
-        mock = MockSensorClient(
+        mock = MockTactileClient(
             connected_sensors=["thumb"],
             taxel_counts={"thumb": 1},
             taxel_provider=lambda: {"thumb": marker},
@@ -231,7 +231,7 @@ def test_taxel_offsets_applied_in_stream(mock_factory):
 # ---------------------------------------------------------------------------
 
 def test_read_before_connect_raises():
-    mock = MockSensorClient(connected_sensors=ALL_FINGERS)
+    mock = MockTactileClient(connected_sensors=ALL_FINGERS)
     with pytest.raises(OSError, match="connect"):
         mock.read_resultant_force()
 
@@ -243,7 +243,7 @@ def test_get_auto_latest_before_stream_returns_none(mock):
 
 
 # ---------------------------------------------------------------------------
-# SensorConfiguration ordering
+# TactileSensorConfiguration ordering
 # ---------------------------------------------------------------------------
 
 def test_slot_order_default():

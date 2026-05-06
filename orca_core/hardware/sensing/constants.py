@@ -38,7 +38,7 @@ FUNC_CODE_READ = 0x03
 FUNC_CODE_WRITE = 0x10
 
 # ---------------------------------------------------------------------------
-# Register addresses (used by sensor_client for read/write targets)
+# Register addresses (used by tactile_client for read/write targets)
 # ---------------------------------------------------------------------------
 
 ADDR_RESET = 0x0022

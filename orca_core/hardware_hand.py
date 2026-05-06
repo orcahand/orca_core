@@ -20,8 +20,10 @@ import numpy as np
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
+from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
-from .hardware.sensing.types import ResultantReading, TaxelReading
+from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
+from .hardware.tactile_client import TactileClient
 from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
 
 if TYPE_CHECKING:
@@ -1308,12 +1310,10 @@ class OrcaHandTouch(OrcaHand):
             model_name=model_name,
             config=config,
         )
-        self._sensor_client = None
+        self._tactile_client = None
 
-    def _create_sensor_client(self):
-        from .hardware.sensor_client import SensorClient
-
-        return SensorClient(
+    def _create_tactile_client(self):
+        return TactileClient(
             port=self.config.sensor_port,
             baudrate=self.config.sensor_baudrate,
             finger_to_sensor_id=self.config.finger_to_sensor_id,
@@ -1334,25 +1334,25 @@ class OrcaHandTouch(OrcaHand):
         (``KNOWN_VIDS["tactile_sensor"]``). On a successful auto-detect the
         new port is written back to ``config.yaml``.
         """
-        self._sensor_client = self._create_sensor_client()
+        self._tactile_client = self._create_tactile_client()
         try:
-            self._sensor_client.connect()
+            self._tactile_client.connect()
             return True, f"Sensor connected on {self.config.sensor_port}"
         except Exception as e:
             print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
-            self._sensor_client = None
+            self._tactile_client = None
 
         chosen = auto_detect_port("tactile_sensor")
         if chosen and chosen != self.config.sensor_port:
             try:
                 self.config = dataclasses.replace(self.config, sensor_port=chosen)
-                self._sensor_client = self._create_sensor_client()
-                self._sensor_client.connect()
+                self._tactile_client = self._create_tactile_client()
+                self._tactile_client.connect()
                 self._persist_sensor_port(chosen)
                 return True, f"Sensor connected on auto-detected {chosen}"
             except Exception as e:
                 print(f"Auto-detected sensor port {chosen} also failed: {e}")
-                self._sensor_client = None
+                self._tactile_client = None
 
         return False, (
             "Sensor connection failed: no usable port (set sensors.port in config.yaml "
@@ -1379,13 +1379,13 @@ class OrcaHandTouch(OrcaHand):
         return self._connect_sensor_with_fallback()
 
     def disconnect(self) -> None:
-        if self._sensor_client is not None and self._sensor_client.is_connected:
+        if self._tactile_client is not None and self._tactile_client.is_connected:
             try:
-                self._sensor_client.stop_auto_stream()
+                self._tactile_client.stop_auto_stream()
             except Exception:
                 pass
-            self._sensor_client.disconnect()
-        self._sensor_client = None
+            self._tactile_client.disconnect()
+        self._tactile_client = None
         super().disconnect()
 
     def get_tactile_forces(self) -> ResultantReading | None:
@@ -1397,7 +1397,7 @@ class OrcaHandTouch(OrcaHand):
 
         Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
         """
-        forces, ts = self._sensor_client.get_auto_latest()
+        forces, ts = self._tactile_client.get_auto_latest()
         if forces is None:
             return None
         return ResultantReading(forces=forces, timestamp=ts)
@@ -1411,30 +1411,47 @@ class OrcaHandTouch(OrcaHand):
 
         Available keys: ``"thumb"``, ``"index"``, ``"middle"``, ``"ring"``, ``"pinky"``.
         """
-        taxels, ts = self._sensor_client.get_auto_latest_taxels()
+        taxels, ts = self._tactile_client.get_auto_latest_taxels()
         if taxels is None:
             return None
         return TaxelReading(taxels=taxels, timestamp=ts)
 
+    def get_tactile_data(self) -> TactileReading | None:
+        """Return resultant and per-taxel forces from the same frame.
+
+        Single locked snapshot of the auto-stream cache, so ``forces`` and
+        ``taxels`` are guaranteed to share a timestamp. Either field is
+        ``None`` if its stream mode is disabled. Returns ``None`` if no
+        frame has arrived yet.
+        """
+        forces, taxels, ts = self._tactile_client.get_auto_latest_all()
+        if forces is None and taxels is None:
+            return None
+        return TactileReading(
+            forces=ResultantReading(forces=forces, timestamp=ts) if forces is not None else None,
+            taxels=TaxelReading(taxels=taxels, timestamp=ts) if taxels is not None else None,
+            timestamp=ts,
+        )
+
     def start_tactile_stream(
         self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
     ) -> None:
-        self._sensor_client.start_auto_stream(
+        self._tactile_client.start_auto_stream(
             resultant=resultant, taxels=taxels, min_sensors=min_sensors,
         )
 
     def stop_tactile_stream(self) -> None:
-        self._sensor_client.stop_auto_stream()
+        self._tactile_client.stop_auto_stream()
 
     def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
         """Capture current readings as zero baseline and return offsets."""
-        return self._sensor_client.capture_taxel_offsets(num_samples=num_samples)
+        return self._tactile_client.capture_taxel_offsets(num_samples=num_samples)
 
     def clear_tactile_zero(self) -> None:
-        self._sensor_client.clear_taxel_offsets()
+        self._tactile_client.clear_taxel_offsets()
 
-    def get_sensor_configuration(self):
-        return self._sensor_client.get_sensor_configuration()
+    def get_tactile_configuration(self):
+        return self._tactile_client.get_tactile_configuration()
 
     def get_tactile_stats(self):
         """Return ``AutoStreamStats`` for the running auto-stream.
@@ -1442,7 +1459,7 @@ class OrcaHandTouch(OrcaHand):
         Useful for monitoring stream health (``frames_ok``, ``frames_bad_checksum``,
         ``parse_errors``, ``resyncs``, ``last_error_code``).
         """
-        return self._sensor_client.get_auto_stats()
+        return self._tactile_client.get_auto_stats()
 
 
 class MockOrcaHand(OrcaHand):
@@ -1488,10 +1505,8 @@ class MockOrcaHandTouch(OrcaHandTouch):
             self.config.motor_ids, self.config.port, self.config.baudrate
         )
 
-    def _create_sensor_client(self):
-        from .hardware.mock_sensor_client import MockSensorClient
-
-        return MockSensorClient(
+    def _create_tactile_client(self):
+        return MockTactileClient(
             port="mock",
             baudrate=self.config.sensor_baudrate,
             finger_to_sensor_id=self.config.finger_to_sensor_id,
