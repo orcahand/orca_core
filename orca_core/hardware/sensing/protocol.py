@@ -2,15 +2,6 @@
 
 Converts between raw bytes (as defined by the sensor hardware protocol)
 and Python objects. Pure functions only — no I/O, no state, no threading.
-
-Naming conventions:
-    build_*   — assemble an outgoing request frame (bytes)
-    parse_*   — validate an incoming frame and extract raw data (bytes)
-    decode_*  — interpret raw bytes into domain objects (dicts of forces)
-    encode_*  — convert domain values into register bytes
-    extract_* — pull a single field from frame metadata
-    unpack_*  — split a payload into its component parts
-    compute_* — calculate sizes or indices from configuration
 """
 from __future__ import annotations
 
@@ -65,16 +56,6 @@ class AutoDataTypeInfo(TypedDict):
     taxels: bool
 
 
-# =========================================================================
-# Protocol Constants
-# =========================================================================
-
-FORCE_DECIMAL_PLACES = 1
-"""Decimal places for rounding decoded force values.
-
-This is a codec-level choice, not a wire-format specification. The sensor
-transmits integer LSB counts; this module converts to Newtons and rounds.
-"""
 
 
 # =========================================================================
@@ -97,7 +78,6 @@ def validate_auto_frame_lrc(meta: bytes, payload: bytes, lrc: int) -> bool:
 
 
 def _validate_frame_lrc(frame: bytes, context: str) -> None:
-    """Validate LRC of a request-response frame. Raises on mismatch."""
     if frame[-1] != calculate_checksum(frame[:-1]):
         raise IOError(f"{context} LRC mismatch")
 
@@ -116,7 +96,6 @@ def read_response_body_size(count: int) -> int:
 # =========================================================================
 
 def _validate_u16(value: int, name: str) -> None:
-    """Validate that a value fits in a uint16 field."""
     if not 0 <= value <= 0xFFFF:
         raise ValueError(f"{name} must be 0x0000-0xFFFF, got {value}")
 
@@ -256,21 +235,18 @@ def unpack_auto_payload(payload: bytes) -> tuple[int, bytes]:
 # =========================================================================
 
 def compute_resultant_payload_size(num_sensors: int) -> int:
-    """Compute payload size for resultant-only auto-stream mode."""
     return num_sensors * BYTES_PER_RESULTANT
 
 
 def compute_taxel_payload_size(
     active_sensors: list[str], num_taxels: dict[str, int],
 ) -> int:
-    """Compute payload size for taxel-only auto-stream mode."""
     return sum(num_taxels[f] for f in active_sensors) * BYTES_PER_TAXEL
 
 
 def compute_combined_payload_size(
     active_sensors: list[str], num_taxels: dict[str, int],
 ) -> int:
-    """Compute payload size for combined (resultant + taxels) auto-stream mode."""
     return (
         compute_resultant_payload_size(len(active_sensors))
         + compute_taxel_payload_size(active_sensors, num_taxels)
@@ -283,7 +259,7 @@ def compute_expected_payload_size(
     active_sensors: list[str],
     num_taxels: dict[str, int],
 ) -> int:
-    """Compute expected auto-stream payload size for the given streaming mode."""
+    """Dispatch to the right ``compute_*_payload_size`` for the active mode."""
     if mode_resultant and mode_taxels:
         return compute_combined_payload_size(active_sensors, num_taxels)
     elif mode_resultant:
@@ -298,7 +274,6 @@ def compute_expected_payload_size(
 # =========================================================================
 
 def _validate_payload_size(data: bytes, expected: int, context: str) -> None:
-    """Validate that payload data matches expected size. Raises ValueError on mismatch."""
     if len(data) != expected:
         preview = data[:16].hex() if data else "(empty)"
         raise ValueError(
@@ -313,7 +288,7 @@ def _unpack_taxel(data: bytes, offset: int) -> ForceVector:
     fx = (fx_byte - 256 if fx_byte > 127 else fx_byte) * RESOLUTION_N_PER_LSB
     fy = (fy_byte - 256 if fy_byte > 127 else fy_byte) * RESOLUTION_N_PER_LSB
     fz = fz_byte * RESOLUTION_N_PER_LSB
-    return [round(fx, FORCE_DECIMAL_PLACES), round(fy, FORCE_DECIMAL_PLACES), round(fz, FORCE_DECIMAL_PLACES)]
+    return [round(fx, 1), round(fy, 1), round(fz, 1)]
 
 
 def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
@@ -327,7 +302,7 @@ def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
     fx = (fx_lo - 256 if fx_lo > 127 else fx_lo) * RESOLUTION_N_PER_LSB
     fy = (fy_lo - 256 if fy_lo > 127 else fy_lo) * RESOLUTION_N_PER_LSB
     fz = fz_lo * RESOLUTION_N_PER_LSB
-    return [round(fx, FORCE_DECIMAL_PLACES), round(fy, FORCE_DECIMAL_PLACES), round(fz, FORCE_DECIMAL_PLACES)]
+    return [round(fx, 1), round(fy, 1), round(fz, 1)]
 
 
 def decode_resultant_auto(
@@ -426,9 +401,6 @@ def decode_resultant_register(
     The block packs 28 modules of 6 bytes each (4 per slot + 8 palm).
     ``module_indices[finger]`` is the zero-based module index; for fingertip
     sensors use ``compute_distal_module_index(slot_id)`` to derive it.
-
-    Raises:
-        ValueError: If data is too short
     """
     if len(data) < RESULTANT_BLOCK_SIZE:
         raise ValueError(f"Resultant force block too short: {len(data)} bytes")
@@ -548,7 +520,6 @@ def encode_resultant_auto_for_mock(
     forces: ResultantForces,
     active_sensors: list[str],
 ) -> bytes:
-    """Encode resultant-only auto-stream payload for mock use."""
     return b"".join(_pack_resultant_for_mock(forces[f]) for f in active_sensors)
 
 
@@ -556,7 +527,6 @@ def encode_taxels_auto_for_mock(
     taxels: TaxelForces,
     active_sensors: list[str],
 ) -> bytes:
-    """Encode taxel-only auto-stream payload for mock use."""
     return b"".join(_pack_taxel_for_mock(t) for f in active_sensors for t in taxels[f])
 
 
@@ -565,7 +535,7 @@ def encode_combined_auto_for_mock(
     taxels: TaxelForces,
     active_sensors: list[str],
 ) -> bytes:
-    """Encode interleaved (resultant + taxels) auto-stream payload for mock use."""
+    """Build interleaved [resultant_i, taxels_i, resultant_{i+1}, ...] payload."""
     out = bytearray()
     for f in active_sensors:
         out += _pack_resultant_for_mock(forces[f])

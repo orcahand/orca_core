@@ -60,7 +60,6 @@ logger = logging.getLogger(__name__)
 
 
 class NoSensorsAvailableError(Exception):
-    """Raised when no sensors are available for communication."""
     pass
 
 
@@ -78,20 +77,12 @@ class FrameError(Exception):
 
 @dataclass
 class AutoStreamStats:
-    """Diagnostic counters for the auto-stream reader loop.
-
-    Attributes:
-        frames_ok: Frames received and decoded successfully.
-        frames_bad_checksum: Frames rejected due to checksum (LRC) mismatch.
-        parse_errors: Frames received intact but whose payload failed to decode.
-        resyncs: Times the reader had to resync after IO errors or bad framing.
-        last_error_code: Most recent sensor-reported error code (0 = no error).
-    """
+    """Diagnostic counters for the auto-stream reader loop."""
     frames_ok: int = 0
     frames_bad_checksum: int = 0
     parse_errors: int = 0
     resyncs: int = 0
-    last_error_code: int = 0
+    last_error_code: int = 0  # most recent sensor-reported error code (0 = no error)
 
 
 @dataclass
@@ -120,11 +111,9 @@ class TactileSensorConfiguration:
 
     @property
     def num_active_sensors(self) -> int:
-        """Number of currently connected sensors."""
         return len(self.active_sensors)
 
     def __str__(self) -> str:
-        """Human-readable representation."""
         active = ", ".join(self.active_sensors) if self.active_sensors else "none"
         return f"SensorConfig({self.num_active_sensors} active: {active})"
 
@@ -211,10 +200,8 @@ class TactileClient:
             raise ConnectionError(f"Failed to connect to sensor at {self.port}: {e}") from e
 
     def disconnect(self):
-        """Disconnect from the sensor device."""
         if not self.is_connected:
             return
-            
         if self._serial_connection and self._serial_connection.is_open:
             self._serial_connection.close()
         self._connected = False
@@ -414,17 +401,13 @@ class TactileClient:
 
 
     def enable_auto_data_transmission(self) -> None:
-        """Enable automatic data transmission mode."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-
         self._write_register(ADDR_AUTO_ENABLE, REGISTER_ENABLE)
 
     def disable_auto_data_transmission(self) -> None:
-        """Disable automatic data transmission mode."""
         if not self.is_connected:
             raise OSError("Must call connect() first.")
-
         self._write_register(ADDR_AUTO_ENABLE, REGISTER_DISABLE)
 
 
@@ -652,12 +635,6 @@ class TactileClient:
 
     def _auto_reader_loop(self, parse_resultant: bool, parse_taxels: bool):
         """Background thread: acquire → offset → store → repeat.
-
-        Error handling:
-        - FrameError: recoverable (bad LRC / parse error). Count and continue.
-        - IOError: serial-level hiccup. Count, back off briefly, continue.
-        - Any other Exception: unexpected (likely a programming bug). Log the
-          traceback and stop the stream loudly rather than rotting silently.
         """
         while self._auto_running.is_set():
             try:
