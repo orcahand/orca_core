@@ -43,6 +43,10 @@ PROTOCOL_RESERVED = 0x00
 FUNC_CODE_READ = 0x03
 FUNC_CODE_WRITE = 0x10
 
+# Frame-type tag
+PROTOCOL_BYTE_RESPONSE = PROTOCOL_HEADER_RESPONSE[1]  # 0x55
+PROTOCOL_BYTE_AUTO = PROTOCOL_HEADER_AUTO[1]          # 0x56
+
 # ---------------------------------------------------------------------------
 # Register addresses (used by tactile_client for read/write targets)
 # ---------------------------------------------------------------------------
@@ -113,6 +117,7 @@ SLOT_DISTAL_TAXEL_REGISTER_OFFSETS = [0x0034, 0x003C, 0x0044, 0x004C, 0x0054]
 # ---------------------------------------------------------------------------
 
 PROTOCOL_HEADER_AUTO_ENC = bytes([0xAA, 0xA9])
+PROTOCOL_BYTE_AUTO_ENC = PROTOCOL_HEADER_AUTO_ENC[1]  # 0xA9
 AUTO_ENC_FRAME_SIZE = 39
 """Wire size: header(2) + reserved(1) + eff_len(2) + err(1) + payload(32) + LRC(1)."""
 
@@ -132,3 +137,17 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 # Encoder hardware properties (14-bit absolute rotary encoder)
 ENCODER_COUNTS_PER_REV = 16384
 ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV
+
+# ---------------------------------------------------------------------------
+# Hand serial link
+# ---------------------------------------------------------------------------
+
+LINK_RESPONSE_QUEUE_MAXSIZE = 4
+LINK_DEMUX_READ_TIMEOUT_S = 0.5
+"""Serial-port read timeout. Bounds how long the demuxer waits before re-checking
+its run flag, so disconnect joins promptly."""
+
+LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
+"""Per-second-byte rate limit for handler-exception traceback logging."""
+
+LINK_DEFAULT_BAUDRATE = 921600
