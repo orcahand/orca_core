@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from orca_core.hardware.sensing.protocol import (
+from orca_core.hardware.sensing.tactile_protocol import (
     calculate_checksum,
     validate_auto_frame_lrc,
     read_response_body_size,

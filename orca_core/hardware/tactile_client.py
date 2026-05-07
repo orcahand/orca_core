@@ -34,7 +34,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_ENABLE,
     REGISTER_DISABLE,
 )
-from orca_core.hardware.sensing.protocol import (
+from orca_core.hardware.sensing.tactile_protocol import (
     validate_auto_frame_lrc,
     build_read_request,
     build_write_request,

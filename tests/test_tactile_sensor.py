@@ -9,7 +9,7 @@ import pytest
 from orca_core.hardware.tactile_client import TactileSensorConfiguration
 from orca_core.hardware.mock_tactile_client import MockTactileClient
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
-from orca_core.hardware.sensing.protocol import compute_distal_module_index
+from orca_core.hardware.sensing.tactile_protocol import compute_distal_module_index
 
 ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 

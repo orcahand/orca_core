@@ -1,5 +1,6 @@
-"""Constants for ORCA tactile sensing."""
+"""Constants for ORCA tactile sensing and joint encoders."""
 
+import math
 from typing import Literal
 
 # ---------------------------------------------------------------------------
@@ -106,3 +107,28 @@ SLOT_CONNECTED_BIT_POSITIONS = [(0, 2), (0, 6), (1, 2), (1, 6), (2, 2)]
 
 # Register address per slot for distal-phalanx taxel count. Hardware-fixed.
 SLOT_DISTAL_TAXEL_REGISTER_OFFSETS = [0x0034, 0x003C, 0x0044, 0x004C, 0x0054]
+
+# ---------------------------------------------------------------------------
+# Encoder auto-stream
+# ---------------------------------------------------------------------------
+
+PROTOCOL_HEADER_AUTO_ENC = bytes([0xAA, 0xA9])
+AUTO_ENC_FRAME_SIZE = 39
+"""Wire size: header(2) + reserved(1) + eff_len(2) + err(1) + payload(32) + LRC(1)."""
+
+AUTO_ENC_NUM_JOINTS = 16
+AUTO_ENC_PAYLOAD_BYTES = AUTO_ENC_NUM_JOINTS * 2
+AUTO_ENC_PAYLOAD_OFFSET = 6
+"""Byte offset to the joint payload (past header + reserved + eff_len + err)."""
+
+AUTO_ENC_EFF_LEN = 1 + AUTO_ENC_PAYLOAD_BYTES
+"""Value of the eff_len field for a valid encoder frame: err byte + payload."""
+
+# Per-joint u16 layout in the encoder payload
+AUTO_ENC_PARITY_BIT = 1 << 15
+AUTO_ENC_ANGLE_ERROR_BIT = 1 << 14
+AUTO_ENC_ANGLE_MASK = 0x3FFF
+
+# Encoder hardware properties (14-bit absolute rotary encoder)
+ENCODER_COUNTS_PER_REV = 16384
+ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV

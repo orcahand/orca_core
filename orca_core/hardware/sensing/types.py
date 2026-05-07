@@ -1,7 +1,8 @@
-"""Typed containers for tactile sensor readings."""
+"""Typed containers for tactile sensor and joint encoder readings."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -72,3 +73,22 @@ class TactileReading:
     forces: ResultantReading | None
     taxels: TaxelReading | None
     timestamp: float | None = None
+
+
+@dataclass(frozen=True)
+class EncoderReading:
+    """Decoded encoder auto-stream frame plus a ``time.monotonic()`` receive timestamp.
+
+    ``raw_counts`` is the unmodified u16 from the wire; bits 15 (parity)
+    and 14 (angle error) are also exposed as ``parity_ok`` and ``angle_error``.
+    """
+
+    raw_counts: np.ndarray
+    parity_ok: np.ndarray
+    angle_error: np.ndarray
+    err_byte: int
+    timestamp: float
+
+    @property
+    def freshness_ms(self) -> float:
+        return (time.monotonic() - self.timestamp) * 1000.0

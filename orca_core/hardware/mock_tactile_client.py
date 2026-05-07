@@ -21,7 +21,7 @@ from orca_core.hardware.sensing.constants import (
     AUTO_DATA_RESULTANT,
     AUTO_DATA_TAXELS,
 )
-from orca_core.hardware.sensing.protocol import (
+from orca_core.hardware.sensing.tactile_protocol import (
     ResultantForces,
     TaxelForces,
     decode_combined_auto,
