@@ -1,42 +1,24 @@
-"""Tests for MockTactileClient integration and TactileSensorConfiguration contracts.
+"""Integration tests for TactileClient on MockHandSerialLink.
 
-Validates the mock's lifecycle (connect → stream → read → stop), offset logic,
-and configuration ordering. Pure protocol codec tests live in test_protocol.py.
+Drives a real ``TactileClient`` through a mock serial link with
+fixture-built wire frames. Pure protocol codec tests live in
+``test_tactile_protocol.py``.
 """
 
 import pytest
 
-from orca_core.hardware.tactile_client import TactileSensorConfiguration
-from orca_core.hardware.mock_tactile_client import MockTactileClient
+from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
 from orca_core.hardware.sensing.tactile_protocol import compute_distal_module_index
+from orca_core.hardware.tactile_client import TactileClient, TactileSensorConfiguration
+
+from tests._tactile_helpers import (
+    feed_combined_frame,
+    feed_resultant_frame,
+    feed_taxels_frame,
+)
 
 ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
-
-
-@pytest.fixture
-def mock():
-    """Connected MockTactileClient with all fingers, cleaned up on teardown."""
-    client = MockTactileClient(connected_sensors=ALL_FINGERS)
-    client.connect()
-    yield client
-    client.disconnect()
-
-
-@pytest.fixture
-def mock_factory():
-    """Factory for connected mocks with custom finger subsets."""
-    created = []
-
-    def _make(connected_sensors, **kwargs):
-        client = MockTactileClient(connected_sensors=connected_sensors, **kwargs)
-        client.connect()
-        created.append(client)
-        return client
-
-    yield _make
-    for client in created:
-        client.disconnect()
 
 
 def _make_config(
@@ -75,12 +57,13 @@ FORCE_VECTORS = {
 
 
 @pytest.mark.parametrize("finger", ALL_FINGERS)
-def test_resultant_round_trip_per_finger(mock, finger):
-    mock.set_mock_forces(FORCE_VECTORS)
-    mock.start_auto_stream(resultant=True, taxels=False)
-    mock.wait_for_first_frame()
-    result, ts = mock.get_auto_latest()
-    mock.stop_auto_stream()
+def test_resultant_round_trip_per_finger(tactile_mock, finger):
+    link, client, state = tactile_mock
+    client.start_auto_stream(resultant=True, taxels=False)
+    feed_resultant_frame(link, FORCE_VECTORS, state.active_sensors)
+    client.wait_for_first_tactile_frame()
+    result, ts = client.get_auto_latest()
+    client.stop_auto_stream()
 
     assert ts is not None
     assert result[finger] == FORCE_VECTORS[finger]
@@ -95,12 +78,14 @@ def test_resultant_round_trip_per_finger(mock, finger):
         ALL_FINGERS,
     ],
 )
-def test_only_connected_sensors_returned(mock_factory, subset):
-    mock = mock_factory(subset)
-    mock.start_auto_stream(resultant=True, taxels=False)
-    mock.wait_for_first_frame()
-    result, _ = mock.get_auto_latest()
-    mock.stop_auto_stream()
+def test_only_connected_sensors_returned(tactile_mock_factory, subset):
+    link, client, state = tactile_mock_factory(subset)
+    forces = {f: [1.0, 0.0, 0.5] for f in subset}
+    client.start_auto_stream(resultant=True, taxels=False)
+    feed_resultant_frame(link, forces, state.active_sensors)
+    client.wait_for_first_tactile_frame()
+    result, _ = client.get_auto_latest()
+    client.stop_auto_stream()
 
     assert set(result.keys()) == set(subset)
 
@@ -109,119 +94,118 @@ def test_only_connected_sensors_returned(mock_factory, subset):
 # Combined mode
 # ---------------------------------------------------------------------------
 
-def test_combined_mode_returns_both_streams(mock):
-    mock.set_mock_forces({f: [1.0, 0.0, 0.5] for f in ALL_FINGERS})
-    mock.start_auto_stream(resultant=True, taxels=True)
-    mock.wait_for_first_frame()
-    forces, taxels, ts = mock.get_auto_latest_all()
-    mock.stop_auto_stream()
+def test_combined_mode_returns_both_streams(tactile_mock):
+    link, client, state = tactile_mock
+    forces = {f: [1.0, 0.0, 0.5] for f in ALL_FINGERS}
+    taxels = {
+        f: [[1.0, 1.0, 1.0] for _ in range(DEFAULT_TAXEL_COUNTS[f])]
+        for f in ALL_FINGERS
+    }
+    client.start_auto_stream(resultant=True, taxels=True)
+    feed_combined_frame(link, forces, taxels, state.active_sensors)
+    client.wait_for_first_tactile_frame()
+    forces_out, taxels_out, ts = client.get_auto_latest_all()
+    client.stop_auto_stream()
 
     assert ts is not None
-    assert set(forces.keys()) == set(ALL_FINGERS)
-    assert set(taxels.keys()) == set(ALL_FINGERS)
+    assert set(forces_out.keys()) == set(ALL_FINGERS)
+    assert set(taxels_out.keys()) == set(ALL_FINGERS)
     for finger in ALL_FINGERS:
-        assert forces[finger] == [1.0, 0.0, 0.5]
-        assert len(taxels[finger]) == DEFAULT_TAXEL_COUNTS[finger]
+        assert forces_out[finger] == [1.0, 0.0, 0.5]
+        assert len(taxels_out[finger]) == DEFAULT_TAXEL_COUNTS[finger]
 
 
 # ---------------------------------------------------------------------------
-# Provider injection
+# Custom data via direct frame feed
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "kind",
-    ["resultant", "taxel"],
-)
-def test_custom_provider_is_used(kind):
+@pytest.mark.parametrize("kind", ["resultant", "taxel"])
+def test_custom_provider_is_used(tactile_mock_factory, kind):
     if kind == "resultant":
         marker = [4.2, -3.0, 20.0]
-        mock = MockTactileClient(
-            connected_sensors=["thumb"],
-            resultant_provider=lambda: {"thumb": marker},
-        )
-        mock.connect()
-        mock.start_auto_stream(resultant=True, taxels=False)
-        mock.wait_for_first_frame()
-        result, _ = mock.get_auto_latest()
-        mock.stop_auto_stream()
-        mock.disconnect()
+        link, client, state = tactile_mock_factory(["thumb"])
+        client.start_auto_stream(resultant=True, taxels=False)
+        feed_resultant_frame(link, {"thumb": marker}, state.active_sensors)
+        client.wait_for_first_tactile_frame()
+        result, _ = client.get_auto_latest()
+        client.stop_auto_stream()
         assert result["thumb"] == marker
     else:
         marker = [[9.9, -8.8, 7.7]]
-        mock = MockTactileClient(
-            connected_sensors=["thumb"],
-            taxel_counts={"thumb": 1},
-            taxel_provider=lambda: {"thumb": marker},
+        link, client, state = tactile_mock_factory(
+            ["thumb"], taxel_counts={"thumb": 1},
         )
-        mock.connect()
-        mock.start_auto_stream(resultant=False, taxels=True)
-        mock.wait_for_first_frame()
-        result, _ = mock.get_auto_latest_taxels()
-        mock.stop_auto_stream()
-        mock.disconnect()
+        client.start_auto_stream(resultant=False, taxels=True)
+        feed_taxels_frame(link, {"thumb": marker}, state.active_sensors)
+        client.wait_for_first_tactile_frame()
+        result, _ = client.get_auto_latest_taxels()
+        client.stop_auto_stream()
         assert result["thumb"] == marker
 
 
 # ---------------------------------------------------------------------------
-# Offset logic
+# Offset logic — synchronous register-read path
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("finger", ALL_FINGERS)
-def test_resultant_offsets_applied(mock_factory, finger):
-    mock = mock_factory([finger])
-    mock.set_mock_forces({finger: [5.0, 3.0, 10.0]})
-    mock.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
+def test_resultant_offsets_applied(tactile_mock_factory, finger):
+    _, client, state = tactile_mock_factory([finger])
+    state.resultant_forces = {finger: [5.0, 3.0, 10.0]}
+    client.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
 
-    result = mock.read_resultant_force()
+    result = client.read_resultant_force()
     assert result[finger] == [4.0, 2.5, 8.0]
 
 
 @pytest.mark.parametrize("finger", ALL_FINGERS)
-def test_fz_clamped_to_zero(mock_factory, finger):
-    mock = mock_factory([finger])
-    mock.set_mock_forces({finger: [0.0, 0.0, 1.0]})
-    mock.set_taxel_offsets({finger: [[0.0, 0.0, 5.0]]})
+def test_fz_clamped_to_zero(tactile_mock_factory, finger):
+    _, client, state = tactile_mock_factory([finger])
+    state.resultant_forces = {finger: [0.0, 0.0, 1.0]}
+    client.set_taxel_offsets({finger: [[0.0, 0.0, 5.0]]})
 
-    result = mock.read_resultant_force()
+    result = client.read_resultant_force()
     assert result[finger][2] == 0.0
 
 
-def test_clear_offsets(mock_factory):
-    mock = mock_factory(["thumb"])
-    mock.set_mock_forces({"thumb": [5.0, 3.0, 10.0]})
-    mock.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
-    mock.clear_taxel_offsets()
+def test_clear_offsets(tactile_mock_factory):
+    _, client, state = tactile_mock_factory(["thumb"])
+    state.resultant_forces = {"thumb": [5.0, 3.0, 10.0]}
+    client.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
+    client.clear_taxel_offsets()
 
-    result = mock.read_resultant_force()
+    result = client.read_resultant_force()
     assert result["thumb"] == [5.0, 3.0, 10.0]
 
 
+# ---------------------------------------------------------------------------
+# Offset logic — auto-stream path
+# ---------------------------------------------------------------------------
+
 @pytest.mark.parametrize("finger", ALL_FINGERS)
-def test_stream_offsets_applied(mock_factory, finger):
-    mock = mock_factory([finger])
-    mock.set_mock_forces({finger: [5.0, 3.0, 10.0]})
-    mock.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
-    mock.start_auto_stream(resultant=True, taxels=False)
-    mock.wait_for_first_frame()
-    result, _ = mock.get_auto_latest()
-    mock.stop_auto_stream()
+def test_stream_offsets_applied(tactile_mock_factory, finger):
+    link, client, state = tactile_mock_factory([finger])
+    client.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
+    client.start_auto_stream(resultant=True, taxels=False)
+    feed_resultant_frame(link, {finger: [5.0, 3.0, 10.0]}, state.active_sensors)
+    client.wait_for_first_tactile_frame()
+    result, _ = client.get_auto_latest()
+    client.stop_auto_stream()
 
     assert result[finger] == [4.0, 2.5, 8.0]
 
 
-def test_taxel_offsets_applied_in_stream(mock_factory):
+def test_taxel_offsets_applied_in_stream(tactile_mock_factory):
     taxels = [[2.0, 1.0, 5.0], [3.0, 2.0, 8.0]]
     offsets = [[0.5, 0.5, 1.0], [1.0, 1.0, 2.0]]
-    mock = mock_factory(
-        ["thumb"],
-        taxel_counts={"thumb": 2},
-        taxel_provider=lambda: {"thumb": [list(t) for t in taxels]},
+    link, client, state = tactile_mock_factory(
+        ["thumb"], taxel_counts={"thumb": 2},
     )
-    mock.set_taxel_offsets({"thumb": offsets})
-    mock.start_auto_stream(resultant=False, taxels=True)
-    mock.wait_for_first_frame()
-    result, _ = mock.get_auto_latest_taxels()
-    mock.stop_auto_stream()
+    client.set_taxel_offsets({"thumb": offsets})
+    client.start_auto_stream(resultant=False, taxels=True)
+    feed_taxels_frame(link, {"thumb": taxels}, state.active_sensors)
+    client.wait_for_first_tactile_frame()
+    result, _ = client.get_auto_latest_taxels()
+    client.stop_auto_stream()
 
     assert result["thumb"] == [[1.5, 0.5, 4.0], [2.0, 1.0, 6.0]]
 
@@ -231,13 +215,19 @@ def test_taxel_offsets_applied_in_stream(mock_factory):
 # ---------------------------------------------------------------------------
 
 def test_read_before_connect_raises():
-    mock = MockTactileClient(connected_sensors=ALL_FINGERS)
-    with pytest.raises(OSError, match="connect"):
-        mock.read_resultant_force()
+    link = MockHandSerialLink()
+    link.connect()
+    try:
+        client = TactileClient(link)
+        with pytest.raises(OSError, match="connect"):
+            client.read_resultant_force()
+    finally:
+        link.disconnect()
 
 
-def test_get_auto_latest_before_stream_returns_none(mock):
-    result, ts = mock.get_auto_latest()
+def test_get_auto_latest_before_stream_returns_none(tactile_mock):
+    _, client, _ = tactile_mock
+    result, ts = client.get_auto_latest()
     assert result is None
     assert ts is None
 

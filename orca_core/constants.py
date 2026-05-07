@@ -1,3 +1,11 @@
+from typing import Literal
+
+FingerName = Literal["thumb", "index", "middle", "ring", "pinky"]
+"""Type alias for valid finger names. Use in public APIs that take a single
+finger name so type checkers flag typos like ``reading["thmub"]``."""
+
+FINGER_NAMES: list[FingerName] = ["thumb", "index", "middle", "ring", "pinky"]
+
 MOTOR_IDS = "motor_ids"
 JOINT_IDS = "joint_ids"
 JOINT_TO_MOTOR_MAP = "joint_to_motor_map"

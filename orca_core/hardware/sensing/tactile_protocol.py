@@ -3,8 +3,6 @@
 Converts between raw bytes (as defined by the sensor hardware protocol)
 and Python objects. Pure functions only — no I/O, no state, no threading.
 """
-from __future__ import annotations
-
 from typing import TypedDict
 
 from orca_core.hardware.sensing.constants import (
@@ -20,6 +18,7 @@ from orca_core.hardware.sensing.constants import (
     ADDR_NUM_TAXELS_LENGTH,
     RESULTANT_BLOCK_SIZE,
     RESOLUTION_N_PER_LSB,
+    FORCE_ROUND_DECIMALS,
     BYTES_PER_RESULTANT,
     BYTES_PER_TAXEL,
     SLOT_CONNECTED_BIT_POSITIONS,
@@ -288,7 +287,11 @@ def _unpack_taxel(data: bytes, offset: int) -> ForceVector:
     fx = (fx_byte - 256 if fx_byte > 127 else fx_byte) * RESOLUTION_N_PER_LSB
     fy = (fy_byte - 256 if fy_byte > 127 else fy_byte) * RESOLUTION_N_PER_LSB
     fz = fz_byte * RESOLUTION_N_PER_LSB
-    return [round(fx, 1), round(fy, 1), round(fz, 1)]
+    return [
+        round(fx, FORCE_ROUND_DECIMALS),
+        round(fy, FORCE_ROUND_DECIMALS),
+        round(fz, FORCE_ROUND_DECIMALS),
+    ]
 
 
 def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
@@ -302,7 +305,11 @@ def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
     fx = (fx_lo - 256 if fx_lo > 127 else fx_lo) * RESOLUTION_N_PER_LSB
     fy = (fy_lo - 256 if fy_lo > 127 else fy_lo) * RESOLUTION_N_PER_LSB
     fz = fz_lo * RESOLUTION_N_PER_LSB
-    return [round(fx, 1), round(fy, 1), round(fz, 1)]
+    return [
+        round(fx, FORCE_ROUND_DECIMALS),
+        round(fy, FORCE_ROUND_DECIMALS),
+        round(fz, FORCE_ROUND_DECIMALS),
+    ]
 
 
 def decode_resultant_auto(

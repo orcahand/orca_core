@@ -317,29 +317,29 @@ def phase_3_taxels_press(hand):
     try:
         wait_for_frame(hand.get_tactile_taxels)
         reading = hand.get_tactile_taxels()
-        for f in FINGERS:
-            if f not in reading:
-                return False, f"{f} missing from taxel frame"
-            n_expected = hand.get_tactile_configuration().num_taxels[f]
-            if len(reading[f]) != n_expected:
-                return False, (f"{f} taxel array length {len(reading[f])} "
-                               f"!= reported {n_expected}")
-            if any(len(t) != 3 for t in reading[f]):
-                return False, f"{f} has malformed taxel vectors"
+        for finger in FINGERS:
+            if finger not in reading:
+                return False, f"{finger} missing from taxel frame"
+            num_expected_taxels = hand.get_tactile_configuration().num_taxels[finger]
+            if len(reading[finger]) != num_expected_taxels:
+                return False, (f"{finger} taxel array length {len(reading[finger])} "
+                               f"!= reported {num_expected_taxels}")
+            if any(len(t) != 3 for t in reading[finger]):
+                return False, f"{finger} has malformed taxel vectors"
         print(f"  Taxel array shapes verified for all 5 fingers")
 
         wiring = hand.config.finger_to_sensor_id
         peaks_per_press = {}
         warnings = []
-        for f in FINGERS:
-            pause(f"press {f.upper()} (move your finger around to light up different taxels)")
-            n = hand.get_tactile_configuration().num_taxels[f]
-            all_peaks = live_press_taxels(hand, f, FINGER_TO_ROLE[f], n, FINGERS, duration_s=2.5)
-            peaks_per_press[f] = all_peaks[f]
-            mismatch = detect_wiring_mismatch(f, all_peaks, wiring)
+        for finger in FINGERS:
+            pause(f"press {finger.upper()} (move your finger around to light up different taxels)")
+            num_expected_taxels = hand.get_tactile_configuration().num_taxels[finger]
+            all_peaks = live_press_taxels(hand, finger, FINGER_TO_ROLE[finger], num_expected_taxels, FINGERS, duration_s=2.5)
+            peaks_per_press[finger] = all_peaks[finger]
+            mismatch = detect_wiring_mismatch(finger, all_peaks, wiring)
             if mismatch:
                 print(mismatch)
-                warnings.append(f)
+                warnings.append(finger)
 
         weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
         if warnings:

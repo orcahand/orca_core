@@ -11,9 +11,16 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
-from .constants import CONTROL_MODES, DEFAULT_MODEL_NAME, JOINT_IDS, JOINT_ROM_DICT, JOINT_TO_MOTOR_MAP, MOTOR_IDS
-from .hardware.sensing.constants import (
+from .constants import (
+    CONTROL_MODES,
+    DEFAULT_MODEL_NAME,
     FINGER_NAMES,
+    JOINT_IDS,
+    JOINT_ROM_DICT,
+    JOINT_TO_MOTOR_MAP,
+    MOTOR_IDS,
+)
+from .hardware.sensing.constants import (
     VALID_SENSOR_IDS,
     DEFAULT_SENSOR_PORT,
     DEFAULT_SENSOR_BAUDRATE,

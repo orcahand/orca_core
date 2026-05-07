@@ -1,17 +1,11 @@
 """Constants for ORCA tactile sensing and joint encoders."""
 
 import math
-from typing import Literal
 
 # ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
 
-FingerName = Literal["thumb", "index", "middle", "ring", "pinky"]
-"""Type alias for valid finger names. Use in public APIs that take a single
-finger name so type checkers flag typos like ``reading["thmub"]``."""
-
-FINGER_NAMES: list[FingerName] = ["thumb", "index", "middle", "ring", "pinky"]
 VALID_SENSOR_IDS = set(range(5))
 DEFAULT_SENSOR_PORT = "/dev/ttyACM1"
 DEFAULT_SENSOR_BAUDRATE = 921600
@@ -22,14 +16,6 @@ DEFAULT_FINGER_TO_SENSOR_ID = {
 # Default taxel counts per finger (must match sensor model configs)
 DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
-}
-
-FINGER_MODELS = {
-    "thumb": "touch-sensor-thumb",
-    "index": "touch-sensor-finger",
-    "middle": "touch-sensor-finger",
-    "ring": "touch-sensor-finger",
-    "pinky": "touch-sensor-pinky",
 }
 
 # ---------------------------------------------------------------------------
@@ -51,7 +37,6 @@ PROTOCOL_BYTE_AUTO = PROTOCOL_HEADER_AUTO[1]          # 0x56
 # Register addresses (used by tactile_client for read/write targets)
 # ---------------------------------------------------------------------------
 
-ADDR_RESET = 0x0022
 ADDR_CONNECTED_SENSORS_START = 0x0010
 ADDR_CONNECTED_SENSORS_LENGTH = 4
 ADDR_NUM_TAXELS_START = 0x0030
@@ -75,6 +60,9 @@ AUTO_DATA_TAXELS = 0x02
 
 # Force resolution
 RESOLUTION_N_PER_LSB = 0.1
+
+# Decimal places to round force values to (matches RESOLUTION_N_PER_LSB granularity).
+FORCE_ROUND_DECIMALS = 1
 
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
@@ -151,3 +139,11 @@ LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
 """Per-second-byte rate limit for handler-exception traceback logging."""
 
 LINK_DEFAULT_BAUDRATE = 921600
+
+# ---------------------------------------------------------------------------
+# Auto-stream timing
+# ---------------------------------------------------------------------------
+
+# One auto-stream period @ ~1 kHz. Used after clearing offsets so the reader
+# emits at least one fresh frame before averaging.
+OFFSET_CLEAR_SETTLE_S = 0.01

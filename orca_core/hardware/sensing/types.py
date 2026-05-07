@@ -1,13 +1,18 @@
 """Typed containers for tactile sensor and joint encoder readings."""
 
-from __future__ import annotations
-
 import time
 from dataclasses import dataclass
 
 import numpy as np
 
-from orca_core.hardware.sensing.constants import FingerName
+from orca_core.constants import FingerName
+
+
+FingerForces = list[float]
+"""Resultant 3-axis force on one finger: ``[fx, fy, fz]`` in Newtons."""
+
+FingerTaxels = list[list[float]]
+"""Per-taxel 3-axis forces on one finger: ``[[fx, fy, fz], ...]`` in Newtons."""
 
 
 @dataclass(frozen=True)
@@ -17,17 +22,17 @@ class ResultantReading:
     Supports dict-style access: ``reading["thumb"]`` returns ``[fx, fy, fz]``.
     """
 
-    forces: dict[str, list[float]]
+    forces: dict[FingerName, FingerForces]
     timestamp: float | None = None
 
-    def __getitem__(self, finger: FingerName) -> list[float]:
+    def __getitem__(self, finger: FingerName) -> FingerForces:
         return self.forces[finger]
 
     def __contains__(self, finger: FingerName) -> bool:
         return finger in self.forces
 
     @property
-    def fingers(self) -> list[str]:
+    def fingers(self) -> list[FingerName]:
         return list(self.forces.keys())
 
     def as_array(self) -> np.ndarray:
@@ -43,17 +48,17 @@ class TaxelReading:
     ``[[fx, fy, fz], ...]`` for every taxel on that finger.
     """
 
-    taxels: dict[str, list[list[float]]]
+    taxels: dict[FingerName, FingerTaxels]
     timestamp: float | None = None
 
-    def __getitem__(self, finger: FingerName) -> list[list[float]]:
+    def __getitem__(self, finger: FingerName) -> FingerTaxels:
         return self.taxels[finger]
 
     def __contains__(self, finger: FingerName) -> bool:
         return finger in self.taxels
 
     @property
-    def fingers(self) -> list[str]:
+    def fingers(self) -> list[FingerName]:
         return list(self.taxels.keys())
 
     def as_array(self, finger: FingerName) -> np.ndarray:
