@@ -126,7 +126,7 @@ def main() -> int:
     hand = create_hand(args.config_path, use_mock=args.mock)
     try:
         connect_hand(hand)
-        hand.enable_torque()
+        hand.init_joints(force_calibrate=args.mock)
 
         last_temp_check = 0.0
         try:
