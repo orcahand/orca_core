@@ -21,6 +21,7 @@ from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
+from .hardware.sensing.serial_discovery import find_tactile_port
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import AutoStreamStats, TactileClient, TactileSensorConfiguration
 from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
@@ -1210,12 +1211,7 @@ class OrcaHandTouch(OrcaHand):
             self._tactile_link = None
 
     def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
-        """Open the sensor serial link, mirroring the motor cascade.
-
-        Tries the configured port first, then USB-VID auto-detection
-        (``KNOWN_VIDS["tactile_sensor"]``). On a successful auto-detect the
-        new port is written back to ``config.yaml``.
-        """
+        """Open the sensor link: configured port first, then Paxini VID auto-detect; persist on success."""
         try:
             self._open_tactile_on_port(self.config.sensor_port)
             return True, f"Sensor connected on {self.config.sensor_port}"
@@ -1223,7 +1219,7 @@ class OrcaHandTouch(OrcaHand):
             print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
             self._teardown_tactile()
 
-        chosen = auto_detect_port("tactile_sensor")
+        chosen = find_tactile_port()
         if chosen and chosen != self.config.sensor_port:
             try:
                 self.config = dataclasses.replace(self.config, sensor_port=chosen)

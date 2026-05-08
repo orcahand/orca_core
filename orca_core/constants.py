@@ -31,7 +31,18 @@ KNOWN_VIDS: dict[str, list[int]] = {
     "tactile_sensor": [
         0x28E9,  # Paxini tactile sensor USB adapter
     ],
+    "oh_board": [
+        0x2F5D,  # ORCA Dexterity OH board (dual-CDC; PID 0x2202)
+    ],
 }
+
+# OH board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY lets the host
+# distinguish motor vs sensor.
+ORCA_ID_QUERY = b"ORCA_ID?\n"
+ORCA_ID_RESP_MOTOR = b"ORCA:MOTOR\n"
+ORCA_ID_RESP_SENSOR = b"ORCA:SENSOR\n"
+ORCA_ID_PROBE_TIMEOUT_S = 0.2
+ORCA_ID_PROBE_BAUDRATE = 921600
 
 """
 Dynamixel specific! TODO(fracapuano): Add feetech control modes too.
