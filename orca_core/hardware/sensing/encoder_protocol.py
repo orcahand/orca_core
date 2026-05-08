@@ -62,11 +62,26 @@ def parse_auto_enc_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderRead
     raw_counts = np.frombuffer(payload, dtype="<u2").copy()
     return EncoderReading(
         raw_counts=raw_counts,
-        parity_ok=(raw_counts & AUTO_ENC_PARITY_BIT) != 0,
+        parity_ok=_check_even_parity(raw_counts),
         angle_error=(raw_counts & AUTO_ENC_ANGLE_ERROR_BIT) != 0,
         err_byte=frame[5],
         timestamp=timestamp,
     )
+
+
+def _check_even_parity(raw_counts: np.ndarray) -> np.ndarray:
+    """True per joint where the AS5048A even-parity check passes.
+
+    The chip sets bit 15 such that the total number of 1-bits across the
+    full 16-bit word is even; a frame with odd popcount therefore came
+    from wire-level corruption (or no chip on the bus at all).
+    """
+    x = raw_counts.astype(np.uint16)
+    x = (x & 0x5555) + ((x >> 1) & 0x5555)
+    x = (x & 0x3333) + ((x >> 2) & 0x3333)
+    x = (x & 0x0F0F) + ((x >> 4) & 0x0F0F)
+    x = (x & 0x00FF) + ((x >> 8) & 0x00FF)
+    return (x & 1) == 0
 
 
 # =========================================================================

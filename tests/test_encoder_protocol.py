@@ -33,7 +33,8 @@ from orca_core.hardware.sensing.types import EncoderReading
 #
 # Wire layout (39 bytes): header(2) + reserved(1) + eff_len(2 LE) + err(1)
 # + payload(32) + LRC(1). eff_len == 33 (err byte + payload).
-# Per-joint u16: bit 15 = parity_ok, bit 14 = angle_error, bits 13:0 = angle.
+# Per-joint u16: bit 15 = parity bit (AS5048A even parity over the whole word),
+# bit 14 = angle error, bits 13:0 = 14-bit absolute angle.
 # ---------------------------------------------------------------------------
 
 def _zero_counts() -> np.ndarray:
@@ -97,19 +98,21 @@ def test_calculate_checksum_matches_tactile_protocol(frame):
 # parse_auto_enc_frame
 # ---------------------------------------------------------------------------
 
-def test_parse_auto_enc_frame_extracts_flag_bits():
-    """Bit 15 → parity_ok, bit 14 → angle_error; raw_counts keeps both bits."""
+def test_parse_auto_enc_frame_decodes_parity_and_angle_error():
+    """``parity_ok`` checks AS5048A even parity over the whole word; ``angle_error`` is bit 14."""
     raw = _zero_counts()
-    raw[0] = AUTO_ENC_PARITY_BIT
-    raw[1] = AUTO_ENC_ANGLE_ERROR_BIT
-    raw[2] = AUTO_ENC_PARITY_BIT | AUTO_ENC_ANGLE_ERROR_BIT
-    raw[3] = 0x0000
-    raw[4] = AUTO_ENC_PARITY_BIT | AUTO_ENC_ANGLE_ERROR_BIT | 0x0123
+    raw[0] = 0x0000  # popcount=0 (even) → parity OK; bit 14 clear → no angle error
+    raw[1] = 0x8000  # popcount=1 (odd) → parity BAD; bit 14 clear
+    raw[2] = 0x8001  # popcount=2 (even) → parity OK; bit 14 clear
+    raw[3] = 0x4000  # popcount=1 (odd) → parity BAD; bit 14 set → angle error
+    raw[4] = 0xFFFF  # popcount=16 (even) → parity OK; bit 14 set
+    raw[5] = 0xC003  # popcount=4 (even) → parity OK; bit 14 set
+    raw[6] = 0x3FFF  # popcount=14 (even) → parity OK; bit 14 clear
 
     reading = parse_auto_enc_frame(_build_encoder_frame(raw))
     np.testing.assert_array_equal(reading.raw_counts, raw)
-    assert list(reading.parity_ok[:5]) == [True, False, True, False, True]
-    assert list(reading.angle_error[:5]) == [False, True, True, False, True]
+    assert list(reading.parity_ok[:7]) == [True, False, True, False, True, True, True]
+    assert list(reading.angle_error[:7]) == [False, False, False, True, True, True, False]
 
 
 @pytest.mark.parametrize("frame,error_match", [
@@ -154,7 +157,7 @@ def test_encoder_to_joint_angle_identity():
     midpoint = ENCODER_COUNTS_PER_REV // 2
     raw = np.full(AUTO_ENC_NUM_JOINTS, midpoint, dtype=np.uint16)
     anchor = np.full(AUTO_ENC_NUM_JOINTS, midpoint, dtype=np.int32)
-    polarity = np.array([1] * 8 + [-1] * 8, dtype=np.int8)
+    polarity = np.tile([1, -1], (AUTO_ENC_NUM_JOINTS + 1) // 2)[:AUTO_ENC_NUM_JOINTS].astype(np.int8)
     anchor_angle = np.linspace(-1.0, 1.0, AUTO_ENC_NUM_JOINTS)
 
     out = encoder_to_joint_angle(raw, anchor, polarity, anchor_angle)

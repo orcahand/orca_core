@@ -1,5 +1,6 @@
 import pytest
 
+from orca_core.hardware.joint_encoder_client import JointEncoderClient
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
@@ -69,3 +70,19 @@ def tactile_mock_factory():
             link.disconnect()
         except Exception:
             pass
+
+
+@pytest.fixture
+def encoder_link_and_client():
+    """Encoder client connected on a mock link; AA A9 handler registered."""
+    link = MockHandSerialLink()
+    link.connect()
+    client = JointEncoderClient(link)
+    client.connect()
+    try:
+        yield link, client
+    finally:
+        try:
+            client.disconnect()
+        finally:
+            link.disconnect()

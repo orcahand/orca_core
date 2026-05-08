@@ -106,16 +106,19 @@ SLOT_DISTAL_TAXEL_REGISTER_OFFSETS = [0x0034, 0x003C, 0x0044, 0x004C, 0x0054]
 
 PROTOCOL_HEADER_AUTO_ENC = bytes([0xAA, 0xA9])
 PROTOCOL_BYTE_AUTO_ENC = PROTOCOL_HEADER_AUTO_ENC[1]  # 0xA9
-AUTO_ENC_FRAME_SIZE = 39
-"""Wire size: header(2) + reserved(1) + eff_len(2) + err(1) + payload(32) + LRC(1)."""
 
-AUTO_ENC_NUM_JOINTS = 16
+AUTO_ENC_NUM_JOINTS = 17
+"""16 finger-joint encoders + 1 wrist slot"""
+
 AUTO_ENC_PAYLOAD_BYTES = AUTO_ENC_NUM_JOINTS * 2
 AUTO_ENC_PAYLOAD_OFFSET = 6
 """Byte offset to the joint payload (past header + reserved + eff_len + err)."""
 
 AUTO_ENC_EFF_LEN = 1 + AUTO_ENC_PAYLOAD_BYTES
 """Value of the eff_len field for a valid encoder frame: err byte + payload."""
+
+AUTO_ENC_FRAME_SIZE = AUTO_ENC_PAYLOAD_OFFSET + AUTO_ENC_PAYLOAD_BYTES + 1
+"""Wire size: header(2) + reserved(1) + eff_len(2) + err(1) + payload + LRC(1)."""
 
 # Per-joint u16 layout in the encoder payload
 AUTO_ENC_PARITY_BIT = 1 << 15
@@ -125,6 +128,22 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 # Encoder hardware properties (14-bit absolute rotary encoder)
 ENCODER_COUNTS_PER_REV = 16384
 ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV
+
+# Joint name → encoder slot
+JOINT_TO_ENCODER_SLOT = {
+    "thumb_cmc":  0, "thumb_abd":  1, "thumb_mcp":  2, "thumb_dip":  3,
+    "index_abd":  4, "index_mcp":  5, "index_pip":  6,
+    "middle_abd": 7, "middle_mcp": 8, "middle_pip": 9,
+    "ring_abd":  10, "ring_mcp":  11, "ring_pip":  12,
+    "pinky_abd": 13, "pinky_mcp": 14, "pinky_pip": 15,
+    "wrist":     16,
+}
+ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
+
+# Slots the production hand currently ships with sensors wired. The wrist
+# (slot 16) is reserved in the wire format but not yet physically present;
+# remove it from this set once wrist hardware lands.
+EXPECTED_ENCODER_SLOTS = frozenset(range(16))
 
 # ---------------------------------------------------------------------------
 # Hand serial link
