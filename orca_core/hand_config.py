@@ -211,6 +211,8 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_threshold: float = 0.01  # rad
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
+    use_joint_feedback: bool = False
+    joint_encoder_joints: List[str] | None = None
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -286,6 +288,13 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["calibration_num_stable"] = int(config["calibration_num_stable"])
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
+        if "use_joint_feedback" in config:
+            kwargs["use_joint_feedback"] = bool(config["use_joint_feedback"])
+        if "joint_encoder_joints" in config:
+            raw = config["joint_encoder_joints"]
+            kwargs["joint_encoder_joints"] = (
+                None if raw is None else [str(j) for j in raw]
+            )
 
         return cls(**kwargs)
 
@@ -331,6 +340,14 @@ class OrcaHandConfig(BaseHandConfig):
                 if direction not in ["flex", "extend"]:
                     raise HandConfigValidationError(
                         f"Invalid direction for joint {joint}."
+                    )
+
+        if self.joint_encoder_joints is not None:
+            from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+            for joint in self.joint_encoder_joints:
+                if joint == "wrist" or joint not in JOINT_TO_ENCODER_SLOT:
+                    raise HandConfigValidationError(
+                        f"joint_encoder_joints contains {joint!r}, which has no encoder slot."
                     )
 
     def __post_init__(self) -> None:

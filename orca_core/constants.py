@@ -17,6 +17,7 @@ MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
 MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
 SUPPORTED_MOTOR_TYPES = ["dynamixel", "feetech"]
 JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
+JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 DEFAULT_MODEL_NAME = "orcahand_right"
 
 KNOWN_VIDS: dict[str, list[int]] = {

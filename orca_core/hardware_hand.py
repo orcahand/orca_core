@@ -17,7 +17,17 @@ from typing import Dict, List, TYPE_CHECKING, Union
 import numpy as np
 
 from .base_hand import BaseHand
-from .calibration import CalibrationResult
+from .calibration import (
+    CalibrationResult,
+    JointEncoderCal,
+    joint_encoder_calibration_to_yaml,
+)
+from .calibration_joint_encoder import (
+    JointEncoderCalibrationError,
+    compute_polarity,
+    sample_anchor_count_from_client,
+    sample_one_count_from_client,
+)
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
@@ -42,6 +52,7 @@ from .constants import (
     JOINTS,
     STEP,
     TINY_SLEEP,
+    JOINT_ENCODER_CALIBRATION,
     JOINT_TO_MOTOR_RATIOS,
     MOTOR_LIMITS_DICT,
     WRIST_CALIBRATED,
@@ -426,17 +437,21 @@ class OrcaHand(BaseHand):
         )
         self.set_control_mode(control_mode)
 
-    def is_calibrated(self, verbose: bool = False) -> bool:
+    def is_calibrated(
+        self, verbose: bool = False, use_joint_feedback: bool | None = None
+    ) -> bool:
         """Check whether all joints have been fully calibrated.
 
         Args:
             verbose: When ``True``, prints a warning for each uncalibrated
                 motor instead of returning early.
-
-        Returns:
-            ``True`` if every motor has valid limits and a non-zero
-            joint-to-motor ratio.
+            use_joint_feedback: When ``True``, also require every encoder-backed
+                joint to have a :class:`~orca_core.calibration.JointEncoderCal`
+                entry. ``None`` defers to ``self.config.use_joint_feedback``.
         """
+        if use_joint_feedback is None:
+            use_joint_feedback = bool(getattr(self.config, "use_joint_feedback", False))
+
         overall_calibrated = True
         uncalibrated_messages = []
         motors_with_warnings = set()
@@ -466,37 +481,124 @@ class OrcaHand(BaseHand):
                     )
                     motors_with_warnings.add(motor_id)
 
+        if use_joint_feedback:
+            encoder_dict = self.calibration.joint_encoder_calibration_dict
+            for joint in self._encoder_backed_joints():
+                if joint not in encoder_dict:
+                    overall_calibrated = False
+                    if not verbose:
+                        return False
+                    uncalibrated_messages.append(
+                        f"\033[93mWarning: Joint {joint} is missing a joint-encoder calibration entry.\033[0m"
+                    )
+
         if verbose:
             for msg in uncalibrated_messages:
                 print(msg)
 
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+    def _encoder_backed_joints(self) -> list[str]:
+        """Joints with a protocol slot, a driving motor on this hand, and an
+        entry in ``config.joint_encoder_joints``. Returns ``[]`` when the
+        config field is ``None``. Wrist is always excluded.
+        """
+        from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+
+        configured = self.config.joint_encoder_joints
+        if configured is None:
+            return []
+        configured_set = set(configured)
+        return [
+            joint
+            for joint in JOINT_TO_ENCODER_SLOT
+            if joint != WRIST
+            and joint in self.config.joint_to_motor_map
+            and joint in configured_set
+        ]
+
+    def _raw_to_joint_angle(self, raw_counts: np.ndarray) -> Dict[str, float]:
+        """Convert raw encoder counts ``(AUTO_ENC_NUM_JOINTS,)`` into joint
+        angles in radians, keyed by joint name. Joints without a
+        :class:`~orca_core.calibration.JointEncoderCal` entry are omitted.
+        """
+        from .hardware.sensing.constants import (
+            AUTO_ENC_NUM_JOINTS,
+            JOINT_TO_ENCODER_SLOT,
+        )
+        from .hardware.sensing.encoder_protocol import encoder_to_joint_angle
+
+        raw_counts = np.asarray(raw_counts)
+        if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
+            raise ValueError(
+                f"raw_counts must have shape ({AUTO_ENC_NUM_JOINTS},), "
+                f"got {raw_counts.shape}"
+            )
+
+        encoder_dict = self.calibration.joint_encoder_calibration_dict
+        if not encoder_dict:
+            return {}
+
+        joints = [j for j in encoder_dict if j in JOINT_TO_ENCODER_SLOT]
+        if not joints:
+            return {}
+
+        slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
+        anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
+        polarities = np.array([encoder_dict[j].polarity for j in joints], dtype=np.int64)
+        anchor_angles = np.array(
+            [encoder_dict[j].anchor_angle_rad for j in joints], dtype=np.float64
+        )
+
+        slot_counts = raw_counts[slots]
+        angles = encoder_to_joint_angle(slot_counts, anchors, polarities, anchor_angles)
+        return {joint: float(angle) for joint, angle in zip(joints, angles)}
+
+    def calibrate(
+        self,
+        blocking: bool = True,
+        force_wrist: bool = False,
+        joints: list[str] | None = None,
+        joint_encoder_client=None,
+    ):
         """Run the joint calibration routine.
 
-        Drives each joint to its mechanical limits in the sequence defined by
-        ``calib_sequence`` in ``config.yaml``, records the motor positions at
-        each limit, and persists the resulting motor limits and joint-to-motor
-        ratios to ``calibration.yaml``.
+        Drives each joint to its mechanical limits per ``calibration_sequence``
+        and persists motor limits + joint-to-motor ratios to
+        ``calibration.yaml`` after every step.
 
-        On completion ``self.calibration`` is replaced with a fresh
-        :class:`~orca_core.CalibrationResult`. Partial progress is written to
-        disk after every step so an interrupted run is never fully lost.
+        Args:
+            blocking: When ``True``, run to completion before returning.
+            force_wrist: Recalibrate the wrist even if already calibrated.
+            joints: Restrict to calibration steps touching these joint names.
+                Joints not visited keep their previously-persisted values.
+            joint_encoder_client: With ``self.config.use_joint_feedback`` and
+                an encoder client, the encoder pass also runs and writes a
+                ``joint_encoder_calibration:`` block.
         """
         if blocking:
             self._task_stop_event.clear()
-            result = self._calibrate(force_wrist=force_wrist)
+            result = self._calibrate(
+                force_wrist=force_wrist,
+                joints=joints,
+                joint_encoder_client=joint_encoder_client,
+            )
             if result is not None:
                 self.calibration = result
         else:
-            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist)
+            self._start_task(
+                self._calibrate_and_apply,
+                force_wrist=force_wrist,
+                joints=joints,
+                joint_encoder_client=joint_encoder_client,
+            )
 
     def _build_calibration_result(
         self,
         motor_limits: Dict[int, list],
         joint_to_motor_ratios: Dict[int, float],
         wrist_calibrated: bool,
+        joint_encoder_calibration_dict: Dict[str, JointEncoderCal] | None = None,
     ) -> CalibrationResult:
         calibrated = all(
             limits[0] is not None and limits[1] is not None
@@ -513,9 +615,15 @@ class OrcaHand(BaseHand):
             joint_to_motor_ratios_dict=dict(joint_to_motor_ratios),
             calibrated=calibrated,
             wrist_calibrated=wrist_calibrated,
+            joint_encoder_calibration_dict=dict(joint_encoder_calibration_dict or {}),
         )
 
-    def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
+    def _calibrate(
+        self,
+        force_wrist: bool = False,
+        joints: list[str] | None = None,
+        joint_encoder_client=None,
+    ) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
         Drives each joint through its mechanical limits following ``calib_sequence``
@@ -552,20 +660,50 @@ class OrcaHand(BaseHand):
                 {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}}
             )
 
-        # Deep-copy current limits so per-step YAML writes reflect only the
-        # joints being calibrated, not stale data from a prior incomplete run.
+        if joints is not None:
+            joints_set = set(joints)
+            filtered = []
+            for step in calibration_sequence:
+                step_joints = {
+                    j: d for j, d in step[JOINTS].items() if j in joints_set
+                }
+                if step_joints:
+                    filtered.append({STEP: step[STEP], JOINTS: step_joints})
+            print(
+                f"Calibrating {len(joints_set)} joint(s) across {len(filtered)} "
+                f"step(s) (out of {len(calibration_sequence)} total)."
+            )
+            calibration_sequence = filtered
+
+        # motor_limits is committed only once both flex and extend land for a
+        # joint; pending_limits holds the in-flight half so a single-direction
+        # run does not erase prior good values.
         motor_limits = {
             motor_id: list(limits)
             for motor_id, limits in self.calibration.motor_limits_dict.items()
         }
+        pending_limits: Dict[int, list] = {
+            motor_id: [None, None] for motor_id in self.config.motor_ids
+        }
         joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
+
+        encoder_pass_active = (
+            getattr(self.config, "use_joint_feedback", False)
+            and joint_encoder_client is not None
+        )
+        joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
+            self.calibration.joint_encoder_calibration_dict
+        )
+        if encoder_pass_active:
+            for step in calibration_sequence:
+                for joint in step[JOINTS]:
+                    joint_encoder_calibration.pop(joint, None)
 
         self._compute_wrap_offsets_dict()
 
         for step in calibration_sequence:
             for joint in step[JOINTS].keys():
                 motor_id = self.config.joint_to_motor_map[joint]
-                motor_limits[motor_id] = [None, None]
                 self._wrap_offsets_dict[motor_id] = 0.0
 
         motors_with_initial_offset = set()
@@ -668,9 +806,9 @@ class OrcaHand(BaseHand):
                                 f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
                             )
                             if directions[motor_id] == 1:
-                                motor_limits[motor_id][1] = avg_limit
+                                pending_limits[motor_id][1] = avg_limit
                             if directions[motor_id] == -1:
-                                motor_limits[motor_id][0] = avg_limit
+                                pending_limits[motor_id][0] = avg_limit
 
                             if (
                                 self._motor_client.requires_offset_calibration
@@ -682,7 +820,7 @@ class OrcaHand(BaseHand):
                                 )
                                 time.sleep(TINY_SLEEP)
                                 new_limit = float(self.get_motor_pos()[idx])
-                                motor_limits[motor_id][1 if is_positive else 0] = (
+                                pending_limits[motor_id][1 if is_positive else 0] = (
                                     new_limit
                                 )
                                 print(
@@ -692,14 +830,23 @@ class OrcaHand(BaseHand):
 
                             self.enable_torque([motor_id])
 
+            if encoder_pass_active:
+                self._run_joint_encoder_pass_for_step(
+                    step=step,
+                    directions=directions,
+                    joint_encoder_calibration=joint_encoder_calibration,
+                    joint_encoder_client=joint_encoder_client,
+                )
+
             for joint in step[JOINTS].keys():
                 motor_id = self.config.joint_to_motor_map[joint]
                 if (
-                    motor_limits[motor_id][0] is None
-                    or motor_limits[motor_id][1] is None
+                    pending_limits[motor_id][0] is None
+                    or pending_limits[motor_id][1] is None
                 ):
                     continue
 
+                motor_limits[motor_id] = list(pending_limits[motor_id])
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = (
                     self.config.joint_roms_dict[joint][1]
@@ -725,6 +872,7 @@ class OrcaHand(BaseHand):
                 motor_limits=motor_limits,
                 joint_to_motor_ratios=joint_to_motor_ratios,
                 wrist_calibrated=step_wrist_calibrated,
+                joint_encoder_calibration_dict=joint_encoder_calibration,
             )
             update_yaml(
                 self.config.calibration_path,
@@ -736,6 +884,12 @@ class OrcaHand(BaseHand):
                 CALIBRATED,
                 self.calibration.calibrated,
             )
+            if encoder_pass_active:
+                update_yaml(
+                    self.config.calibration_path,
+                    JOINT_ENCODER_CALIBRATION,
+                    joint_encoder_calibration_to_yaml(joint_encoder_calibration),
+                )
 
             if calibrated_joints:
                 self.set_joint_positions(
@@ -754,6 +908,7 @@ class OrcaHand(BaseHand):
             motor_limits=motor_limits,
             joint_to_motor_ratios=joint_to_motor_ratios,
             wrist_calibrated=new_wrist_calibrated,
+            joint_encoder_calibration_dict=joint_encoder_calibration,
         )
         self.calibration = final_result
         update_yaml(self.config.calibration_path, CALIBRATED, final_result.calibrated)
@@ -766,6 +921,84 @@ class OrcaHand(BaseHand):
         self.set_max_current(self.config.max_current)
 
         return final_result
+
+    def _run_joint_encoder_pass_for_step(
+        self,
+        *,
+        step,
+        directions: Dict[int, int],
+        joint_encoder_calibration: Dict[str, JointEncoderCal],
+        joint_encoder_client,
+    ) -> None:
+        """Sample anchor + polarity tweak for each not-yet-anchored joint in
+        ``step``. Caller must hold motors torque-enabled at their hardstops.
+        Joints not in ``_encoder_backed_joints()`` (no protocol slot, no
+        motor, or not configured as sensed) and joints already present in
+        ``joint_encoder_calibration`` are skipped.
+        """
+        from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+
+        encoder_backed = set(self._encoder_backed_joints())
+        tweak_motor_delta = 2.0 * self.config.calibration_step_size
+
+        for joint, direction in step[JOINTS].items():
+            if joint not in encoder_backed:
+                continue
+            if joint in joint_encoder_calibration:
+                continue
+
+            slot = JOINT_TO_ENCODER_SLOT[joint]
+            motor_id = self.config.joint_to_motor_map.get(joint)
+            if motor_id is None:
+                continue
+
+            anchor_end = "max" if direction == FLEX else "min"
+            anchor_angle_rad = float(
+                self.config.joint_roms_dict[joint][1 if anchor_end == "max" else 0]
+            )
+
+            try:
+                anchor_count = sample_anchor_count_from_client(
+                    joint_encoder_client, slot=slot
+                )
+            except JointEncoderCalibrationError as e:
+                print(
+                    f"\033[93mWARNING: encoder anchor sample failed for joint {joint}: {e}\033[0m"
+                )
+                continue
+
+            motor_idx = self.config.motor_id_to_idx_dict[motor_id]
+            anchor_motor_pos = float(self.get_motor_pos()[motor_idx])
+            tweak_sign = -directions[motor_id]
+            self._set_motor_pos(
+                {motor_id: tweak_sign * tweak_motor_delta}, rel_to_current=True
+            )
+
+            try:
+                enc_after_tweak = sample_one_count_from_client(
+                    joint_encoder_client, slot=slot
+                )
+                polarity = compute_polarity(anchor_count, enc_after_tweak, anchor_end)
+            except JointEncoderCalibrationError as e:
+                print(
+                    f"\033[93mWARNING: encoder polarity tweak failed for joint {joint}: {e}\033[0m"
+                )
+                self._set_motor_pos({motor_id: anchor_motor_pos})
+                continue
+
+            self._set_motor_pos({motor_id: anchor_motor_pos})
+
+            joint_encoder_calibration[joint] = JointEncoderCal(
+                enc_at_anchor_count=int(anchor_count),
+                polarity=int(polarity),
+                anchor_angle_rad=anchor_angle_rad,
+                anchor_end=anchor_end,
+            )
+            print(
+                f"Joint {joint} encoder calibrated: "
+                f"anchor_count={anchor_count}, polarity={polarity}, "
+                f"anchor_angle_rad={anchor_angle_rad:.4f}, anchor_end={anchor_end}"
+            )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
         control_mode = self.config.control_mode
