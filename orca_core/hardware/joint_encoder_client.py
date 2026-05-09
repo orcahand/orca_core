@@ -16,6 +16,7 @@ calls ``start_encoder_stream()``.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 import math
@@ -135,6 +136,27 @@ class JointEncoderClient:
             self._publish_active = False
             self._latest = None
             self._first_frame_event.clear()
+
+    # ----- Link read pause / resume passthroughs ----------------------------
+
+    def pause_link_reads(self) -> None:
+        """Pause demuxer reads on the underlying link. Use around host
+        operations whose USB CDC traffic is starved by sustained sibling-CDC
+        reads (e.g. per-motor Dynamixel ``write_byte`` ack waits).
+        """
+        self._link.pause_reads()
+
+    def resume_link_reads(self) -> None:
+        """Flush stale link bytes and resume demuxer reads."""
+        self._link.resume_reads()
+
+    @contextlib.contextmanager
+    def paused_link_reads(self):
+        self.pause_link_reads()
+        try:
+            yield
+        finally:
+            self.resume_link_reads()
 
     # ----- Reads ------------------------------------------------------------
 

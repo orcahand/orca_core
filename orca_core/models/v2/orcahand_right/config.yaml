@@ -1,4 +1,4 @@
-port: /dev/cu.usbserial-FTAK89H0
+port: /dev/cu.usbmodem101
 version: 0.2.1
 baudrate: 1000000
 max_current: 300
@@ -133,6 +133,10 @@ calibration_step_size: 0.15
 calibration_step_period: 0.0001
 calibration_num_stable: 10
 calibration_threshold: 0.01
+use_joint_feedback: true
+joint_encoder_joints:
+- ring_mcp
+- ring_pip
 calibration_sequence:
 - step: 1
   joints:

@@ -7,6 +7,7 @@ point at it (``shared=True``).
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +16,7 @@ from ...constants import (
     ORCA_ID_PROBE_BAUDRATE,
     ORCA_ID_PROBE_TIMEOUT_S,
     ORCA_ID_QUERY,
+    ORCA_ID_RESP_MOTOR,
     ORCA_ID_RESP_SENSOR,
 )
 
@@ -40,16 +42,32 @@ def _probe_orca_id(
     baudrate: int = ORCA_ID_PROBE_BAUDRATE,
     timeout: float = ORCA_ID_PROBE_TIMEOUT_S,
 ) -> Optional[bytes]:
-    """Send ORCA_ID? and return the response bytes, or None on open/timeout failure."""
+    """Send ORCA_ID? and return ORCA:MOTOR/ORCA:SENSOR if the bridge replies.
+
+    Robust against an active AA A9 (or AA 56) auto-stream interleaving with
+    the bridge's response: instead of stopping at the first ``\\n`` byte
+    (which can land inside an auto-stream frame's LRC or payload), the read
+    accumulates bytes until either the expected response substring appears
+    or the timeout expires.
+    """
     import serial
 
     try:
-        with serial.Serial(port, baudrate=baudrate, timeout=timeout) as link:
+        with serial.Serial(port, baudrate=baudrate, timeout=0.05) as link:
             link.reset_input_buffer()
             link.write(ORCA_ID_QUERY)
             link.flush()
-            response = link.read_until(b"\n", size=32)
-            return response if response.endswith(b"\n") else None
+            deadline = time.monotonic() + timeout
+            buf = bytearray()
+            while time.monotonic() < deadline:
+                chunk = link.read(256)
+                if chunk:
+                    buf.extend(chunk)
+                    if ORCA_ID_RESP_MOTOR in buf:
+                        return ORCA_ID_RESP_MOTOR
+                    if ORCA_ID_RESP_SENSOR in buf:
+                        return ORCA_ID_RESP_SENSOR
+            return None
     except (OSError, serial.SerialException) as exc:
         logger.debug("ORCA_ID? probe on %s failed: %s", port, exc)
         return None

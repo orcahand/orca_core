@@ -296,6 +296,14 @@ class MockDynamixelClient(MotorClient):
     def get_operating_modes(self) -> dict:
         return dict(self._operating_mode)
 
+    def read_operating_modes(self, motor_ids: Sequence[int]) -> dict:
+        """Mirror of ``DynamixelClient.read_operating_modes``: returns the
+        simulated operating mode for each requested motor."""
+        for mid in motor_ids:
+            if mid not in self._operating_mode:
+                raise ValueError('Motor ID {} not found in client.'.format(mid))
+        return {mid: self._operating_mode[mid] for mid in motor_ids}
+
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)

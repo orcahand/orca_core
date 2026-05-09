@@ -14,6 +14,7 @@ from orca_core.calibration import JointEncoderCal
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
     ENCODER_COUNTS_PER_REV,
+    JOINT_ENCODER_POLARITY,
     JOINT_TO_ENCODER_SLOT,
 )
 from orca_core.hardware.sensing.types import EncoderReading
@@ -25,7 +26,8 @@ _COUNTS_PER_RAD = ENCODER_COUNTS_PER_REV / (2.0 * np.pi)
 
 def make_calibrated_hand(config_path: str) -> MockOrcaHand:
     """Connect a ``MockOrcaHand`` and install motor + encoder calibration
-    with anchor=0 / polarity=+1 entries for every encoder-backed joint."""
+    with anchor_count=0 entries for every encoder-backed joint. Polarity is
+    looked up from ``JOINT_ENCODER_POLARITY`` at angle-decode time."""
     hand = MockOrcaHand(config_path=config_path)
     hand.connect()
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
@@ -33,9 +35,7 @@ def make_calibrated_hand(config_path: str) -> MockOrcaHand:
     encoder_cal = {
         joint: JointEncoderCal(
             enc_at_anchor_count=0,
-            polarity=1,
             anchor_angle_rad=0.0,
-            anchor_end="min",
         )
         for joint in hand._encoder_backed_joints()
     }
@@ -52,11 +52,16 @@ def make_calibrated_hand(config_path: str) -> MockOrcaHand:
 
 def encoder_reading_from_joint_angles(joint_angles: Dict[str, float]) -> EncoderReading:
     """Build an ``EncoderReading`` whose raw counts decode to ``joint_angles``
-    under anchor=0 / polarity=+1 calibration."""
+    under anchor=0 calibration. Applies the per-joint
+    :data:`JOINT_ENCODER_POLARITY` so the round-trip
+    ``encoder_to_joint_angle(reading.raw_counts, ...)`` recovers the input
+    angles regardless of which joints are mounted with inverted polarity.
+    """
     raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
     for joint, angle in joint_angles.items():
         slot = JOINT_TO_ENCODER_SLOT[joint]
-        raw[slot] = int(round(angle * _COUNTS_PER_RAD)) % ENCODER_COUNTS_PER_REV
+        polarity = JOINT_ENCODER_POLARITY[joint]
+        raw[slot] = int(round(angle * polarity * _COUNTS_PER_RAD)) % ENCODER_COUNTS_PER_REV
     return EncoderReading(
         raw_counts=raw,
         parity_ok=np.ones(AUTO_ENC_NUM_JOINTS, dtype=bool),

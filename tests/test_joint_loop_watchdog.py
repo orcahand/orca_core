@@ -2,7 +2,8 @@
 
 Encoder-freshness tiers: 10 / 50 / 200 / 1000 ms.
 Loop-period jitter monitor: warn after 10 consecutive >2× target,
-e-stop on a single >10× target.
+e-stop after 5 consecutive >10× target. A single transient stall
+(USB hiccup, GC pause) does not e-stop on its own.
 """
 
 from __future__ import annotations
@@ -161,9 +162,11 @@ def test_tier4_sets_fallback_and_restores_modes(calibrated_hand):
 
 
 def test_jitter_monitor_warns_after_streak_and_estops_on_pathological(calibrated_hand, caplog):
-    """Three contracts in one test: the streak resets on a fast cycle (so
-    healthy hands don't warn after a single hiccup); ten consecutive slow
-    cycles emit a warning; a single >10× target cycle triggers e-stop."""
+    """Four contracts in one test: the warn streak resets on a fast cycle
+    (so healthy hands don't warn after a single hiccup); ten consecutive
+    slow cycles emit a warning; a single >10× target cycle does NOT e-stop
+    (transient OS / USB stalls are tolerated); five consecutive >10×
+    cycles trigger e-stop."""
     encoder = _static_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder)
     period = loop._target_period
@@ -183,5 +186,11 @@ def test_jitter_monitor_warns_after_streak_and_estops_on_pathological(calibrated
     assert len(_jitter_records(caplog)) >= 1
 
     loop2 = _make_loop(calibrated_hand, _static_zero(calibrated_hand))
+    loop2._record_loop_period(loop2._target_period * 12.0)
+    assert loop2.get_stats()["fallback_active"] is False
+    loop2._record_loop_period(loop2._target_period)  # one fast cycle resets the streak
+    for _ in range(4):
+        loop2._record_loop_period(loop2._target_period * 12.0)
+    assert loop2.get_stats()["fallback_active"] is False
     loop2._record_loop_period(loop2._target_period * 12.0)
     assert loop2.get_stats()["fallback_active"] is True

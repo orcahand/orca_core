@@ -24,9 +24,7 @@ from .calibration import (
 )
 from .calibration_joint_encoder import (
     JointEncoderCalibrationError,
-    compute_polarity,
     sample_anchor_count_from_client,
-    sample_one_count_from_client,
 )
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
@@ -524,6 +522,7 @@ class OrcaHand(BaseHand):
         """
         from .hardware.sensing.constants import (
             AUTO_ENC_NUM_JOINTS,
+            JOINT_ENCODER_POLARITY,
             JOINT_TO_ENCODER_SLOT,
         )
         from .hardware.sensing.encoder_protocol import encoder_to_joint_angle
@@ -545,7 +544,7 @@ class OrcaHand(BaseHand):
 
         slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
         anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
-        polarities = np.array([encoder_dict[j].polarity for j in joints], dtype=np.int64)
+        polarities = np.array([JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64)
         anchor_angles = np.array(
             [encoder_dict[j].anchor_angle_rad for j in joints], dtype=np.float64
         )
@@ -711,125 +710,138 @@ class OrcaHand(BaseHand):
         
         calibrated_joints: dict = {}
 
-        # Calibration is always done in current-based position mode.
-        self.set_control_mode(CURRENT_BASED_POSITION)
-        self.set_max_current(self.config.calibration_current)
+        # macOS USB CDC scheduling can starve the motor CDC's IN polls when
+        # this link is reading at ~500 fps on the sibling CDC, causing
+        # `set_torque_enabled`'s status acks to miss their windows. Pausing
+        # the encoder demuxer around each ack-heavy phase keeps motor traffic
+        # deterministic; ``_run_joint_encoder_pass_for_step`` runs with reads
+        # resumed because anchor sampling needs fresh frames. Pause is
+        # best-effort — encoder-client mocks that don't read from a real
+        # serial link expose neither method, and pause is a no-op then.
+        pause_link = (
+            getattr(joint_encoder_client, "pause_link_reads", None)
+            if encoder_pass_active else None
+        )
+        resume_link = (
+            getattr(joint_encoder_client, "resume_link_reads", None)
+            if encoder_pass_active else None
+        )
+
+        if pause_link:
+            pause_link()
+        try:
+            self.set_control_mode(CURRENT_BASED_POSITION)
+            self.set_max_current(self.config.calibration_current)
+        finally:
+            if resume_link:
+                resume_link()
 
         for step in calibration_sequence:
-            self.disable_torque()
-
-            if self._task_stop_event.is_set():
-                return None
-
-            desired_increment, motor_reached_limit, directions = {}, {}, {}
-            position_buffers, calibrated_joints, position_logs, current_log = (
-                {},
-                {},
-                {},
-                {},
-            )
-
-            for joint, direction in step[JOINTS].items():
-                self.enable_torque(motor_ids=[self.config.joint_to_motor_map[joint]])
-                print(
-                    "Enabling torque for the following motor: ",
-                    self.config.joint_to_motor_map[joint],
-                )
+            if pause_link:
+                pause_link()
+            try:
+                self.disable_torque()
 
                 if self._task_stop_event.is_set():
                     return None
 
-                self.set_max_current(
-                    self.config.calibration_current
-                    if joint != WRIST
-                    else self.config.wrist_calibration_current
+                desired_increment, motor_reached_limit, directions = {}, {}, {}
+                position_buffers, calibrated_joints, position_logs, current_log = (
+                    {},
+                    {},
+                    {},
+                    {},
                 )
 
-                motor_id = self.config.joint_to_motor_map[joint]
-                sign = 1 if direction == FLEX else -1
-                if self.config.joint_inversion_dict.get(joint, False):
-                    sign = -sign
+                for joint, direction in step[JOINTS].items():
+                    self.enable_torque(motor_ids=[self.config.joint_to_motor_map[joint]])
+                    print(
+                        "Enabling torque for the following motor: ",
+                        self.config.joint_to_motor_map[joint],
+                    )
 
-                directions[motor_id] = sign
-                position_buffers[motor_id] = deque(
-                    maxlen=self.config.calibration_num_stable
-                )
-                position_logs[motor_id] = []
-                current_log[motor_id] = []
-                motor_reached_limit[motor_id] = False
+                    if self._task_stop_event.is_set():
+                        return None
 
-                if (
-                    self._motor_client.requires_offset_calibration
-                    and motor_id not in motors_with_initial_offset
+                    self.set_max_current(
+                        self.config.calibration_current
+                        if joint != WRIST
+                        else self.config.wrist_calibration_current
+                    )
+
+                    motor_id = self.config.joint_to_motor_map[joint]
+                    sign = 1 if direction == FLEX else -1
+                    if self.config.joint_inversion_dict.get(joint, False):
+                        sign = -sign
+
+                    directions[motor_id] = sign
+                    position_buffers[motor_id] = deque(
+                        maxlen=self.config.calibration_num_stable
+                    )
+                    position_logs[motor_id] = []
+                    current_log[motor_id] = []
+                    motor_reached_limit[motor_id] = False
+
+                    if (
+                        self._motor_client.requires_offset_calibration
+                        and motor_id not in motors_with_initial_offset
+                    ):
+                        self._motor_client.calibrate_offset(motor_id, upper=(sign < 0))
+                        motors_with_initial_offset.add(motor_id)
+
+                while (
+                    not all(motor_reached_limit.values())
+                    and not self._task_stop_event.is_set()
                 ):
-                    self._motor_client.calibrate_offset(motor_id, upper=(sign < 0))
-                    motors_with_initial_offset.add(motor_id)
-
-            while (
-                not all(motor_reached_limit.values())
-                and not self._task_stop_event.is_set()
-            ):
-                desired_increment = {}
-                for motor_id, reached_limit in motor_reached_limit.items():
-                    if not reached_limit:
-                        desired_increment[motor_id] = (
-                            directions[motor_id] * self.config.calibration_step_size
-                        )
-
-                self._set_motor_pos(desired_increment, rel_to_current=True)
-                time.sleep(self.config.calibration_step_period)
-                curr_pos = self.get_motor_pos()
-                curr_current = self.get_motor_current()
-
-                for motor_id in desired_increment.keys():
-                    if not motor_reached_limit[motor_id]:
-                        idx = self.config.motor_id_to_idx_dict[motor_id]
-                        position_buffers[motor_id].append(curr_pos[idx])
-                        position_logs[motor_id].append(float(curr_pos[idx]))
-                        current_log[motor_id].append(float(curr_current[idx]))
-
-                        if len(
-                            position_buffers[motor_id]
-                        ) == self.config.calibration_num_stable and np.allclose(
-                            position_buffers[motor_id],
-                            position_buffers[motor_id][0],
-                            atol=self.config.calibration_threshold,
-                        ):
-                            motor_reached_limit[motor_id] = True
-                            if WRIST in self.config.motor_to_joint_dict[motor_id]:
-                                avg_limit = float(np.mean(position_buffers[motor_id]))
-                            else:
-                                self.disable_torque([motor_id])
-                                time.sleep(TINY_SLEEP)
-                                avg_limit = float(self.get_motor_pos()[idx])
-                            print(
-                                f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
+                    desired_increment = {}
+                    for motor_id, reached_limit in motor_reached_limit.items():
+                        if not reached_limit:
+                            desired_increment[motor_id] = (
+                                directions[motor_id] * self.config.calibration_step_size
                             )
-                            if directions[motor_id] == 1:
-                                pending_limits[motor_id][1] = avg_limit
-                            if directions[motor_id] == -1:
-                                pending_limits[motor_id][0] = avg_limit
 
-                            if (
-                                self._motor_client.requires_offset_calibration
-                                and motor_id not in motors_with_final_offset
+                    self._set_motor_pos(desired_increment, rel_to_current=True)
+                    time.sleep(self.config.calibration_step_period)
+                    curr_pos = self.get_motor_pos()
+                    curr_current = self.get_motor_current()
+
+                    for motor_id in desired_increment.keys():
+                        if not motor_reached_limit[motor_id]:
+                            idx = self.config.motor_id_to_idx_dict[motor_id]
+                            position_buffers[motor_id].append(curr_pos[idx])
+                            position_logs[motor_id].append(float(curr_pos[idx]))
+                            current_log[motor_id].append(float(curr_current[idx]))
+
+                            if len(
+                                position_buffers[motor_id]
+                            ) == self.config.calibration_num_stable and np.allclose(
+                                position_buffers[motor_id],
+                                position_buffers[motor_id][0],
+                                atol=self.config.calibration_threshold,
                             ):
-                                is_positive = directions[motor_id] > 0
-                                self._motor_client.calibrate_offset(
-                                    motor_id, upper=is_positive
-                                )
-                                time.sleep(TINY_SLEEP)
-                                new_limit = float(self.get_motor_pos()[idx])
-                                pending_limits[motor_id][1 if is_positive else 0] = (
-                                    new_limit
-                                )
-                                print(
-                                    f"  (Offset adjusted: limit now at {new_limit} rad)"
-                                )
-                                motors_with_final_offset.add(motor_id)
+                                motor_reached_limit[motor_id] = True
+                                # Wrist limit is read from the stable-position
+                                # buffer (no torque release). Non-wrist motors
+                                # are kept under torque for the encoder anchor
+                                # pass below; their motor-side limit is read
+                                # post-release after that.
+                                if WRIST in self.config.motor_to_joint_dict[motor_id]:
+                                    avg_limit = float(np.mean(position_buffers[motor_id]))
+                                    print(
+                                        f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
+                                    )
+                                    if directions[motor_id] == 1:
+                                        pending_limits[motor_id][1] = avg_limit
+                                    if directions[motor_id] == -1:
+                                        pending_limits[motor_id][0] = avg_limit
+            finally:
+                if resume_link:
+                    resume_link()
 
-                            self.enable_torque([motor_id])
-
+            # All motors are pressing their hardstops with calibration current;
+            # joints are firmly at the mechanical limit. Sample encoder anchors
+            # NOW, before the torque release, so the anchor count corresponds
+            # to the actual hardstop pose.
             if encoder_pass_active:
                 self._run_joint_encoder_pass_for_step(
                     step=step,
@@ -837,6 +849,46 @@ class OrcaHand(BaseHand):
                     joint_encoder_calibration=joint_encoder_calibration,
                     joint_encoder_client=joint_encoder_client,
                 )
+
+            # Motor-side limit capture: release torque so tendon tension
+            # doesn't bias the motor encoder reading at the hardstop, then
+            # read the relaxed motor position, run any motor-type-specific
+            # offset calibration, and re-enable torque.
+            for motor_id in directions.keys():
+                if motor_id not in motor_reached_limit or not motor_reached_limit[motor_id]:
+                    continue
+                if WRIST in self.config.motor_to_joint_dict[motor_id]:
+                    continue
+                idx = self.config.motor_id_to_idx_dict[motor_id]
+
+                self.disable_torque([motor_id])
+                time.sleep(TINY_SLEEP)
+                avg_limit = float(self.get_motor_pos()[idx])
+                print(
+                    f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
+                )
+                if directions[motor_id] == 1:
+                    pending_limits[motor_id][1] = avg_limit
+                if directions[motor_id] == -1:
+                    pending_limits[motor_id][0] = avg_limit
+
+                if (
+                    self._motor_client.requires_offset_calibration
+                    and motor_id not in motors_with_final_offset
+                ):
+                    is_positive = directions[motor_id] > 0
+                    self._motor_client.calibrate_offset(
+                        motor_id, upper=is_positive
+                    )
+                    time.sleep(TINY_SLEEP)
+                    new_limit = float(self.get_motor_pos()[idx])
+                    pending_limits[motor_id][1 if is_positive else 0] = new_limit
+                    print(
+                        f"  (Offset adjusted: limit now at {new_limit} rad)"
+                    )
+                    motors_with_final_offset.add(motor_id)
+
+                self.enable_torque([motor_id])
 
             for joint in step[JOINTS].keys():
                 motor_id = self.config.joint_to_motor_map[joint]
@@ -930,32 +982,30 @@ class OrcaHand(BaseHand):
         joint_encoder_calibration: Dict[str, JointEncoderCal],
         joint_encoder_client,
     ) -> None:
-        """Sample anchor + polarity tweak for each not-yet-anchored joint in
-        ``step``. Caller must hold motors torque-enabled at their hardstops.
-        Joints not in ``_encoder_backed_joints()`` (no protocol slot, no
-        motor, or not configured as sensed) and joints already present in
-        ``joint_encoder_calibration`` are skipped.
+        """Sample anchor count for each not-yet-anchored joint in ``step``
+        whose direction is FLEX (i.e. driven to its max ROM). Caller must
+        hold motors torque-enabled at the FLEX hardstop. Joints not in
+        ``_encoder_backed_joints()`` (no protocol slot, no motor, or not
+        configured as sensed), joints already present in
+        ``joint_encoder_calibration``, and EXTEND-direction steps are skipped.
         """
         from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
 
         encoder_backed = set(self._encoder_backed_joints())
-        tweak_motor_delta = 2.0 * self.config.calibration_step_size
 
         for joint, direction in step[JOINTS].items():
+            if direction != FLEX:
+                continue
             if joint not in encoder_backed:
                 continue
             if joint in joint_encoder_calibration:
                 continue
 
             slot = JOINT_TO_ENCODER_SLOT[joint]
-            motor_id = self.config.joint_to_motor_map.get(joint)
-            if motor_id is None:
+            if self.config.joint_to_motor_map.get(joint) is None:
                 continue
 
-            anchor_end = "max" if direction == FLEX else "min"
-            anchor_angle_rad = float(
-                self.config.joint_roms_dict[joint][1 if anchor_end == "max" else 0]
-            )
+            anchor_angle_rad = math.radians(float(self.config.joint_roms_dict[joint][1]))
 
             try:
                 anchor_count = sample_anchor_count_from_client(
@@ -967,37 +1017,13 @@ class OrcaHand(BaseHand):
                 )
                 continue
 
-            motor_idx = self.config.motor_id_to_idx_dict[motor_id]
-            anchor_motor_pos = float(self.get_motor_pos()[motor_idx])
-            tweak_sign = -directions[motor_id]
-            self._set_motor_pos(
-                {motor_id: tweak_sign * tweak_motor_delta}, rel_to_current=True
-            )
-
-            try:
-                enc_after_tweak = sample_one_count_from_client(
-                    joint_encoder_client, slot=slot
-                )
-                polarity = compute_polarity(anchor_count, enc_after_tweak, anchor_end)
-            except JointEncoderCalibrationError as e:
-                print(
-                    f"\033[93mWARNING: encoder polarity tweak failed for joint {joint}: {e}\033[0m"
-                )
-                self._set_motor_pos({motor_id: anchor_motor_pos})
-                continue
-
-            self._set_motor_pos({motor_id: anchor_motor_pos})
-
             joint_encoder_calibration[joint] = JointEncoderCal(
                 enc_at_anchor_count=int(anchor_count),
-                polarity=int(polarity),
                 anchor_angle_rad=anchor_angle_rad,
-                anchor_end=anchor_end,
             )
             print(
-                f"Joint {joint} encoder calibrated: "
-                f"anchor_count={anchor_count}, polarity={polarity}, "
-                f"anchor_angle_rad={anchor_angle_rad:.4f}, anchor_end={anchor_end}"
+                f"Joint {joint} encoder anchor sampled: "
+                f"anchor_count={anchor_count}, anchor_angle_rad={anchor_angle_rad:.4f}"
             )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):

@@ -13,3 +13,9 @@ WATCHDOG_WARN_MS = 10
 WATCHDOG_HOLD_MS = 50
 WATCHDOG_DROP_TORQUE_MS = 200
 WATCHDOG_STOP_LOOP_MS = 1000
+
+# PID gain defaults for the host-side joint loop. Conservative P-only seed for
+# first-finger bring-up; Ki and Kd are tuned live once the finger is stable.
+DEFAULT_KP_MA_PER_RAD = 200.0
+DEFAULT_KI_MA_PER_RAD_S = 0.0
+DEFAULT_KD_MA_S_PER_RAD = 0.0

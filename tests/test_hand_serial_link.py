@@ -217,3 +217,33 @@ def test_register_handler_after_disconnect_raises():
     link.disconnect()
     with pytest.raises(RuntimeError):
         link.register_frame_handler(PROTOCOL_BYTE_AUTO_ENC, lambda _frame: None)
+
+
+def test_pause_reads_blocks_dispatch_until_resume(link):
+    received = _Capture()
+    link.register_frame_handler(PROTOCOL_BYTE_AUTO_ENC, received)
+
+    link.feed_bytes(_encoder_frame())
+    received.wait_for(1)
+
+    link.pause_reads()
+    link.feed_bytes(_encoder_frame())  # buffered, demuxer is paused
+    # The pause flushes the input buffer on resume; bytes fed during pause
+    # are discarded, not delivered.
+    link.resume_reads()
+    link.feed_bytes(_encoder_frame())
+    received.wait_for(2)
+
+    assert len(received.frames) == 2
+
+
+def test_paused_reads_context_manager_resumes_on_exit(link):
+    received = _Capture()
+    link.register_frame_handler(PROTOCOL_BYTE_AUTO_ENC, received)
+
+    with link.paused_reads():
+        link.feed_bytes(_encoder_frame())  # discarded on exit
+
+    link.feed_bytes(_encoder_frame())
+    received.wait_for(1)
+    assert len(received.frames) == 1

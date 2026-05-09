@@ -20,6 +20,7 @@ payload meaning to the handler.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -91,6 +92,7 @@ class HandSerialLink:
 
         self._stats = LinkStats()
         self._last_handler_error_log: dict[int, float] = {}
+        self._reads_paused = False
 
     # ----- Lifecycle --------------------------------------------------------
 
@@ -204,6 +206,56 @@ class HandSerialLink:
                     pass
                 raise IOError("hand serial link closed")
 
+    # ----- Read pause / resume ---------------------------------------------
+
+    def pause_reads(self) -> None:
+        """Stop the demuxer from polling the serial port.
+
+        Use this around host operations that need ack-blocking USB CDC
+        traffic on a sibling endpoint (e.g. per-motor Dynamixel writes on
+        a different CDC of the same composite device) and that would
+        otherwise be starved by sustained reads on this link. While
+        paused, the OS-level input buffer fills with frames the device
+        keeps emitting — those bytes are flushed by ``resume_reads``.
+        """
+        if self._reads_paused:
+            return
+        self._reads_paused = True
+        # Best-effort wait: the demuxer checks the flag at the start of
+        # each outer iteration, so it acks within at most one frame's
+        # read window (a few ms at 500 fps; 0.5 s in the no-traffic
+        # extreme).
+        time.sleep(0.05)
+
+    def resume_reads(self) -> None:
+        """Discard stale buffered bytes, then re-enable demuxer reads.
+
+        The kernel CDC ring buffer can hold several hundred ms of frames
+        at typical broadcast rates; flushing it before resuming keeps
+        downstream consumers (e.g. anchor-sample averaging that waits
+        for distinct timestamps) from chewing through stale frames
+        before fresh ones arrive.
+        """
+        if not self._reads_paused:
+            return
+        self._flush_input_buffer()
+        self._reads_paused = False
+
+    def _flush_input_buffer(self) -> None:
+        if self._serial is not None:
+            try:
+                self._serial.reset_input_buffer()
+            except (serial.SerialException, OSError):
+                pass
+
+    @contextlib.contextmanager
+    def paused_reads(self):
+        self.pause_reads()
+        try:
+            yield
+        finally:
+            self.resume_reads()
+
     # ----- Stats ------------------------------------------------------------
 
     def get_link_stats(self) -> LinkStats:
@@ -253,6 +305,9 @@ class HandSerialLink:
     def _demux_loop(self) -> None:
         try:
             while self._demux_running:
+                if self._reads_paused:
+                    time.sleep(0.01)
+                    continue
                 # Resync: slide one byte at a time until we land on 0xAA.
                 first = self._serial_read(1)
                 if not first:

@@ -129,16 +129,26 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 ENCODER_COUNTS_PER_REV = 16384
 ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV
 
-# Joint name → encoder slot
+# Joint name → encoder slot.
 JOINT_TO_ENCODER_SLOT = {
-    "thumb_cmc":  0, "thumb_abd":  1, "thumb_mcp":  2, "thumb_dip":  3,
-    "index_abd":  4, "index_mcp":  5, "index_pip":  6,
-    "middle_abd": 7, "middle_mcp": 8, "middle_pip": 9,
-    "ring_abd":  10, "ring_mcp":  11, "ring_pip":  12,
-    "pinky_abd": 13, "pinky_mcp": 14, "pinky_pip": 15,
+    "thumb_dip":  0, "thumb_mcp":  1, "thumb_abd":  2, "thumb_cmc":  3,
+    "index_pip":  4, "index_mcp":  5, "index_abd":  6,
+    "middle_pip": 7, "middle_mcp": 8, "middle_abd": 9,
+    "ring_pip":  10, "ring_mcp":  11, "ring_abd":  12,
+    "pinky_pip": 13, "pinky_mcp": 14, "pinky_abd": 15,
     "wrist":     16,
 }
 ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
+
+# Per-joint encoder polarity.
+JOINT_ENCODER_POLARITY = {
+    "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": 1, "thumb_dip": -1,
+    "index_abd": 1, "index_mcp": 1, "index_pip": -1,
+    "middle_abd": 1, "middle_mcp": 1, "middle_pip": -1,
+    "ring_abd": 1, "ring_mcp": 1, "ring_pip": -1,
+    "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
+    "wrist": 1,
+}
 
 # Slots the production hand currently ships with sensors wired. The wrist
 # (slot 16) is reserved in the wire format but not yet physically present;

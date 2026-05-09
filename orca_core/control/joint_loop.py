@@ -27,7 +27,11 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
 from ..constants import WRIST
-from ..hardware.sensing.constants import AUTO_ENC_NUM_JOINTS, JOINT_TO_ENCODER_SLOT
+from ..hardware.sensing.constants import (
+    AUTO_ENC_NUM_JOINTS,
+    JOINT_ENCODER_POLARITY,
+    JOINT_TO_ENCODER_SLOT,
+)
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
 from .constants import (
     DEFAULT_LOOP_HZ,
@@ -46,6 +50,7 @@ _FRESHNESS_WARN_INTERVAL_S = 1.0
 _JITTER_WARN_RATIO = 2.0
 _JITTER_ESTOP_RATIO = 10.0
 _JITTER_WARN_CONSECUTIVE = 10
+_JITTER_ESTOP_CONSECUTIVE = 5
 
 
 JointTargets = Union[Dict[str, float], np.ndarray]
@@ -100,6 +105,7 @@ class JointLoopThread:
         self._prior_modes: Dict[int, int] = {}
         self._last_freshness_warn_time: float = 0.0
         self._slow_cycle_streak: int = 0
+        self._pathological_cycle_streak: int = 0
 
     def prime_for_step(self) -> None:
         """Snapshot calibration, latch the PID target to the measured pose
@@ -261,7 +267,7 @@ class JointLoopThread:
             [encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64
         )
         self._enc_polarities = np.array(
-            [encoder_dict[j].polarity for j in joints], dtype=np.int64
+            [JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
             [encoder_dict[j].anchor_angle_rad for j in joints], dtype=np.float64
@@ -274,8 +280,9 @@ class JointLoopThread:
         self._target_rad = np.zeros(len(joints), dtype=np.float64)
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
 
-        modes = self._hand._motor_client.get_operating_modes()
-        self._prior_modes = {mid: modes[mid] for mid in self._motor_ids}
+        self._prior_modes = self._hand._motor_client.read_operating_modes(
+            self._motor_ids
+        )
 
     def _measure_joint_angles_now(self) -> Optional[np.ndarray]:
         reading = self._encoder_client.get_latest_encoder_reading()
@@ -321,24 +328,42 @@ class JointLoopThread:
             self._last_freshness_warn_time = now
 
     def _record_loop_period(self, period_s: float) -> None:
-        """Update the jitter streak counter and escalate if needed."""
-        if period_s >= self._target_period * _JITTER_ESTOP_RATIO:
-            self._trigger_estop(
-                f"loop period {period_s * 1000:.1f} ms exceeds "
-                f"{_JITTER_ESTOP_RATIO}× target"
-            )
-            self._slow_cycle_streak = 0
-            return
-        if period_s > self._target_period * _JITTER_WARN_RATIO:
+        """Update the jitter streak counters and escalate if needed.
+
+        A single transient >10× cycle (USB stall, GC pause, OS scheduling
+        hiccup) is tolerated; only a sustained run of pathological cycles
+        e-stops. The encoder-freshness watchdog catches genuinely wedged
+        loops first via tier-3 / tier-4.
+        """
+        is_pathological = period_s >= self._target_period * _JITTER_ESTOP_RATIO
+        is_slow = period_s > self._target_period * _JITTER_WARN_RATIO
+
+        if is_pathological:
+            self._pathological_cycle_streak += 1
+        else:
+            self._pathological_cycle_streak = 0
+
+        if is_slow:
             self._slow_cycle_streak += 1
-            if self._slow_cycle_streak == _JITTER_WARN_CONSECUTIVE:
-                logger.warning(
-                    "loop jitter: %d consecutive cycles slower than %.1f× target",
-                    _JITTER_WARN_CONSECUTIVE,
-                    _JITTER_WARN_RATIO,
-                )
         else:
             self._slow_cycle_streak = 0
+
+        if self._pathological_cycle_streak >= _JITTER_ESTOP_CONSECUTIVE:
+            self._trigger_estop(
+                f"loop period exceeded {_JITTER_ESTOP_RATIO}× target for "
+                f"{_JITTER_ESTOP_CONSECUTIVE} consecutive cycles "
+                f"(last={period_s * 1000:.1f} ms)"
+            )
+            self._pathological_cycle_streak = 0
+            self._slow_cycle_streak = 0
+            return
+
+        if self._slow_cycle_streak == _JITTER_WARN_CONSECUTIVE:
+            logger.warning(
+                "loop jitter: %d consecutive cycles slower than %.1f× target",
+                _JITTER_WARN_CONSECUTIVE,
+                _JITTER_WARN_RATIO,
+            )
 
     def _run_loop(self) -> None:
         period = self._target_period

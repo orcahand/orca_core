@@ -8,26 +8,25 @@
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal
+from typing import Dict, List
 
 from .utils.utils import read_yaml
 
 
 @dataclass(frozen=True)
 class JointEncoderCal:
-    """Per-joint absolute-encoder calibration.
+    """Per-joint absolute-encoder anchor.
 
     ``joint_angle = polarity * Δenc_wrapped + anchor_angle_rad``, where
     ``Δenc_wrapped`` is the 14-bit-aware wrap-corrected delta from
-    ``enc_at_anchor_count``. ``anchor_angle_rad`` equals one endpoint of
-    ``joint_roms_dict[joint]``; ``anchor_end`` records which (``"min"`` or
-    ``"max"``).
+    ``enc_at_anchor_count`` and ``polarity`` is looked up from
+    :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by mounting + magnet
+    orientation). ``anchor_angle_rad`` equals ``joint_roms_dict[joint][1]``
+    — the joint's max ROM, where the calibration sweep stalls the motor.
     """
 
     enc_at_anchor_count: int
-    polarity: int
     anchor_angle_rad: float
-    anchor_end: Literal["min", "max"]
 
 
 @dataclass(frozen=True)
@@ -96,9 +95,7 @@ class CalibrationResult:
         joint_encoder_calibration_dict = {
             joint: JointEncoderCal(
                 enc_at_anchor_count=int(entry["enc_at_anchor_count"]),
-                polarity=int(entry["polarity"]),
                 anchor_angle_rad=float(entry["anchor_angle_rad"]),
-                anchor_end=str(entry["anchor_end"]),
             )
             for joint, entry in encoder_raw.items()
         }

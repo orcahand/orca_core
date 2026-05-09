@@ -213,6 +213,7 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_sequence: List[dict] = field(default_factory=list)
     use_joint_feedback: bool = False
     joint_encoder_joints: List[str] | None = None
+    encoder_serial_port: str = "auto"
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -295,6 +296,8 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_encoder_joints"] = (
                 None if raw is None else [str(j) for j in raw]
             )
+        if "encoder_serial_port" in config:
+            kwargs["encoder_serial_port"] = str(config["encoder_serial_port"])
 
         return cls(**kwargs)
 
