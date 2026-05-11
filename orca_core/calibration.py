@@ -17,16 +17,17 @@ from .utils.utils import read_yaml
 class JointEncoderCal:
     """Per-joint absolute-encoder anchor.
 
-    ``joint_angle = polarity * Δenc_wrapped + anchor_angle_rad``, where
+    ``joint_angle = polarity * Δenc_wrapped + anchor_angle_deg``, where
     ``Δenc_wrapped`` is the 14-bit-aware wrap-corrected delta from
-    ``enc_at_anchor_count`` and ``polarity`` is looked up from
-    :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by mounting + magnet
-    orientation). ``anchor_angle_rad`` equals ``joint_roms_dict[joint][1]``
-    — the joint's max ROM, where the calibration sweep stalls the motor.
+    ``enc_at_anchor_count`` (converted to degrees) and ``polarity`` is
+    looked up from :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by
+    mounting + magnet orientation). ``anchor_angle_deg`` equals
+    ``joint_roms_dict[joint][1]`` — the joint's max ROM, where the
+    calibration sweep stalls the motor.
     """
 
     enc_at_anchor_count: int
-    anchor_angle_rad: float
+    anchor_angle_deg: float
 
 
 @dataclass(frozen=True)
@@ -38,10 +39,11 @@ class CalibrationResult:
     state — the internals are never mutated in place.
 
     Attributes:
-        motor_limits_dict: Maps motor ID → ``[lower, upper]`` hard limits (rad).
-            Values are ``None`` before the corresponding joint is calibrated.
-        joint_to_motor_ratios_dict: Maps motor ID → rad/rad gear ratio.
-            Zero before calibration.
+        motor_limits_dict: Maps motor ID → ``[lower, upper]`` motor-shaft
+            hard limits (motor radians). Values are ``None`` before the
+            corresponding joint is calibrated.
+        joint_to_motor_ratios_dict: Maps motor ID → motor-rad per joint-deg
+            gear ratio. Zero before calibration.
         joint_encoder_calibration_dict: Maps joint name → :class:`JointEncoderCal`.
             Empty for hands without joint encoders.
         calibrated: ``True`` when all joints have been fully calibrated.
@@ -95,7 +97,7 @@ class CalibrationResult:
         joint_encoder_calibration_dict = {
             joint: JointEncoderCal(
                 enc_at_anchor_count=int(entry["enc_at_anchor_count"]),
-                anchor_angle_rad=float(entry["anchor_angle_rad"]),
+                anchor_angle_deg=float(entry["anchor_angle_deg"]),
             )
             for joint, entry in encoder_raw.items()
         }

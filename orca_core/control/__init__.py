@@ -1,6 +1,7 @@
-"""Closed-loop joint control: vectorised PID and the host-side loop thread."""
+"""Closed-loop joint control: vectorised PI controller and the host-side
+loop thread that drives motor positions from joint-encoder feedback."""
 
-from .cascaded_joint import CascadedJointController
-from .joint_pid import JointPIDController
+from .joint_controller import JointController
+from .joint_loop import JointLoopThread
 
-__all__ = ["CascadedJointController", "JointPIDController"]
+__all__ = ["JointController", "JointLoopThread"]

@@ -517,7 +517,7 @@ class OrcaHand(BaseHand):
 
     def _raw_to_joint_angle(self, raw_counts: np.ndarray) -> Dict[str, float]:
         """Convert raw encoder counts ``(AUTO_ENC_NUM_JOINTS,)`` into joint
-        angles in radians, keyed by joint name. Joints without a
+        angles in degrees, keyed by joint name. Joints without a
         :class:`~orca_core.calibration.JointEncoderCal` entry are omitted.
         """
         from .hardware.sensing.constants import (
@@ -546,7 +546,7 @@ class OrcaHand(BaseHand):
         anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
         polarities = np.array([JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64)
         anchor_angles = np.array(
-            [encoder_dict[j].anchor_angle_rad for j in joints], dtype=np.float64
+            [encoder_dict[j].anchor_angle_deg for j in joints], dtype=np.float64
         )
 
         slot_counts = raw_counts[slots]
@@ -1005,7 +1005,7 @@ class OrcaHand(BaseHand):
             if self.config.joint_to_motor_map.get(joint) is None:
                 continue
 
-            anchor_angle_rad = math.radians(float(self.config.joint_roms_dict[joint][1]))
+            anchor_angle_deg = float(self.config.joint_roms_dict[joint][1])
 
             try:
                 anchor_count = sample_anchor_count_from_client(
@@ -1019,11 +1019,11 @@ class OrcaHand(BaseHand):
 
             joint_encoder_calibration[joint] = JointEncoderCal(
                 enc_at_anchor_count=int(anchor_count),
-                anchor_angle_rad=anchor_angle_rad,
+                anchor_angle_deg=anchor_angle_deg,
             )
             print(
                 f"Joint {joint} encoder anchor sampled: "
-                f"anchor_count={anchor_count}, anchor_angle_rad={anchor_angle_rad:.4f}"
+                f"anchor_count={anchor_count}, anchor_angle_deg={anchor_angle_deg:.2f}"
             )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):

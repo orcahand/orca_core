@@ -1,43 +1,31 @@
 """Single-finger bring-up CLI for the host-side joint loop.
 
-Loads a calibrated hand, opens the encoder link, starts the closed-loop
-joint controller, and prints per-second loop stats and per-joint
-measurements. Stdin accepts live commands so a single session can probe
-step responses and retune gains without restarting:
+Loads a calibrated hand, opens the encoder link, starts the joint
+controller, and prints per-second loop stats and per-joint measurements.
+Stdin accepts live commands so a session can probe step responses and
+retune without restarting:
 
-    set <joint> <angle_rad>      update one joint target
-    gains <a> <b> <c>            retune the controller (mode-dependent —
-                                 see the meaning printed at startup)
-    quit                         clean shutdown
-
-The third positional ``gains`` argument is mode-dependent:
-
-  * current_pid: ``Kd`` in mA·s/rad.
-  * cascaded:    ``correction_max`` in degrees (also used as the
-                 integrator clamp in radians).
+    set <joint> <angle_deg>           update one joint target
+    gains <Kp> <Ki> <corr_max_deg>    retune the PI controller
+    quit                              clean shutdown
 
 Usage:
     uv run python scripts/joint_loop_bringup.py path/to/config.yaml \\
-        --encoder-port /dev/cu.usbmodem103 --joint-control-mode cascaded
+        --encoder-port /dev/cu.usbmodem103
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import logging
-import math
 import sys
 import threading
 import time
 
-from orca_core.control import CascadedJointController, JointPIDController
 from orca_core.control.constants import (
-    DEFAULT_CASCADED_CORRECTION_MAX_RAD,
-    DEFAULT_CASCADED_KI_RAD_PER_RAD_S,
-    DEFAULT_CASCADED_KP_RAD_PER_RAD,
-    DEFAULT_KD_MA_S_PER_RAD,
-    DEFAULT_KI_MA_PER_RAD_S,
-    DEFAULT_KP_MA_PER_RAD,
+    DEFAULT_CORRECTION_MAX_DEG,
+    DEFAULT_KI,
+    DEFAULT_KP,
 )
 from orca_core.hardware_hand_joint_feedback import (
     OrcaHandJointFeedback,
@@ -47,7 +35,7 @@ from orca_core.hardware_hand_joint_feedback import (
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Single-finger bring-up CLI for the closed-loop joint loop."
+        description="Single-finger bring-up CLI for the host-side joint loop."
     )
     p.add_argument(
         "model_path",
@@ -62,78 +50,50 @@ def parse_args() -> argparse.Namespace:
              'an explicit path bypasses; "disabled" forces None.',
     )
     p.add_argument(
-        "--joint-control-mode",
-        choices=["current_pid", "cascaded"],
-        default=None,
-        help="Override config joint_control_mode. Default: use config value.",
-    )
-    p.add_argument(
         "--max-current",
         type=int,
         default=None,
-        help="Override config max_current (mA). For cascaded the new value is "
-             "also pushed to the motors after connect so the inner CBP loop "
-             "picks up the higher torque cap. Default: use config value.",
+        help="Override config max_current (mA) and push the new cap to "
+             "motors so the inner CBP loop picks it up.",
     )
     p.add_argument(
-        "--Kp",
-        type=float,
-        default=None,
-        help="Override Kp. Default: mode-specific constant.",
+        "--Kp", type=float, default=DEFAULT_KP,
+        help="Proportional gain (deg/deg).",
     )
     p.add_argument(
-        "--Ki",
-        type=float,
-        default=None,
-        help="Override Ki. Default: mode-specific constant.",
+        "--Ki", type=float, default=DEFAULT_KI,
+        help="Integral gain (deg/deg/s).",
     )
     p.add_argument(
-        "--Kd",
-        type=float,
-        default=None,
-        help="current_pid: Kd (mA·s/rad). cascaded: correction_max in degrees. "
-             "Default: mode-specific constant.",
+        "--correction-max-deg", type=float, default=DEFAULT_CORRECTION_MAX_DEG,
+        help="Output clamp on the trim correction (degrees).",
     )
     return p.parse_args()
 
 
 def _print_stats_row(hand: OrcaHandJointFeedback) -> None:
     stats = hand._loop.get_stats()
-    measured_rad = hand._loop.get_measured_joints()
-    measured = "  ".join(
-        f"{joint}={math.degrees(angle):+7.1f}°"
-        for joint, angle in sorted(measured_rad.items())
+    measured = hand._loop.get_measured_joints()
+    measured_str = "  ".join(
+        f"{joint}={angle:+7.1f}°" for joint, angle in sorted(measured.items())
     )
     print(
         f"cycles_ok={stats['cycles_ok']:>6}  "
         f"last_dt={stats['last_dt_s'] * 1000:6.2f}ms  "
         f"e_stops={stats['e_stops']}  "
-        f"fallback={stats['fallback_active']}  | {measured}"
+        f"fallback={stats['fallback_active']}  | {measured_str}"
     )
 
 
-def _apply_gains(hand: OrcaHandJointFeedback, a: float, b: float, c: float) -> str:
-    """Push three positional gain values onto the active controller.
-
-    For ``JointPIDController`` ``c`` is Kd; for ``CascadedJointController``
-    ``c`` is the correction-max in degrees, also reused as the integrator
-    clamp.
-    """
-    if isinstance(hand._pid, CascadedJointController):
-        correction_max_rad = math.radians(c)
-        hand._pid.set_gains(
-            Kp=a, Ki=b,
-            correction_max_rad=correction_max_rad,
-            i_clamp_rad=correction_max_rad,
-        )
-        return f"cascaded: Kp={a} Ki={b} correction_max={c}°"
-    if isinstance(hand._pid, JointPIDController):
-        i_max = float(hand.config.max_current)
-        hand._pid.set_gains(
-            Kp=a, Ki=b, Kd=c, i_clamp_mA=i_max, i_max_mA=i_max,
-        )
-        return f"current_pid: Kp={a} Ki={b} Kd={c} i_max={i_max} mA"
-    raise RuntimeError(f"unknown controller type: {type(hand._pid).__name__}")
+def _apply_gains(
+    hand: OrcaHandJointFeedback, kp: float, ki: float, corr_max_deg: float,
+) -> str:
+    hand._controller.set_gains(
+        Kp=kp, Ki=ki,
+        correction_max_deg=corr_max_deg,
+        i_clamp_deg=corr_max_deg,
+    )
+    return f"Kp={kp} Ki={ki} correction_max={corr_max_deg:.1f}°"
 
 
 def _handle_command(line: str, hand: OrcaHandJointFeedback) -> bool:
@@ -147,15 +107,14 @@ def _handle_command(line: str, hand: OrcaHandJointFeedback) -> bool:
     if cmd == "set" and len(parts) == 3:
         joint, angle = parts[1], float(parts[2])
         hand._loop.set_target({joint: angle})
-        print(f"  → target[{joint}] = {angle:.4f} rad")
+        print(f"  → target[{joint}] = {angle:.2f}°")
         return True
     if cmd == "gains" and len(parts) == 4:
-        a, b, c = float(parts[1]), float(parts[2]), float(parts[3])
-        summary = _apply_gains(hand, a, b, c)
-        print(f"  → gains {summary}")
+        kp, ki, corr = float(parts[1]), float(parts[2]), float(parts[3])
+        print(f"  → gains {_apply_gains(hand, kp, ki, corr)}")
         return True
     print(f"  unknown command: {line.strip()!r}")
-    print("  usage: set <joint> <angle_rad> | gains <a> <b> <c> | quit")
+    print("  usage: set <joint> <angle_deg> | gains <Kp> <Ki> <corr_max_deg> | quit")
     return True
 
 
@@ -177,8 +136,6 @@ def main() -> int:
     overrides = {}
     if args.encoder_port is not None:
         overrides["encoder_serial_port"] = args.encoder_port
-    if args.joint_control_mode is not None:
-        overrides["joint_control_mode"] = args.joint_control_mode
     if args.max_current is not None:
         overrides["max_current"] = args.max_current
     if overrides:
@@ -197,26 +154,10 @@ def main() -> int:
         hand.set_max_current(args.max_current)
         print(f"  → max_current = {args.max_current} mA")
 
-    mode = hand.config.joint_control_mode
-    if mode == "cascaded":
-        a = DEFAULT_CASCADED_KP_RAD_PER_RAD if args.Kp is None else args.Kp
-        b = DEFAULT_CASCADED_KI_RAD_PER_RAD_S if args.Ki is None else args.Ki
-        c = (
-            math.degrees(DEFAULT_CASCADED_CORRECTION_MAX_RAD)
-            if args.Kd is None else args.Kd
-        )
-    else:
-        a = DEFAULT_KP_MA_PER_RAD if args.Kp is None else args.Kp
-        b = DEFAULT_KI_MA_PER_RAD_S if args.Ki is None else args.Ki
-        c = DEFAULT_KD_MA_S_PER_RAD if args.Kd is None else args.Kd
-    print(f"  → gains {_apply_gains(hand, a, b, c)}")
-
-    third_arg_label = (
-        "correction_max_deg" if mode == "cascaded" else "Kd"
-    )
+    print(f"  → gains {_apply_gains(hand, args.Kp, args.Ki, args.correction_max_deg)}")
     print(
-        f"Joint loop running ({mode}). Commands: "
-        f"`set <joint> <rad>`, `gains <Kp> <Ki> <{third_arg_label}>`, `quit`."
+        "Joint loop running. Commands: "
+        "`set <joint> <deg>`, `gains <Kp> <Ki> <corr_max_deg>`, `quit`."
     )
 
     stop_event = threading.Event()

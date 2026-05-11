@@ -92,9 +92,9 @@ def encoder_to_joint_angle(
     raw_counts: np.ndarray,
     anchor_count: np.ndarray,
     polarity: np.ndarray,
-    anchor_angle_rad: np.ndarray,
+    anchor_angle_deg: np.ndarray,
 ) -> np.ndarray:
-    """Convert raw 14-bit encoder counts into joint angles in radians.
+    """Convert raw 14-bit encoder counts into joint angles in degrees.
 
     Inputs broadcast against each other; typical use is shape ``(16,)``.
     Wrap correction is required because the encoder is absolute over a
@@ -105,7 +105,7 @@ def encoder_to_joint_angle(
     delta = (a14 - anchor_count.astype(np.int64)) * ENCODER_LSB_RAD
     delta = np.where(delta > math.pi, delta - 2.0 * math.pi, delta)
     delta = np.where(delta <= -math.pi, delta + 2.0 * math.pi, delta)
-    return polarity.astype(np.float64) * delta + anchor_angle_rad
+    return np.degrees(polarity.astype(np.float64) * delta) + anchor_angle_deg
 
 
 # =========================================================================

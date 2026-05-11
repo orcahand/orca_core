@@ -128,7 +128,6 @@ class MockDynamixelClient(MotorClient):
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
-        self._last_currents_mA: dict = {}
         self._temp = {mid: 0.0 for mid in self.motor_ids}
         self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
         
@@ -270,40 +269,6 @@ class MockDynamixelClient(MotorClient):
             if mid not in self._cur:
                 raise ValueError('Motor ID {} not found in client.'.format(mid))
             self._cur[mid] = current[motor_ids.index(mid)]
-
-    def sync_write_current(self, motor_ids: Sequence[int], currents_mA: np.ndarray):
-        """Records mA per motor on ``_last_currents_mA`` so tests can read
-        back what the loop commanded without re-applying unit conversion."""
-        assert len(motor_ids) == len(currents_mA)
-        currents_mA = np.asarray(currents_mA, dtype=np.float64)
-        for mid in motor_ids:
-            if mid not in self._cur:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
-        for mid, value in zip(motor_ids, currents_mA):
-            self._last_currents_mA[mid] = float(value)
-
-    def get_last_currents_mA(self) -> dict:
-        return dict(self._last_currents_mA)
-
-    def set_operating_mode_per_motor(self, motor_ids: Sequence[int], modes: Sequence[int]):
-        assert len(motor_ids) == len(modes)
-        for mid in motor_ids:
-            if mid not in self._operating_mode:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
-        for mid, mode in zip(motor_ids, modes):
-            self._operating_mode[mid] = mode
-
-    def get_operating_modes(self) -> dict:
-        return dict(self._operating_mode)
-
-    def read_operating_modes(self, motor_ids: Sequence[int]) -> dict:
-        """Mirror of ``DynamixelClient.read_operating_modes``: returns the
-        simulated operating mode for each requested motor."""
-        for mid in motor_ids:
-            if mid not in self._operating_mode:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
-        return {mid: self._operating_mode[mid] for mid in motor_ids}
-
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)

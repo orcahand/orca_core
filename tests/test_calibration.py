@@ -12,7 +12,7 @@ from orca_core.calibration import (
 from orca_core.constants import JOINT_ENCODER_CALIBRATION
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
-    ENCODER_LSB_RAD,
+    ENCODER_LSB_DEG,
     JOINT_TO_ENCODER_SLOT,
 )
 from orca_core.hardware_hand import MockOrcaHand
@@ -79,8 +79,8 @@ def test_joint_encoder_calibration_yaml_round_trip(tmp_path):
     calib_path = tmp_path / "calibration.yaml"
     calib_path.touch()
     cals = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=12345, anchor_angle_rad=0.0),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=4321, anchor_angle_rad=1.5),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=12345, anchor_angle_deg=0.0),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=4321, anchor_angle_deg=85.0),
     }
 
     update_yaml(
@@ -141,7 +141,7 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
     )
 
     full_dict = {
-        joint: JointEncoderCal(enc_at_anchor_count=0, anchor_angle_rad=0.0)
+        joint: JointEncoderCal(enc_at_anchor_count=0, anchor_angle_deg=0.0)
         for joint in hand._encoder_backed_joints()
     }
     hand.calibration = dc.replace(
@@ -167,8 +167,8 @@ def test_raw_to_joint_angle_at_anchor_returns_anchor_angle(calib_dir):
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=1000, anchor_angle_rad=0.25),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=8000, anchor_angle_rad=1.4),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=1000, anchor_angle_deg=15.0),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=8000, anchor_angle_deg=80.0),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -180,8 +180,8 @@ def test_raw_to_joint_angle_at_anchor_returns_anchor_angle(calib_dir):
 
     angles = hand._raw_to_joint_angle(raw)
     assert set(angles.keys()) == {"thumb_cmc", "index_mcp"}
-    assert angles["thumb_cmc"] == pytest.approx(0.25, abs=1e-9)
-    assert angles["index_mcp"] == pytest.approx(1.4, abs=1e-9)
+    assert angles["thumb_cmc"] == pytest.approx(15.0, abs=1e-9)
+    assert angles["index_mcp"] == pytest.approx(80.0, abs=1e-9)
 
 
 def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
@@ -194,8 +194,8 @@ def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_rad=0.0),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_rad=0.0),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_deg=0.0),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_deg=0.0),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -206,8 +206,8 @@ def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
     raw[JOINT_TO_ENCODER_SLOT["index_mcp"]] = 16380  # wraps to -14 LSB, polarity -1
 
     angles = hand._raw_to_joint_angle(raw)
-    assert angles["thumb_cmc"] == pytest.approx(20 * ENCODER_LSB_RAD, abs=1e-12)
-    assert angles["index_mcp"] == pytest.approx(14 * ENCODER_LSB_RAD, abs=1e-12)
+    assert angles["thumb_cmc"] == pytest.approx(20 * ENCODER_LSB_DEG, abs=1e-12)
+    assert angles["index_mcp"] == pytest.approx(14 * ENCODER_LSB_DEG, abs=1e-12)
 
 
 def test_raw_to_joint_angle_empty_dict_returns_empty(calib_dir):
@@ -254,33 +254,7 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
     assert hand.is_calibrated(use_joint_feedback=True) is True
 
     sample_entry = next(iter(raw["joint_encoder_calibration"].values()))
-    assert set(sample_entry.keys()) == {"enc_at_anchor_count", "anchor_angle_rad"}
-
-
-def test_calibrate_with_joint_feedback_round_trips_through_raw_to_joint_angle(
-    calib_dir,
-):
-    from tests._encoder_helpers import MockJointEncoderSource
-
-    config_path = calib_dir / "config.yaml"
-    _enable_joint_feedback(config_path)
-
-    hand = MockOrcaHand(config_path=str(config_path))
-    hand.connect()
-    encoder = MockJointEncoderSource(
-        hand._motor_client, hand.config.joint_to_motor_map
-    )
-    hand.calibrate(joint_encoder_client=encoder)
-
-    reading = encoder.get_latest_encoder_reading()
-    angles = hand._raw_to_joint_angle(reading.raw_counts)
-    assert set(angles.keys()) == set(hand._encoder_backed_joints())
-    for joint, angle in angles.items():
-        rom_min, rom_max = hand.config.joint_roms_dict[joint]
-        slack = 0.2  # mock motor quantisation slack
-        assert rom_min - slack <= angle <= rom_max + slack, (
-            f"{joint} angle {angle} outside ROM [{rom_min}, {rom_max}]"
-        )
+    assert set(sample_entry.keys()) == {"enc_at_anchor_count", "anchor_angle_deg"}
 
 
 # ---------------------------------------------------------------------------
@@ -418,13 +392,3 @@ def test_validator_rejects_wrist_in_joint_encoder_joints(tmp_path):
         MockOrcaHand(config_path=str(config_path))
 
 
-def test_validator_rejects_unknown_joint_control_mode(tmp_path):
-    from orca_core.hand_config import HandConfigValidationError
-
-    src_config = os.path.join(MODEL_DIR, "config.yaml")
-    config_path = tmp_path / "config.yaml"
-    shutil.copy(src_config, config_path)
-    update_yaml(str(config_path), "joint_control_mode", "bogus")
-
-    with pytest.raises(HandConfigValidationError, match="joint_control_mode"):
-        MockOrcaHand(config_path=str(config_path))

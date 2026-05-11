@@ -128,6 +128,7 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 # Encoder hardware properties (14-bit absolute rotary encoder)
 ENCODER_COUNTS_PER_REV = 16384
 ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV
+ENCODER_LSB_DEG = 360.0 / ENCODER_COUNTS_PER_REV
 
 # Joint name → encoder slot.
 JOINT_TO_ENCODER_SLOT = {

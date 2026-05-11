@@ -12,7 +12,7 @@ from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
     AUTO_ENC_PARITY_BIT,
     ENCODER_COUNTS_PER_REV,
-    ENCODER_LSB_RAD,
+    ENCODER_LSB_DEG,
     PROTOCOL_HEADER_AUTO,
     PROTOCOL_HEADER_AUTO_ENC,
 )
@@ -182,14 +182,14 @@ def test_encoder_to_joint_angle_strips_top_bits_from_raw():
     pytest.param(ENCODER_COUNTS_PER_REV - 1, 0,                          -1, id="wrap_near_top"),
 ])
 def test_encoder_to_joint_angle_wraparound(raw, anchor, expected_lsb):
-    """Naive subtraction crosses the wrap; correction brings the result into (-π, π]."""
+    """Naive subtraction crosses the wrap; correction brings the result into (-180°, 180°]."""
     out = encoder_to_joint_angle(
         np.array([raw], dtype=np.uint16),
         np.array([anchor], dtype=np.int32),
         np.array([1], dtype=np.int8),
         np.array([0.0]),
     )
-    np.testing.assert_allclose(out, expected_lsb * ENCODER_LSB_RAD, atol=1e-9)
+    np.testing.assert_allclose(out, expected_lsb * ENCODER_LSB_DEG, atol=1e-9)
 
 
 def test_encoder_to_joint_angle_polarity_flip():

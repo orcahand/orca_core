@@ -1,43 +1,27 @@
 """Open / close cycle on ring_mcp + ring_pip via ``OrcaHandJointFeedback``.
 
 Targets are ramped smoothly between an "open" pose and a "close" pose so
-the controller tracks in its linear regime instead of saturating on a step
-input. Only ring_mcp and ring_pip move; other fingers stay put.
-
-The ``--Kd`` flag is mode-dependent: correction_max (degrees) for cascaded,
-Kd (mA·s/rad) for current_pid.
+the controller tracks in its linear regime instead of saturating on a
+step input. Only ring_mcp and ring_pip move; other fingers stay put.
 
 Usage:
-    # Cascaded (trim on top of CBP)
-    uv run python scripts/test_cascaded_ring.py \\
-        orca_core/models/v2/orcahand_right/config.yaml \\
-        --joint-control-mode cascaded --max-current 600
-
-    # current_pid
-    uv run python scripts/test_cascaded_ring.py \\
-        orca_core/models/v2/orcahand_right/config.yaml \\
-        --joint-control-mode current_pid --max-current 600 \\
-        --Kp 400 --Ki 80 --Kd 30
+    uv run python scripts/ring_open_close.py \\
+        orca_core/models/v2/orcahand_right/config.yaml --max-current 600
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import logging
-import math
 import sys
 import threading
 import time
 from typing import Dict
 
-from orca_core.control import CascadedJointController, JointPIDController
 from orca_core.control.constants import (
-    DEFAULT_CASCADED_CORRECTION_MAX_RAD,
-    DEFAULT_CASCADED_KI_RAD_PER_RAD_S,
-    DEFAULT_CASCADED_KP_RAD_PER_RAD,
-    DEFAULT_KD_MA_S_PER_RAD,
-    DEFAULT_KI_MA_PER_RAD_S,
-    DEFAULT_KP_MA_PER_RAD,
+    DEFAULT_CORRECTION_MAX_DEG,
+    DEFAULT_KI,
+    DEFAULT_KP,
 )
 from orca_core.hardware_hand_joint_feedback import (
     OrcaHandJointFeedback,
@@ -54,90 +38,56 @@ DEFAULT_CLOSE_RING_PIP_DEG = 85.0
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument(
-        "model_path",
-        nargs="?",
-        default=None,
+        "model_path", nargs="?", default=None,
         help="Path to the hand config.yaml (defaults to the bundled model).",
     )
     p.add_argument(
-        "--encoder-port",
-        default=None,
+        "--encoder-port", default=None,
         help='Override config encoder_serial_port. "auto" runs discovery.',
     )
     p.add_argument(
-        "--max-current",
-        type=int,
-        default=None,
+        "--max-current", type=int, default=None,
         help="Override config max_current (mA). Pushed to motors after connect "
              "so the inner CBP loop picks up the higher torque cap.",
     )
     p.add_argument(
-        "--joint-control-mode",
-        choices=["current_pid", "cascaded"],
-        default="cascaded",
-        help="Which joint-control architecture to drive. Default: cascaded.",
+        "--Kp", type=float, default=DEFAULT_KP,
+        help="Proportional gain (deg/deg).",
     )
     p.add_argument(
-        "--Kp",
-        type=float,
-        default=None,
-        help="cascaded: rad/rad. current_pid: mA/rad. Default: mode constant.",
+        "--Ki", type=float, default=DEFAULT_KI,
+        help="Integral gain (deg/deg/s).",
     )
     p.add_argument(
-        "--Ki",
-        type=float,
-        default=None,
-        help="cascaded: rad/rad/s. current_pid: mA/rad/s. Default: mode constant.",
+        "--correction-max-deg", type=float, default=DEFAULT_CORRECTION_MAX_DEG,
+        help="Output clamp on the trim correction (degrees).",
     )
     p.add_argument(
-        "--Kd",
-        type=float,
-        default=None,
-        help="cascaded: correction_max in degrees. current_pid: Kd in mA·s/rad. "
-             "Default: mode constant.",
-    )
-    p.add_argument(
-        "--ramp-duration",
-        type=float,
-        default=2.0,
+        "--ramp-duration", type=float, default=2.0,
         help="Seconds to ramp between open and close poses.",
     )
     p.add_argument(
-        "--hold-duration",
-        type=float,
-        default=2.0,
+        "--hold-duration", type=float, default=2.0,
         help="Seconds to hold each end pose.",
     )
     p.add_argument(
-        "--open-mcp",
-        type=float,
-        default=DEFAULT_OPEN_RING_MCP_DEG,
+        "--open-mcp", type=float, default=DEFAULT_OPEN_RING_MCP_DEG,
         help="Open-pose ring_mcp target (degrees).",
     )
     p.add_argument(
-        "--open-pip",
-        type=float,
-        default=DEFAULT_OPEN_RING_PIP_DEG,
+        "--open-pip", type=float, default=DEFAULT_OPEN_RING_PIP_DEG,
         help="Open-pose ring_pip target (degrees). Stay above the relaxed "
              "extension (~+10°) so the spring can reach it.",
     )
     p.add_argument(
-        "--close-mcp",
-        type=float,
-        default=DEFAULT_CLOSE_RING_MCP_DEG,
+        "--close-mcp", type=float, default=DEFAULT_CLOSE_RING_MCP_DEG,
         help="Close-pose ring_mcp target (degrees).",
     )
     p.add_argument(
-        "--close-pip",
-        type=float,
-        default=DEFAULT_CLOSE_RING_PIP_DEG,
+        "--close-pip", type=float, default=DEFAULT_CLOSE_RING_PIP_DEG,
         help="Close-pose ring_pip target (degrees).",
     )
     return p.parse_args()
-
-
-def _radians_pose(pose_deg: Dict[str, float]) -> Dict[str, float]:
-    return {joint: math.radians(value) for joint, value in pose_deg.items()}
 
 
 def _ramp(
@@ -147,7 +97,7 @@ def _ramp(
     duration_s: float,
     stop_event: threading.Event,
 ) -> None:
-    """Linearly interpolate the loop target between two poses."""
+    """Linearly interpolate the loop target between two poses (degrees)."""
     deadline = time.monotonic() + duration_s
     while not stop_event.is_set():
         now = time.monotonic()
@@ -178,30 +128,22 @@ def _hold(
 
 def _print_status(hand: OrcaHandJointFeedback, label: str) -> None:
     measured = hand._loop.get_measured_joints()
+    correction = hand._loop.get_correction()
     stats = hand._loop.get_stats()
     motor_pos_array = hand.get_motor_pos()
     motor_id_to_idx = hand.config.motor_id_to_idx_dict
-
-    cascaded = isinstance(hand._pid, CascadedJointController)
-    correction = hand._loop.get_correction() if cascaded else {}
 
     parts = [f"{label:<8}"]
     for joint in ("ring_mcp", "ring_pip"):
         idx = hand._loop._joint_names.index(joint)
         motor_id = hand._loop._motor_ids[idx]
         actual_motor = motor_pos_array[motor_id_to_idx[motor_id]]
-        enc_deg = math.degrees(measured.get(joint, float("nan")))
-        if cascaded:
-            extra = (
-                f"trim={math.degrees(correction.get(joint, 0.0)):+5.1f}° "
-                f"M_act={actual_motor:+6.2f}"
-            )
-        else:
-            extra = f"M_act={actual_motor:+6.2f}"
-        parts.append(f"{joint}: enc={enc_deg:+6.1f}° {extra}")
-    parts.append(
-        f"cyc={stats['cycles_ok']:>5} fb={stats['fallback_active']}"
-    )
+        parts.append(
+            f"{joint}: enc={measured.get(joint, float('nan')):+6.1f}° "
+            f"trim={correction.get(joint, 0.0):+5.1f}° "
+            f"M_act={actual_motor:+6.2f}"
+        )
+    parts.append(f"cyc={stats['cycles_ok']:>5} fb={stats['fallback_active']}")
     print("  ".join(parts))
 
 
@@ -223,12 +165,13 @@ def main() -> int:
     )
 
     hand = OrcaHandJointFeedback(config_path=args.model_path)
-    overrides = {"joint_control_mode": args.joint_control_mode}
+    overrides = {}
     if args.encoder_port is not None:
         overrides["encoder_serial_port"] = args.encoder_port
     if args.max_current is not None:
         overrides["max_current"] = args.max_current
-    hand.config = dataclasses.replace(hand.config, **overrides)
+    if overrides:
+        hand.config = dataclasses.replace(hand.config, **overrides)
 
     try:
         success, msg = hand.connect()
@@ -243,46 +186,25 @@ def main() -> int:
         hand.set_max_current(args.max_current)
         print(f"  → max_current = {args.max_current} mA")
 
-    if args.joint_control_mode == "cascaded":
-        kp = DEFAULT_CASCADED_KP_RAD_PER_RAD if args.Kp is None else args.Kp
-        ki = DEFAULT_CASCADED_KI_RAD_PER_RAD_S if args.Ki is None else args.Ki
-        correction_max_deg = (
-            math.degrees(DEFAULT_CASCADED_CORRECTION_MAX_RAD)
-            if args.Kd is None else args.Kd
-        )
-        correction_max_rad = math.radians(correction_max_deg)
-        hand._pid.set_gains(
-            Kp=kp, Ki=ki,
-            correction_max_rad=correction_max_rad,
-            i_clamp_rad=correction_max_rad,
-        )
-        print(
-            f"  → cascaded gains Kp={kp} Ki={ki} "
-            f"correction_max={correction_max_deg:.1f}°"
-        )
-    else:
-        kp = DEFAULT_KP_MA_PER_RAD if args.Kp is None else args.Kp
-        ki = DEFAULT_KI_MA_PER_RAD_S if args.Ki is None else args.Ki
-        kd = DEFAULT_KD_MA_S_PER_RAD if args.Kd is None else args.Kd
-        i_max = float(hand.config.max_current)
-        hand._pid.set_gains(
-            Kp=kp, Ki=ki, Kd=kd, i_clamp_mA=i_max, i_max_mA=i_max,
-        )
-        print(
-            f"  → current_pid gains Kp={kp} Ki={ki} Kd={kd} i_max={i_max:.0f} mA"
-        )
-
-    open_pose_deg = {"ring_mcp": args.open_mcp, "ring_pip": args.open_pip}
-    close_pose_deg = {"ring_mcp": args.close_mcp, "ring_pip": args.close_pip}
-    open_pose = _radians_pose(open_pose_deg)
-    close_pose = _radians_pose(close_pose_deg)
-    print(
-        f"  open  ring_mcp={open_pose_deg['ring_mcp']:+.0f}° "
-        f"ring_pip={open_pose_deg['ring_pip']:+.0f}°"
+    hand._controller.set_gains(
+        Kp=args.Kp, Ki=args.Ki,
+        correction_max_deg=args.correction_max_deg,
+        i_clamp_deg=args.correction_max_deg,
     )
     print(
-        f"  close ring_mcp={close_pose_deg['ring_mcp']:+.0f}° "
-        f"ring_pip={close_pose_deg['ring_pip']:+.0f}°"
+        f"  → gains Kp={args.Kp} Ki={args.Ki} "
+        f"correction_max={args.correction_max_deg:.1f}°"
+    )
+
+    open_pose = {"ring_mcp": args.open_mcp, "ring_pip": args.open_pip}
+    close_pose = {"ring_mcp": args.close_mcp, "ring_pip": args.close_pip}
+    print(
+        f"  open  ring_mcp={open_pose['ring_mcp']:+.0f}° "
+        f"ring_pip={open_pose['ring_pip']:+.0f}°"
+    )
+    print(
+        f"  close ring_mcp={close_pose['ring_mcp']:+.0f}° "
+        f"ring_pip={close_pose['ring_pip']:+.0f}°"
     )
     print(
         f"  ramp={args.ramp_duration}s  hold={args.hold_duration}s. "
@@ -298,7 +220,7 @@ def main() -> int:
     stats_thread.start()
 
     try:
-        # Start each cycle from the *current* measured pose so the first
+        # Start each cycle from the current measured pose so the first
         # ramp doesn't yank from an arbitrary start.
         measured = hand._loop.get_measured_joints()
         current = {j: measured.get(j, 0.0) for j in open_pose}

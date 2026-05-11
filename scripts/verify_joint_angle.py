@@ -136,13 +136,10 @@ def main() -> int:
                 if enc is None or motor is None:
                     cells.append(f"{joint}: (uncalibrated)")
                     continue
-                # _raw_to_joint_angle returns radians; _motor_to_joint_pos
-                # returns degrees (it's built around joint_roms in degrees).
-                enc_deg = math.degrees(enc)
                 cells.append(
-                    f"{joint}: enc={enc_deg:+7.1f}°  "
+                    f"{joint}: enc={enc:+7.1f}°  "
                     f"motor={motor:+7.1f}°  "
-                    f"Δ={enc_deg - motor:+6.1f}°"
+                    f"Δ={enc - motor:+6.1f}°"
                 )
             print(f"[t={t:5.1f}s] " + "   ".join(cells))
             time.sleep(period)

@@ -89,12 +89,6 @@ def dynamixel_cleanup_handler():
         open_client.disconnect()
 
 
-def currents_mA_to_dxl_units(currents_mA: np.ndarray, cur_scale: float) -> np.ndarray:
-    """Convert mA to Goal_Current LSBs, truncating toward zero. The caller
-    clips to the motor's signed-current range."""
-    return np.trunc(np.asarray(currents_mA, dtype=np.float64) / cur_scale).astype(np.int64)
-
-
 def signed_to_unsigned(value: int, size: int) -> int:
     """Converts the given value to its unsigned representation."""
     if value < 0:
@@ -315,50 +309,6 @@ class DynamixelClient(MotorClient):
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
         assert len(motor_ids) == len(current)
         self.sync_write(motor_ids, current, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
-
-    def sync_write_current(self, motor_ids: Sequence[int], currents_mA: np.ndarray):
-        """Write signed Goal_Current (in mA) to a group of motors."""
-        assert len(motor_ids) == len(currents_mA)
-        units = currents_mA_to_dxl_units(currents_mA, self._pos_vel_cur_reader.cur_scale)
-        self.sync_write(motor_ids, units, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
-
-    def set_operating_mode_per_motor(self, motor_ids: Sequence[int], modes: Sequence[int]):
-        """Set a distinct operating mode for each motor in one EEPROM write."""
-        assert len(motor_ids) == len(modes)
-        self.set_torque_enabled(motor_ids, False)
-        self.sync_write(motor_ids, list(modes), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-        self.set_torque_enabled(motor_ids, True)
-        for motor_id, mode in zip(motor_ids, modes):
-            self._operating_modes[motor_id] = mode
-
-    def get_operating_modes(self) -> dict:
-        """Return a copy of the in-process cache populated by ``set_operating_mode``
-        / ``set_operating_mode_per_motor``. Empty until a mode has been set in
-        this process; use ``read_operating_modes`` to query the motor bus."""
-        return dict(self._operating_modes)
-
-    def read_operating_modes(self, motor_ids: Sequence[int]) -> Dict[int, int]:
-        """Read the operating mode register from each motor over the bus and
-        update the in-process cache. Use this when the caller needs the modes
-        the motors are *actually* in (e.g. a snapshot before flipping modes
-        for a joint loop), independent of whether anyone has called
-        ``set_operating_mode`` yet in this process.
-
-        Raises:
-            OSError: if any motor fails to respond.
-        """
-        self.check_connected()
-        result: Dict[int, int] = {}
-        for mid in motor_ids:
-            value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
-                self.port_handler, mid, ADDR_OPERATING_MODE)
-            success = self.handle_packet_result(
-                comm_result, dxl_error, mid, context='read_operating_modes')
-            if not success:
-                raise OSError(f'failed to read operating mode for motor {mid}')
-            result[mid] = value
-            self._operating_modes[mid] = value
-        return result
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)

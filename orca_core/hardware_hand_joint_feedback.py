@@ -8,16 +8,14 @@
 
 """Closed-loop joint-feedback variant of :class:`OrcaHand`.
 
-``OrcaHandConfig.joint_control_mode`` selects the active architecture:
+``connect()`` opens the motor bus, the encoder serial link, and starts a
+:class:`~orca_core.control.JointLoopThread` running a vectorised PI on
+joint-encoder error. The motors stay in ``current_based_position``; the
+host writes ``Goal_Position`` per cycle and the motor's internal position
+PID handles the fast tracking against the motor encoder. The host trims
+the residual offset between motor angle and joint angle.
 
-- ``current_pid``: motors switch to ``current``; the host runs a vectorised
-  current-mode PID and writes signed Goal_Current per cycle.
-- ``cascaded``: motors stay in ``current_based_position``; the host runs a
-  slower outer-loop PI on joint-encoder error and writes Goal_Position per
-  cycle. The motor's internal position PID handles fast tracking; the host
-  trims the residual offset between motor angle and joint angle.
-
-The wrist motor is not part of the loop in either mode; it stays in
+The wrist motor is not part of the loop; it stays in
 ``current_based_position`` and accepts targets through the inherited
 synchronous motor-position path.
 """
@@ -25,27 +23,18 @@ synchronous motor-position path.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
-from .constants import CURRENT, MODE_MAP, WRIST
-from .control.cascaded_joint import CascadedJointController
 from .control.constants import (
-    DEFAULT_CASCADED_CORRECTION_MAX_RAD,
-    DEFAULT_CASCADED_I_CLAMP_RAD,
-    DEFAULT_CASCADED_KI_RAD_PER_RAD_S,
-    DEFAULT_CASCADED_KP_RAD_PER_RAD,
-    DEFAULT_KD_MA_S_PER_RAD,
-    DEFAULT_KI_MA_PER_RAD_S,
-    DEFAULT_KP_MA_PER_RAD,
+    DEFAULT_CORRECTION_MAX_DEG,
+    DEFAULT_I_CLAMP_DEG,
+    DEFAULT_KI,
+    DEFAULT_KP,
 )
+from .control.joint_controller import JointController
 from .control.joint_loop import JointLoopThread
-from .control.joint_loop_cascaded import JointLoopThreadCascaded
-from .control.joint_pid import JointPIDController
 from .hardware.hand_serial_link import HandSerialLink
-from .hardware.joint_encoder_client import (
-    EncodersNotAvailableError,
-    JointEncoderClient,
-)
+from .hardware.joint_encoder_client import JointEncoderClient
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.constants import LINK_DEFAULT_BAUDRATE
 from .hardware.sensing.serial_discovery import resolve_sensing_ports
@@ -65,9 +54,8 @@ class OrcaHandJointFeedback(OrcaHand):
     """ORCA hand with closed-loop joint feedback on the encoder-backed joints.
 
     ``connect()`` opens the motor bus, the encoder serial link, and starts
-    the joint-loop thread selected by ``config.joint_control_mode``. The
-    wrist stays in ``current_based_position`` and is driven through the
-    inherited synchronous path.
+    the joint-loop thread. The wrist stays in ``current_based_position``
+    and is driven through the inherited synchronous path.
 
     Connect-time preconditions raise: a missing encoder port, an absent
     ``joint_encoder_calibration`` block, or an encoder-stream timeout each
@@ -92,9 +80,8 @@ class OrcaHandJointFeedback(OrcaHand):
         )
         self._encoder_link: Optional[HandSerialLink] = None
         self._encoder_client: Optional[JointEncoderClient] = None
-        self._pid: Optional[Union[JointPIDController, CascadedJointController]] = None
-        self._loop: Optional[Union[JointLoopThread, JointLoopThreadCascaded]] = None
-        self._prior_modes_snapshot: Dict[int, int] = {}
+        self._controller: Optional[JointController] = None
+        self._loop: Optional[JointLoopThread] = None
 
     def _create_encoder_link(self, port: str) -> HandSerialLink:
         return HandSerialLink(port=port, baudrate=LINK_DEFAULT_BAUDRATE)
@@ -140,51 +127,20 @@ class OrcaHandJointFeedback(OrcaHand):
                     "(set joint_encoder_joints in config.yaml)."
                 )
 
-            mode = self.config.joint_control_mode
-            if mode == "current_pid":
-                with self._motor_lock:
-                    self._prior_modes_snapshot = self._motor_client.read_operating_modes(
-                        motor_ids
-                    )
-                    self._motor_client.set_operating_mode_per_motor(
-                        motor_ids, [MODE_MAP[CURRENT]] * len(motor_ids),
-                    )
-
-                self._pid = JointPIDController(num_joints=len(motor_ids))
-                i_max = float(self.config.max_current)
-                self._pid.set_gains(
-                    Kp=DEFAULT_KP_MA_PER_RAD,
-                    Ki=DEFAULT_KI_MA_PER_RAD_S,
-                    Kd=DEFAULT_KD_MA_S_PER_RAD,
-                    i_clamp_mA=i_max,
-                    i_max_mA=i_max,
-                )
-                self._loop = JointLoopThread(self, self._encoder_client, self._pid)
-            elif mode == "cascaded":
-                self._pid = CascadedJointController(num_joints=len(motor_ids))
-                self._pid.set_gains(
-                    Kp=DEFAULT_CASCADED_KP_RAD_PER_RAD,
-                    Ki=DEFAULT_CASCADED_KI_RAD_PER_RAD_S,
-                    correction_max_rad=DEFAULT_CASCADED_CORRECTION_MAX_RAD,
-                    i_clamp_rad=DEFAULT_CASCADED_I_CLAMP_RAD,
-                )
-                self._loop = JointLoopThreadCascaded(
-                    self, self._encoder_client, self._pid,
-                )
-            else:
-                raise OrcaHandJointFeedbackError(
-                    f"Unsupported joint_control_mode {mode!r}; "
-                    "expected 'current_pid' or 'cascaded'."
-                )
+            self._controller = JointController(num_joints=len(motor_ids))
+            self._controller.set_gains(
+                Kp=DEFAULT_KP,
+                Ki=DEFAULT_KI,
+                correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
+                i_clamp_deg=DEFAULT_I_CLAMP_DEG,
+            )
+            self._loop = JointLoopThread(self, self._encoder_client, self._controller)
             self._loop.start()
         except Exception:
             self._teardown_joint_feedback()
             raise
 
-        return (
-            True,
-            f"{msg} | Joint feedback loop ({mode}) running on {ports.encoder}",
-        )
+        return True, f"{msg} | Joint feedback loop running on {ports.encoder}"
 
     def disconnect(self) -> tuple[bool, str]:
         self._teardown_joint_feedback()
@@ -222,25 +178,15 @@ class OrcaHandJointFeedback(OrcaHand):
         return OrcaJointPositions.from_dict(joint_dict)
 
     def _teardown_joint_feedback(self) -> None:
-        """Stop the loop, restore prior operating modes, and drop the
-        encoder link/client. Tolerates partial connect state."""
+        """Stop the loop and drop the encoder link/client. Tolerates
+        partial connect state so failure paths can re-enter cleanly."""
         if self._loop is not None:
             try:
                 self._loop.stop()
             except Exception:
                 logger.exception("failed to stop joint loop thread")
             self._loop = None
-        self._pid = None
-
-        if self._prior_modes_snapshot and self._motor_client is not None:
-            try:
-                motor_ids = list(self._prior_modes_snapshot.keys())
-                modes = [self._prior_modes_snapshot[mid] for mid in motor_ids]
-                with self._motor_lock:
-                    self._motor_client.set_operating_mode_per_motor(motor_ids, modes)
-            except Exception:
-                logger.exception("failed to restore prior operating modes")
-            self._prior_modes_snapshot = {}
+        self._controller = None
 
         if self._encoder_client is not None:
             try:

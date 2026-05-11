@@ -56,7 +56,6 @@ def make_calibrated_joint_feedback_hand(
     config_path: str,
     raw_counts: Optional[np.ndarray] = None,
     install_encoder_calibration: bool = True,
-    joint_control_mode: str = "current_pid",
 ) -> MockOrcaHandJointFeedback:
     """Build a mock hand wired for a successful joint-feedback connect.
 
@@ -68,17 +67,9 @@ def make_calibrated_joint_feedback_hand(
     With ``install_encoder_calibration=False`` the motor calibration is
     installed but the encoder calibration block is omitted, so
     ``connect()`` raises ``OrcaHandJointFeedbackError``.
-
-    ``joint_control_mode`` selects between the current-mode host PID
-    (``"current_pid"``, default) and the cascaded outer-loop trim
-    (``"cascaded"``) — the same fixture covers both lifecycle paths.
     """
     hand = MockOrcaHandJointFeedback(config_path=config_path)
-    hand.config = dc.replace(
-        hand.config,
-        encoder_serial_port="/dev/ttyMOCK",
-        joint_control_mode=joint_control_mode,
-    )
+    hand.config = dc.replace(hand.config, encoder_serial_port="/dev/ttyMOCK")
 
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
     ratios = {mid: 0.01 for mid in hand.config.motor_ids}
@@ -86,7 +77,7 @@ def make_calibrated_joint_feedback_hand(
         {
             joint: JointEncoderCal(
                 enc_at_anchor_count=0,
-                anchor_angle_rad=0.0,
+                anchor_angle_deg=0.0,
             )
             for joint in hand._encoder_backed_joints()
         }

@@ -214,7 +214,6 @@ class OrcaHandConfig(BaseHandConfig):
     use_joint_feedback: bool = False
     joint_encoder_joints: List[str] | None = None
     encoder_serial_port: str = "auto"
-    joint_control_mode: Literal["current_pid", "cascaded"] = "current_pid"
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -299,8 +298,6 @@ class OrcaHandConfig(BaseHandConfig):
             )
         if "encoder_serial_port" in config:
             kwargs["encoder_serial_port"] = str(config["encoder_serial_port"])
-        if "joint_control_mode" in config:
-            kwargs["joint_control_mode"] = str(config["joint_control_mode"])
 
         return cls(**kwargs)
 
@@ -320,12 +317,6 @@ class OrcaHandConfig(BaseHandConfig):
 
         if self.control_mode not in CONTROL_MODES:
             raise HandConfigValidationError("Invalid control mode.")
-
-        if self.joint_control_mode not in {"current_pid", "cascaded"}:
-            raise HandConfigValidationError(
-                f"Invalid joint_control_mode: {self.joint_control_mode!r}. "
-                "Expected 'current_pid' or 'cascaded'."
-            )
 
         if self.max_current < self.calibration_current:
             raise HandConfigValidationError(
