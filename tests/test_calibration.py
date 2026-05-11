@@ -416,3 +416,15 @@ def test_validator_rejects_wrist_in_joint_encoder_joints(tmp_path):
 
     with pytest.raises(HandConfigValidationError, match="wrist"):
         MockOrcaHand(config_path=str(config_path))
+
+
+def test_validator_rejects_unknown_joint_control_mode(tmp_path):
+    from orca_core.hand_config import HandConfigValidationError
+
+    src_config = os.path.join(MODEL_DIR, "config.yaml")
+    config_path = tmp_path / "config.yaml"
+    shutil.copy(src_config, config_path)
+    update_yaml(str(config_path), "joint_control_mode", "bogus")
+
+    with pytest.raises(HandConfigValidationError, match="joint_control_mode"):
+        MockOrcaHand(config_path=str(config_path))

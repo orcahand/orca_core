@@ -83,6 +83,21 @@ def test_encoder_serial_port_round_trips_explicit_value(tmp_path):
     assert config.encoder_serial_port == "/dev/ttyACM2"
 
 
+def test_joint_control_mode_defaults_to_current_pid_when_yaml_omits_it(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    shutil.copy(MODELS_DIR / "v2" / "orcahand_right" / "config.yaml", config_path)
+    config = OrcaHandConfig.from_config_path(config_path=str(config_path))
+    assert config.joint_control_mode == "current_pid"
+
+
+def test_joint_control_mode_round_trips_cascaded(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    shutil.copy(MODELS_DIR / "v2" / "orcahand_right" / "config.yaml", config_path)
+    update_yaml(str(config_path), "joint_control_mode", "cascaded")
+    config = OrcaHandConfig.from_config_path(config_path=str(config_path))
+    assert config.joint_control_mode == "cascaded"
+
+
 @pytest.mark.parametrize(
     ("kwargs", "expected_version", "expected_model_name"),
     [
