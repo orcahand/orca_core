@@ -1,10 +1,9 @@
 """Vectorised PI controller for the host-side joint loop.
 
-Reads joint-encoder error and outputs a per-joint correction in degrees
-clamped to ``correction_max_deg``. The loop thread adds the correction to
-the base joint target before mapping to motor positions; the motor's
-internal position PID then tracks the corrected motor target on the
-motor encoder.
+Output is a per-joint correction in degrees, clipped to
+``±correction_max_deg``. The loop thread adds the correction to the base
+joint target before mapping to motor positions; the motor's internal PID
+then tracks the corrected motor target on the motor encoder.
 
 Conditional integration freezes the integrator when the output is at the
 clamp and the error sign would push it further (anti-windup). No
@@ -23,27 +22,23 @@ ScalarOrArray = Union[float, np.ndarray]
 
 
 class JointController:
-    """Per-channel PI with shared scalar or per-joint vector gains.
-
-    Output is a per-joint correction in degrees clipped to
-    ``±correction_max_deg``.
-    """
+    """Per-channel PI with shared scalar or per-joint vector gains."""
 
     def __init__(self, num_joints: int):
         if num_joints <= 0:
             raise ValueError("num_joints must be positive")
-        self._n = int(num_joints)
-        self._Kp = np.zeros(self._n)
-        self._Ki = np.zeros(self._n)
-        self._correction_max_deg = np.zeros(self._n)
-        self._i_clamp_deg = np.zeros(self._n)
-        self._ierr = np.zeros(self._n)
-        self._last_correction = np.zeros(self._n)
+        self._num_joints = int(num_joints)
+        self._Kp = np.zeros(self._num_joints)
+        self._Ki = np.zeros(self._num_joints)
+        self._correction_max_deg = np.zeros(self._num_joints)
+        self._i_clamp_deg = np.zeros(self._num_joints)
+        self._ierr = np.zeros(self._num_joints)
+        self._last_correction = np.zeros(self._num_joints)
         self._integral_frozen = False
 
     @property
     def num_joints(self) -> int:
-        return self._n
+        return self._num_joints
 
     def set_gains(
         self,
@@ -54,13 +49,17 @@ class JointController:
     ) -> None:
         """Set per-channel gains and clamps. Each value is a scalar
         (broadcast) or a ``(num_joints,)`` array. All values must be
-        non-negative."""
-        self._Kp = self._broadcast(Kp, "Kp")
-        self._Ki = self._broadcast(Ki, "Ki")
-        self._correction_max_deg = self._broadcast(
-            correction_max_deg, "correction_max_deg"
-        )
-        self._i_clamp_deg = self._broadcast(i_clamp_deg, "i_clamp_deg")
+        non-negative. The four arrays are validated and broadcast before any
+        attribute is assigned, so a bad input never leaves the controller in
+        a half-installed state."""
+        kp = self._broadcast(Kp, "Kp")
+        ki = self._broadcast(Ki, "Ki")
+        corr_max = self._broadcast(correction_max_deg, "correction_max_deg")
+        i_clamp = self._broadcast(i_clamp_deg, "i_clamp_deg")
+        self._Kp = kp
+        self._Ki = ki
+        self._correction_max_deg = corr_max
+        self._i_clamp_deg = i_clamp
 
     def step(
         self,
@@ -71,11 +70,13 @@ class JointController:
         """Advance one cycle and return per-joint correction in degrees."""
         target = np.asarray(target_deg, dtype=np.float64)
         measured = np.asarray(measured_deg, dtype=np.float64)
-        if target.shape != (self._n,):
-            raise ValueError(f"target must have shape ({self._n},), got {target.shape}")
-        if measured.shape != (self._n,):
+        if target.shape != (self._num_joints,):
             raise ValueError(
-                f"measured must have shape ({self._n},), got {measured.shape}"
+                f"target must have shape ({self._num_joints},), got {target.shape}"
+            )
+        if measured.shape != (self._num_joints,):
+            raise ValueError(
+                f"measured must have shape ({self._num_joints},), got {measured.shape}"
             )
         dt_clamped = float(np.clip(dt, MIN_LOOP_DT_S, MAX_LOOP_DT_S))
 
@@ -124,10 +125,10 @@ class JointController:
     def _broadcast(self, value: ScalarOrArray, name: str) -> np.ndarray:
         array = np.asarray(value, dtype=np.float64)
         if array.ndim == 0:
-            array = np.full(self._n, float(array))
-        elif array.shape != (self._n,):
+            array = np.full(self._num_joints, float(array))
+        elif array.shape != (self._num_joints,):
             raise ValueError(
-                f"{name} must be scalar or shape ({self._n},), got {array.shape}"
+                f"{name} must be scalar or shape ({self._num_joints},), got {array.shape}"
             )
         if np.any(array < 0):
             raise ValueError(f"{name} must be non-negative")

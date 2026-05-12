@@ -15,7 +15,7 @@ import pytest
 
 from orca_core.constants import CURRENT, MODE_MAP, WRIST
 from orca_core.control import JointController, JointLoopThread
-from orca_core.hardware_hand_joint_feedback import OrcaHandJointFeedbackError
+from orca_core.hardware_hand_joint_feedback import JointFeedbackConnectError
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
@@ -44,6 +44,9 @@ def _wait_until(predicate, timeout=1.0):
 
 
 def test_connect_starts_loop_without_touching_operating_modes(joint_feedback_config):
+    """The loop runs as an outer PI on top of the motor's internal position
+    PID
+    """
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     success, _ = hand.connect()
     try:
@@ -52,8 +55,6 @@ def test_connect_starts_loop_without_touching_operating_modes(joint_feedback_con
         assert isinstance(hand._controller, JointController)
         assert hand._loop._thread is not None and hand._loop._thread.is_alive()
 
-        # Encoder-backed motors stay in current_based_position throughout —
-        # the loop writes Goal_Position, not Goal_Current, so no swap.
         for motor_id in hand._encoder_motor_ids():
             assert (
                 hand._motor_client._operating_mode[motor_id]
@@ -86,7 +87,7 @@ def test_connect_raises_when_encoder_calibration_missing(joint_feedback_config):
         joint_feedback_config, install_encoder_calibration=False,
     )
     try:
-        with pytest.raises(OrcaHandJointFeedbackError, match="joint-encoder calibration"):
+        with pytest.raises(JointFeedbackConnectError, match="joint-encoder calibration"):
             hand.connect()
         assert hand._loop is None
         assert hand._encoder_client is None
@@ -114,16 +115,29 @@ def test_set_joint_positions_routes_wrist_and_encoder_joints(joint_feedback_conf
         hand.disconnect()
 
 
-def test_get_joint_positions_merges_loop_and_wrist(joint_feedback_config):
+def test_get_joint_positions_wrist_comes_from_motor_position(joint_feedback_config):
+    """Encoder joints come from the loop's measurement; the wrist value
+    has to come from the motor-position read (the wrist isn't in the
+    loop). Drive the wrist motor to a known position post-connect and
+    check the converted joint angle propagates through _get_joint_positions.
+    """
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
     try:
+        wrist_motor_id = hand.config.joint_to_motor_map[WRIST]
+        wrist_idx = hand.config.motor_id_to_idx_dict[wrist_motor_id]
+
+        # Park the wrist motor at a non-trivial position so the converted
+        # joint angle is distinct from the post-connect default.
+        motor_pos = hand.get_motor_pos().copy()
+        motor_pos[wrist_idx] = 0.25
+        hand._motor_client._pos[wrist_motor_id] = 0.25
+
+        # Compute the expected joint angle through the inherited mapping.
+        expected_wrist = hand._motor_to_joint_pos(motor_pos)[WRIST]
+
         positions = hand._get_joint_positions().as_dict()
-        encoder_joints = set(hand._encoder_backed_joints())
-        loop_measurements = hand._loop.get_measured_joints()
-        assert encoder_joints.issubset(positions.keys())
         assert WRIST in positions
-        for joint in encoder_joints:
-            assert positions[joint] == loop_measurements[joint]
+        assert positions[WRIST] == pytest.approx(expected_wrist, abs=1e-9)
     finally:
         hand.disconnect()

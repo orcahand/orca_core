@@ -52,6 +52,28 @@ class _LinkFramePump:
         self._thread.join(timeout=1.0)
 
 
+class _PumpedMockOrcaHandJointFeedback(MockOrcaHandJointFeedback):
+    """``MockOrcaHandJointFeedback`` that owns a frame pump on the encoder
+    link so ``start_encoder_stream`` sees a fresh AA A9 frame within its
+    first-frame timeout. Lifecycle of the pump is bound to the link.
+    """
+
+    _frame_for_pump: bytes = b""
+
+    def _create_encoder_link(self, port: str) -> MockHandSerialLink:
+        link = super()._create_encoder_link(port)
+        pump = _LinkFramePump(link, type(self)._frame_for_pump)
+        self._pumps.append(pump)
+        pump.start()
+        return link
+
+    def disconnect(self):
+        for pump in self._pumps:
+            pump.stop()
+        self._pumps.clear()
+        return super().disconnect()
+
+
 def make_calibrated_joint_feedback_hand(
     config_path: str,
     raw_counts: Optional[np.ndarray] = None,
@@ -60,15 +82,24 @@ def make_calibrated_joint_feedback_hand(
     """Build a mock hand wired for a successful joint-feedback connect.
 
     The encoder serial port is forced to a fixed string so
-    ``resolve_sensing_ports`` skips discovery. ``_create_encoder_link`` is
-    monkey-patched to attach a frame pump; ``disconnect`` is wrapped to
-    stop the pump before tearing down.
-
-    With ``install_encoder_calibration=False`` the motor calibration is
+    ``resolve_sensing_ports`` skips discovery. With
+    ``install_encoder_calibration=False`` the motor calibration is
     installed but the encoder calibration block is omitted, so
-    ``connect()`` raises ``OrcaHandJointFeedbackError``.
+    ``connect()`` raises ``JointFeedbackConnectError``.
     """
-    hand = MockOrcaHandJointFeedback(config_path=config_path)
+    if raw_counts is None:
+        raw_counts = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
+
+    # Bind the per-instance pump state and the per-test frame onto a
+    # one-off subclass so different fixtures inside the same test session
+    # don't share state.
+    frame = make_encoder_frame(raw_counts=raw_counts)
+
+    class _Bound(_PumpedMockOrcaHandJointFeedback):
+        _frame_for_pump = frame
+
+    hand = _Bound(config_path=config_path)
+    hand._pumps: List[_LinkFramePump] = []
     hand.config = dc.replace(hand.config, encoder_serial_port="/dev/ttyMOCK")
 
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
@@ -89,29 +120,4 @@ def make_calibrated_joint_feedback_hand(
         calibrated=True,
         wrist_calibrated=True,
     )
-
-    if raw_counts is None:
-        raw_counts = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
-    frame = make_encoder_frame(raw_counts=raw_counts)
-
-    pumps: List[_LinkFramePump] = []
-    real_create = hand._create_encoder_link
-
-    def _patched_create_encoder_link(port: str) -> MockHandSerialLink:
-        link = real_create(port)
-        pump = _LinkFramePump(link, frame)
-        pumps.append(pump)
-        pump.start()
-        return link
-
-    hand._create_encoder_link = _patched_create_encoder_link
-
-    real_disconnect = hand.disconnect
-
-    def _patched_disconnect():
-        for pump in pumps:
-            pump.stop()
-        return real_disconnect()
-
-    hand.disconnect = _patched_disconnect
     return hand

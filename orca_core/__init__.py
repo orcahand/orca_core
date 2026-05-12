@@ -12,6 +12,10 @@ from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
 from .hardware_hand import OrcaHand
 from .hardware_hand import OrcaHandTouch
+from .hardware_hand_joint_feedback import (
+    JointFeedbackConnectError,
+    OrcaHandJointFeedback,
+)
 from .joint_position import OrcaJointPositions
 from .version import LATEST_VERSION
 
@@ -22,6 +26,8 @@ __all__ = [
     "OrcaHandTouchConfig",
     "OrcaHand",
     "OrcaHandTouch",
+    "OrcaHandJointFeedback",
+    "JointFeedbackConnectError",
     "OrcaJointPositions",
     "canonical_joint_ids",
     "LATEST_VERSION",

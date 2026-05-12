@@ -39,12 +39,13 @@ from .hardware.motor_client import MotorClient
 from .hardware.sensing.constants import LINK_DEFAULT_BAUDRATE
 from .hardware.sensing.serial_discovery import resolve_sensing_ports
 from .hardware_hand import OrcaHand
+from .joint_position import OrcaJointPositions
 
 
 logger = logging.getLogger(__name__)
 
 
-class OrcaHandJointFeedbackError(RuntimeError):
+class JointFeedbackConnectError(RuntimeError):
     """Raised when a joint-feedback connect precondition fails (no encoder
     port resolved, no encoder-backed joints, missing encoder calibration).
     """
@@ -59,8 +60,10 @@ class OrcaHandJointFeedback(OrcaHand):
 
     Connect-time preconditions raise: a missing encoder port, an absent
     ``joint_encoder_calibration`` block, or an encoder-stream timeout each
-    surface as an exception. The motor bus is left open on failure; the
-    caller invokes ``disconnect()`` to fully roll back.
+    surface as a :class:`JointFeedbackConnectError`. The motor bus opened
+    by ``super().connect()`` is rolled back before the exception escapes,
+    so a caller that catches the error sees the hand in the same state it
+    started in.
     """
 
     def __init__(
@@ -83,15 +86,21 @@ class OrcaHandJointFeedback(OrcaHand):
         self._controller: Optional[JointController] = None
         self._loop: Optional[JointLoopThread] = None
 
+    # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
+
     def _create_encoder_link(self, port: str) -> HandSerialLink:
         return HandSerialLink(port=port, baudrate=LINK_DEFAULT_BAUDRATE)
 
     def _create_encoder_client(self, link: HandSerialLink) -> JointEncoderClient:
         return JointEncoderClient(link)
 
+    # ----- Internal helpers ------------------------------------------------
+
     def _encoder_motor_ids(self) -> List[int]:
         joint_to_motor = self.config.joint_to_motor_map
         return [joint_to_motor[j] for j in self._encoder_backed_joints()]
+
+    # ----- Lifecycle -------------------------------------------------------
 
     def connect(self) -> tuple[bool, str]:
         success, msg = super().connect()
@@ -103,7 +112,7 @@ class OrcaHandJointFeedback(OrcaHand):
                 encoder_override=self.config.encoder_serial_port,
             )
             if ports.encoder is None:
-                raise OrcaHandJointFeedbackError(
+                raise JointFeedbackConnectError(
                     "No encoder serial port resolved "
                     f"(encoder_serial_port={self.config.encoder_serial_port!r})."
                 )
@@ -115,17 +124,22 @@ class OrcaHandJointFeedback(OrcaHand):
             self._encoder_client.start_encoder_stream()
 
             if not self.is_calibrated(use_joint_feedback=True):
-                raise OrcaHandJointFeedbackError(
+                raise JointFeedbackConnectError(
                     "Hand is missing joint-encoder calibration; "
                     "run calibration with use_joint_feedback enabled."
                 )
 
             motor_ids = self._encoder_motor_ids()
             if not motor_ids:
-                raise OrcaHandJointFeedbackError(
+                raise JointFeedbackConnectError(
                     "No encoder-backed joints configured "
                     "(set joint_encoder_joints in config.yaml)."
                 )
+
+            # Wrap offsets feed the joint→motor mapping the loop runs every
+            # cycle; populate them once here so the loop's snapshot is
+            # deterministic.
+            self._compute_wrap_offsets_dict()
 
             self._controller = JointController(num_joints=len(motor_ids))
             self._controller.set_gains(
@@ -138,6 +152,13 @@ class OrcaHandJointFeedback(OrcaHand):
             self._loop.start()
         except Exception:
             self._teardown_joint_feedback()
+            # The motor bus opened by super().connect() is part of the
+            # session this connect attempt was supposed to set up; roll it
+            # back so the caller doesn't inherit a half-connected hand.
+            try:
+                super().disconnect()
+            except Exception:
+                logger.exception("super().disconnect() failed during connect rollback")
             raise
 
         return True, f"{msg} | Joint feedback loop running on {ports.encoder}"
@@ -145,6 +166,34 @@ class OrcaHandJointFeedback(OrcaHand):
     def disconnect(self) -> tuple[bool, str]:
         self._teardown_joint_feedback()
         return super().disconnect()
+
+    def _teardown_joint_feedback(self) -> None:
+        """Stop the loop and drop the encoder link/client. Tolerates
+        partial-connect state so failure paths can re-enter cleanly. Errors
+        are logged (not swallowed) so a stuck teardown still surfaces."""
+        if self._loop is not None:
+            try:
+                self._loop.stop()
+            except Exception:
+                logger.exception("failed to stop joint loop thread")
+            self._loop = None
+        self._controller = None
+
+        if self._encoder_client is not None:
+            try:
+                self._encoder_client.disconnect()
+            except Exception:
+                logger.exception("failed to disconnect encoder client")
+            self._encoder_client = None
+
+        if self._encoder_link is not None:
+            try:
+                self._encoder_link.disconnect()
+            except Exception:
+                logger.exception("failed to disconnect encoder link")
+            self._encoder_link = None
+
+    # ----- Joint position routing ------------------------------------------
 
     def _set_joint_positions(self, joint_pos) -> bool:
         if self._loop is None:
@@ -162,49 +211,93 @@ class OrcaHandJointFeedback(OrcaHand):
         if loop_targets:
             self._loop.set_target(loop_targets)
         if rest:
-            from .joint_position import OrcaJointPositions
             super()._set_joint_positions(OrcaJointPositions(rest))
         return True
 
     def _get_joint_positions(self):
-        from .joint_position import OrcaJointPositions
-
         if self._loop is None:
             return super()._get_joint_positions()
 
-        motor_pos = self.get_motor_pos()
-        joint_dict = self._motor_to_joint_pos(motor_pos)
-        joint_dict.update(self._loop.get_measured_joints())
+        # Start from the loop's encoder-measured angles, then patch in the
+        # wrist via its own motor read — avoids the full _motor_to_joint_pos
+        # pass that would (a) recompute the 16 encoder joints we're about
+        # to overwrite and (b) spam calibration-warning prints every cycle.
+        joint_dict: Dict[str, float] = dict(self._loop.get_measured_joints())
+        wrist_joint = self._wrist_joint_name()
+        if wrist_joint is not None:
+            wrist_angle = self._wrist_joint_angle()
+            if wrist_angle is not None:
+                joint_dict[wrist_joint] = wrist_angle
         return OrcaJointPositions.from_dict(joint_dict)
 
-    def _teardown_joint_feedback(self) -> None:
-        """Stop the loop and drop the encoder link/client. Tolerates
-        partial connect state so failure paths can re-enter cleanly."""
-        if self._loop is not None:
-            try:
-                self._loop.stop()
-            except Exception:
-                logger.exception("failed to stop joint loop thread")
-            self._loop = None
-        self._controller = None
+    def _wrist_joint_name(self) -> Optional[str]:
+        from .constants import WRIST
 
-        if self._encoder_client is not None:
-            try:
-                self._encoder_client.stop_encoder_stream()
-            except Exception:
-                pass
-            try:
-                self._encoder_client.disconnect()
-            except Exception:
-                pass
-            self._encoder_client = None
+        if WRIST in self.config.joint_to_motor_map:
+            return WRIST
+        return None
 
-        if self._encoder_link is not None:
-            try:
-                self._encoder_link.disconnect()
-            except Exception:
-                pass
-            self._encoder_link = None
+    def _wrist_joint_angle(self) -> Optional[float]:
+        """Read the wrist motor only and convert via the inherited motor→joint
+        mapping. Returns ``None`` if the wrist isn't fully calibrated."""
+        wrist_joint = self._wrist_joint_name()
+        if wrist_joint is None:
+            return None
+        wrist_motor_id = self.config.joint_to_motor_map[wrist_joint]
+        limits = self.motor_limits_dict.get(wrist_motor_id)
+        ratio = self.calibration.joint_to_motor_ratios_dict.get(wrist_motor_id, 0.0)
+        if limits is None or any(v is None for v in limits) or ratio == 0:
+            return None
+        motor_pos = self.get_motor_pos()
+        idx = self.config.motor_id_to_idx_dict[wrist_motor_id]
+        wrapped = motor_pos[idx] - (self._wrap_offsets_dict or {}).get(wrist_motor_id, 0.0)
+        if self.config.joint_inversion_dict.get(wrist_joint, False):
+            return self.config.joint_roms_dict[wrist_joint][1] - (wrapped - limits[0]) / ratio
+        return self.config.joint_roms_dict[wrist_joint][0] + (wrapped - limits[0]) / ratio
+
+    # ----- Public facade onto the loop + controller ------------------------
+
+    def set_pid_gains(
+        self,
+        Kp,
+        Ki,
+        correction_max_deg: float,
+        i_clamp_deg: Optional[float] = None,
+    ) -> None:
+        """Retune the outer-loop PI gains while the loop is running.
+
+        ``i_clamp_deg`` defaults to ``correction_max_deg`` (the convention
+        established during bring-up: anti-windup matches output clamp).
+        Raises :class:`RuntimeError` when the joint loop isn't active.
+        """
+        if self._controller is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        clamp = correction_max_deg if i_clamp_deg is None else i_clamp_deg
+        self._controller.set_gains(
+            Kp=Kp,
+            Ki=Ki,
+            correction_max_deg=correction_max_deg,
+            i_clamp_deg=clamp,
+        )
+
+    def get_measured_joints(self) -> Dict[str, float]:
+        """Encoder-measured joint angles in degrees, per encoder-backed joint."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        return self._loop.get_measured_joints()
+
+    def get_loop_correction(self) -> Dict[str, float]:
+        """Per-joint PI trim correction in degrees from the last cycle."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        return self._loop.get_correction()
+
+    def get_loop_stats(self) -> Dict[str, float]:
+        """Diagnostic counters from the joint-loop thread (cycles_ok,
+        cycles_overrun, e_stops, last_dt_s, fallback_active, …)."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        return self._loop.get_stats()
 
 
 class MockOrcaHandJointFeedback(OrcaHandJointFeedback):

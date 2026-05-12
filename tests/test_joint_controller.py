@@ -93,10 +93,18 @@ def test_reset_zeros_state():
     np.testing.assert_allclose(state["last_correction_deg"], np.zeros(4))
 
 
-def test_set_gains_rejects_negative_values():
+@pytest.mark.parametrize(
+    "bad_field",
+    ["Kp", "Ki", "correction_max_deg", "i_clamp_deg"],
+)
+def test_set_gains_rejects_negative_values(bad_field):
+    """Every gain must be non-negative; the validator must reject each one
+    individually so we don't regress to "only Kp is checked"."""
     controller = JointController(num_joints=4)
-    with pytest.raises(ValueError, match="Kp"):
-        controller.set_gains(Kp=-1.0, Ki=0.0, correction_max_deg=0.1, i_clamp_deg=0.1)
+    kwargs = {"Kp": 0.1, "Ki": 0.1, "correction_max_deg": 0.1, "i_clamp_deg": 0.1}
+    kwargs[bad_field] = -1.0
+    with pytest.raises(ValueError, match=bad_field):
+        controller.set_gains(**kwargs)
 
 
 def test_step_rejects_wrong_shape():

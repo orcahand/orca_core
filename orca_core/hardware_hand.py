@@ -408,6 +408,17 @@ class OrcaHand(BaseHand):
         self._set_motor_pos(motor_pos)
         return True
 
+    def write_motor_pos(self, motor_ids: List[int], positions) -> None:
+        """Write motor-position targets for an explicit subset of motors.
+
+        Thin wrapper used by hot-path callers (e.g. the joint-loop thread)
+        that already have an aligned ``(motor_ids, positions)`` pair and
+        want to bypass the dict/list/array normalisation done by
+        :meth:`_set_motor_pos`. Acquires the motor lock.
+        """
+        with self._motor_lock:
+            self._motor_client.write_desired_pos(motor_ids, positions)
+
     def init_joints(self, force_calibrate: bool = False):
         """Prepare the hand for operation.
 

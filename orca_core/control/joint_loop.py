@@ -153,7 +153,7 @@ class JointLoopThread:
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
             motor_targets = self._joint_to_motor_pos(target)
-            self._hand._motor_client.write_desired_pos(self._motor_ids, motor_targets)
+            self._hand.write_motor_pos(self._motor_ids, motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
             return
@@ -171,7 +171,7 @@ class JointLoopThread:
 
         correction = self._controller.step(target, measured, dt)
         motor_targets = self._joint_to_motor_pos(target + correction)
-        self._hand._motor_client.write_desired_pos(self._motor_ids, motor_targets)
+        self._hand.write_motor_pos(self._motor_ids, motor_targets)
 
         with self._lock:
             self._latest_measured = measured.copy()
@@ -183,24 +183,28 @@ class JointLoopThread:
     def set_target(self, joint_targets: JointTargets) -> None:
         """Update the joint setpoint. Accepts a ``{joint_name: angle_deg}``
         dict or a ``(num_joints,)`` array indexed in the snapshotted joint
-        order."""
+        order. Concurrent calls compose atomically — each dict updates only
+        the joints it names, on top of whatever the previous caller wrote."""
         if isinstance(joint_targets, dict):
             unknown = set(joint_targets) - set(self._joint_names)
             if unknown:
                 raise ValueError(f"unknown joints in target: {sorted(unknown)}")
-            new_target = self._target_deg.copy()
-            for joint, value in joint_targets.items():
-                new_target[self._joint_names.index(joint)] = float(value)
-        else:
-            array = np.asarray(joint_targets, dtype=np.float64)
-            if array.shape != (len(self._joint_names),):
-                raise ValueError(
-                    f"target array must have shape ({len(self._joint_names)},), "
-                    f"got {array.shape}"
-                )
-            new_target = array.copy()
+            joint_index = {name: i for i, name in enumerate(self._joint_names)}
+            with self._lock:
+                new_target = self._target_deg.copy()
+                for joint, value in joint_targets.items():
+                    new_target[joint_index[joint]] = float(value)
+                self._target_deg = new_target
+            return
+
+        array = np.asarray(joint_targets, dtype=np.float64)
+        if array.shape != (len(self._joint_names),):
+            raise ValueError(
+                f"target array must have shape ({len(self._joint_names)},), "
+                f"got {array.shape}"
+            )
         with self._lock:
-            self._target_deg = new_target
+            self._target_deg = array.copy()
 
     def get_measured_joints(self) -> Dict[str, float]:
         with self._lock:
@@ -262,7 +266,10 @@ class JointLoopThread:
                 f"but {len(joints)} encoder-backed joints are available"
             )
         if self._hand._wrap_offsets_dict is None:
-            self._hand._compute_wrap_offsets_dict()
+            raise RuntimeError(
+                "hand has no wrap-offsets snapshot; caller must compute it "
+                "before constructing the joint loop"
+            )
 
         self._joint_names = joints
         self._slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
