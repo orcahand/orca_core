@@ -65,7 +65,7 @@ To get started with Orca Core, follow these steps:
 
 ### Serial Port Permissions (Linux)
 
-On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
+On Linux, the serial port (e.g., `/dev/ttyACM0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
 
 **Permanent fix** (requires re-login):
 
@@ -76,23 +76,23 @@ sudo usermod -aG dialout $USER
 **Temporary fix** (resets on reboot/replug):
 
 ```sh
-sudo chmod 666 /dev/ttyUSB0
+sudo chmod 666 /dev/ttyACM0
 ```
 
-### Serial Port Path
+### Serial port, baudrate, and motor type
 
-Make sure the `port` field in your `config.yaml` matches your operating system:
+By default these are all **auto-detected** at connect time.
 
-| OS    | Example port                    |
-|-------|---------------------------------|
-| Linux | `/dev/ttyUSB0`                  |
-| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+However, you can declare them explicitly in `config.yaml`. Useful when:
 
----
+- **multiple hands are connected** at once → `port` disambiguates which one
+- **motors run at a non-default baudrate** → `baudrate` skips the probe sweep
+- **the auto-detection picks the wrong family** → `motor_type` forces a specific one
 
-**Note:**
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
+```yaml
+# Optional overrides:   auto-detected if omitted
+port: /dev/ttyACM0      # or /'dev/cu.usbmodemXXXX' on macOS
+baudrate: 1000000       # 1M for v2; 3M for v1 
+motor_type: dynamixel   # or 'feetech'
+```
 
----
