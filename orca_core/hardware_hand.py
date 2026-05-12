@@ -1193,7 +1193,7 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
-    def _tension(self, move_motors: bool = False):
+    def _tension(self, move_motors: bool = True):
         # TODO(fracapuano): Move this to a standard stateless function
         control_mode = self.config.control_mode
         self.set_control_mode(CURRENT_BASED_POSITION)
@@ -1205,7 +1205,7 @@ class OrcaHand(BaseHand):
             ]
             self.set_max_current(self.config.calibration_current)
 
-            duration = 8
+            duration = 5
             increment_per_step = 0.1
             motor_increments_right = {
                 motor_id: increment_per_step for motor_id in motors_to_move
@@ -1214,21 +1214,39 @@ class OrcaHand(BaseHand):
                 motor_id: -increment_per_step for motor_id in motors_to_move
             }
 
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                if self._task_stop_event.is_set():
-                    break
-                self._set_motor_pos(motor_increments_left, rel_to_current=True)
-                time.sleep(0.1)
+            stall_threshold = 0.01
+            stall_hold = 1.0
 
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                if self._task_stop_event.is_set():
-                    break
-                self._set_motor_pos(motor_increments_right, rel_to_current=True)
-                time.sleep(0.1)
+            for increments in (motor_increments_left, motor_increments_right):
+                stall_start = None
+                prev_pos = self.get_motor_pos()
+                while not self._task_stop_event.is_set():
+                    self._set_motor_pos(increments, rel_to_current=True)
+                    time.sleep(0.1)
+                    cur_pos = self.get_motor_pos()
+                    if np.max(np.abs(cur_pos - prev_pos)) < stall_threshold:
+                        if stall_start is None:
+                            stall_start = time.time()
+                        elif time.time() - stall_start >= stall_hold:
+                            break
+                    else:
+                        stall_start = None
+                    prev_pos = cur_pos
 
-        self.set_max_current(self.config.max_current)
+        # Gradually release torque so tendons don't snap back, then
+        # re-engage at the relaxed position for a stable hold.
+        max_cur = self.config.max_current
+        self.set_max_current(max_cur)
+        self.enable_torque()
+        steps = 20
+        for i in range(steps):
+            if self._task_stop_event.is_set():
+                break
+            self.set_max_current(max_cur * (1 - (i + 1) / steps))
+            time.sleep(1.0 / steps)
+        self.disable_torque()
+        time.sleep(0.05)
+        self.set_max_current(max_cur)
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
         try:
