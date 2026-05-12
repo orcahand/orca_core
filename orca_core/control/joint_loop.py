@@ -283,7 +283,7 @@ class JointLoopThread:
             [JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
-            [encoder_dict[j].anchor_angle_deg for j in joints], dtype=np.float64
+            [joint_roms[j][1] for j in joints], dtype=np.float64
         )
         self._motor_ids = [joint_to_motor[j] for j in joints]
         self._motor_limits_lower = np.array(

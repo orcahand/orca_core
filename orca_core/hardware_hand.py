@@ -546,7 +546,7 @@ class OrcaHand(BaseHand):
         anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
         polarities = np.array([JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64)
         anchor_angles = np.array(
-            [encoder_dict[j].anchor_angle_deg for j in joints], dtype=np.float64
+            [self.config.joint_roms_dict[j][1] for j in joints], dtype=np.float64
         )
 
         slot_counts = raw_counts[slots]
@@ -1005,8 +1005,6 @@ class OrcaHand(BaseHand):
             if self.config.joint_to_motor_map.get(joint) is None:
                 continue
 
-            anchor_angle_deg = float(self.config.joint_roms_dict[joint][1])
-
             try:
                 anchor_count = sample_anchor_count_from_client(
                     joint_encoder_client, slot=slot
@@ -1019,11 +1017,11 @@ class OrcaHand(BaseHand):
 
             joint_encoder_calibration[joint] = JointEncoderCal(
                 enc_at_anchor_count=int(anchor_count),
-                anchor_angle_deg=anchor_angle_deg,
             )
+            anchor_angle_deg = float(self.config.joint_roms_dict[joint][1])
             print(
                 f"Joint {joint} encoder anchor sampled: "
-                f"anchor_count={anchor_count}, anchor_angle_deg={anchor_angle_deg:.2f}"
+                f"anchor_count={anchor_count} (at ROM upper {anchor_angle_deg:.2f}°)"
             )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):

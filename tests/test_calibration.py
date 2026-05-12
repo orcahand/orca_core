@@ -79,8 +79,8 @@ def test_joint_encoder_calibration_yaml_round_trip(tmp_path):
     calib_path = tmp_path / "calibration.yaml"
     calib_path.touch()
     cals = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=12345, anchor_angle_deg=0.0),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=4321, anchor_angle_deg=85.0),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=12345),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=4321),
     }
 
     update_yaml(
@@ -141,7 +141,7 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
     )
 
     full_dict = {
-        joint: JointEncoderCal(enc_at_anchor_count=0, anchor_angle_deg=0.0)
+        joint: JointEncoderCal(enc_at_anchor_count=0)
         for joint in hand._encoder_backed_joints()
     }
     hand.calibration = dc.replace(
@@ -163,12 +163,14 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
 
 
 def test_raw_to_joint_angle_at_anchor_returns_anchor_angle(calib_dir):
+    """raw == enc_at_anchor_count decodes to the joint's ROM upper (the
+    pose the calibration sweep stalls the motor at)."""
     import dataclasses as dc
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=1000, anchor_angle_deg=15.0),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=8000, anchor_angle_deg=80.0),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=1000),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=8000),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -180,11 +182,17 @@ def test_raw_to_joint_angle_at_anchor_returns_anchor_angle(calib_dir):
 
     angles = hand._raw_to_joint_angle(raw)
     assert set(angles.keys()) == {"thumb_cmc", "index_mcp"}
-    assert angles["thumb_cmc"] == pytest.approx(15.0, abs=1e-9)
-    assert angles["index_mcp"] == pytest.approx(80.0, abs=1e-9)
+    assert angles["thumb_cmc"] == pytest.approx(
+        hand.config.joint_roms_dict["thumb_cmc"][1], abs=1e-9
+    )
+    assert angles["index_mcp"] == pytest.approx(
+        hand.config.joint_roms_dict["index_mcp"][1], abs=1e-9
+    )
 
 
 def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
+    """Polarity flips the sign of the encoder delta; the 14-bit wrap is
+    handled at the ±180° boundary."""
     import dataclasses as dc
 
     from orca_core.hardware.sensing import constants as sensing_constants
@@ -194,8 +202,8 @@ def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_deg=0.0),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=10, anchor_angle_deg=0.0),
+        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=10),
+        "index_mcp": JointEncoderCal(enc_at_anchor_count=10),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -205,9 +213,11 @@ def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
     raw[JOINT_TO_ENCODER_SLOT["thumb_cmc"]] = 30  # +20 LSB, polarity +1
     raw[JOINT_TO_ENCODER_SLOT["index_mcp"]] = 16380  # wraps to -14 LSB, polarity -1
 
+    rom_thumb = hand.config.joint_roms_dict["thumb_cmc"][1]
+    rom_index = hand.config.joint_roms_dict["index_mcp"][1]
     angles = hand._raw_to_joint_angle(raw)
-    assert angles["thumb_cmc"] == pytest.approx(20 * ENCODER_LSB_DEG, abs=1e-12)
-    assert angles["index_mcp"] == pytest.approx(14 * ENCODER_LSB_DEG, abs=1e-12)
+    assert angles["thumb_cmc"] == pytest.approx(rom_thumb + 20 * ENCODER_LSB_DEG, abs=1e-12)
+    assert angles["index_mcp"] == pytest.approx(rom_index + 14 * ENCODER_LSB_DEG, abs=1e-12)
 
 
 def test_raw_to_joint_angle_empty_dict_returns_empty(calib_dir):
@@ -254,7 +264,7 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
     assert hand.is_calibrated(use_joint_feedback=True) is True
 
     sample_entry = next(iter(raw["joint_encoder_calibration"].values()))
-    assert set(sample_entry.keys()) == {"enc_at_anchor_count", "anchor_angle_deg"}
+    assert set(sample_entry.keys()) == {"enc_at_anchor_count"}
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ def _make_loop(
 def _static_at_zero(hand, freshness_ms: float = 0.0) -> StaticEncoderSource:
     return StaticEncoderSource(
         encoder_reading_from_joint_angles(
-            {j: 0.0 for j in hand._encoder_backed_joints()}
+            hand, {j: 0.0 for j in hand._encoder_backed_joints()},
         ),
         freshness_ms=freshness_ms,
     )
@@ -92,7 +92,8 @@ def test_bumpless_first_step_writes_base_motor_target_with_no_correction(calibra
     measured_angle_deg = 3.0
     encoder = StaticEncoderSource(
         encoder_reading_from_joint_angles(
-            {j: measured_angle_deg for j in calibrated_hand._encoder_backed_joints()}
+            calibrated_hand,
+            {j: measured_angle_deg for j in calibrated_hand._encoder_backed_joints()},
         )
     )
     loop = _make_loop(calibrated_hand, encoder, Kp=1.0)
@@ -125,13 +126,18 @@ def test_step_once_applies_correction_to_motor_target(calibrated_hand):
     )
     loop.step_once(dt=0.01)
 
+    # The encoder round-trip is quantised to one 14-bit LSB (~0.022°/LSB),
+    # so the measured pose can land up to that much off zero; tolerance
+    # follows the LSB scaled by Kp.
     expected_correction = Kp * target_offset_deg
+    enc_quantisation_deg = 360.0 / 16384
+    correction_tol = Kp * enc_quantisation_deg
     correction = loop.get_correction()
     for joint in calibrated_hand._encoder_backed_joints():
-        assert correction[joint] == pytest.approx(expected_correction, abs=1e-9)
+        assert correction[joint] == pytest.approx(expected_correction, abs=correction_tol)
         motor_id = calibrated_hand.config.joint_to_motor_map[joint]
         expected_motor = _expected_motor_pos(
-            calibrated_hand, joint, target_offset_deg + expected_correction
+            calibrated_hand, joint, target_offset_deg + correction[joint],
         )
         assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
             expected_motor, abs=1e-6

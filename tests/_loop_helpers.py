@@ -15,14 +15,12 @@ from orca_core.calibration import JointEncoderCal
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
     ENCODER_COUNTS_PER_REV,
+    ENCODER_LSB_DEG,
     JOINT_ENCODER_POLARITY,
     JOINT_TO_ENCODER_SLOT,
 )
 from orca_core.hardware.sensing.types import EncoderReading
 from orca_core.hardware_hand import MockOrcaHand
-
-
-_COUNTS_PER_DEG = ENCODER_COUNTS_PER_REV / 360.0
 
 
 def make_calibrated_hand(config_path: str) -> MockOrcaHand:
@@ -34,10 +32,7 @@ def make_calibrated_hand(config_path: str) -> MockOrcaHand:
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
     ratios = {mid: 0.01 for mid in hand.config.motor_ids}
     encoder_cal = {
-        joint: JointEncoderCal(
-            enc_at_anchor_count=0,
-            anchor_angle_deg=0.0,
-        )
+        joint: JointEncoderCal(enc_at_anchor_count=0)
         for joint in hand._encoder_backed_joints()
     }
     hand.calibration = dc.replace(
@@ -48,21 +43,30 @@ def make_calibrated_hand(config_path: str) -> MockOrcaHand:
         calibrated=True,
         wrist_calibrated=True,
     )
+    hand._compute_wrap_offsets_dict()
     return hand
 
 
-def encoder_reading_from_joint_angles(joint_angles_deg: Dict[str, float]) -> EncoderReading:
+def encoder_reading_from_joint_angles(
+    hand: MockOrcaHand, joint_angles_deg: Dict[str, float],
+) -> EncoderReading:
     """Build an ``EncoderReading`` whose raw counts decode to the given
-    joint angles (degrees) under anchor=0 calibration. Applies the
-    per-joint :data:`JOINT_ENCODER_POLARITY` so the round-trip through
-    :func:`encoder_to_joint_angle` recovers the input angles regardless
-    of which joints are mounted with inverted polarity.
+    joint angles (degrees) for the given hand's calibration.
+
+    The decode reads the anchor angle from ``hand.config.joint_roms_dict[j][1]``
+    and the anchor count from ``hand.calibration.joint_encoder_calibration_dict[j]``,
+    so the round-trip through :func:`encoder_to_joint_angle` recovers the
+    input angles regardless of polarity, anchor count, or ROM offset.
     """
     raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
+    encoder_dict = hand.calibration.joint_encoder_calibration_dict
     for joint, angle_deg in joint_angles_deg.items():
         slot = JOINT_TO_ENCODER_SLOT[joint]
         polarity = JOINT_ENCODER_POLARITY[joint]
-        raw[slot] = int(round(angle_deg * polarity * _COUNTS_PER_DEG)) % ENCODER_COUNTS_PER_REV
+        anchor_count = encoder_dict[joint].enc_at_anchor_count
+        anchor_angle_deg = hand.config.joint_roms_dict[joint][1]
+        delta_counts = int(round((angle_deg - anchor_angle_deg) / (polarity * ENCODER_LSB_DEG)))
+        raw[slot] = (anchor_count + delta_counts) % ENCODER_COUNTS_PER_REV
     return EncoderReading(
         raw_counts=raw,
         parity_ok=np.ones(AUTO_ENC_NUM_JOINTS, dtype=bool),

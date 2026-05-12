@@ -18,16 +18,15 @@ class JointEncoderCal:
     """Per-joint absolute-encoder anchor.
 
     ``joint_angle = polarity * Δenc_wrapped + anchor_angle_deg``, where
-    ``Δenc_wrapped`` is the 14-bit-aware wrap-corrected delta from
-    ``enc_at_anchor_count`` (converted to degrees) and ``polarity`` is
-    looked up from :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by
-    mounting + magnet orientation). ``anchor_angle_deg`` equals
-    ``joint_roms_dict[joint][1]`` — the joint's max ROM, where the
-    calibration sweep stalls the motor.
+    ``Δenc_wrapped`` is the wrap-corrected 14-bit encoder delta from
+    ``enc_at_anchor_count``, ``polarity`` is looked up from
+    :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by mounting + magnet
+    orientation), and ``anchor_angle_deg`` is the joint's ROM upper from
+    :attr:`OrcaHandConfig.joint_roms_dict` (the pose the calibration sweep
+    stalls the motor at).
     """
 
     enc_at_anchor_count: int
-    anchor_angle_deg: float
 
 
 @dataclass(frozen=True)
@@ -97,7 +96,6 @@ class CalibrationResult:
         joint_encoder_calibration_dict = {
             joint: JointEncoderCal(
                 enc_at_anchor_count=int(entry["enc_at_anchor_count"]),
-                anchor_angle_deg=float(entry["anchor_angle_deg"]),
             )
             for joint, entry in encoder_raw.items()
         }
