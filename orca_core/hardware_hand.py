@@ -1090,7 +1090,7 @@ class OrcaHand(BaseHand):
                 )
                 update_yaml(self.config.calibration_path, "calibrated", False)
 
-    def tension(self, move_motors: bool = False, blocking: bool = True):
+    def tension(self, move_motors: bool = True, blocking: bool = True):
         """Hold motors under current to allow manual tendon tensioning.
 
         Optionally pre-conditions the tendons with a short back-and-forth
@@ -1099,7 +1099,7 @@ class OrcaHand(BaseHand):
 
         Args:
             move_motors: When ``True``, execute a short flexion/extension cycle
-                before holding (default ``False``).
+                before holding (default ``True``).
             blocking: When ``True`` (default) blocks until the user interrupts
                 with Ctrl-C. When ``False`` runs in a background thread.
         """
