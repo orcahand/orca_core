@@ -12,8 +12,9 @@ def main() -> int:
     add_hand_arguments(parser)
     parser.add_argument(
         "--move-motors",
-        action="store_true",
-        help="Run the built-in preconditioning motion before holding tension.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run the built-in preconditioning motion before holding tension (default: True).",
     )
     args = parser.parse_args()
 
