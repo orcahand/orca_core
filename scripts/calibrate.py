@@ -44,7 +44,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.fingers and args.joints:
-        parser.error("Cannot specify both --fingers and --joints. Use one or the other.")
+        parser.error("Cannot specify both --fingers and --joints. Use either one.")
 
     joints = None
     if args.fingers:

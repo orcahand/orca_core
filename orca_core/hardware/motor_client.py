@@ -9,7 +9,7 @@
 """Abstract base class for motor communication clients."""
 
 from abc import ABC, abstractmethod
-from typing import Sequence, Tuple
+from typing import NamedTuple, Sequence
 import numpy as np
 
 
@@ -19,6 +19,18 @@ class MotorError(Exception):
 
 class MotionTimeoutError(MotorError):
     """Raised when motors fail to settle within the requested timeout."""
+
+
+class MotorRead(NamedTuple):
+    """A single snapshot of position / velocity / current for all motors.
+
+    Each field is a 1-D numpy array indexed by the motor order configured
+    on the client. NamedTuple so callers can also unpack as
+    ``position, velocity, current = client.read_position_velocity_current()``.
+    """
+    position: np.ndarray
+    velocity: np.ndarray
+    current: np.ndarray
 
 
 class MotorClient(ABC):
@@ -82,12 +94,12 @@ class MotorClient(ABC):
         ...
 
     @abstractmethod
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads the current position, velocity, and current for all motors.
+    def read_position_velocity_current(self) -> MotorRead:
+        """Read the current position, velocity, and current for all motors.
 
         Returns:
-            A tuple of (positions, velocities, currents) as numpy arrays.
-            Positions are in radians, velocities in rad/s, currents in mA.
+            A :class:`MotorRead` snapshot. Positions are in radians,
+            velocities in rad/s, currents in mA.
         """
         ...
 

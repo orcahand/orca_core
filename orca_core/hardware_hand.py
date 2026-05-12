@@ -394,7 +394,7 @@ class OrcaHand(BaseHand):
             Motor positions in radians as an array or dict.
         """
         with self._motor_lock:
-            motor_pos = self._motor_client.read_pos_vel_cur()[0]
+            motor_pos = self._motor_client.read_position_velocity_current().position
 
             if as_dict:
                 return {
@@ -414,7 +414,7 @@ class OrcaHand(BaseHand):
             Motor currents (mA) as an array, or dict.
         """
         with self._motor_lock:
-            motor_current = self._motor_client.read_pos_vel_cur()[2]
+            motor_current = self._motor_client.read_position_velocity_current().current
 
             if as_dict:
                 return {

@@ -20,7 +20,13 @@ import time
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
-from .motor_client import MotorClient
+from dynamixel_sdk import (
+    COMM_SUCCESS,
+    PacketHandler,
+    PortHandler,
+)
+
+from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
 
@@ -227,8 +233,6 @@ class DynamixelClient(MotorClient):
         Dynamixel Protocol 2.0 at this baudrate. Used at connect time to
         auto-detect the driver family without enabling torque.
         """
-        from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
-
         handler = PortHandler(port)
         try:
             if not handler.openPort():
@@ -306,13 +310,14 @@ class DynamixelClient(MotorClient):
         for mid in motor_ids:
             self._operating_modes[mid] = mode_value
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the positions, velocities, and currents.
+    def read_position_velocity_current(self) -> MotorRead:
+        """Return positions, velocities, and currents as a ``MotorRead`` snapshot.
 
         Overload detection is handled reactively via the Alert bit in
         handle_packet_result, so no extra bulk read is needed here.
         """
-        return self._pos_vel_cur_reader.read()
+        pos, vel, cur = self._pos_vel_cur_reader.read()
+        return MotorRead(position=pos, velocity=vel, current=cur)
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
@@ -716,7 +721,7 @@ class DynamixelReader:
         return self._get_data()
 
     def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> None:
-        """Read each motor in ``motor_ids`` individually."""
+        """Hook overridden by subclasses to read each motor individually. Default no-op keeps cached values."""
 
     def _initialize_data(self):
         """Initializes the cached data."""
@@ -892,7 +897,7 @@ if __name__ == '__main__':
                 print('Writing: {}'.format(way_point.tolist()))
                 dxl_client.write_desired_pos(motors, way_point)
             read_start = time.time()
-            pos_now, vel_now, cur_now = dxl_client.read_pos_vel_cur()
+            pos_now, vel_now, cur_now = dxl_client.read_position_velocity_current()
             if step % 5 == 0:
                 print('[{}] Frequency: {:.2f} Hz'.format(
                     step, 1.0 / (time.time() - read_start)))

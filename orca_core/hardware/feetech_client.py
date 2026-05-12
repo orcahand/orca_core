@@ -14,7 +14,7 @@ import time
 from typing import Optional, Sequence, Tuple
 import numpy as np
 
-from .motor_client import MotionTimeoutError, MotorClient
+from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 from .feetech import (
     PortHandler,
     sms_sts,
@@ -48,10 +48,7 @@ FEETECH_BAUD_RATE_MAP: dict[int, int] = {
     38_400: 7,
 }
 
-# Model-number → human name. The string is used by configure_motor_chain
-# for substring-matching, so multiple raw model numbers can share a label
-# (e.g., HLS3915 ships in two firmware revisions reporting different
-# model_number values; both are functionally HLS3915).
+# Model-number → human name. Multiple raw values can map to the same label.
 FEETECH_MODELS: dict[int, str] = {
     4106: 'HLS3930',
     6922: 'HLS3915',
@@ -201,7 +198,7 @@ class FeetechClient(MotorClient):
     def scan_for_motors(
         port: str = '/dev/ttyUSB0',
         id_range: tuple = (0, 252),
-        baud_rates: list = None,
+        baud_rates: Optional[list] = None,
     ) -> list:
         """Scan ``port`` for any responding Feetech motors.
 
@@ -209,7 +206,8 @@ class FeetechClient(MotorClient):
         every ID in ``id_range``, and returns a list of dicts with keys
         ``id``, ``baud_rate``, ``model_name``. Doesn't change motor state.
         """
-        baud_rates = baud_rates or list(FEETECH_BAUD_RATE_MAP.keys())
+        if baud_rates is None:
+            baud_rates = list(FEETECH_BAUD_RATE_MAP.keys())
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = PortHandler(port)
@@ -370,7 +368,7 @@ class FeetechClient(MotorClient):
         # Re-enable torque
         self.set_torque_enabled(motor_ids, True)
 
-    def _read_state_per_motor_fallback(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _read_state_per_motor_fallback(self) -> MotorRead:
         """Per-motor read of position/velocity/current; used only when sync read fails."""
         self._check_connected()
 
@@ -419,7 +417,7 @@ class FeetechClient(MotorClient):
                     motor_id, result, error
                 )
 
-        return positions, velocities, currents
+        return MotorRead(position=positions, velocity=velocities, current=currents)
 
     def read_temperature(self) -> np.ndarray:
         """Reads the temperature for all motors via a single sync-read packet."""
@@ -708,6 +706,7 @@ class FeetechClient(MotorClient):
         self.packet_handler.groupSyncWrite.clearParam()
 
         for motor_id, pos_rad in zip(motor_ids, positions):
+            # STS servo mode uses raw 0–4095 (single rotation); clamp before sending.
             pos_raw = self._clamp_position(self._rad_to_raw(pos_rad, self.pos_scale))
 
             logging.debug(
@@ -725,7 +724,7 @@ class FeetechClient(MotorClient):
         # Clear params for next use
         self.packet_handler.groupSyncWrite.clearParam()
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def read_position_velocity_current(self) -> MotorRead:
         """Read position, velocity, and current for all motors in one sync packet.
 
         Falls back to per-motor reads only if the sync transaction fails.
@@ -768,7 +767,7 @@ class FeetechClient(MotorClient):
             else:
                 logging.warning('Motor %d not available in sync read', motor_id)
 
-        return positions, velocities, currents
+        return MotorRead(position=positions, velocity=velocities, current=currents)
 
 
 # Register global cleanup function
