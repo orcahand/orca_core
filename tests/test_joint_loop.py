@@ -15,7 +15,7 @@ import pytest
 
 from orca_core.control import JointController, JointLoopThread
 from orca_core.control.constants import (
-    WATCHDOG_DROP_TORQUE_MS,
+    WATCHDOG_HOLD_BASE_MS,
     WATCHDOG_HOLD_MS,
     WATCHDOG_STOP_LOOP_MS,
     WATCHDOG_WARN_MS,
@@ -194,12 +194,12 @@ def test_tier2_freezes_integrator_and_recovers(calibrated_hand):
     assert not loop._controller.integral_frozen
 
 
-def test_tier3_zeroes_trim_writes_base_motor_target_only(calibrated_hand):
-    """At >200 ms freshness the trim is zeroed: write the base motor
-    target for the (uncorrected) joint target. The motor PID holds the
-    un-trimmed pose."""
+def test_tier3_drops_trim_writes_base_motor_target_only(calibrated_hand):
+    """At >200 ms freshness the PI trim is dropped: each cycle writes the
+    base motor target for the (uncorrected) joint target so the motor's
+    internal PID continues to hold the requested pose."""
     encoder = _static_at_zero(
-        calibrated_hand, freshness_ms=WATCHDOG_DROP_TORQUE_MS + 50
+        calibrated_hand, freshness_ms=WATCHDOG_HOLD_BASE_MS + 50
     )
     loop = _make_loop(calibrated_hand, encoder, Kp=10.0)
     loop.prime_for_step()
@@ -213,7 +213,9 @@ def test_tier3_zeroes_trim_writes_base_motor_target_only(calibrated_hand):
         assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
             expected, abs=1e-6
         )
-    assert loop.get_stats()["e_stops"] >= 1
+    stats = loop.get_stats()
+    assert stats["cycles_held_base"] >= 1
+    assert stats["e_stops"] == 0, "tier-3 must not count as an e-stop"
 
 
 def test_tier4_sets_fallback_active(calibrated_hand):

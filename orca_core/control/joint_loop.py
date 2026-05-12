@@ -11,10 +11,11 @@ Encoder-freshness watchdog (the motor PID keeps holding the last
 commanded position even without host updates, so the higher tiers do not
 drop torque):
 
-  > WATCHDOG_WARN_MS         rate-limited warning, control unchanged.
-  > WATCHDOG_HOLD_MS         freeze the integrator; P term still runs.
-  > WATCHDOG_DROP_TORQUE_MS  write the un-trimmed base motor target.
-  > WATCHDOG_STOP_LOOP_MS    stop the loop, set ``fallback_active``.
+  > WATCHDOG_WARN_MS      rate-limited warning, control unchanged.
+  > WATCHDOG_HOLD_MS      freeze the integrator; P term still runs.
+  > WATCHDOG_HOLD_BASE_MS drop the PI trim; write only the base motor
+                          target so the motor's internal PID holds pose.
+  > WATCHDOG_STOP_LOOP_MS stop the loop, set ``fallback_active``.
 
 A loop-period jitter monitor escalates to the stop tier on five
 consecutive cycles slower than 10× target.
@@ -37,7 +38,13 @@ from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
 from .joint_controller import JointController
 from .constants import (
     DEFAULT_LOOP_HZ,
-    WATCHDOG_DROP_TORQUE_MS,
+    FRESHNESS_WARN_INTERVAL_S,
+    JITTER_ESTOP_CONSECUTIVE,
+    JITTER_ESTOP_RATIO,
+    JITTER_WARN_CONSECUTIVE,
+    JITTER_WARN_RATIO,
+    LOOP_EXCEPTION_LOG_INTERVAL_S,
+    WATCHDOG_HOLD_BASE_MS,
     WATCHDOG_HOLD_MS,
     WATCHDOG_STOP_LOOP_MS,
     WATCHDOG_WARN_MS,
@@ -45,13 +52,6 @@ from .constants import (
 
 
 logger = logging.getLogger(__name__)
-
-
-_FRESHNESS_WARN_INTERVAL_S = 1.0
-_JITTER_WARN_RATIO = 2.0
-_JITTER_ESTOP_RATIO = 10.0
-_JITTER_WARN_CONSECUTIVE = 10
-_JITTER_ESTOP_CONSECUTIVE = 5
 
 
 JointTargets = Union[Dict[str, float], np.ndarray]
@@ -104,12 +104,15 @@ class JointLoopThread:
             "cycles_overrun": 0,
             "cycles_no_reading": 0,
             "cycles_held": 0,
+            "cycles_held_base": 0,
+            "cycles_exception": 0,
             "commands_sent": 0,
             "e_stops": 0,
             "last_dt_s": float("nan"),
             "fallback_active": False,
         }
         self._last_freshness_warn_time: float = 0.0
+        self._last_exception_log_time: float = 0.0
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
 
@@ -148,11 +151,10 @@ class JointLoopThread:
         with self._lock:
             target = self._target_deg.copy()
 
-        if freshness_ms > WATCHDOG_DROP_TORQUE_MS:
-            zero_correction = np.zeros(len(self._joint_names), dtype=np.float64)
-            motor_targets = self._joint_to_motor_pos(target + zero_correction)
+        if freshness_ms > WATCHDOG_HOLD_BASE_MS:
+            motor_targets = self._joint_to_motor_pos(target)
             self._hand._motor_client.write_desired_pos(self._motor_ids, motor_targets)
-            self._stats["e_stops"] += 1
+            self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
             return
 
@@ -165,18 +167,7 @@ class JointLoopThread:
         if freshness_ms > WATCHDOG_WARN_MS:
             self._maybe_log_freshness_warning(freshness_ms)
 
-        raw_counts = np.asarray(reading.raw_counts)
-        if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
-            raise RuntimeError(
-                f"encoder reading has shape {raw_counts.shape}, "
-                f"expected ({AUTO_ENC_NUM_JOINTS},)"
-            )
-        measured = encoder_to_joint_angle(
-            raw_counts[self._slots],
-            self._anchors,
-            self._enc_polarities,
-            self._anchor_angles,
-        )
+        measured = self._decode_measured(reading)
 
         correction = self._controller.step(target, measured, dt)
         motor_targets = self._joint_to_motor_pos(target + correction)
@@ -270,7 +261,6 @@ class JointLoopThread:
                 f"controller was constructed with num_joints={self._controller.num_joints} "
                 f"but {len(joints)} encoder-backed joints are available"
             )
-
         if self._hand._wrap_offsets_dict is None:
             self._hand._compute_wrap_offsets_dict()
 
@@ -332,6 +322,11 @@ class JointLoopThread:
         reading = self._encoder_client.get_latest_encoder_reading()
         if reading is None:
             return None
+        return self._decode_measured(reading)
+
+    def _decode_measured(self, reading) -> np.ndarray:
+        """Decode an :class:`EncoderReading` into per-joint angles in
+        degrees, sliced and aligned to the snapshotted joint set."""
         raw_counts = np.asarray(reading.raw_counts)
         if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
             raise RuntimeError(
@@ -357,7 +352,7 @@ class JointLoopThread:
 
     def _maybe_log_freshness_warning(self, freshness_ms: float) -> None:
         now = time.monotonic()
-        if now - self._last_freshness_warn_time >= _FRESHNESS_WARN_INTERVAL_S:
+        if now - self._last_freshness_warn_time >= FRESHNESS_WARN_INTERVAL_S:
             logger.warning(
                 "encoder freshness %.0f ms exceeds %d ms warn threshold",
                 freshness_ms,
@@ -365,11 +360,17 @@ class JointLoopThread:
             )
             self._last_freshness_warn_time = now
 
+    def _maybe_log_step_exception(self) -> None:
+        now = time.monotonic()
+        if now - self._last_exception_log_time >= LOOP_EXCEPTION_LOG_INTERVAL_S:
+            logger.exception("step_once raised; thread continues")
+            self._last_exception_log_time = now
+
     def _record_loop_period(self, period_s: float) -> None:
         """Update jitter streak counters; e-stop on a sustained run of
         pathological cycles. A single transient >10× cycle is tolerated."""
-        is_pathological = period_s >= self._target_period * _JITTER_ESTOP_RATIO
-        is_slow = period_s > self._target_period * _JITTER_WARN_RATIO
+        is_pathological = period_s >= self._target_period * JITTER_ESTOP_RATIO
+        is_slow = period_s > self._target_period * JITTER_WARN_RATIO
 
         if is_pathological:
             self._pathological_cycle_streak += 1
@@ -381,21 +382,21 @@ class JointLoopThread:
         else:
             self._slow_cycle_streak = 0
 
-        if self._pathological_cycle_streak >= _JITTER_ESTOP_CONSECUTIVE:
+        if self._pathological_cycle_streak >= JITTER_ESTOP_CONSECUTIVE:
             self._trigger_estop(
-                f"loop period exceeded {_JITTER_ESTOP_RATIO}× target for "
-                f"{_JITTER_ESTOP_CONSECUTIVE} consecutive cycles "
+                f"loop period exceeded {JITTER_ESTOP_RATIO}× target for "
+                f"{JITTER_ESTOP_CONSECUTIVE} consecutive cycles "
                 f"(last={period_s * 1000:.1f} ms)"
             )
             self._pathological_cycle_streak = 0
             self._slow_cycle_streak = 0
             return
 
-        if self._slow_cycle_streak == _JITTER_WARN_CONSECUTIVE:
+        if self._slow_cycle_streak == JITTER_WARN_CONSECUTIVE:
             logger.warning(
                 "loop jitter: %d consecutive cycles slower than %.1f× target",
-                _JITTER_WARN_CONSECUTIVE,
-                _JITTER_WARN_RATIO,
+                JITTER_WARN_CONSECUTIVE,
+                JITTER_WARN_RATIO,
             )
 
     def _run_loop(self) -> None:
@@ -414,8 +415,10 @@ class JointLoopThread:
                 self.step_once(dt=dt)
             except Exception:
                 # Keep the thread alive on transient bus errors; the cycle
-                # is counted as overrun so a sick loop surfaces in stats.
-                self._stats["cycles_overrun"] += 1
+                # surfaces as cycles_exception so a sick loop is visible
+                # without conflating it with jitter overruns.
+                self._stats["cycles_exception"] += 1
+                self._maybe_log_step_exception()
             self._record_loop_period(dt)
             prev_time = now
             next_deadline += period
