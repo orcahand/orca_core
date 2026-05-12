@@ -563,10 +563,11 @@ class DynamixelClient(MotorClient):
             logging.error(f"Failed to change baud rate: {e}")
             return False
     
-    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252), 
+    def scan_for_motors(self, port: str, id_range: tuple,
                              baud_rates: Optional[list] = None) -> list:
         """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_number', 'model_name'}."""
-        baud_rates = baud_rates or list(BAUD_RATE_MAP.keys())
+        if baud_rates is None:
+            baud_rates = list(BAUD_RATE_MAP.keys())
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = self.dxl.PortHandler(port)

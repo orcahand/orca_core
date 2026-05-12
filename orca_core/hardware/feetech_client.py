@@ -196,8 +196,8 @@ class FeetechClient(MotorClient):
 
     @staticmethod
     def scan_for_motors(
-        port: str = '/dev/ttyUSB0',
-        id_range: tuple = (0, 252),
+        port: str,
+        id_range: tuple,
         baud_rates: Optional[list] = None,
     ) -> list:
         """Scan ``port`` for any responding Feetech motors.
