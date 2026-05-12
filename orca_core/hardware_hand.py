@@ -13,13 +13,15 @@ import threading
 import time
 from collections import deque
 from threading import RLock
-from typing import Dict, List, TYPE_CHECKING, Union
+from typing import Dict, List, Union
 
 import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
+from .hardware.dynamixel_client import DynamixelClient
+from .hardware.feetech_client import FeetechClient
 from .hardware.motor_client import MotorClient
 from .utils.utils import (
     auto_detect_port,
@@ -28,10 +30,6 @@ from .utils.utils import (
     motor_type_for_port,
     update_yaml,
 )
-
-if TYPE_CHECKING:
-    from .hardware.dynamixel_client import DynamixelClient
-    from .hardware.feetech_client import FeetechClient
 
 from .constants import (
     SUPPORTED_MOTOR_TYPES,
@@ -142,13 +140,9 @@ class OrcaHand(BaseHand):
         baudrate: int,
     ) -> MotorClient:
         if motor_type == "dynamixel":
-            from .hardware.dynamixel_client import DynamixelClient
-
             return DynamixelClient(self.config.motor_ids, port, baudrate)
 
         if motor_type == "feetech":
-            from .hardware.feetech_client import FeetechClient
-
             return FeetechClient(self.config.motor_ids, port, baudrate)
 
         raise ValueError(
@@ -181,9 +175,6 @@ class OrcaHand(BaseHand):
         ``baudrate`` is pinned in yaml, that dimension is fixed and the
         probe only iterates the other.
         """
-        from .hardware.dynamixel_client import DynamixelClient
-        from .hardware.feetech_client import FeetechClient
-
         candidates = {
             "dynamixel": DynamixelClient,
             "feetech": FeetechClient,

@@ -225,14 +225,18 @@ class DynamixelClient(MotorClient):
         port: str,
         baudrate: int,
         motor_ids: Sequence[int],
-        ping_count: int = 2,
     ) -> bool:
-        """Open ``port`` at ``baudrate`` and ping the first few motor IDs.
+        """Open ``port`` at ``baudrate`` and ping the first and last motor IDs.
 
-        Returns True if any motor responds — i.e. the bus is speaking the
+        Returns True if either motor responds — i.e. the bus is speaking the
         Dynamixel Protocol 2.0 at this baudrate. Used at connect time to
         auto-detect the driver family without enabling torque.
         """
+        ids = list(motor_ids)
+        if not ids:
+            return False
+        sample = [ids[0]] if len(ids) == 1 else [ids[0], ids[-1]]
+
         handler = PortHandler(port)
         try:
             if not handler.openPort():
@@ -240,7 +244,7 @@ class DynamixelClient(MotorClient):
             if not handler.setBaudRate(baudrate):
                 return False
             packet = PacketHandler(PROTOCOL_VERSION)
-            for motor_id in list(motor_ids)[:ping_count]:
+            for motor_id in sample:
                 _, comm, _ = packet.ping(handler, motor_id)
                 if comm == COMM_SUCCESS:
                     return True
