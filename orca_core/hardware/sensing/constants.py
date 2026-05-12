@@ -1,7 +1,5 @@
 """Constants for ORCA tactile sensing and joint encoders."""
 
-import math
-
 # ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
@@ -86,6 +84,11 @@ MIN_WRITE_RESPONSE_SIZE = 9
 # Typical payloads are 6-200 bytes; this guards against corrupted eff_len fields.
 MAX_AUTO_FRAME_EFF_LEN = 8192
 
+# Same bound applied to the ``count`` field in AA 55 register responses — a
+# higher value is treated as a corrupted header and resync rather than the
+# start of a multi-megabyte read.
+MAX_RESPONSE_DATA_LEN = MAX_AUTO_FRAME_EFF_LEN
+
 # Register block structure
 MODULES_PER_SLOT = 4
 """Modules per sensor slot in the resultant force register block (proximal, middle, distal, nail)."""
@@ -127,7 +130,6 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 
 # Encoder hardware properties (14-bit absolute rotary encoder)
 ENCODER_COUNTS_PER_REV = 16384
-ENCODER_LSB_RAD = 2.0 * math.pi / ENCODER_COUNTS_PER_REV
 ENCODER_LSB_DEG = 360.0 / ENCODER_COUNTS_PER_REV
 
 # Joint name → encoder slot.
@@ -169,6 +171,10 @@ LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
 """Per-second-byte rate limit for handler-exception traceback logging."""
 
 LINK_DEFAULT_BAUDRATE = 921600
+
+ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
+"""How long ``JointEncoderClient.start_encoder_stream`` waits for the first valid
+AA A9 frame before raising ``EncodersNotAvailableError``."""
 
 # ---------------------------------------------------------------------------
 # Auto-stream timing

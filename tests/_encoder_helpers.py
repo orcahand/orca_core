@@ -30,7 +30,7 @@ def make_encoder_frame(
 
     With ``override_eff_len`` set, the meta and payload sizes follow that
     value so the link still accepts the frame; the resulting total size
-    differs from the encoder spec's 39 bytes, which exercises the client's
+    differs from ``AUTO_ENC_FRAME_SIZE``, which exercises the client's
     exact-size check.
     """
     if raw_counts is None:

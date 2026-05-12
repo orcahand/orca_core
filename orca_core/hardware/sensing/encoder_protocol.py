@@ -4,8 +4,6 @@ Pure functions only — no I/O, no state, no threading.
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from orca_core.hardware.sensing.constants import (
@@ -16,7 +14,7 @@ from orca_core.hardware.sensing.constants import (
     AUTO_ENC_PARITY_BIT,
     AUTO_ENC_PAYLOAD_BYTES,
     AUTO_ENC_PAYLOAD_OFFSET,
-    ENCODER_LSB_RAD,
+    ENCODER_LSB_DEG,
     PROTOCOL_HEADER_AUTO_ENC,
 )
 from orca_core.hardware.sensing.types import EncoderReading
@@ -35,7 +33,7 @@ def calculate_checksum(frame: bytes) -> int:
 # Frame parser
 # =========================================================================
 
-def parse_auto_enc_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderReading:
+def parse_encoder_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderReading:
     """Validate an encoder auto-stream frame and decode the joint payload.
 
     Raises ``IOError`` on size, header, eff_len, or LRC mismatch.
@@ -70,11 +68,10 @@ def parse_auto_enc_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderRead
 
 
 def _check_even_parity(raw_counts: np.ndarray) -> np.ndarray:
-    """True per joint where the AS5048A even-parity check passes.
+    """True per joint where the encoder's even-parity check passes.
 
-    The chip sets bit 15 such that the total number of 1-bits across the
-    full 16-bit word is even; a frame with odd popcount therefore came
-    from wire-level corruption (or no chip on the bus at all).
+    The chip sets bit 15 such that the popcount across the full 16-bit
+    word is even.
     """
     x = raw_counts.astype(np.uint16)
     x = (x & 0x5555) + ((x >> 1) & 0x5555)
@@ -96,32 +93,14 @@ def encoder_to_joint_angle(
 ) -> np.ndarray:
     """Convert raw 14-bit encoder counts into joint angles in degrees.
 
-    Inputs broadcast against each other; typical use is shape ``(16,)``.
-    Wrap correction is required because the encoder is absolute over a
-    14-bit range — naive subtraction can land on either side of the wrap
-    once the joint moves more than π/16384 from the calibration anchor.
+    All four inputs are per-joint arrays of the same shape; the math
+    runs element-wise. Wrap correction is needed because the encoder is
+    absolute over one turn
     """
     a14 = raw_counts.astype(np.int64) & AUTO_ENC_ANGLE_MASK
-    delta = (a14 - anchor_count.astype(np.int64)) * ENCODER_LSB_RAD
-    delta = np.where(delta > math.pi, delta - 2.0 * math.pi, delta)
-    delta = np.where(delta <= -math.pi, delta + 2.0 * math.pi, delta)
-    return np.degrees(polarity.astype(np.float64) * delta) + anchor_angle_deg
+    delta_deg = (a14 - anchor_count.astype(np.int64)) * ENCODER_LSB_DEG
+    delta_deg = np.where(delta_deg > 180.0, delta_deg - 360.0, delta_deg)
+    delta_deg = np.where(delta_deg <= -180.0, delta_deg + 360.0, delta_deg)
+    return polarity.astype(np.float64) * delta_deg + anchor_angle_deg
 
 
-# =========================================================================
-# Wire-format encoder — for mocking hardware in tests only
-# =========================================================================
-
-def encode_auto_enc_frame_for_mock(
-    raw_counts: np.ndarray,
-    err_byte: int = 0,
-) -> bytes:
-    """Encode a (16,) array of raw u16 counts into a wire-format encoder frame."""
-    body = (
-        PROTOCOL_HEADER_AUTO_ENC
-        + bytes([0x00])
-        + AUTO_ENC_EFF_LEN.to_bytes(2, "little")
-        + bytes([err_byte])
-        + raw_counts.astype("<u2").tobytes()
-    )
-    return body + bytes([calculate_checksum(body)])

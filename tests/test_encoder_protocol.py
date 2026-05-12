@@ -18,23 +18,24 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core.hardware.sensing.encoder_protocol import (
     calculate_checksum,
-    encode_auto_enc_frame_for_mock,
     encoder_to_joint_angle,
-    parse_auto_enc_frame,
+    parse_encoder_frame,
 )
 from orca_core.hardware.sensing.tactile_protocol import (
     calculate_checksum as tactile_calculate_checksum,
 )
 from orca_core.hardware.sensing.types import EncoderReading
 
+from tests._encoder_helpers import make_encoder_frame
+
 
 # ---------------------------------------------------------------------------
 # Frame builders
 #
-# Wire layout (39 bytes): header(2) + reserved(1) + eff_len(2 LE) + err(1)
-# + payload(32) + LRC(1). eff_len == 33 (err byte + payload).
-# Per-joint u16: bit 15 = parity bit (AS5048A even parity over the whole word),
-# bit 14 = angle error, bits 13:0 = 14-bit absolute angle.
+# Wire layout: header(2) + reserved(1) + eff_len(2 LE) + err(1) +
+# payload(2 × AUTO_ENC_NUM_JOINTS) + LRC(1). eff_len == 1 + payload bytes.
+# Per-joint u16: bit 15 = even-parity over the whole word, bit 14 = angle
+# error, bits 13:0 = 14-bit absolute angle.
 # ---------------------------------------------------------------------------
 
 def _zero_counts() -> np.ndarray:
@@ -95,10 +96,10 @@ def test_calculate_checksum_matches_tactile_protocol(frame):
 
 
 # ---------------------------------------------------------------------------
-# parse_auto_enc_frame
+# parse_encoder_frame
 # ---------------------------------------------------------------------------
 
-def test_parse_auto_enc_frame_decodes_parity_and_angle_error():
+def test_parse_encoder_frame_decodes_parity_and_angle_error():
     """``parity_ok`` checks AS5048A even parity over the whole word; ``angle_error`` is bit 14."""
     raw = _zero_counts()
     raw[0] = 0x0000  # popcount=0 (even) → parity OK; bit 14 clear → no angle error
@@ -109,7 +110,7 @@ def test_parse_auto_enc_frame_decodes_parity_and_angle_error():
     raw[5] = 0xC003  # popcount=4 (even) → parity OK; bit 14 set
     raw[6] = 0x3FFF  # popcount=14 (even) → parity OK; bit 14 clear
 
-    reading = parse_auto_enc_frame(_build_encoder_frame(raw))
+    reading = parse_encoder_frame(_build_encoder_frame(raw))
     np.testing.assert_array_equal(reading.raw_counts, raw)
     assert list(reading.parity_ok[:7]) == [True, False, True, False, True, True, True]
     assert list(reading.angle_error[:7]) == [False, False, False, True, True, True, False]
@@ -122,26 +123,29 @@ def test_parse_auto_enc_frame_decodes_parity_and_angle_error():
     pytest.param(_build_encoder_frame(_zero_counts(), eff_len_override=AUTO_ENC_EFF_LEN + 1),     "eff_len", id="bad_eff_len"),
     pytest.param(PROTOCOL_HEADER_AUTO_ENC,                                                        "size",    id="too_short"),
 ])
-def test_parse_auto_enc_frame_rejects(frame, error_match):
+def test_parse_encoder_frame_rejects(frame, error_match):
     with pytest.raises(IOError, match=error_match):
-        parse_auto_enc_frame(frame)
+        parse_encoder_frame(frame)
 
 
 # ---------------------------------------------------------------------------
-# encode_auto_enc_frame_for_mock
+# wire-format round-trip
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("err_byte", [0x00, 0xFF])
-def test_encode_auto_enc_frame_for_mock_round_trip(err_byte):
+def test_make_encoder_frame_round_trips_through_parser(err_byte):
+    """``make_encoder_frame`` is the test-side wire-format builder; verify
+    its output round-trips through the production parser so any bug in
+    either surfaces as a test failure."""
     raw = np.arange(AUTO_ENC_NUM_JOINTS, dtype=np.uint16) * 1031
     raw[3] |= AUTO_ENC_PARITY_BIT
     raw[7] |= AUTO_ENC_ANGLE_ERROR_BIT
     raw[11] |= AUTO_ENC_PARITY_BIT | AUTO_ENC_ANGLE_ERROR_BIT
 
-    frame = encode_auto_enc_frame_for_mock(raw, err_byte=err_byte)
+    frame = make_encoder_frame(raw_counts=raw, err_byte=err_byte)
     assert len(frame) == AUTO_ENC_FRAME_SIZE
 
-    reading = parse_auto_enc_frame(frame, timestamp=12.5)
+    reading = parse_encoder_frame(frame, timestamp=12.5)
     assert isinstance(reading, EncoderReading)
     assert reading.err_byte == err_byte
     assert reading.timestamp == 12.5

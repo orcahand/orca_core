@@ -7,18 +7,13 @@
 # ==============================================================================
 """Serial-link transport with a background frame demultiplexer.
 
-Owns one serial port carrying two kinds of frames: synchronous responses
-to host-issued requests, and asynchronous broadcasts the device emits on
-its own clock. Responses are paired with their outgoing request by
-``send_register_request``; broadcasts are handed to whatever callback was
-registered via ``register_frame_handler``.
-
-A single byte in the header tags the frame type (``0x55`` for responses,
-a distinct byte per broadcast stream), so multiple broadcast streams can
-share one link. The link validates frame shape and checksum and leaves
-payload meaning to the handler.
+Carries two kinds of frames on one port: synchronous responses to host
+requests, and asynchronous broadcasts the device emits on its own clock.
+Both are AA-XX framed; the second byte tags the type so a single demuxer
+thread can route responses to ``send_register_request`` and broadcasts to
+registered handlers. Frame shape and checksum are validated; payload
+meaning is left to the handler.
 """
-from __future__ import annotations
 
 import contextlib
 import logging
@@ -45,15 +40,18 @@ from orca_core.hardware.sensing.constants import (
 from orca_core.hardware.sensing.tactile_protocol import calculate_checksum
 
 logger = logging.getLogger(__name__)
-
 FrameHandler = Callable[[bytes], None]
 """Handler signature: receives the full frame including header + LRC."""
 
 
 @dataclass
 class LinkStats:
-    """Diagnostic counters for the demuxer. Per-second-byte counters are
-    indexed by the AA-XX second byte."""
+    """Diagnostic counters for the demuxer.
+
+    Frame counters are indexed by the second byte (XX) of AA-XX frames:
+    - 'AA' is the fixed header byte (0xAA)
+    - 'XX' identifies frame types and is used as the counter key
+    """
     frames_routed: Counter = field(default_factory=Counter)
     frames_dropped_no_handler: Counter = field(default_factory=Counter)
     frames_bad_lrc: Counter = field(default_factory=Counter)
@@ -64,12 +62,15 @@ class LinkStats:
 
 
 class HandSerialLink:
-    """Serial-port owner + demuxer for AA-XX framed traffic.
+    """Serial-port owner and demultiplexer for AA-XX framed traffic.
+
+    Frame layout: ``AA`` header, ``XX`` type byte, payload, LRC checksum
+    (longitudinal redundancy check) on the last byte.
 
     Lifecycle: ``connect()`` opens the port and starts the demuxer thread;
-    ``disconnect()`` clears the run flag, joins the thread, and closes the
-    port. Handlers may be registered at any time before ``disconnect()``;
-    after disconnect, registration raises ``RuntimeError``.
+    ``disconnect()`` stops it and closes the port. Handlers may be
+    registered at any time before disconnect; after disconnect,
+    registration raises ``RuntimeError``.
     """
 
     def __init__(self, port: str, baudrate: int = LINK_DEFAULT_BAUDRATE):
@@ -163,11 +164,11 @@ class HandSerialLink:
         request_bytes: bytes,
         response_timeout_s: float = 0.5,
     ) -> bytes:
-        """Write a register request and return the matching AA 55 response frame.
+        """Write a register request and return the matching AA 55 response.
 
-        The whole transaction (drain stale responses → write → wait) is
-        serialised under a single lock so a previously-timed-out caller's
-        late response cannot be delivered to the next caller.
+        The drain → write → wait is serialised under a single lock so a
+        late response from a previously-timed-out caller can't be handed
+        to the next caller.
         """
         if not self._demux_running:
             raise RuntimeError(
@@ -209,32 +210,20 @@ class HandSerialLink:
     # ----- Read pause / resume ---------------------------------------------
 
     def pause_reads(self) -> None:
-        """Stop the demuxer from polling the serial port.
-
-        Use this around host operations that need ack-blocking USB CDC
-        traffic on a sibling endpoint (e.g. per-motor Dynamixel writes on
-        a different CDC of the same composite device) and that would
-        otherwise be starved by sustained reads on this link. While
-        paused, the OS-level input buffer fills with frames the device
-        keeps emitting — those bytes are flushed by ``resume_reads``.
-        """
+        """Stop demuxer polling so a sibling USB-CDC endpoint (e.g. the
+        Dynamixel bus) isn't starved during ack-blocking writes. The 50 ms
+        sleep lets the demuxer ack the flag."""
         if self._reads_paused:
             return
         self._reads_paused = True
-        # Best-effort wait: the demuxer checks the flag at the start of
-        # each outer iteration, so it acks within at most one frame's
-        # read window (a few ms at 500 fps; 0.5 s in the no-traffic
-        # extreme).
         time.sleep(0.05)
 
     def resume_reads(self) -> None:
         """Discard stale buffered bytes, then re-enable demuxer reads.
 
         The kernel CDC ring buffer can hold several hundred ms of frames
-        at typical broadcast rates; flushing it before resuming keeps
-        downstream consumers (e.g. anchor-sample averaging that waits
-        for distinct timestamps) from chewing through stale frames
-        before fresh ones arrive.
+        while paused; flushing before resuming prevents downstream
+        consumers from churning through stale frames.
         """
         if not self._reads_paused:
             return
@@ -290,8 +279,7 @@ class HandSerialLink:
         self._serial.write(data)
 
     def _serial_read(self, n: int) -> bytes:
-        """Read up to ``n`` bytes. Returns ``b""`` on read timeout (mimics
-        ``serial.Serial.read`` with a finite timeout). Returns at least one
+        """Read up to ``n`` bytes. Returns ``b""`` on read timeout. Returns at least one
         byte when bytes are available."""
         if self._serial is None:
             return b""
@@ -397,6 +385,8 @@ class HandSerialLink:
         self._stats.frames_routed[second_byte] += 1
 
     def _enqueue_response(self, frame: bytes) -> None:
+        """Push ``frame`` onto the response queue, dropping the oldest entry
+        on overflow so the newest response is always reachable."""
         try:
             self._response_queue.put_nowait(frame)
             self._stats.responses_received += 1
@@ -416,6 +406,9 @@ class HandSerialLink:
             pass
 
     def _log_handler_error(self, second_byte: int) -> None:
+        """Rate-limited per second-byte: at most one stack trace per
+        ``LINK_HANDLER_ERROR_LOG_INTERVAL_S`` so a sick handler can't
+        drown the log."""
         now = time.monotonic()
         last = self._last_handler_error_log.get(second_byte, 0.0)
         if now - last < LINK_HANDLER_ERROR_LOG_INTERVAL_S:

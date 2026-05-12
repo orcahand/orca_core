@@ -5,14 +5,15 @@
 # You may use, copy, modify, and distribute this file under the terms of the MIT License.
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
-"""Joint-encoder client that subscribes to AA A9 frames on a ``HandSerialLink``.
+"""Client for reading joint encoder data from AA A9 frames.
 
-The encoder stream is always-on hardware-side, so this client never writes a
-device register to enable it. ``connect()`` registers the handler and the
-demuxer thread starts driving it immediately; ``start_encoder_stream()`` only
-gates whether parsed frames are exposed via ``get_latest_encoder_reading()``.
-This way diagnostic counters reflect link health even before any consumer
-calls ``start_encoder_stream()``.
+The AA A9 stream is always-on hardware-side, so this client never writes
+a device register to enable it. ``connect()`` registers the frame handler
+(stats start updating immediately, useful for link-health checks);
+``start_encoder_stream()`` only gates whether parsed readings become
+visible via ``get_latest_encoder_reading()``.
+
+All public methods are thread-safe.
 """
 from __future__ import annotations
 
@@ -25,24 +26,23 @@ import time
 from dataclasses import dataclass
 
 from orca_core.hardware.hand_serial_link import HandSerialLink
-from orca_core.hardware.sensing.constants import PROTOCOL_BYTE_AUTO_ENC
-from orca_core.hardware.sensing.encoder_protocol import parse_auto_enc_frame
+from orca_core.hardware.sensing.constants import (
+    ENCODER_FIRST_FRAME_TIMEOUT_S,
+    PROTOCOL_BYTE_AUTO_ENC,
+)
+from orca_core.hardware.sensing.encoder_protocol import parse_encoder_frame
 from orca_core.hardware.sensing.types import EncoderReading
 
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_FIRST_FRAME_TIMEOUT_S = 0.1
-
-
-class EncodersNotAvailableError(Exception):
-    pass
+class EncodersNotAvailableError(RuntimeError):
+    """Raised when no valid encoder frame arrives within the start-stream timeout."""
 
 
 @dataclass
 class EncoderStreamStats:
-    """Diagnostic counters for the AA A9 handler.
-    """
+    """Diagnostic counters for the AA A9 handler."""
     frames_ok: int = 0
     frames_bad_eff_len: int = 0
     last_err_byte: int = 0
@@ -89,14 +89,8 @@ class JointEncoderClient:
     def disconnect(self) -> None:
         if not self._connected:
             return
-        try:
-            self.stop_encoder_stream()
-        except Exception:
-            logger.exception("Error stopping encoder stream during disconnect")
-        try:
-            self._link.unregister_frame_handler(PROTOCOL_BYTE_AUTO_ENC)
-        except Exception:
-            logger.exception("Error unregistering encoder handler during disconnect")
+        self.stop_encoder_stream()
+        self._link.unregister_frame_handler(PROTOCOL_BYTE_AUTO_ENC)
         self._connected = False
 
     def __enter__(self):
@@ -109,12 +103,12 @@ class JointEncoderClient:
 
     # ----- Stream control ---------------------------------------------------
 
-    def start_encoder_stream(self, timeout: float = _DEFAULT_FIRST_FRAME_TIMEOUT_S) -> None:
-        """Begin publishing the latest reading; wait for the first valid frame.
+    def start_encoder_stream(self, timeout: float = ENCODER_FIRST_FRAME_TIMEOUT_S) -> None:
+        """Begin publishing encoder readings and wait for the first valid frame.
 
+        Does not write any device register — the AA A9 stream is always-on.
         Raises :class:`EncodersNotAvailableError` if no valid frame arrives
-        within ``timeout`` seconds. Does not write any device register —
-        the AA A9 stream is always-on.
+        within ``timeout`` seconds.
         """
         if not self._connected:
             raise OSError("Must call connect() first.")
@@ -132,6 +126,9 @@ class JointEncoderClient:
             )
 
     def stop_encoder_stream(self) -> None:
+        """Hide further readings and drop the cached one so a later
+        ``get_latest_encoder_reading()`` returns ``None`` until the next
+        ``start_encoder_stream()``."""
         with self._lock:
             self._publish_active = False
             self._latest = None
@@ -161,28 +158,27 @@ class JointEncoderClient:
     # ----- Reads ------------------------------------------------------------
 
     def get_latest_encoder_reading(self) -> EncoderReading | None:
+        """Returns ``None`` before the first frame is published or while
+        the stream is stopped."""
         with self._lock:
             return self._latest
 
     def get_encoder_stats(self) -> EncoderStreamStats:
+        """Snapshot of the diagnostic counters — safe to call without
+        ``start_encoder_stream``."""
         with self._lock:
             return dataclasses.replace(self._stats)
 
     # ----- Frame handler ----------------------------------------------------
 
     def _on_encoder_frame(self, frame_bytes: bytes) -> None:
-        """Parse one AA A9 frame and (when publishing) update the latest cache.
+        """Parse one AA A9 frame and update the latest reading cache.
 
-        The link has already validated header alignment, ``eff_len`` bounds,
-        and full-frame LRC, so the only payload-semantic check left is the
-        exact frame size — handled by :func:`parse_auto_enc_frame`. Any
-        ``IOError`` from the parser is therefore an eff_len-mismatch on the
-        production path; non-IOError exceptions fall through to the link's
-        handler-exception isolation.
+        Ignores malformed frames and updates diagnostic statistics.
         """
         timestamp = time.monotonic()
         try:
-            reading = parse_auto_enc_frame(frame_bytes, timestamp=timestamp)
+            reading = parse_encoder_frame(frame_bytes, timestamp=timestamp)
         except IOError:
             with self._lock:
                 self._stats.frames_bad_eff_len += 1
