@@ -9,8 +9,28 @@
 """Abstract base class for motor communication clients."""
 
 from abc import ABC, abstractmethod
-from typing import Sequence, Tuple
+from typing import NamedTuple, Sequence
 import numpy as np
+
+
+class MotorError(Exception):
+    """Raised when a motor operation cannot be completed."""
+
+
+class MotionTimeoutError(MotorError):
+    """Raised when motors fail to settle within the requested timeout."""
+
+
+class MotorRead(NamedTuple):
+    """A single snapshot of position / velocity / current for all motors.
+
+    Each field is a 1-D numpy array indexed by the motor order configured
+    on the client. NamedTuple so callers can also unpack as
+    ``position, velocity, current = client.read_position_velocity_current()``.
+    """
+    position: np.ndarray
+    velocity: np.ndarray
+    current: np.ndarray
 
 
 class MotorClient(ABC):
@@ -19,6 +39,10 @@ class MotorClient(ABC):
     This defines the interface that all motor clients (Dynamixel, Feetech, etc.)
     must implement to work with OrcaHand.
     """
+
+    # Subclasses set this to True when ``wait_for_motion_complete`` actually
+    # blocks; callers can use it to skip locking around no-op waits.
+    waits_for_motion: bool = False
 
     @property
     @abstractmethod
@@ -70,12 +94,12 @@ class MotorClient(ABC):
         ...
 
     @abstractmethod
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads the current position, velocity, and current for all motors.
+    def read_position_velocity_current(self) -> MotorRead:
+        """Read the current position, velocity, and current for all motors.
 
         Returns:
-            A tuple of (positions, velocities, currents) as numpy arrays.
-            Positions are in radians, velocities in rad/s, currents in mA.
+            A :class:`MotorRead` snapshot. Positions are in radians,
+            velocities in rad/s, currents in mA.
         """
         ...
 
@@ -115,6 +139,16 @@ class MotorClient(ABC):
             currents: The desired currents in mA.
         """
         ...
+
+    def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
+        """Block until all motors finish their commanded motion.
+
+        Default implementation is a no-op for motor families that respond
+        fast enough that callers don't need to wait (e.g., Dynamixel, mock).
+        Subclasses that actually block (e.g., Feetech) must set
+        ``waits_for_motion = True`` and override this to poll a per-motor
+        moving flag, raising ``MotionTimeoutError`` on timeout.
+        """
 
     @property
     def requires_offset_calibration(self) -> bool:

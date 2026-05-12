@@ -15,8 +15,6 @@ This file defines parameters crucial for the hand's operation, including communi
 
 ```yaml
 version: 0.2.0
-baudrate: 3000000
-port: /dev/ttyUSB0
 max_current: 400
 type: right
 control_mode: current_based_position
@@ -24,7 +22,25 @@ control_mode: current_based_position
 
 **What should be changed?**
 
-You should change the `port` to match your system (Linux or macOS). Change `type` to right or left depending on the hand assembly you have. `max_current` is set to a value found to be sufficient; you can adjust it depending on the needs of your tasks. The `baudrate` or `control_mode` should not be changed based on the current implementation in the repo. If you decide to change them you have to adapt the code accordingly. 
+Change `type` to right or left depending on the hand assembly. `max_current` is set to a sane default; adjust if your tasks need more or less. `control_mode` should generally stay at `current_based_position`.
+
+#### Optional driver overrides
+
+`port`, `baudrate`, and `motor_type` are **not in the bundled configs** — they're auto-detected at connect time:
+
+- The serial port is found by USB VID, falling back to "the only adapter present" or an interactive picker.
+- The motor family (Dynamixel vs Feetech) is identified by pinging factory defaults on the bus.
+- The baudrate comes from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
+
+Drop any of these into `config.yaml` if you need to override that behaviour:
+
+```yaml
+port: /dev/cu.usbmodemXXXX  # only when multiple adapters are connected
+baudrate: 1000000           # only when motors are configured for a non-default rate
+motor_type: feetech         # only when probing might misidentify the bus
+```
+
+You won't normally need any of them — the script will tell you on the command line if a probe failed and asking for an override would help.
 
 ---
 

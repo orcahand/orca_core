@@ -2,6 +2,7 @@ import shutil
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,7 @@ def _install_fake_dynamixel_sdk() -> types.ModuleType:
     module.PortHandler = PortHandler
     module.PacketHandler = PacketHandler
     module.GroupBulkRead = GroupBulkRead
+    module.COMM_SUCCESS = 0
     return module
 
 
@@ -88,3 +90,23 @@ def connected_mock_hand(mock_config_dir: Path) -> MockOrcaHand:
 def initialized_mock_hand(connected_mock_hand: MockOrcaHand) -> MockOrcaHand:
     connected_mock_hand.init_joints(force_calibrate=True)
     return connected_mock_hand
+
+
+@pytest.fixture
+def patch_comports(monkeypatch):
+    """Replace serial.tools.list_ports.comports() with a fixed port list."""
+    def _set(ports):
+        import serial.tools.list_ports as ltp
+        monkeypatch.setattr(ltp, "comports", lambda: ports)
+    return _set
+
+
+@pytest.fixture
+def mock_hand(mock_config_dir):
+    """Bare MockOrcaHand (not connected) for unit-testing helper methods."""
+    return MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
+
+
+def fake_serial_port(device: str, vid: int) -> SimpleNamespace:
+    """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
+    return SimpleNamespace(device=device, vid=vid, description="fake")

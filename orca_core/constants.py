@@ -22,6 +22,14 @@ KNOWN_VIDS: dict[str, list[int]] = {
     ],
 }
 
+# Baudrates the connect-time probe will try, per motor family, in priority
+# order. Used only when ``baudrate`` is not pinned in config.yaml. Feetech
+# motors ship at 1M; Dynamixels run at 1M (v2 hands) or 3M (v1 hands).
+MOTOR_BAUD_RATES: dict[str, list[int]] = {
+    "dynamixel": [1_000_000, 3_000_000],
+    "feetech": [1_000_000],
+}
+
 """
 Dynamixel specific! TODO(fracapuano): Add feetech control modes too.
 PWM (id: 2) control modeis omitted becayse it bypasses PID controllers entirely.

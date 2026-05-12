@@ -1,7 +1,4 @@
 version: 0.2.1
-baudrate: 3000000
-#port: /dev/ttyUSB0 # linux
-port: /dev/tty.usbserial-FT9MISJT # mac
 max_current: 400
 
 type: right
