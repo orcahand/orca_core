@@ -239,19 +239,37 @@ class OrcaHand(BaseHand):
             with self._motor_lock:
                 self._motor_client.connect()
 
-            self._persist_resolved_port(port)
+            self._persist_resolved_driver(motor_type, port, baudrate)
             return True, f"Connection successful ({motor_type} @ {port}, {baudrate} baud)"
 
         except Exception as e:
             self._motor_client = None
             return False, f"Connection failed on {port}: {str(e)}"
 
-    def _persist_resolved_port(self, port: str) -> None:
-        """Write the resolved port back to config.yaml when it differs."""
-        if self.config.port == port:
+    def _persist_resolved_driver(self, motor_type: str, port: str, baudrate: int) -> None:
+        """Persist auto-detected driver fields to config.yaml.
+
+        Each field is only written when it was missing from yaml. Once written,
+        the next connect short-circuits the probe and uses the yaml values
+        directly. Users who want to swap motor families on the same hand can
+        clear the yaml fields and re-run to trigger a fresh probe.
+        """
+        updates = {}
+        if not self.config.port or self.config.port != port:
+            updates["port"] = port
+        if self.config.motor_type is None:
+            updates["motor_type"] = motor_type
+        if self.config.baudrate is None:
+            updates["baudrate"] = baudrate
+        if not updates:
             return
-        self.config = dataclasses.replace(self.config, port=port)
-        update_yaml(self.config.config_path, "port", port)
+        self.config = dataclasses.replace(self.config, **updates)
+        for key, value in updates.items():
+            update_yaml(self.config.config_path, key, value)
+        print(
+            f"Wrote auto-detected {', '.join(updates.keys())} to "
+            f"{os.path.basename(self.config.config_path)}."
+        )
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque and close the serial connection.
