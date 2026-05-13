@@ -13,22 +13,26 @@ import threading
 import time
 from collections import deque
 from threading import RLock
-from typing import Dict, List, Union, TYPE_CHECKING
+from typing import Dict, List, Union
 
 import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
+from .hardware.dynamixel_client import DynamixelClient
+from .hardware.feetech_client import FeetechClient
 from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import TactileClient
-from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
-
-if TYPE_CHECKING:
-    from .hardware.dynamixel_client import DynamixelClient
-    from .hardware.feetech_client import FeetechClient
+from .utils.utils import (
+    auto_detect_port,
+    find_single_usb_serial_port,
+    get_and_choose_port,
+    read_yaml,
+    update_yaml,
+)
 
 from .constants import (
     SUPPORTED_MOTOR_TYPES,
