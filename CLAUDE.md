@@ -48,7 +48,6 @@ docs/                 # Documentation
 
 - Use conventional commits: `Add feature`, `Fix bug`, `Update docs`
 - Keep messages concise and descriptive
-- Do NOT add `Co-Authored-By` lines
 
 ---
 

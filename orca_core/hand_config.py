@@ -6,6 +6,7 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
@@ -18,6 +19,13 @@ from .constants import (
     JOINT_TO_MOTOR_MAP,
     MOTOR_IDS,
     SUPPORTED_MOTOR_TYPES,
+)
+from .hardware.sensing.constants import (
+    FINGER_NAMES,
+    VALID_SENSOR_IDS,
+    DEFAULT_SENSOR_PORT,
+    DEFAULT_SENSOR_BAUDRATE,
+    DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
 from .utils.utils import get_model_path, read_yaml
@@ -334,6 +342,61 @@ class OrcaHandConfig(BaseHandConfig):
 
     def __post_init__(self) -> None:
         self.validate_config()
+
+
+@dataclass(frozen=True)
+class OrcaHandTouchConfig(OrcaHandConfig):
+    """ORCA hand configuration with tactile sensor support."""
+
+    sensor_port: str = DEFAULT_SENSOR_PORT
+    sensor_baudrate: int = DEFAULT_SENSOR_BAUDRATE
+    finger_to_sensor_id: Dict[str, int] = field(
+        default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID)
+    )
+
+    @classmethod
+    def from_config_path(
+        cls,
+        config_path: str | None = None,
+        calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+    ) -> "OrcaHandTouchConfig":
+        base = OrcaHandConfig.from_config_path(
+            config_path=config_path,
+            calibration_path=calibration_path,
+            model_version=model_version,
+            model_name=model_name,
+        )
+
+        config = read_yaml(base.config_path)
+        sensors = config.get("sensors", {})
+
+        sensor_kwargs = {}
+        if "port" in sensors:
+            sensor_kwargs["sensor_port"] = sensors["port"]
+        if "baudrate" in sensors:
+            sensor_kwargs["sensor_baudrate"] = int(sensors["baudrate"])
+        if "finger_to_sensor_id" in sensors:
+            sensor_kwargs["finger_to_sensor_id"] = dict(sensors["finger_to_sensor_id"])
+
+        return cls(**{f.name: getattr(base, f.name) for f in dataclasses.fields(base)}, **sensor_kwargs)
+
+    def validate_config(self) -> None:
+        super().validate_config()
+
+        if set(self.finger_to_sensor_id.keys()) != set(FINGER_NAMES):
+            raise HandConfigValidationError(
+                f"finger_to_sensor_id must contain exactly {FINGER_NAMES}, "
+                f"got {sorted(self.finger_to_sensor_id.keys())}"
+            )
+
+        ids = set(self.finger_to_sensor_id.values())
+        if ids != VALID_SENSOR_IDS:
+            raise HandConfigValidationError(
+                f"finger_to_sensor_id values must be 0-4 with no duplicates, "
+                f"got {sorted(self.finger_to_sensor_id.values())}"
+            )
 
 
 HandConfig = BaseHandConfig

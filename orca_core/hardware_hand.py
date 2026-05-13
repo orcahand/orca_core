@@ -19,15 +19,18 @@ import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
-from .hand_config import OrcaHandConfig
+from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.dynamixel_client import DynamixelClient
 from .hardware.feetech_client import FeetechClient
+from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
+from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
+from .hardware.tactile_client import TactileClient
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
     get_and_choose_port,
-    motor_type_for_port,
+    read_yaml,
     update_yaml,
 )
 
@@ -1285,6 +1288,164 @@ class OrcaHand(BaseHand):
             print("No running task to stop.")
 
 
+class OrcaHandTouch(OrcaHand):
+    """ORCA hand with integrated tactile sensing.
+
+    ``connect()`` opens both the motor bus and the sensor serial link;
+    ``disconnect()`` tears down both.
+    """
+
+    config_cls = OrcaHandTouchConfig
+
+    def __init__(
+        self,
+        config_path: str | None = None,
+        calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+        config: OrcaHandTouchConfig | None = None,
+    ):
+        super().__init__(
+            config_path=config_path,
+            calibration_path=calibration_path,
+            model_version=model_version,
+            model_name=model_name,
+            config=config,
+        )
+        self._tactile_client = None
+
+    def _create_tactile_client(self):
+        return TactileClient(
+            port=self.config.sensor_port,
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
+
+    def _persist_sensor_port(self, chosen_port: str) -> None:
+        """Write a new ``sensors.port`` value to ``config.yaml`` while preserving
+        the rest of the ``sensors`` block (baudrate, finger_to_sensor_id)."""
+        existing = read_yaml(self.config.config_path) or {}
+        sensors = dict(existing.get("sensors") or {})
+        sensors["port"] = chosen_port
+        update_yaml(self.config.config_path, "sensors", sensors)
+
+    def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
+        """Open the sensor serial link, mirroring the motor cascade.
+
+        Tries the configured port first, then USB-VID auto-detection
+        (``KNOWN_VIDS["tactile_sensor"]``). On a successful auto-detect the
+        new port is written back to ``config.yaml``.
+        """
+        self._tactile_client = self._create_tactile_client()
+        try:
+            self._tactile_client.connect()
+            return True, f"Sensor connected on {self.config.sensor_port}"
+        except Exception as e:
+            print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
+            self._tactile_client = None
+
+        chosen = auto_detect_port("tactile_sensor")
+        if chosen and chosen != self.config.sensor_port:
+            try:
+                self.config = dataclasses.replace(self.config, sensor_port=chosen)
+                self._tactile_client = self._create_tactile_client()
+                self._tactile_client.connect()
+                self._persist_sensor_port(chosen)
+                return True, f"Sensor connected on auto-detected {chosen}"
+            except Exception as e:
+                print(f"Auto-detected sensor port {chosen} also failed: {e}")
+                self._tactile_client = None
+
+        return False, (
+            "Sensor connection failed: no usable port (set sensors.port in config.yaml "
+            "or check that the sensor adapter is plugged in)"
+        )
+
+    def connect(self) -> tuple[bool, str]:
+        success, msg = super().connect()
+        if not success:
+            return success, msg
+
+        sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
+        if not sensor_ok:
+            return False, f"{msg} | {sensor_msg}"
+        return True, f"{msg} | {sensor_msg}"
+
+    def connect_sensors_only(self) -> tuple[bool, str]:
+        """Connect only the tactile sensor, skipping the motor bus.
+
+        Useful for sensor bring-up and testing on a hand whose motors are not
+        powered. After this call, tactile methods work; motor-control methods
+        will fail because the motor client is not initialised.
+        """
+        return self._connect_sensor_with_fallback()
+
+    def disconnect(self) -> None:
+        if self._tactile_client is not None and self._tactile_client.is_connected:
+            try:
+                self._tactile_client.stop_auto_stream()
+            except Exception:
+                pass
+            self._tactile_client.disconnect()
+        self._tactile_client = None
+        super().disconnect()
+
+    def get_tactile_forces(self) -> ResultantReading | None:
+        """Return the latest resultant ``ResultantReading``, or ``None`` if no frame yet."""
+        forces, ts = self._tactile_client.get_auto_latest()
+        if forces is None:
+            return None
+        return ResultantReading(forces=forces, timestamp=ts)
+
+    def get_tactile_taxels(self) -> TaxelReading | None:
+        """Return the latest per-taxel ``TaxelReading``, or ``None`` if no frame yet."""
+        taxels, ts = self._tactile_client.get_auto_latest_taxels()
+        if taxels is None:
+            return None
+        return TaxelReading(taxels=taxels, timestamp=ts)
+
+    def get_tactile_data(self) -> TactileReading | None:
+        """Return resultant and per-taxel forces from the same frame.
+
+        Single locked snapshot of the auto-stream cache, so ``forces`` and
+        ``taxels`` are guaranteed to share a timestamp. Either field is
+        ``None`` if its stream mode is disabled. Returns ``None`` if no
+        frame has arrived yet.
+        """
+        forces, taxels, ts = self._tactile_client.get_auto_latest_all()
+        if forces is None and taxels is None:
+            return None
+        return TactileReading(
+            forces=ResultantReading(forces=forces, timestamp=ts) if forces is not None else None,
+            taxels=TaxelReading(taxels=taxels, timestamp=ts) if taxels is not None else None,
+            timestamp=ts,
+        )
+
+    def start_tactile_stream(
+        self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
+    ) -> None:
+        self._tactile_client.start_auto_stream(
+            resultant=resultant, taxels=taxels, min_sensors=min_sensors,
+        )
+
+    def stop_tactile_stream(self) -> None:
+        self._tactile_client.stop_auto_stream()
+
+    def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
+        """Capture current readings as zero baseline and return offsets."""
+        return self._tactile_client.capture_taxel_offsets(num_samples=num_samples)
+
+    def clear_tactile_zero(self) -> None:
+        self._tactile_client.clear_taxel_offsets()
+
+    def get_tactile_configuration(self):
+        return self._tactile_client.get_tactile_configuration()
+
+    def get_tactile_stats(self):
+        """Return ``AutoStreamStats`` for the running auto-stream."""
+        return self._tactile_client.get_auto_stats()
+
+
 class MockOrcaHand(OrcaHand):
     """Drop-in :class:`OrcaHand` backed by an in-memory mock motor client,
     for testing and prototyping.
@@ -1308,4 +1469,24 @@ class MockOrcaHand(OrcaHand):
     ) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
-        return MockDynamixelClient(self.config.motor_ids, port, baudrate)
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+
+class MockOrcaHandTouch(OrcaHandTouch):
+    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
+
+    def _create_motor_client(self) -> MotorClient:
+        from .hardware.mock_dynamixel_client import MockDynamixelClient
+
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+    def _create_tactile_client(self):
+        return MockTactileClient(
+            port="mock",
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
