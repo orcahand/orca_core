@@ -1477,7 +1477,18 @@ class MockOrcaHand(OrcaHand):
 class MockOrcaHandTouch(OrcaHandTouch):
     """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
 
-    def _create_motor_client(self) -> MotorClient:
+    def _resolve_port(self) -> str:
+        return self.config.port or "/dev/null"
+
+    def _trial_probe(self, port: str) -> tuple[str, int]:
+        return "dynamixel", 1_000_000
+
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
         return MockDynamixelClient(
