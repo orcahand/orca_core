@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import sys
+import threading
 import time
 
 from orca_core import OrcaHandTouch
@@ -103,6 +104,13 @@ def pause(msg):
     input(f">>> {msg} (press Enter) ")
 
 
+def _enter_event():
+    """Return a threading.Event that is set when the user presses Enter."""
+    event = threading.Event()
+    threading.Thread(target=lambda: (input(), event.set()), daemon=True).start()
+    return event
+
+
 def wait_for_frame(getter, timeout=2.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -146,16 +154,22 @@ def _redraw_in_place(prev_lines: int, lines: list[str]) -> int:
     return len(lines)
 
 
-def live_press_resultant(hand, target, fingers, duration_s=1.5, fps=20):
+def live_press_resultant(hand, target, fingers, stop_event=None, duration_s=1.5, fps=20):
     """Live in-place display of resultant |fz| during press of `target`.
     Polls at ~200 Hz for accurate peak tracking; redraws at `fps`.
+    If stop_event is given, runs until the event is set (Enter pressed);
+    otherwise falls back to duration_s.
     Returns dict {finger: peak |fz|} across the full window."""
     peaks = {f: 0.0 for f in fingers}
-    end = time.time() + duration_s
+    if stop_event is None:
+        end = time.time() + duration_s
+        running = lambda: time.time() < end
+    else:
+        running = lambda: not stop_event.is_set()
     interval = 1.0 / fps
     next_render = time.time()
     prev_lines = 0
-    while time.time() < end:
+    while running():
         reading = hand.get_tactile_forces()
         if reading is not None:
             for f in fingers:
@@ -172,18 +186,24 @@ def live_press_resultant(hand, target, fingers, duration_s=1.5, fps=20):
     return peaks
 
 
-def live_press_taxels(hand, target, role, n_taxels, fingers, duration_s=1.5, fps=12):
+def live_press_taxels(hand, target, role, n_taxels, fingers, stop_event=None, duration_s=1.5, fps=12):
     """Live in-place display of taxel ASCII grid + peak during press of
-    `target`. Polls at ~200 Hz, redraws at `fps`. Returns dict
-    {finger: peak |fz| at hottest taxel} across the full window."""
+    `target`. Polls at ~200 Hz, redraws at `fps`.
+    If stop_event is given, runs until the event is set (Enter pressed);
+    otherwise falls back to duration_s.
+    Returns dict {finger: peak |fz| at hottest taxel} across the full window."""
     peaks = {f: 0.0 for f in fingers}
-    end = time.time() + duration_s
+    if stop_event is None:
+        end = time.time() + duration_s
+        running = lambda: time.time() < end
+    else:
+        running = lambda: not stop_event.is_set()
     interval = 1.0 / fps
     next_render = time.time()
     prev_lines = 0
     no_layout = (f"    (no ASCII layout for {role}-{n_taxels}; "
                  f"standard models are thumb-51, finger-87, pinky-51)")
-    while time.time() < end:
+    while running():
         reading = hand.get_tactile_taxels()
         if reading is not None:
             for f in fingers:
@@ -293,8 +313,9 @@ def phase_2_resultant_press(hand):
         peaks_per_press = {}
         warnings = []
         for f in FINGERS:
-            pause(f"press {f.upper()} (vary pressure to watch the live readout)")
-            all_peaks = live_press_resultant(hand, f, FINGERS, duration_s=1.5)
+            print(f"\n  >>> Press {f.upper()} now (vary pressure). Press Enter when done.")
+            stop = _enter_event()
+            all_peaks = live_press_resultant(hand, f, FINGERS, stop_event=stop)
             peaks_per_press[f] = all_peaks[f]
             mismatch = detect_wiring_mismatch(f, all_peaks, wiring)
             if mismatch:
@@ -332,9 +353,10 @@ def phase_3_taxels_press(hand):
         peaks_per_press = {}
         warnings = []
         for f in FINGERS:
-            pause(f"press {f.upper()} (move your finger around to light up different taxels)")
+            print(f"\n  >>> Press {f.upper()} now (move around to light up taxels). Press Enter when done.")
             n = hand.get_tactile_configuration().num_taxels[f]
-            all_peaks = live_press_taxels(hand, f, FINGER_TO_ROLE[f], n, FINGERS, duration_s=2.5)
+            stop = _enter_event()
+            all_peaks = live_press_taxels(hand, f, FINGER_TO_ROLE[f], n, FINGERS, stop_event=stop)
             peaks_per_press[f] = all_peaks[f]
             mismatch = detect_wiring_mismatch(f, all_peaks, wiring)
             if mismatch:
