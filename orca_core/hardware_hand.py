@@ -1339,19 +1339,29 @@ class OrcaHandTouch(OrcaHand):
         self._tactile_client = self._create_tactile_client()
         try:
             self._tactile_client.connect()
-            return True, f"Sensor connected on {self.config.sensor_port}"
+            if self._tactile_client.get_tactile_configuration() is not None:
+                return True, f"Sensor connected on {self.config.sensor_port}"
+            print(f"Port {self.config.sensor_port} opened but sensor did not respond; "
+                  "trying auto-detection.")
+            self._tactile_client.disconnect()
+            self._tactile_client = None
         except Exception as e:
             print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
             self._tactile_client = None
 
         chosen = auto_detect_port("tactile_sensor")
-        if chosen and chosen != self.config.sensor_port:
+        if chosen:
             try:
                 self.config = dataclasses.replace(self.config, sensor_port=chosen)
                 self._tactile_client = self._create_tactile_client()
                 self._tactile_client.connect()
-                self._persist_sensor_port(chosen)
-                return True, f"Sensor connected on auto-detected {chosen}"
+                if self._tactile_client.get_tactile_configuration() is None:
+                    print(f"Auto-detected port {chosen} opened but sensor did not respond.")
+                    self._tactile_client.disconnect()
+                    self._tactile_client = None
+                else:
+                    self._persist_sensor_port(chosen)
+                    return True, f"Sensor connected on auto-detected {chosen}"
             except Exception as e:
                 print(f"Auto-detected sensor port {chosen} also failed: {e}")
                 self._tactile_client = None
