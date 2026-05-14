@@ -1,57 +1,29 @@
 #!/usr/bin/env python3
-
 import argparse
-import sys
-import os
 
-# Add the parent directory to the Python path so we can import orca_core
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
-from orca_core import OrcaHand
 
-def main():
-    parser = argparse.ArgumentParser(description='Move OrcaHand to neutral position.')
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Move the hand to its neutral pose.")
+    add_hand_arguments(parser)
     parser.add_argument(
-        "config_path",
-        type=str,
-        nargs="?",
-        default=None,
-        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
+        "--force-calibrate",
+        action="store_true",
+        help="Run calibration even if calibration.yaml already exists.",
     )
-    
     args = parser.parse_args()
 
+    hand = create_hand(args.config_path, use_mock=args.mock)
     try:
-        # Initialize the hand
-        hand = OrcaHand(config_path=args.config_path)
-            
-        # Connect to the hand
-        success, message = hand.connect()
-        if not success:
-            print(f"Failed to connect: {message}")
-            return 1
-            
-        print("Connected to hand successfully")
-        
-        # Enable torque
-        hand.enable_torque()
-        print("Torque enabled")
-        print("Available motor IDs:", hand.config.motor_ids)
-        # Move to neutral position
+        connect_hand(hand)
+        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
         print("Moving to neutral position...")
         hand.set_neutral_position()
-        print("Reached neutral position")
-        
-        # Disable torque and disconnect
-        hand.disable_torque()
-        hand.disconnect()
-        print("Disconnected from hand")
-        
+        print("Reached neutral position.")
         return 0
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return 1
+    finally:
+        shutdown_hand(hand)
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    raise SystemExit(main())

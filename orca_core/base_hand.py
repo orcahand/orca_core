@@ -14,7 +14,7 @@ import numpy as np
 from .hand_config import BaseHandConfig
 from .joint_position import OrcaJointPositions
 
-from .constants import STEPS_TO_NEUTRAL, STEP_SIZE_NEUTRAL
+from .constants import NUM_STEPS, STEP_SIZE
 
 
 class BaseHand(ABC):
@@ -159,7 +159,7 @@ class BaseHand(ABC):
     def set_named_position(self, name: str, num_steps: int = 1, step_size: float = 1.0):
         self.set_joint_positions(self.recorded_positions[name], num_steps=num_steps, step_size=step_size)
 
-    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         """Move hand to neutral position."""
         self.set_joint_positions(
             OrcaJointPositions.from_dict(self.config.neutral_position),
@@ -167,7 +167,7 @@ class BaseHand(ABC):
             step_size=step_size,
         )
 
-    def set_zero_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_zero_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         self.set_joint_positions(
             OrcaJointPositions.from_dict(
                 {joint: 0.0 for joint in self.config.joint_ids}

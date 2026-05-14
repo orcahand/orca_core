@@ -1,118 +1,115 @@
-from orca_core import OrcaHand
-import numpy as np
-import argparse # Added import
 
-def main(): # Added main function
+
+import argparse
+
+from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core import OrcaJointPositions
+
+
+def pose_from_fractions(hand, fractions: dict[str, float]) -> OrcaJointPositions:
+    pose = dict(hand.config.neutral_position)
+    for joint, fraction in fractions.items():
+        if joint not in hand.config.joint_roms_dict:
+            continue
+        joint_min, joint_max = hand.config.joint_roms_dict[joint]
+        pose[joint] = joint_min + fraction * (joint_max - joint_min)
+    return OrcaJointPositions.from_dict(pose)
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run a demo of the ORCA Hand. Specify the path to the hand config.yaml file."
+        description="Run a simple open-close-pinch demo using the current hand config."
     )
-    parser.add_argument(
-        "config_path",
-        type=str,
-        nargs="?",
-        default=None, # Changed default to None
-        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)"
-    )
+    add_hand_arguments(parser)
+    parser.add_argument("--cycles", type=int, default=3)
+    parser.add_argument("--num-steps", type=int, default=8)
+    parser.add_argument("--step-size", type=float, default=0.02)
     args = parser.parse_args()
 
-    # Initialize the hand
-    hand = OrcaHand(config_path=args.config_path)
-    status = hand.connect()
-    print(status)
-
-    # Ensure the hand is connected
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit()
-
-    # Joint ranges of motion (ROMs)
-    joint_roms = {
-        'thumb_mcp': [-50, 50],
-        'thumb_abd': [-20, 42],
-        'thumb_pip': [-12, 108],
-        'thumb_dip': [-20, 112],
-        'index_mcp': [-20, 95],
-        'index_pip': [-20, 108],
-        'index_abd': [-37, 37],
-        'middle_mcp': [-20, 91],
-        'middle_pip': [-20, 107],
-        'ring_mcp': [-20, 91],
-        'ring_pip': [-20, 107],
-        'ring_abd': [-37, 37],
-        'pinky_mcp': [-20, 98],
-        'pinky_pip': [-20, 108],
-        'pinky_abd': [-37, 37],
-        'wrist': [-50, 30],
-    }
-
-    # Define the fingers and their joints
-    fingers = [
-        {'name': 'index', 'joints': ['index_mcp', 'index_pip']},
-        {'name': 'middle', 'joints': ['middle_mcp', 'middle_pip']},
-        {'name': 'ring', 'joints': ['ring_mcp', 'ring_pip']},
-        {'name': 'pinky', 'joints': ['pinky_mcp', 'pinky_pip']},
-    ]
-
-    # Movement parameters
-    period = 0.4 # Total time for one cycle (seconds)
-    step_time = 0.005  # Time between updates (seconds)
-    amplitude = 0.7  # Fraction of the ROM to use for finger movement
-    thumb_amplitude = 0.4  # Fraction of the ROM to use for thumb movement
-    phase_shift_factor = period / 20  # Phase shift between fingers (0 for no shift, period/4 for equal spacing)
-
-    # Precompute the joint positions for each time step
-    time_steps = np.arange(0, period, step_time)
-    joint_positions = {finger['name']: [] for finger in fingers}
-    thumb_positions = []
-
-    for t in time_steps:
-        # Compute positions for fingers
-        for i, finger in enumerate(fingers):
-            phase_shift = i * phase_shift_factor  # Apply the phase shift factor
-            positions = {}
-            for joint in finger['joints']:
-                rom_min, rom_max = joint_roms[joint]
-                center = (rom_min + rom_max) / 2
-                range_ = (rom_max - rom_min) / 2
-                positions[joint] = center + amplitude * range_ * np.sin(2 * np.pi * (t - phase_shift) / period)
-            joint_positions[finger['name']].append(positions)
-
-        # Compute positions for the thumb
-        thumb_pos = {
-            'thumb_mcp': (joint_roms['thumb_mcp'][0] + joint_roms['thumb_mcp'][1]) / 2
-            + thumb_amplitude * (joint_roms['thumb_mcp'][1] - joint_roms['thumb_mcp'][0]) / 2
-            * np.sin(2 * np.pi * t / period) - 20,
-            'thumb_pip': (joint_roms['thumb_dip'][0] + joint_roms['thumb_dip'][1]) / 4
-            + thumb_amplitude/3 * (joint_roms['thumb_dip'][1] - joint_roms['thumb_dip'][0]) / 2
-            * np.sin(2 * np.pi * t / period),
-            'thumb_dip': (joint_roms['thumb_dip'][0] + joint_roms['thumb_dip'][1]) / 4
-            + thumb_amplitude * (joint_roms['thumb_dip'][1] - joint_roms['thumb_dip'][0]) / 2
-            * np.sin(2 * np.pi * t / period),
-            'thumb_abd': 35,  # Constant position
-            'wrist': -20,  # Constant position
-            'pinky_abd': -20,  # Constant abduction
-            'ring_abd': -10,   # Constant abduction
-            'index_abd': 25, # Constant abduction
-        }
-        thumb_positions.append(thumb_pos)
-
-    # Perform the movement in a loop
+    hand = create_hand(args.config_path, use_mock=args.mock)
     try:
-        while True:
-            for t_idx, t in enumerate(time_steps):
-                # Combine all joint positions for this time step
-                current_positions = {}
-                for finger in fingers:
-                    current_positions.update(joint_positions[finger['name']][t_idx])
-                current_positions.update(thumb_positions[t_idx])  # Add thumb, wrist, and abduction positions
-                
-                # Send the positions to the hand
-                hand.set_joint_positions(current_positions)
+        connect_hand(hand)
+        hand.init_joints(force_calibrate=args.mock)
 
+        demo_poses = {
+            "open_hand": pose_from_fractions(
+                hand,
+                {
+                    "thumb_cmc": 0.70,
+                    "thumb_abd": 0.80,
+                    "thumb_mcp": 0.85,
+                    "thumb_dip": 0.75,
+                    "index_abd": 0.10,
+                    "middle_abd": 0.50,
+                    "ring_abd": 0.70,
+                    "pinky_abd": 0.85,
+                    "index_mcp": 0.15,
+                    "middle_mcp": 0.15,
+                    "ring_mcp": 0.15,
+                    "pinky_mcp": 0.15,
+                    "index_pip": 0.10,
+                    "middle_pip": 0.10,
+                    "ring_pip": 0.10,
+                    "pinky_pip": 0.10,
+                    "wrist": 0.30,
+                },
+            ),
+            "power_grasp": pose_from_fractions(
+                hand,
+                {
+                    "thumb_cmc": 0.35,
+                    "thumb_abd": 0.55,
+                    "thumb_mcp": 0.20,
+                    "thumb_dip": 0.85,
+                    "index_mcp": 0.85,
+                    "middle_mcp": 0.85,
+                    "ring_mcp": 0.85,
+                    "pinky_mcp": 0.85,
+                    "index_pip": 0.90,
+                    "middle_pip": 0.90,
+                    "ring_pip": 0.90,
+                    "pinky_pip": 0.90,
+                    "wrist": 0.55,
+                },
+            ),
+            "pinch": pose_from_fractions(
+                hand,
+                {
+                    "thumb_cmc": 0.45,
+                    "thumb_abd": 0.65,
+                    "thumb_mcp": 0.40,
+                    "thumb_dip": 0.75,
+                    "index_abd": 0.30,
+                    "index_mcp": 0.70,
+                    "index_pip": 0.75,
+                    "middle_mcp": 0.30,
+                    "middle_pip": 0.20,
+                    "ring_mcp": 0.20,
+                    "ring_pip": 0.15,
+                    "pinky_mcp": 0.20,
+                    "pinky_pip": 0.15,
+                    "wrist": 0.45,
+                },
+            ),
+        }
+
+        for name, pose in demo_poses.items():
+            hand.register_position(name, pose)
+
+        print("Cycling through open_hand -> power_grasp -> pinch -> neutral")
+        for _ in range(args.cycles):
+            for name in ("open_hand", "power_grasp", "pinch"):
+                print(f"Moving to {name}")
+                hand.set_named_position(name, num_steps=args.num_steps, step_size=args.step_size)
+            hand.set_neutral_position(num_steps=args.num_steps, step_size=args.step_size)
+
+        return 0
     except KeyboardInterrupt:
-        # Reset the hand to the neutral position on exit
-        hand.set_joint_positions({joint: 0 for joint in hand.config.joint_ids})
-        print("Demo stopped and hand reset.")
+        print("\nDemo interrupted.")
+        return 0
+    finally:
+        shutdown_hand(hand)
 
-if __name__ == "__main__": # Added main execution block
-    main()
+
+if __name__ == "__main__":
+    raise SystemExit(main())

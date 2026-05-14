@@ -14,7 +14,7 @@ import time
 from typing import Optional, Sequence, Tuple
 import numpy as np
 
-from .motor_client import MotorClient
+from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 from .feetech import (
     PortHandler,
     sms_sts,
@@ -27,11 +27,33 @@ from .feetech import (
     SMS_STS_PRESENT_SPEED_L,
     SMS_STS_PRESENT_CURRENT_L,
     SMS_STS_PRESENT_TEMPERATURE,
+    SMS_STS_MOVING,
     SMS_STS_ACC,
     SMS_STS_GOAL_POSITION_L,
     SMS_STS_GOAL_TIME_L,
     SMS_STS_GOAL_SPEED_L,
+    SMS_STS_ID,
+    SMS_STS_BAUD_RATE,
 )
+
+# Map host-facing baud rates to the firmware's register code.
+FEETECH_BAUD_RATE_MAP: dict[int, int] = {
+    1_000_000: 0,
+    500_000: 1,
+    250_000: 2,
+    128_000: 3,
+    115_200: 4,
+    76_800: 5,
+    57_600: 6,
+    38_400: 7,
+}
+
+# Model-number → human name. Multiple raw values can map to the same label.
+FEETECH_MODELS: dict[int, str] = {
+    4106: 'HLS3930',
+    6922: 'HLS3915',
+    5130: 'HLS3915',
+}
 
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
@@ -41,6 +63,12 @@ DEFAULT_CUR_SCALE = 6.5  # mA per unit
 # Position limits for STS servo mode (0-4095, one full rotation)
 POS_MIN = 0
 POS_MAX = 4095
+
+# Feetech servos rotate in the opposite direction from Dynamixel for the same
+# raw command. We invert here so OrcaHand sees a single, motor-type-agnostic
+# convention; per-joint sign tuning (joint_to_motor_map) can then be shared
+# across motor types.
+POSITION_DIRECTION = -1
 
 
 def feetech_cleanup_handler():
@@ -59,6 +87,8 @@ class FeetechClient(MotorClient):
     This implements the MotorClient interface for Feetech motors,
     providing compatibility with the OrcaHand control system.
     """
+
+    waits_for_motion = True
 
     OPEN_CLIENTS = set()
 
@@ -99,10 +129,11 @@ class FeetechClient(MotorClient):
         self._connected = False
 
         # Default motion parameters
-        # Speed unit is 0.732 RPM per value. In practice, motor tops out around
-        # 1500 steps/sec (~22 RPM) due to hardware limits.
-        self._default_speed = 60  # Good balance of speed and control
-        self._default_acc = 50  # Acceleration (0-254)
+        # Speed unit is 0.732 RPM per value; the motor's firmware caps speed
+        # to whatever its hardware can sustain, so passing a large value just
+        # means "go as fast as you can".
+        self._default_speed = 1500  # Effectively "max speed" for STS-class
+        self._default_acc = 150  # Acceleration (0-254): faster ramp-up
         self._default_torque = 500  # Torque limit (0-1000), required for motion
 
         self.OPEN_CLIENTS.add(self)
@@ -162,6 +193,102 @@ class FeetechClient(MotorClient):
 
         if self in self.OPEN_CLIENTS:
             self.OPEN_CLIENTS.remove(self)
+
+    @staticmethod
+    def scan_for_motors(
+        port: str,
+        id_range: tuple,
+        baud_rates: Optional[list] = None,
+    ) -> list:
+        """Scan ``port`` for any responding Feetech motors.
+
+        Tries each baud in ``baud_rates`` (defaults to all known rates), pings
+        every ID in ``id_range``, and returns a list of dicts with keys
+        ``id``, ``baud_rate``, ``model_name``. Doesn't change motor state.
+        """
+        if baud_rates is None:
+            baud_rates = list(FEETECH_BAUD_RATE_MAP.keys())
+        detected_motors = []
+        for baud_rate in baud_rates:
+            port_handler = PortHandler(port)
+            port_handler.baudrate = baud_rate
+            try:
+                if not port_handler.openPort():
+                    logging.warning(
+                        'Failed to open port %s at %d baud', port, baud_rate
+                    )
+                    continue
+                packet_handler = sms_sts(port_handler)
+                for motor_id in range(id_range[0], id_range[1] + 1):
+                    model_number, result, _ = packet_handler.ping(motor_id)
+                    if result == COMM_SUCCESS:
+                        detected_motors.append({
+                            'id': motor_id,
+                            'baud_rate': baud_rate,
+                            'model_name': FEETECH_MODELS.get(model_number, 'Feetech'),
+                        })
+                port_handler.closePort()
+            except Exception as e:
+                logging.warning(
+                    'Error scanning port %s at %d baud: %s', port, baud_rate, e
+                )
+                try:
+                    port_handler.closePort()
+                except Exception:
+                    pass
+        return detected_motors
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Re-program a motor's bus ID. Persists in EEPROM."""
+        if not (0 <= new_id <= 253):
+            logging.error("Invalid ID %d. Valid range is 0-253.", new_id)
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([current_id], False, retries=0)
+            self.packet_handler.unLockEprom(current_id)
+            result, error = self.packet_handler.write1ByteTxRx(
+                current_id, SMS_STS_ID, new_id
+            )
+            self.packet_handler.LockEprom(new_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info("Changed motor ID: %d -> %d", current_id, new_id)
+                return True
+            logging.error(
+                "Failed to change motor ID: result=%d, error=%d", result, error
+            )
+            return False
+        except Exception as e:
+            logging.error("Failed to change motor ID: %s", e)
+            return False
+
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Re-program a motor's UART baud. Caller must reconnect at the new rate."""
+        if new_baud_rate not in FEETECH_BAUD_RATE_MAP:
+            logging.error(
+                "Invalid baud rate %d. Valid: %s",
+                new_baud_rate,
+                list(FEETECH_BAUD_RATE_MAP.keys()),
+            )
+            return False
+        try:
+            self._check_connected()
+            self.set_torque_enabled([motor_id], False, retries=0)
+            self.packet_handler.unLockEprom(motor_id)
+            result, error = self.packet_handler.write1ByteTxRx(
+                motor_id, SMS_STS_BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
+            )
+            self.packet_handler.LockEprom(motor_id)
+            if result == COMM_SUCCESS and error == 0:
+                logging.info("Changed motor %d baud rate to %d", motor_id, new_baud_rate)
+                return True
+            logging.error(
+                "Failed to change baud rate: result=%d, error=%d", result, error
+            )
+            return False
+        except Exception as e:
+            logging.error("Failed to change baud rate: %s", e)
+            return False
 
     def set_torque_enabled(
         self,
@@ -241,8 +368,8 @@ class FeetechClient(MotorClient):
         # Re-enable torque
         self.set_torque_enabled(motor_ids, True)
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads position, velocity, and current for all motors."""
+    def _read_state_per_motor_fallback(self) -> MotorRead:
+        """Per-motor read of position/velocity/current; used only when sync read fails."""
         self._check_connected()
 
         positions = np.zeros(len(self.motor_ids), dtype=np.float32)
@@ -257,7 +384,7 @@ class FeetechClient(MotorClient):
             if result == COMM_SUCCESS and error == 0:
                 pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                 pos_normalized = self._normalize_position(pos_signed)
-                positions[i] = pos_normalized * self.pos_scale
+                positions[i] = self._raw_to_rad(pos_normalized, self.pos_scale)
             else:
                 logging.warning(
                     'Failed to read position for motor %d: result=%d, error=%d',
@@ -270,7 +397,7 @@ class FeetechClient(MotorClient):
             )
             if result == COMM_SUCCESS and error == 0:
                 vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
-                velocities[i] = vel_signed * self.vel_scale
+                velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
             else:
                 logging.warning(
                     'Failed to read velocity for motor %d: result=%d, error=%d',
@@ -290,14 +417,34 @@ class FeetechClient(MotorClient):
                     motor_id, result, error
                 )
 
-        return positions, velocities, currents
+        return MotorRead(position=positions, velocity=velocities, current=currents)
 
     def read_temperature(self) -> np.ndarray:
-        """Reads the temperature for all motors."""
+        """Reads the temperature for all motors via a single sync-read packet."""
         self._check_connected()
 
         temperatures = np.zeros(len(self.motor_ids), dtype=np.float32)
 
+        sync_read = GroupSyncRead(self.packet_handler, SMS_STS_PRESENT_TEMPERATURE, 1)
+        for motor_id in self.motor_ids:
+            sync_read.addParam(motor_id)
+
+        if sync_read.txRxPacket() != COMM_SUCCESS:
+            logging.warning('Sync temp read failed, falling back to individual reads')
+            return self._read_temperature_per_motor_fallback()
+
+        for i, motor_id in enumerate(self.motor_ids):
+            available, _ = sync_read.isAvailable(motor_id, SMS_STS_PRESENT_TEMPERATURE, 1)
+            if available:
+                temperatures[i] = float(sync_read.getData(motor_id, SMS_STS_PRESENT_TEMPERATURE, 1))
+            else:
+                logging.warning('Motor %d not available in sync temp read', motor_id)
+
+        return temperatures
+
+    def _read_temperature_per_motor_fallback(self) -> np.ndarray:
+        """Per-motor read of temperature; used only when sync read fails."""
+        temperatures = np.zeros(len(self.motor_ids), dtype=np.float32)
         for i, motor_id in enumerate(self.motor_ids):
             temp, result, error = self.packet_handler.read1ByteTxRx(
                 motor_id, SMS_STS_PRESENT_TEMPERATURE
@@ -312,6 +459,54 @@ class FeetechClient(MotorClient):
 
         return temperatures
 
+    def wait_for_motion_complete(
+        self,
+        timeout: float = 5.0,
+        poll_interval: float = 0.02,
+    ) -> None:
+        """Block until every motor reports it has stopped.
+
+        Reads each motor's MOVING flag (register 66) via sync read; the bit
+        is 1 while the servo is travelling toward its goal position and 0
+        once it has settled.
+
+        Args:
+            timeout: Max seconds to wait before giving up.
+            poll_interval: Seconds between polls.
+
+        Raises:
+            MotionTimeoutError: If any motor is still moving when the
+                timeout elapses.
+        """
+        self._check_connected()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            sync_read = GroupSyncRead(self.packet_handler, SMS_STS_MOVING, 1)
+            for motor_id in self.motor_ids:
+                sync_read.addParam(motor_id)
+
+            if sync_read.txRxPacket() != COMM_SUCCESS:
+                time.sleep(poll_interval)
+                continue
+
+            all_stopped = True
+            for motor_id in self.motor_ids:
+                available, _ = sync_read.isAvailable(motor_id, SMS_STS_MOVING, 1)
+                if not available:
+                    all_stopped = False
+                    break
+                if sync_read.getData(motor_id, SMS_STS_MOVING, 1) != 0:
+                    all_stopped = False
+                    break
+
+            if all_stopped:
+                return
+            time.sleep(poll_interval)
+
+        raise MotionTimeoutError(
+            f'Motors did not settle within {timeout:.1f}s'
+        )
+
     def write_desired_pos(
         self,
         motor_ids: Sequence[int],
@@ -321,42 +516,16 @@ class FeetechClient(MotorClient):
     ) -> None:
         """Writes desired positions to the motors.
 
+        Routes through ``write_positions_sync`` so all motors receive their
+        targets in a single broadcast packet (one round-trip instead of N).
+
         Args:
             motor_ids: Motor IDs to write to.
             positions: Target positions in radians.
             speed: Movement speed (0.732 RPM per unit). Default ~60 = 44 RPM.
             torque: Torque limit (0-1000). Default 500. Required for motion.
         """
-        self._check_connected()
-
-        if len(motor_ids) != len(positions):
-            raise ValueError('motor_ids and positions must have the same length')
-
-        speed = speed if speed is not None else self._default_speed
-        torque = torque if torque is not None else self._default_torque
-
-        for motor_id, pos_rad in zip(motor_ids, positions):
-            # Convert radians to raw position and clamp to valid range
-            pos_raw = int(pos_rad / self.pos_scale)
-            pos_raw = self._clamp_position(pos_raw)
-
-            logging.debug(
-                'WritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
-                motor_id, pos_raw, speed, self._default_acc, torque
-            )
-
-            result, error = self.packet_handler.WritePosEx(
-                motor_id,
-                pos_raw,
-                speed,
-                self._default_acc,
-                torque,
-            )
-            if result != COMM_SUCCESS or error != 0:
-                logging.error(
-                    'Failed to write position to motor %d: result=%d, error=%d',
-                    motor_id, result, error
-                )
+        self.write_positions_sync(motor_ids, positions, speed=speed, torque=torque)
 
     def write_desired_current(
         self,
@@ -409,6 +578,16 @@ class FeetechClient(MotorClient):
         """Clamp position to valid servo range (0-4095)."""
         return max(POS_MIN, min(POS_MAX, pos_raw))
 
+    @staticmethod
+    def _raw_to_rad(raw: float, scale: float) -> float:
+        """Convert raw motor units to radians (applies direction inversion)."""
+        return raw * scale * POSITION_DIRECTION
+
+    @staticmethod
+    def _rad_to_raw(rad: float, scale: float) -> int:
+        """Convert radians to raw motor units (applies direction inversion)."""
+        return int((rad * POSITION_DIRECTION) / scale)
+
     @property
     def requires_offset_calibration(self) -> bool:
         return True
@@ -428,7 +607,10 @@ class FeetechClient(MotorClient):
         """
         self._check_connected()
 
-        # Buffer of 500 (~44°) ensures room for tendon loosening over time
+        # When POSITION_DIRECTION inverts the read frame, "upper" maps to low raw.
+        if POSITION_DIRECTION < 0:
+            upper = not upper
+
         target_position = 3595 if upper else 500
 
         result, error = self.packet_handler.reOfsCal(motor_id, target_position)
@@ -444,6 +626,40 @@ class FeetechClient(MotorClient):
             motor_id, target_position
         )
         return True
+
+    @staticmethod
+    def probe(
+        port: str,
+        baudrate: int,
+        motor_ids: Sequence[int],
+    ) -> bool:
+        """Open ``port`` at ``baudrate`` and ping the first and last motor IDs.
+
+        Returns True if either motor responds — i.e. the bus is speaking the
+        Feetech protocol at this baudrate. Used at connect time to
+        auto-detect the driver family without enabling torque.
+        """
+        ids = list(motor_ids)
+        if not ids:
+            return False
+        sample = [ids[0]] if len(ids) == 1 else [ids[0], ids[-1]]
+
+        handler = PortHandler(port)
+        handler.baudrate = baudrate
+        try:
+            if not handler.openPort():
+                return False
+            packet = sms_sts(handler)
+            for motor_id in sample:
+                _, comm, _ = packet.ping(motor_id)
+                if comm == COMM_SUCCESS:
+                    return True
+            return False
+        finally:
+            try:
+                handler.closePort()
+            except Exception:
+                pass
 
     def __enter__(self):
         """Enables use as a context manager."""
@@ -494,8 +710,8 @@ class FeetechClient(MotorClient):
         self.packet_handler.groupSyncWrite.clearParam()
 
         for motor_id, pos_rad in zip(motor_ids, positions):
-            pos_raw = int(pos_rad / self.pos_scale)
-            pos_raw = self._clamp_position(pos_raw)
+            # STS servo mode uses raw 0–4095 (single rotation); clamp before sending.
+            pos_raw = self._clamp_position(self._rad_to_raw(pos_rad, self.pos_scale))
 
             logging.debug(
                 'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
@@ -512,10 +728,10 @@ class FeetechClient(MotorClient):
         # Clear params for next use
         self.packet_handler.groupSyncWrite.clearParam()
 
-    def read_pos_vel_cur_sync(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Reads position, velocity, and current for all motors using sync read.
+    def read_position_velocity_current(self) -> MotorRead:
+        """Read position, velocity, and current for all motors in one sync packet.
 
-        More efficient than individual reads for multiple motors.
+        Falls back to per-motor reads only if the sync transaction fails.
         """
         self._check_connected()
 
@@ -533,7 +749,7 @@ class FeetechClient(MotorClient):
         result = sync_read.txRxPacket()
         if result != COMM_SUCCESS:
             logging.warning('Sync read failed, falling back to individual reads')
-            return self.read_pos_vel_cur()
+            return self._read_state_per_motor_fallback()
 
         for i, motor_id in enumerate(self.motor_ids):
             available, error = sync_read.isAvailable(
@@ -543,11 +759,11 @@ class FeetechClient(MotorClient):
                 pos_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_POSITION_L, 2)
                 pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                 pos_normalized = self._normalize_position(pos_signed)
-                positions[i] = pos_normalized * self.pos_scale
+                positions[i] = self._raw_to_rad(pos_normalized, self.pos_scale)
 
                 vel_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_SPEED_L, 2)
                 vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
-                velocities[i] = vel_signed * self.vel_scale
+                velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
 
                 cur_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_CURRENT_L, 2)
                 cur_signed = self.packet_handler.scs_tohost(cur_raw, 15)
@@ -555,7 +771,7 @@ class FeetechClient(MotorClient):
             else:
                 logging.warning('Motor %d not available in sync read', motor_id)
 
-        return positions, velocities, currents
+        return MotorRead(position=positions, velocity=velocities, current=currents)
 
 
 # Register global cleanup function

@@ -1,88 +1,79 @@
-import time
-import yaml
-import numpy as np
-import argparse
-from orca_core import OrcaHand
-import os
 
-def main():
-    parser = argparse.ArgumentParser(description='Replay continuous hand joint movements.')
-    parser.add_argument("config_path", type=str, nargs="?", default=None, help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1_left/config.yaml)")
-    parser.add_argument('--replay_file', type=str, required=True, help="Path to the replay file. Can be an absolute/relative path (e.g., 'replay_sequences/my_file.yaml'), or a plain filename which will be sought in 'project_root/replay_sequences/'.")
+
+import argparse
+import time
+
+import numpy as np
+import yaml
+
+from common import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand,
+    resolve_input_path,
+    shutdown_hand,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Replay a continuous joint recording.")
+    add_hand_arguments(parser)
+    parser.add_argument("--replay-file", type=str, required=True)
     args = parser.parse_args()
 
-    user_input_replay_file = args.replay_file.strip()
-    
-    project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    default_replay_dir_path = os.path.join(project_root, 'replay_sequences')
-
-    if os.path.isabs(user_input_replay_file):
-        full_filepath = user_input_replay_file
-    elif os.sep in user_input_replay_file :
-        full_filepath = os.path.join(project_root, user_input_replay_file)
-    else:
-        full_filepath = os.path.join(default_replay_dir_path, user_input_replay_file)
-    
-    full_filepath = os.path.abspath(full_filepath)
-
+    replay_path = resolve_input_path(args.replay_file)
     try:
-        with open(full_filepath, "r") as file:
-            replay_data = yaml.safe_load(file)
+        replay_data = yaml.safe_load(replay_path.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
-        print(f"File not found at the resolved path: {full_filepath}")
-        return
+        print(f"Replay file not found: {replay_path}")
+        return 1
 
     metadata = replay_data.get("metadata", {})
     if metadata.get("type") != "continuous":
-        print("The file does not contain continuous recording data.")
-        return
+        print("Replay file is not a continuous recording.")
+        return 1
 
     sampling_frequency = metadata.get("sampling_frequency_hz")
     if sampling_frequency is None:
-        print("Sampling frequency not found in metadata.")
-        return
-
-    print("Replaying with ", sampling_frequency, " Hz...")
-
-    step_time = 1.0 / sampling_frequency
+        print("Replay file is missing sampling_frequency_hz.")
+        return 1
 
     waypoints = replay_data.get("angles", [])
     if not waypoints:
-        print("No angles found in the file.")
-        return
+        print("Replay file does not contain any recorded frames.")
+        return 1
 
-    hand = OrcaHand(config_path=args.config_path)
-    status = hand.connect()
-    print(status)
-
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        return
-
-    if "hand_type" in metadata:
-        recorded_type = metadata["hand_type"]
-        if recorded_type != getattr(hand, "type", None):
-            print(f"Hand type mismatch: recorded={recorded_type}, connected={getattr(hand, 'type', 'unknown')}")
-            return
-
-    hand.enable_torque()
-    print("Torque enabled. Starting real-time replay...")
-
+    hand = create_hand(args.config_path, use_mock=args.mock)
     try:
+        connect_hand(hand)
+        hand.init_joints(force_calibrate=args.mock)
+
+        expected_joint_ids = metadata.get("joint_ids")
+        if expected_joint_ids is not None and expected_joint_ids != hand.config.joint_ids:
+            raise ValueError("Replay joint order does not match the connected hand configuration.")
+
+        if metadata.get("hand_type") not in (None, hand.config.type):
+            raise ValueError(
+                f"Replay was recorded for hand_type={metadata['hand_type']}, "
+                f"but the connected config is {hand.config.type}."
+            )
+
+        print(f"Replaying {len(waypoints)} frames from {replay_path}")
+        step_time = 1.0 / sampling_frequency
         start_time = time.time()
-        for i, pose in enumerate(waypoints):
-            hand.set_joint_positions(pose)
-            target_time = start_time + i * step_time
-            now = time.time()
-            if now < target_time:
-                time.sleep(target_time - now)
-
+        for index, pose in enumerate(waypoints):
+            hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
+            target_time = start_time + index * step_time
+            remaining = target_time - time.time()
+            if remaining > 0:
+                time.sleep(remaining)
+        return 0
     except KeyboardInterrupt:
-        print("Replay interrupted.")
-
+        print("\nReplay interrupted.")
+        return 0
     finally:
-        hand.disable_torque()
-        print("Torque disabled.")
+        shutdown_hand(hand)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

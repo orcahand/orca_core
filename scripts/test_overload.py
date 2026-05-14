@@ -7,7 +7,14 @@ the bulk read path in DynamixelClient.
 
 import argparse
 import logging
+import sys
 import time
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from orca_core.hardware.dynamixel_client import DynamixelClient
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -21,6 +28,7 @@ def main():
     args = parser.parse_args()
 
     mid = args.motor_id
+    # TODO: change this to automatically detect Dynamixel or Feetech client
     dxl_client = DynamixelClient([mid], args.port, args.baudrate)
     dxl_client.connect()
     dxl_client.set_operating_mode([mid], 5)  # current-based position
@@ -29,7 +37,7 @@ def main():
     try:
         while True:
             hw_err = dxl_client.read_hardware_error(mid)
-            pos, vel, cur = dxl_client.read_pos_vel_cur()
+            pos, vel, cur = dxl_client.read_position_velocity_current()
             target = pos + 0.3
             dxl_client.write_desired_pos([mid], target)
             err_str = f"  HW_ERR=0x{hw_err:02X}" if hw_err else ""

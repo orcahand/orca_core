@@ -9,9 +9,17 @@
 import dataclasses
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
-from .constants import CONTROL_MODES, DEFAULT_MODEL_NAME, JOINT_IDS, JOINT_ROM_DICT, JOINT_TO_MOTOR_MAP, MOTOR_IDS
+from .constants import (
+    CONTROL_MODES,
+    DEFAULT_MODEL_NAME,
+    JOINT_IDS,
+    JOINT_ROM_DICT,
+    JOINT_TO_MOTOR_MAP,
+    MOTOR_IDS,
+    SUPPORTED_MOTOR_TYPES,
+)
 from .hardware.sensing.constants import (
     FINGER_NAMES,
     VALID_SENSOR_IDS,
@@ -189,11 +197,11 @@ class OrcaHandConfig(BaseHandConfig):
     """ORCA hand configuration layered on top of the shared base spec."""
 
     calibration_path: str = ""
-    baudrate: int = 3_000_000
-    port: str = "/dev/ttyUSB0"
+    baudrate: Optional[int] = None
+    port: Optional[str] = None
     max_current: int = 300  # mA
     control_mode: str = "current_based_position"
-    motor_type: str = "dynamixel"
+    motor_type: Optional[str] = None
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
@@ -298,6 +306,12 @@ class OrcaHandConfig(BaseHandConfig):
 
         if self.control_mode not in CONTROL_MODES:
             raise HandConfigValidationError("Invalid control mode.")
+
+        if self.motor_type is not None and self.motor_type not in SUPPORTED_MOTOR_TYPES:
+            raise HandConfigValidationError(
+                f"Unknown motor_type: {self.motor_type!r}. "
+                f"Expected one of {SUPPORTED_MOTOR_TYPES} or omit for auto-detection."
+            )
 
         if self.max_current < self.calibration_current:
             raise HandConfigValidationError(

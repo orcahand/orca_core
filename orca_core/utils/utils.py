@@ -42,6 +42,31 @@ def _list_available_models(models_dir: str) -> list[str]:
     return available
 
 
+def _version_sort_key(version: str) -> tuple[int, str]:
+    if version.startswith("v") and version[1:].isdigit():
+        return (int(version[1:]), version)
+    return (-1, version)
+
+
+def _find_latest_model_version(models_dir: str, model_name: str) -> str | None:
+    if not os.path.isdir(models_dir):
+        return None
+
+    versions = sorted(os.listdir(models_dir), key=_version_sort_key, reverse=True)
+    for version in versions:
+        candidate = os.path.join(models_dir, version, model_name)
+        if os.path.isdir(candidate):
+            return version
+    return None
+
+
+def _find_model_dir_across_versions(models_dir: str, model_name: str) -> str | None:
+    version = _find_latest_model_version(models_dir, model_name)
+    if version is None:
+        return None
+    return os.path.join(models_dir, version, model_name)
+
+
 def get_model_path(model_path=None, model_version: str | None = None, model_name: str | None = None):
     """Resolve and validate a hand "model" directory path (containing util files 
     like ``config.yaml``).
@@ -69,6 +94,10 @@ def get_model_path(model_path=None, model_version: str | None = None, model_name
     if model_path is None or model_path == "models":
         if not os.path.exists(models_dir):
             raise FileNotFoundError("\033[1;35mModels directory not found. Did you delete them?")
+        if model_version is None:
+            fallback_version = _find_latest_model_version(models_dir, selected_name)
+            if fallback_version is not None:
+                selected_version = fallback_version
         resolved_path = os.path.join(models_dir, selected_version, selected_name)
     else:
         if os.path.isabs(model_path):
@@ -83,6 +112,13 @@ def get_model_path(model_path=None, model_version: str | None = None, model_name
             else:
                 package_root = os.path.dirname(_get_package_root())
                 resolved_path = os.path.join(package_root, model_path)
+                fallback_model_dir = (
+                    _find_model_dir_across_versions(models_dir, model_path)
+                    if model_version is None
+                    else None
+                )
+                if fallback_model_dir is not None:
+                    resolved_path = fallback_model_dir
     
     if not os.path.exists(resolved_path):
         available = _list_available_models(models_dir)
@@ -188,6 +224,36 @@ def auto_detect_port(motor_type: str = "dynamixel") -> str:
         print(f"Auto-detected {motor_type} adapter: {port.device} ({port.description or 'unknown'})")
         return port.device
 
+    return None
+
+
+def motor_type_for_port(port_device: str) -> str | None:
+    """Return the motor family whose USB VID matches ``port_device``, or None."""
+    import serial.tools.list_ports
+    from ..constants import KNOWN_VIDS
+
+    for port in serial.tools.list_ports.comports():
+        if port.device != port_device:
+            continue
+        for motor_type, vids in KNOWN_VIDS.items():
+            if port.vid in vids:
+                return motor_type
+        return None
+    return None
+
+
+def find_single_usb_serial_port() -> str | None:
+    """Return the device path of the only attached USB serial adapter, or None.
+
+    Filters out built-in / non-USB serial endpoints (Bluetooth, debug console)
+    by requiring a USB VID. Used as a last-resort port pick when no VID is
+    in :data:`~orca_core.constants.KNOWN_VIDS`.
+    """
+    import serial.tools.list_ports
+
+    ports = [p for p in serial.tools.list_ports.comports() if p.vid is not None]
+    if len(ports) == 1:
+        return ports[0].device
     return None
 
 

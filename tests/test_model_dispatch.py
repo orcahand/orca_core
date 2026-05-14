@@ -16,7 +16,7 @@ MODELS_DIR = REPO_ROOT / "orca_core" / "models"
 
 
 def test_latest_is_hand_selected_default_version():
-    assert LATEST_VERSION == "v1"
+    assert LATEST_VERSION == "v2"
 
 
 def test_default_hand_is_right():
@@ -67,6 +67,11 @@ def test_unknown_model_raises_file_not_found():
         get_model_path(model_version="v1", model_name="missing_hand")
 
 
+def test_get_model_path_falls_back_across_versions_for_bare_model_name(patched_models_dir):
+    models_dir, _ = patched_models_dir
+    assert Path(get_model_path("orcahand_left")) == models_dir / "v1" / "orcahand_left"
+
+
 @pytest.mark.parametrize(
     ("kwargs", "expected_version", "expected_model_name"),
     [
@@ -106,7 +111,7 @@ def patched_models_dir(monkeypatch):
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({}, ("v1_right_joint",)),
+        ({}, ("v2_right_joint",)),
         ({"type": "left"}, ("v1_left_joint",)),
         ({"version": "v2", "type": "right"}, ("v2_right_joint",)),
     ],
@@ -118,7 +123,7 @@ def test_canonical_joint_ids_tracks_underlying_config_contents(patched_models_di
 def test_canonical_joint_ids_reflects_updated_config_contents(patched_models_dir):
     models_dir, write_config = patched_models_dir
     write_config(
-        models_dir / "v1" / "orcahand_right" / "config.yaml",
+        models_dir / "v2" / "orcahand_right" / "config.yaml",
         ["updated_joint_a", "updated_joint_b"],
     )
     assert canonical_joint_ids() == ("updated_joint_a", "updated_joint_b")

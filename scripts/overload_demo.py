@@ -11,9 +11,17 @@ Usage:
 """
 import argparse
 import os
+import sys
 import time
 import logging
+from pathlib import Path
+
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from orca_core import OrcaHand
 
 FINGER_JOINTS = {
@@ -43,54 +51,73 @@ def main():
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
 
     hand = OrcaHand(config_path=args.config_path)
-    hand.connect()
+    start_positions = None
 
-    if not hand.calibrated:
-        msg("ERROR: Hand must be calibrated so motor limits are known.")
-        hand.disconnect()
-        return
+    success, message = hand.connect()
+    if not success:
+        msg(f"ERROR: Could not connect to hand: {message}")
+        return 1
 
-    joints = FINGER_JOINTS[args.finger]
-    motor_ids = [hand.config.joint_to_motor_map[j] for j in joints]
+    try:
+        if not hand.calibrated:
+            msg("ERROR: Hand must be calibrated so motor limits are known.")
+            return 1
 
-    # Target past the hardstop (lower limit minus extra) to guarantee a stall
-    targets = {}
-    for mid in motor_ids:
-        lo, hi = hand.motor_limits_dict[mid]
-        targets[mid] = lo - PAST_LIMIT_RAD
+        joints = FINGER_JOINTS[args.finger]
+        motor_ids = [hand.config.joint_to_motor_map[j] for j in joints]
 
-    msg(f"\n  Finger: {args.finger}")
-    msg(f"  Joints: {joints}")
-    msg(f"  Motors: {motor_ids}")
-    msg(f"  Duration: {args.duration}s")
-    msg(f"\n  Driving into hardstop to trigger overload...")
-    msg(f"  Motors will recover automatically.\n")
+        # Target past the hardstop (lower limit minus extra) to guarantee a stall
+        targets = {}
+        for mid in motor_ids:
+            lo, hi = hand.motor_limits_dict[mid]
+            targets[mid] = lo - PAST_LIMIT_RAD
 
-    hand.enable_torque()
-    hand.set_control_mode('position', motor_ids=motor_ids)
-    start_positions = hand.get_motor_pos(as_dict=True)
+        msg(f"\n  Finger: {args.finger}")
+        msg(f"  Joints: {joints}")
+        msg(f"  Motors: {motor_ids}")
+        msg(f"  Duration: {args.duration}s")
+        msg(f"\n  Driving into hardstop to trigger overload...")
+        msg(f"  Motors will recover automatically.\n")
 
-    hand._set_motor_pos(targets)
+        hand.enable_torque()
+        hand.set_control_mode('position', motor_ids=motor_ids)
+        start_positions = hand.get_motor_pos(as_dict=True)
 
-    last_print = 0
-    start = time.time()
-    while time.time() - start < args.duration:
-        elapsed = time.time() - start
         hand._set_motor_pos(targets)
 
-        now_sec = int(elapsed)
-        if now_sec > last_print and now_sec % 2 == 0:
-            last_print = now_sec
-            msg(f"  [{now_sec:3d}s]")
+        last_print = 0
+        start = time.time()
+        while time.time() - start < args.duration:
+            elapsed = time.time() - start
+            hand._set_motor_pos(targets)
 
-        time.sleep(0.01)
+            now_sec = int(elapsed)
+            if now_sec > last_print and now_sec % 2 == 0:
+                last_print = now_sec
+                msg(f"  [{now_sec:3d}s]")
 
-    msg("\nReturning to start...")
-    hand._set_motor_pos(start_positions)
-    time.sleep(1)
-    msg("Done. Disabling torque.")
-    hand.disable_torque()
-    hand.disconnect()
+            time.sleep(0.01)
+        return 0
+    except KeyboardInterrupt:
+        msg("\nInterrupted. Returning to a safe state...")
+        return 0
+    finally:
+        if start_positions is not None:
+            try:
+                msg("\nReturning to start...")
+                hand._set_motor_pos(start_positions)
+                time.sleep(1)
+            except Exception as exc:
+                msg(f"WARNING: Failed to restore start positions: {exc}")
+        try:
+            msg("Disabling torque.")
+            hand.disable_torque()
+        except Exception as exc:
+            msg(f"WARNING: Failed to disable torque: {exc}")
+        try:
+            hand.disconnect()
+        except Exception as exc:
+            msg(f"WARNING: Failed to disconnect cleanly: {exc}")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

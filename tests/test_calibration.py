@@ -1,22 +1,8 @@
-import os
-import shutil
-
 import pytest
 from orca_core.hardware_hand import MockOrcaHand
 from orca_core.utils import read_yaml
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
-REAL_CONFIG = os.path.join(MODEL_DIR, "config.yaml")
-
 EXPECTED_LIMITS = [-1.0, 1.0]
-
-
-@pytest.fixture
-def calib_dir(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
-    return tmp_path
 
 
 def check_calibrated(hand, calib_path):
@@ -38,15 +24,22 @@ def check_calibrated(hand, calib_path):
         assert motor_limits[mid][1] <= EXPECTED_LIMITS[1], f"Motor {mid} max limit is above expected"
 
 
-def test_calibration_yaml_missing(calib_dir):
-    calib_path = calib_dir / "calibration.yaml"
-    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
-    hand.connect()
+def test_calibration_yaml_missing(mock_config_dir):
+    calib_path = mock_config_dir / "calibration.yaml"
+    hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
+    success, msg = hand.connect()
+    assert success, f"Failed to connect mock hand: {msg}"
 
-    assert not hand.calibrated, "Hand should not be marked as calibrated before calibration"
+    try:
+        assert (
+            not hand.calibrated
+        ), "Hand should not be marked as calibrated before calibration"
 
-    hand.calibrate()
+        hand.calibrate()
 
-    assert calib_path.exists(), "calibration.yaml should be created"
+        assert calib_path.exists(), "calibration.yaml should be created"
 
-    check_calibrated(hand, calib_path)
+        check_calibrated(hand, calib_path)
+    finally:
+        hand.stop_task()
+        hand.disconnect()
