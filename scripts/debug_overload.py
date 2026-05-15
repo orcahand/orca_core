@@ -60,7 +60,7 @@ def main():
         print("Operating mode set, torque re-enabled.")
 
         print(f"\n=== Step 4: Read position ===")
-        pos, vel, cur = dxl_client.read_pos_vel_cur()
+        pos, vel, cur = dxl_client.read_position_velocity_current()
         print(f"pos={pos[0]:.3f}  vel={vel[0]:.3f}  cur={cur[0]:.1f}")
 
         print("\nReboot and recovery successful!")

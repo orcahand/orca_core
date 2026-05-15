@@ -48,6 +48,7 @@ def _install_fake_dynamixel_sdk() -> None:
     module.PortHandler = PortHandler
     module.PacketHandler = PacketHandler
     module.GroupBulkRead = GroupBulkRead
+    module.COMM_SUCCESS = 0
     sys.modules["dynamixel_sdk"] = module
 
 

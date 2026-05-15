@@ -37,7 +37,7 @@ def main():
     try:
         while True:
             hw_err = dxl_client.read_hardware_error(mid)
-            pos, vel, cur = dxl_client.read_pos_vel_cur()
+            pos, vel, cur = dxl_client.read_position_velocity_current()
             target = pos + 0.3
             dxl_client.write_desired_pos([mid], target)
             err_str = f"  HW_ERR=0x{hw_err:02X}" if hw_err else ""

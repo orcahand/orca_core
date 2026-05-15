@@ -43,7 +43,7 @@ def main(): # Added main function
 
     try:
         while True:
-            pos = dxl_client.read_pos_vel_cur()[0]
+            pos = dxl_client.read_position_velocity_current()[0]
             increment = -0.1 if args.reverse else 0.1
             new_pos = pos + increment
             dxl_client.write_desired_pos([args.motor_id], new_pos)

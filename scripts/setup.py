@@ -9,6 +9,7 @@ import time
 
 from common import connect_hand, create_hand, shutdown_hand
 from orca_core import OrcaJointPositions
+from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
 DIVIDER = "=" * 60
@@ -146,10 +147,10 @@ def run_motion_test(hand, step_num, duration=60):
 
             if cycle % 2 == 0:
                 print(f"  [{int(remaining):3d}s left]  OPEN")
-                hand.set_joint_positions(open_pos, num_steps=25, step_size=0.001)
+                hand.set_joint_positions(open_pos, num_steps=NUM_STEPS, step_size=STEP_SIZE)
             else:
                 print(f"  [{int(remaining):3d}s left]  CLOSE")
-                hand.set_joint_positions(closed_pos, num_steps=25, step_size=0.001)
+                hand.set_joint_positions(closed_pos, num_steps=NUM_STEPS, step_size=STEP_SIZE)
             cycle += 1
 
             hold_end = min(time.time() + 2.0, start + duration)

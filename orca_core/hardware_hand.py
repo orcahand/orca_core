@@ -8,26 +8,35 @@
 
 import dataclasses
 import math
+import os
 import threading
 import time
 from collections import deque
 from threading import RLock
-from typing import Dict, List, TYPE_CHECKING, Union
+from typing import Dict, List, Union
 
 import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
-from .hand_config import OrcaHandConfig
+from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
+from .hardware.dynamixel_client import DynamixelClient
+from .hardware.feetech_client import FeetechClient
+from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
-from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
-
-if TYPE_CHECKING:
-    from .hardware.dynamixel_client import DynamixelClient
-    from .hardware.feetech_client import FeetechClient
+from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
+from .hardware.tactile_client import TactileClient
+from .utils.utils import (
+    auto_detect_port,
+    find_single_usb_serial_port,
+    get_and_choose_port,
+    read_yaml,
+    update_yaml,
+)
 
 from .constants import (
     SUPPORTED_MOTOR_TYPES,
+    MOTOR_BAUD_RATES,
     MODE_MAP,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -42,9 +51,9 @@ from .constants import (
     MOTOR_LIMITS_DICT,
     WRIST_CALIBRATED,
     CALIBRATED,
-    STEPS_TO_NEUTRAL,
+    NUM_STEPS,
     POSITION,
-    STEP_SIZE_NEUTRAL,
+    STEP_SIZE,
 )
 
 from .joint_position import OrcaJointPositions
@@ -127,82 +136,143 @@ class OrcaHand(BaseHand):
     def wrist_calibrated(self) -> bool:
         return self.calibration.wrist_calibrated
 
-    def _create_motor_client(self) -> MotorClient:
-        if self.config.motor_type == "dynamixel":
-            from .hardware.dynamixel_client import DynamixelClient
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
+        if motor_type == "dynamixel":
+            return DynamixelClient(self.config.motor_ids, port, baudrate)
 
-            return DynamixelClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
-
-        if self.config.motor_type == "feetech":
-            from .hardware.feetech_client import FeetechClient
-
-            return FeetechClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
+        if motor_type == "feetech":
+            return FeetechClient(self.config.motor_ids, port, baudrate)
 
         raise ValueError(
-            f"Unknown motor_type: {self.config.motor_type}. Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
+            f"Unknown motor_type: {motor_type}. "
+            f"Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
         )
+
+    def _resolve_port(self) -> str | None:
+        """Pick the serial port to talk to: explicit yaml > VID match > sole adapter."""
+        if self.config.port and os.path.exists(self.config.port):
+            return self.config.port
+        if self.config.port:
+            print(
+                f"Configured port {self.config.port} not present; "
+                "falling back to USB auto-detection."
+            )
+        # No yaml port (or the configured one is gone). Try VID-based detection
+        # for any motor family, then fall back to "the only adapter present".
+        for motor_type in SUPPORTED_MOTOR_TYPES:
+            port = auto_detect_port(motor_type)
+            if port:
+                return port
+        return find_single_usb_serial_port()
+
+    def _trial_probe(self, port: str) -> tuple[str | None, int | None]:
+        """Probe ``port`` until a (motor_type, baudrate) combination responds.
+
+        Iterates each motor family × the baudrates listed in
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
+        ``baudrate`` is pinned in yaml, that dimension is fixed and the
+        probe only iterates the other.
+        """
+        candidates = {
+            "dynamixel": DynamixelClient,
+            "feetech": FeetechClient,
+        }
+        motor_types = (
+            [self.config.motor_type]
+            if self.config.motor_type
+            else list(SUPPORTED_MOTOR_TYPES)
+        )
+        for motor_type in motor_types:
+            client_cls = candidates.get(motor_type)
+            if client_cls is None:
+                continue
+            baudrates = (
+                [self.config.baudrate]
+                if self.config.baudrate is not None
+                else list(MOTOR_BAUD_RATES.get(motor_type, []))
+            )
+            for baudrate in baudrates:
+                print(f"Probing {motor_type} on {port} @ {baudrate} baud...")
+                try:
+                    if client_cls.probe(port, baudrate, self.config.motor_ids):
+                        print(f"  -> {motor_type} responded at {baudrate} baud.")
+                        return motor_type, baudrate
+                except Exception as e:
+                    print(f"  -> probe errored: {e}")
+        return None, None
 
     def connect(self) -> tuple[bool, str]:
         """Open connection to the motor bus.
 
-        Attempts to connect on the port in ``config.yaml``. On failure it
-        tries auto-detection via USB vendor ID, then falls back to an
-        interactive terminal port picker. A successful connection updates
-        ``config.yaml`` if the port changed.
+        Resolves (motor_type, port, baudrate) at connect time:
+
+        1. Find a port: explicit ``port`` in yaml wins; else VID-based
+           auto-detection; else the lone attached USB serial adapter; else
+           an interactive picker.
+        2. Find the motor family / baudrate by pinging each candidate from
+           :data:`~orca_core.constants.MOTOR_BAUD_RATES` until one responds.
+           Explicit ``motor_type``/``baudrate`` in yaml short-circuit the
+           corresponding axis.
 
         Returns:
             A ``(success, message)`` tuple where *success* is ``True`` on a
             successful connection.
         """
-        # TODO(fracapuano): Refactor: this is basically always connecting to one port and looking at multiple ports
+        port = self._resolve_port()
+        if port is None:
+            print("Please select a port from available devices:")
+            port = get_and_choose_port()
+            if port is None:
+                return False, "Connection failed: No port selected"
+
+        motor_type, baudrate = self._trial_probe(port)
+        if motor_type is None or baudrate is None:
+            return False, (
+                f"Connection failed: no motor responded on {port}. "
+                "Check power and wiring."
+            )
+
         try:
-            self._motor_client = self._create_motor_client()
+            self._motor_client = self._create_motor_client(motor_type, port, baudrate)
             with self._motor_lock:
                 self._motor_client.connect()
 
-            return True, "Connection successful"
+            self._persist_resolved_driver(motor_type, port, baudrate)
+            return True, f"Connection successful ({motor_type} @ {port}, {baudrate} baud)"
 
         except Exception as e:
-            # 1. The port is not correct
             self._motor_client = None
-            print(f"Connection failed on {self.config.port}: {str(e)}")
+            return False, f"Connection failed on {port}: {str(e)}"
 
-            chosen_port = auto_detect_port(self.config.motor_type)
-            if chosen_port and chosen_port != self.config.port:
-                # TODO(fracapuano): Replace replace replace this try except Exception is madness
-                try:
-                    self.config = dataclasses.replace(self.config, port=chosen_port)
-                    self._motor_client = self._create_motor_client()
-                    with self._motor_lock:
-                        self._motor_client.connect()
-                    update_yaml(self.config.config_path, "port", chosen_port)
-                    return (
-                        True,
-                        f"Connection successful with auto-detected port {chosen_port}",
-                    )
+    def _persist_resolved_driver(self, motor_type: str, port: str, baudrate: int) -> None:
+        """Persist auto-detected driver fields to config.yaml.
 
-                except Exception:
-                    self._motor_client = None
-
-            print("Please select a port from available devices:")
-            chosen_port = get_and_choose_port()
-            if chosen_port is None:
-                return False, "Connection failed: No port selected"
-
-            try:
-                self.config = dataclasses.replace(self.config, port=chosen_port)
-                self._motor_client = self._create_motor_client()
-                with self._motor_lock:
-                    self._motor_client.connect()
-                update_yaml(self.config.config_path, "port", chosen_port)
-                return True, f"Connection successful with port {chosen_port}"
-            except Exception as e2:
-                self._motor_client = None
-                return False, f"Connection failed with selected port: {str(e2)}"
+        Each field is only written when it was missing from yaml. Once written,
+        the next connect short-circuits the probe and uses the yaml values
+        directly. Users who want to swap motor families on the same hand can
+        clear the yaml fields and re-run to trigger a fresh probe.
+        """
+        updates = {}
+        if not self.config.port or self.config.port != port:
+            updates["port"] = port
+        if self.config.motor_type is None:
+            updates["motor_type"] = motor_type
+        if self.config.baudrate is None:
+            updates["baudrate"] = baudrate
+        if not updates:
+            return
+        self.config = dataclasses.replace(self.config, **updates)
+        for key, value in updates.items():
+            update_yaml(self.config.config_path, key, value)
+        print(
+            f"Wrote auto-detected {', '.join(updates.keys())} to "
+            f"{os.path.basename(self.config.config_path)}."
+        )
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque and close the serial connection.
@@ -336,7 +406,7 @@ class OrcaHand(BaseHand):
             Motor positions in radians as an array or dict.
         """
         with self._motor_lock:
-            motor_pos = self._motor_client.read_pos_vel_cur()[0]
+            motor_pos = self._motor_client.read_position_velocity_current().position
 
             if as_dict:
                 return {
@@ -356,7 +426,7 @@ class OrcaHand(BaseHand):
             Motor currents (mA) as an array, or dict.
         """
         with self._motor_lock:
-            motor_current = self._motor_client.read_pos_vel_cur()[2]
+            motor_current = self._motor_client.read_position_velocity_current().current
 
             if as_dict:
                 return {
@@ -365,6 +435,23 @@ class OrcaHand(BaseHand):
                 }
 
             return motor_current
+
+    def wait_for_motion(self, timeout: float = 5.0) -> None:
+        """Block until all motors have settled at their commanded position.
+
+        No-op for motor types fast enough that callers don't need to wait
+        (e.g., Dynamixel). Feetech polls a per-motor moving flag.
+
+        Args:
+            timeout: Max seconds to wait.
+
+        Raises:
+            MotionTimeoutError: If motors fail to settle within ``timeout``.
+        """
+        if not self._motor_client.waits_for_motion:
+            return
+        with self._motor_lock:
+            self._motor_client.wait_for_motion_complete(timeout=timeout)
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
@@ -395,16 +482,19 @@ class OrcaHand(BaseHand):
         self._set_motor_pos(motor_pos)
         return True
 
-    def init_joints(self, force_calibrate: bool = False):
+    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
         Enables torque, sets the configured control mode and current limit,
-        runs calibration if needed, computes wrap offsets, and moves to the
-        neutral position.
+        runs calibration if needed, computes wrap offsets, and optionally
+        moves to the neutral position.
 
         Args:
-            calibrate: Force a fresh calibration even if the hand is already
-                calibrated (default ``False``).
+            force_calibrate: Force a fresh calibration even if the hand is
+                already calibrated (default ``False``).
+            move_to_neutral: Move to the configured neutral pose at the end
+                of initialization (default ``True``). Set to ``False`` when
+                the caller will immediately command a different pose.
         """
         self.enable_torque()
         self.set_control_mode(self.config.control_mode)
@@ -414,13 +504,15 @@ class OrcaHand(BaseHand):
             self.calibrate()
 
         self._compute_wrap_offsets_dict()
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
-        self.set_joint_positions(
-            OrcaJointPositions.from_dict(self.config.neutral_position),
-            num_steps=STEPS_TO_NEUTRAL
-        )
-        self.set_control_mode(control_mode)
+
+        if move_to_neutral:
+            control_mode = self.config.control_mode
+            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
+            self.set_joint_positions(
+                OrcaJointPositions.from_dict(self.config.neutral_position),
+                num_steps=NUM_STEPS
+            )
+            self.set_control_mode(control_mode)
 
     def is_calibrated(self, verbose: bool = False) -> bool:
         """Check whether all joints have been fully calibrated.
@@ -468,13 +560,25 @@ class OrcaHand(BaseHand):
 
         return overall_calibrated
 
-    def calibrate(self, blocking: bool = True, force_wrist: bool = False):
+    def calibrate(
+        self,
+        blocking: bool = True,
+        force_wrist: bool = False,
+        joints: list | None = None,
+    ):
         """Run the joint calibration routine.
 
         Drives each joint to its mechanical limits in the sequence defined by
-        ``calib_sequence`` in ``config.yaml``, records the motor positions at
+        ``calibration_sequence`` in ``config.yaml``, records the motor positions at
         each limit, and persists the resulting motor limits and joint-to-motor
         ratios to ``calibration.yaml``.
+
+        Args:
+            blocking: When True, runs to completion before returning.
+            force_wrist: Recalibrate the wrist even if it's already calibrated.
+            joints: When given, only calibrate steps that touch any of these
+                joint names (others are skipped). Useful for re-running just
+                one finger or joint without re-calibrating the whole hand.
 
         On completion ``self.calibration`` is replaced with a fresh
         :class:`~orca_core.CalibrationResult`. Partial progress is written to
@@ -482,11 +586,11 @@ class OrcaHand(BaseHand):
         """
         if blocking:
             self._task_stop_event.clear()
-            result = self._calibrate(force_wrist=force_wrist)
+            result = self._calibrate(force_wrist=force_wrist, joints=joints)
             if result is not None:
                 self.calibration = result
         else:
-            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist)
+            self._start_task(self._calibrate_and_apply, force_wrist=force_wrist, joints=joints)
 
     def _build_calibration_result(
         self,
@@ -511,10 +615,14 @@ class OrcaHand(BaseHand):
             wrist_calibrated=wrist_calibrated,
         )
 
-    def _calibrate(self, force_wrist: bool = False) -> CalibrationResult | None:
+    def _calibrate(
+        self,
+        force_wrist: bool = False,
+        joints: list | None = None,
+    ) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
-        Drives each joint through its mechanical limits following ``calib_sequence``
+        Drives each joint through its mechanical limits following ``calibration_sequence``
         from ``config.yaml``, records motor positions at each limit, and persists
         the resulting motor limits and joint-to-motor ratios to ``calibration.yaml``
         after every step. Returns ``None`` on early exit (stop event triggered).
@@ -548,21 +656,36 @@ class OrcaHand(BaseHand):
                 {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}}
             )
 
-        # Deep-copy current limits so per-step YAML writes reflect only the
-        # joints being calibrated, not stale data from a prior incomplete run.
+        if joints is not None:
+            joints_set = set(joints)
+            filtered = []
+            for step in calibration_sequence:
+                step_joints = {
+                    j: d for j, d in step[JOINTS].items() if j in joints_set
+                }
+                if step_joints:
+                    filtered.append({STEP: step[STEP], JOINTS: step_joints})
+            print(
+                f"Calibrating {len(joints_set)} joint(s) across {len(filtered)} "
+                f"step(s) (out of {len(calibration_sequence)} total)."
+            )
+            calibration_sequence = filtered
+
+        # Deep-copy current limits. Joints not touched by this run keep their
+        # values; joints in this run accumulate their new limits in
+        # ``pending_limits`` and only overwrite ``motor_limits`` once both
+        # flex AND extend have been measured. That way an interrupted run
+        # never destroys a previously-good calibration.
         motor_limits = {
             motor_id: list(limits)
             for motor_id, limits in self.calibration.motor_limits_dict.items()
         }
+        pending_limits: Dict[int, list] = {
+            motor_id: [None, None] for motor_id in self.config.motor_ids
+        }
         joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
 
         self._compute_wrap_offsets_dict()
-
-        for step in calibration_sequence:
-            for joint in step[JOINTS].keys():
-                motor_id = self.config.joint_to_motor_map[joint]
-                motor_limits[motor_id] = [None, None]
-                self._wrap_offsets_dict[motor_id] = 0.0
 
         motors_with_initial_offset = set()
         motors_with_final_offset = set()
@@ -609,6 +732,7 @@ class OrcaHand(BaseHand):
                     sign = -sign
 
                 directions[motor_id] = sign
+                self._wrap_offsets_dict[motor_id] = 0.0
                 position_buffers[motor_id] = deque(
                     maxlen=self.config.calibration_num_stable
                 )
@@ -664,9 +788,9 @@ class OrcaHand(BaseHand):
                                 f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
                             )
                             if directions[motor_id] == 1:
-                                motor_limits[motor_id][1] = avg_limit
+                                pending_limits[motor_id][1] = avg_limit
                             if directions[motor_id] == -1:
-                                motor_limits[motor_id][0] = avg_limit
+                                pending_limits[motor_id][0] = avg_limit
 
                             if (
                                 self._motor_client.requires_offset_calibration
@@ -678,7 +802,7 @@ class OrcaHand(BaseHand):
                                 )
                                 time.sleep(TINY_SLEEP)
                                 new_limit = float(self.get_motor_pos()[idx])
-                                motor_limits[motor_id][1 if is_positive else 0] = (
+                                pending_limits[motor_id][1 if is_positive else 0] = (
                                     new_limit
                                 )
                                 print(
@@ -691,11 +815,16 @@ class OrcaHand(BaseHand):
             for joint in step[JOINTS].keys():
                 motor_id = self.config.joint_to_motor_map[joint]
                 if (
-                    motor_limits[motor_id][0] is None
-                    or motor_limits[motor_id][1] is None
+                    pending_limits[motor_id][0] is None
+                    or pending_limits[motor_id][1] is None
                 ):
+                    # Only one direction has completed for this joint; leave
+                    # motor_limits alone so an interrupted run doesn't lose
+                    # the previously-known good values.
                     continue
 
+                # Both directions measured — commit to motor_limits.
+                motor_limits[motor_id] = list(pending_limits[motor_id])
                 delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
                 delta_joint = (
                     self.config.joint_roms_dict[joint][1]
@@ -735,7 +864,7 @@ class OrcaHand(BaseHand):
 
             if calibrated_joints:
                 self.set_joint_positions(
-                    calibrated_joints, num_steps=25, step_size=0.001
+                    calibrated_joints, num_steps=NUM_STEPS, step_size=STEP_SIZE
                 )
 
             # TODO(fracapuano): Is this necessary?
@@ -756,14 +885,14 @@ class OrcaHand(BaseHand):
 
         if calibrated_joints:
             self.set_joint_positions(
-                calibrated_joints, num_steps=STEPS_TO_NEUTRAL, step_size=TINY_SLEEP
+                calibrated_joints, num_steps=NUM_STEPS, step_size=TINY_SLEEP
             )
 
         self.set_max_current(self.config.max_current)
 
         return final_result
 
-    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
@@ -964,7 +1093,7 @@ class OrcaHand(BaseHand):
                 )
                 update_yaml(self.config.calibration_path, "calibrated", False)
 
-    def tension(self, move_motors: bool = False, blocking: bool = True):
+    def tension(self, move_motors: bool = True, blocking: bool = True):
         """Hold motors under current to allow manual tendon tensioning.
 
         Optionally pre-conditions the tendons with a short back-and-forth
@@ -973,7 +1102,7 @@ class OrcaHand(BaseHand):
 
         Args:
             move_motors: When ``True``, execute a short flexion/extension cycle
-                before holding (default ``False``).
+                before holding (default ``True``).
             blocking: When ``True`` (default) blocks until the user interrupts
                 with Ctrl-C. When ``False`` runs in a background thread.
         """
@@ -1067,7 +1196,7 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
-    def _tension(self, move_motors: bool = False):
+    def _tension(self, move_motors: bool = True):
         # TODO(fracapuano): Move this to a standard stateless function
         control_mode = self.config.control_mode
         self.set_control_mode(CURRENT_BASED_POSITION)
@@ -1079,7 +1208,7 @@ class OrcaHand(BaseHand):
             ]
             self.set_max_current(self.config.calibration_current)
 
-            duration = 8
+            duration = 5
             increment_per_step = 0.1
             motor_increments_right = {
                 motor_id: increment_per_step for motor_id in motors_to_move
@@ -1088,21 +1217,39 @@ class OrcaHand(BaseHand):
                 motor_id: -increment_per_step for motor_id in motors_to_move
             }
 
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                if self._task_stop_event.is_set():
-                    break
-                self._set_motor_pos(motor_increments_left, rel_to_current=True)
-                time.sleep(0.1)
+            stall_threshold = 0.01
+            stall_hold = 1.0
 
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                if self._task_stop_event.is_set():
-                    break
-                self._set_motor_pos(motor_increments_right, rel_to_current=True)
-                time.sleep(0.1)
+            for increments in (motor_increments_left, motor_increments_right):
+                stall_start = None
+                prev_pos = self.get_motor_pos()
+                while not self._task_stop_event.is_set():
+                    self._set_motor_pos(increments, rel_to_current=True)
+                    time.sleep(0.1)
+                    cur_pos = self.get_motor_pos()
+                    if np.max(np.abs(cur_pos - prev_pos)) < stall_threshold:
+                        if stall_start is None:
+                            stall_start = time.time()
+                        elif time.time() - stall_start >= stall_hold:
+                            break
+                    else:
+                        stall_start = None
+                    prev_pos = cur_pos
 
-        self.set_max_current(self.config.max_current)
+        # Gradually release torque so tendons don't snap back, then
+        # re-engage at the relaxed position for a stable hold.
+        max_cur = self.config.max_current
+        self.set_max_current(max_cur)
+        self.enable_torque()
+        steps = 20
+        for i in range(steps):
+            if self._task_stop_event.is_set():
+                break
+            self.set_max_current(max_cur * (1 - (i + 1) / steps))
+            time.sleep(1.0 / steps)
+        self.disable_torque()
+        time.sleep(0.05)
+        self.set_max_current(max_cur)
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
         try:
@@ -1141,6 +1288,174 @@ class OrcaHand(BaseHand):
             print("No running task to stop.")
 
 
+class OrcaHandTouch(OrcaHand):
+    """ORCA hand with integrated tactile sensing.
+
+    ``connect()`` opens both the motor bus and the sensor serial link;
+    ``disconnect()`` tears down both.
+    """
+
+    config_cls = OrcaHandTouchConfig
+
+    def __init__(
+        self,
+        config_path: str | None = None,
+        calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+        config: OrcaHandTouchConfig | None = None,
+    ):
+        super().__init__(
+            config_path=config_path,
+            calibration_path=calibration_path,
+            model_version=model_version,
+            model_name=model_name,
+            config=config,
+        )
+        self._tactile_client = None
+
+    def _create_tactile_client(self):
+        return TactileClient(
+            port=self.config.sensor_port,
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
+        )
+
+    def _persist_sensor_port(self, chosen_port: str) -> None:
+        """Write a new ``sensors.port`` value to ``config.yaml`` while preserving
+        the rest of the ``sensors`` block (baudrate, finger_to_sensor_id)."""
+        existing = read_yaml(self.config.config_path) or {}
+        sensors = dict(existing.get("sensors") or {})
+        sensors["port"] = chosen_port
+        update_yaml(self.config.config_path, "sensors", sensors)
+
+    def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
+        """Open the sensor serial link, mirroring the motor cascade.
+
+        Tries the configured port first, then USB-VID auto-detection
+        (``KNOWN_VIDS["tactile_sensor"]``). On a successful auto-detect the
+        new port is written back to ``config.yaml``.
+        """
+        self._tactile_client = self._create_tactile_client()
+        try:
+            self._tactile_client.connect()
+            if self._tactile_client.get_tactile_configuration() is not None:
+                return True, f"Sensor connected on {self.config.sensor_port}"
+            print(f"Port {self.config.sensor_port} opened but sensor did not respond; "
+                  "trying auto-detection.")
+            self._tactile_client.disconnect()
+            self._tactile_client = None
+        except Exception as e:
+            print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
+            self._tactile_client = None
+
+        chosen = auto_detect_port("tactile_sensor")
+        if chosen:
+            try:
+                self.config = dataclasses.replace(self.config, sensor_port=chosen)
+                self._tactile_client = self._create_tactile_client()
+                self._tactile_client.connect()
+                if self._tactile_client.get_tactile_configuration() is None:
+                    print(f"Auto-detected port {chosen} opened but sensor did not respond.")
+                    self._tactile_client.disconnect()
+                    self._tactile_client = None
+                else:
+                    self._persist_sensor_port(chosen)
+                    return True, f"Sensor connected on auto-detected {chosen}"
+            except Exception as e:
+                print(f"Auto-detected sensor port {chosen} also failed: {e}")
+                self._tactile_client = None
+
+        return False, (
+            "Sensor connection failed: no usable port (set sensors.port in config.yaml "
+            "or check that the sensor adapter is plugged in)"
+        )
+
+    def connect(self) -> tuple[bool, str]:
+        success, msg = super().connect()
+        if not success:
+            return success, msg
+
+        sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
+        if not sensor_ok:
+            return False, f"{msg} | {sensor_msg}"
+        return True, f"{msg} | {sensor_msg}"
+
+    def connect_sensors_only(self) -> tuple[bool, str]:
+        """Connect only the tactile sensor, skipping the motor bus.
+
+        Useful for sensor bring-up and testing on a hand whose motors are not
+        powered. After this call, tactile methods work; motor-control methods
+        will fail because the motor client is not initialised.
+        """
+        return self._connect_sensor_with_fallback()
+
+    def disconnect(self) -> None:
+        if self._tactile_client is not None and self._tactile_client.is_connected:
+            try:
+                self._tactile_client.stop_auto_stream()
+            except Exception:
+                pass
+            self._tactile_client.disconnect()
+        self._tactile_client = None
+        super().disconnect()
+
+    def get_tactile_forces(self) -> ResultantReading | None:
+        """Return the latest resultant ``ResultantReading``, or ``None`` if no frame yet."""
+        forces, ts = self._tactile_client.get_auto_latest()
+        if forces is None:
+            return None
+        return ResultantReading(forces=forces, timestamp=ts)
+
+    def get_tactile_taxels(self) -> TaxelReading | None:
+        """Return the latest per-taxel ``TaxelReading``, or ``None`` if no frame yet."""
+        taxels, ts = self._tactile_client.get_auto_latest_taxels()
+        if taxels is None:
+            return None
+        return TaxelReading(taxels=taxels, timestamp=ts)
+
+    def get_tactile_data(self) -> TactileReading | None:
+        """Return resultant and per-taxel forces from the same frame.
+
+        Single locked snapshot of the auto-stream cache, so ``forces`` and
+        ``taxels`` are guaranteed to share a timestamp. Either field is
+        ``None`` if its stream mode is disabled. Returns ``None`` if no
+        frame has arrived yet.
+        """
+        forces, taxels, ts = self._tactile_client.get_auto_latest_all()
+        if forces is None and taxels is None:
+            return None
+        return TactileReading(
+            forces=ResultantReading(forces=forces, timestamp=ts) if forces is not None else None,
+            taxels=TaxelReading(taxels=taxels, timestamp=ts) if taxels is not None else None,
+            timestamp=ts,
+        )
+
+    def start_tactile_stream(
+        self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
+    ) -> None:
+        self._tactile_client.start_auto_stream(
+            resultant=resultant, taxels=taxels, min_sensors=min_sensors,
+        )
+
+    def stop_tactile_stream(self) -> None:
+        self._tactile_client.stop_auto_stream()
+
+    def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
+        """Capture current readings as zero baseline and return offsets."""
+        return self._tactile_client.capture_taxel_offsets(num_samples=num_samples)
+
+    def clear_tactile_zero(self) -> None:
+        self._tactile_client.clear_taxel_offsets()
+
+    def get_tactile_configuration(self):
+        return self._tactile_client.get_tactile_configuration()
+
+    def get_tactile_stats(self):
+        """Return ``AutoStreamStats`` for the running auto-stream."""
+        return self._tactile_client.get_auto_stats()
+
+
 class MockOrcaHand(OrcaHand):
     """Drop-in :class:`OrcaHand` backed by an in-memory mock motor client,
     for testing and prototyping.
@@ -1149,9 +1464,50 @@ class MockOrcaHand(OrcaHand):
     port is opened and motor state is simulated in memory.
     """
 
-    def _create_motor_client(self) -> MotorClient:
+    def _resolve_port(self) -> str:
+        return self.config.port or "/dev/null"
+
+    def _trial_probe(self, port: str) -> tuple[str, int]:
+        # Mock hand has no real bus to probe — pretend Dynamixel @ 1M.
+        return "dynamixel", 1_000_000
+
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient
 
         return MockDynamixelClient(
             self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+
+class MockOrcaHandTouch(OrcaHandTouch):
+    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
+
+    def _resolve_port(self) -> str:
+        return self.config.port or "/dev/null"
+
+    def _trial_probe(self, port: str) -> tuple[str, int]:
+        return "dynamixel", 1_000_000
+
+    def _create_motor_client(
+        self,
+        motor_type: str,
+        port: str,
+        baudrate: int,
+    ) -> MotorClient:
+        from .hardware.mock_dynamixel_client import MockDynamixelClient
+
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
+
+    def _create_tactile_client(self):
+        return MockTactileClient(
+            port="mock",
+            baudrate=self.config.sensor_baudrate,
+            finger_to_sensor_id=self.config.finger_to_sensor_id,
         )

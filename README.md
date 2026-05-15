@@ -8,7 +8,7 @@
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space.
 
 ## Get Started
 
@@ -42,13 +42,13 @@ To get started with Orca Core, follow these steps:
 
 3. **Check the configuration file**:
 
-    - Review the config file (e.g., `orca_core/models/orcahand_v1_right/config.yaml`) and make sure it matches your hardware setup.
+    - Review the config file (e.g., `orca_core/models/v2/orcahand_right/config.yaml`) and make sure it matches your hardware setup.
 
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/orcahand_v1_right
-    uv run python scripts/calibrate.py orca_core/models/orcahand_v1_right
+    uv run python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml
+    uv run python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
     Replace the path with your specific hand model folder if needed.
@@ -56,36 +56,7 @@ To get started with Orca Core, follow these steps:
 5. **Move the hand to the neutral position**:
 
     ```sh
-    uv run python scripts/neutral.py orca_core/models/orcahand_v1_right
-    ```
-
-6. **Example usage: test.py**
-
-    Here is a minimal example script you can use to test your setup:
-
-    ```python
-    from orca_core import OrcaHand
-    import time
-
-    hand = OrcaHand("orca_core/models/orcahand_v1_right")
-    status = hand.connect()
-    print(status)
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        exit(1)
-
-    hand.enable_torque()
-
-    joint_dict = {
-        "index_mcp": 90,
-        "middle_pip": 30,
-    }
-
-    hand.set_joint_pos(joint_dict, num_steps=25, step_size=0.001)
-
-    time.sleep(2)
-    hand.disable_torque()
-    hand.disconnect()
+    uv run python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
     ```
 
 ---
@@ -94,7 +65,7 @@ To get started with Orca Core, follow these steps:
 
 ### Serial Port Permissions (Linux)
 
-On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
+On Linux, the serial port (e.g., `/dev/ttyACM0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
 
 **Permanent fix** (requires re-login):
 
@@ -105,23 +76,23 @@ sudo usermod -aG dialout $USER
 **Temporary fix** (resets on reboot/replug):
 
 ```sh
-sudo chmod 666 /dev/ttyUSB0
+sudo chmod 666 /dev/ttyACM0
 ```
 
-### Serial Port Path
+### Serial port, baudrate, and motor type
 
-Make sure the `port` field in your `config.yaml` matches your operating system:
+By default these are all **auto-detected** at connect time.
 
-| OS    | Example port                    |
-|-------|---------------------------------|
-| Linux | `/dev/ttyUSB0`                  |
-| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+However, you can declare them explicitly in `config.yaml`. Useful when:
 
----
+- **multiple hands are connected** at once → `port` disambiguates which one
+- **motors run at a non-default baudrate** → `baudrate` skips the probe sweep
+- **the auto-detection picks the wrong family** → `motor_type` forces a specific one
 
-**Note:**
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
+```yaml
+# Optional overrides:   auto-detected if omitted
+port: /dev/ttyACM0      # or /'dev/cu.usbmodemXXXX' on macOS
+baudrate: 1000000       # 1M for v2; 3M for v1 
+motor_type: dynamixel   # or 'feetech'
+```
 
----

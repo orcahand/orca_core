@@ -1,6 +1,7 @@
-port: /dev/cu.usbmodem1101
+port: /dev/ttyACM2
 version: 0.2.1
-max_current: 300
+baudrate: 1000000
+max_current: 400
 type: right
 control_mode: current_based_position
 motor_ids:
@@ -127,12 +128,12 @@ neutral_position:
   pinky_mcp: -4
   pinky_pip: -2
   wrist: -20
-calibration_current: 300
-calibration_step_size: 0.15
-calibration_step_period: 0.0001
-calibration_num_stable: 10
-calibration_threshold: 0.01
-calibration_sequence:
+calib_current: 300
+calib_step_size: 0.15
+calib_step_period: 0.0001
+calib_num_stable: 10
+calib_threshold: 0.01
+calib_sequence:
 - step: 1
   joints:
     thumb_cmc: flex
@@ -199,3 +200,12 @@ calibration_sequence:
 - step: 16
   joints:
     wrist: extend
+sensors:
+  port: /dev/ttyACM0
+  baudrate: 921600
+  finger_to_sensor_id:
+    thumb: 1
+    index: 3
+    middle: 0
+    ring: 2
+    pinky: 4
