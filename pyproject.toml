@@ -5,7 +5,7 @@ description = "Core Python Controller of the ORCA Hand. Handles all hardware int
 authors = [
     {name = "clemens-chr", email = "cchristoph@student.ethz.ch"},
     {name = "fabricenoelbourquin", email = "fabrice.bourquin@protonmail.ch"},
-    {name = "Maximilian Eberlein", email = "meberlein@ethz.ch"}
+    {name = "Maximilian Eberlein", email = "meberlein@ethz.ch"},
     {name = "fracapuano", email = "capuano@robots.ox.ac.uk"},
 ]
 license = {text = "MIT"}
