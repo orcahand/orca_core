@@ -27,11 +27,10 @@ from orca_core.hardware.sensing.constants import (
     SLOT_CONNECTED_BIT_POSITIONS,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
 )
+from orca_core.hardware.sensing.framing import calculate_checksum
+from orca_core.hardware.sensing.types import ResultantForces, TaxelForces
 from orca_core.hardware.sensing.tactile_protocol import (
-    ResultantForces,
-    TaxelForces,
     _pack_resultant_for_mock,
-    calculate_checksum,
     compute_distal_module_index,
     encode_combined_auto_for_mock,
     encode_resultant_auto_for_mock,
@@ -102,11 +101,11 @@ def feed_combined_frame(
 def _wrap_auto_frame(valid_bytes: bytes, err_code: int = 0) -> bytes:
     """Wrap a payload with the AA 56 envelope: header + meta + err + LRC."""
     payload = bytes([err_code]) + valid_bytes
-    eff_len = len(payload)
+    effective_length = len(payload)
     body = (
         PROTOCOL_HEADER_AUTO
         + bytes([PROTOCOL_RESERVED])
-        + eff_len.to_bytes(2, "little")
+        + effective_length.to_bytes(2, "little")
         + payload
     )
     return body + bytes([calculate_checksum(body)])

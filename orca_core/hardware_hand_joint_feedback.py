@@ -121,7 +121,7 @@ class OrcaHandJointFeedback(OrcaHand):
             self._encoder_link.connect()
             self._encoder_client = self._create_encoder_client(self._encoder_link)
             self._encoder_client.connect()
-            self._encoder_client.start_encoder_stream()
+            self._encoder_client.start_stream()
 
             if not self.is_calibrated(use_joint_feedback=True):
                 raise JointFeedbackConnectError(

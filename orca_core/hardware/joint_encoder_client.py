@@ -10,13 +10,11 @@
 The AA A9 stream is always-on hardware-side, so this client never writes
 a device register to enable it. ``connect()`` registers the frame handler
 (stats start updating immediately, useful for link-health checks);
-``start_encoder_stream()`` only gates whether parsed readings become
-visible via ``get_latest_encoder_reading()``.
+``start_stream()`` only gates whether parsed readings become
+visible via ``get_latest()``.
 
 All public methods are thread-safe.
 """
-from __future__ import annotations
-
 import contextlib
 import dataclasses
 import logging
@@ -44,8 +42,8 @@ class EncodersNotAvailableError(RuntimeError):
 class EncoderStreamStats:
     """Diagnostic counters for the AA A9 handler."""
     frames_ok: int = 0
-    frames_bad_eff_len: int = 0
-    last_err_byte: int = 0
+    frames_bad_effective_length: int = 0
+    last_error_byte: int = 0
     last_frame_timestamp: float | None = None
 
     @property
@@ -60,7 +58,7 @@ class JointEncoderClient:
 
     Subscribes to AA A9 auto-stream frames and exposes the latest reading.
     The handler always parses incoming frames so stats track the stream
-    even before ``start_encoder_stream()``; the publish flag only gates
+    even before ``start_stream()``; the publish flag only gates
     public visibility of the latest reading.
     """
 
@@ -89,7 +87,7 @@ class JointEncoderClient:
     def disconnect(self) -> None:
         if not self._connected:
             return
-        self.stop_encoder_stream()
+        self.stop_stream()
         self._link.unregister_frame_handler(PROTOCOL_BYTE_AUTO_ENC)
         self._connected = False
 
@@ -103,7 +101,7 @@ class JointEncoderClient:
 
     # ----- Stream control ---------------------------------------------------
 
-    def start_encoder_stream(self, timeout: float = ENCODER_FIRST_FRAME_TIMEOUT_S) -> None:
+    def start_stream(self, timeout: float = ENCODER_FIRST_FRAME_TIMEOUT_S) -> None:
         """Begin publishing encoder readings and wait for the first valid frame.
 
         Does not write any device register — the AA A9 stream is always-on.
@@ -125,10 +123,10 @@ class JointEncoderClient:
                 f"No encoder frame within {timeout}s"
             )
 
-    def stop_encoder_stream(self) -> None:
+    def stop_stream(self) -> None:
         """Hide further readings and drop the cached one so a later
-        ``get_latest_encoder_reading()`` returns ``None`` until the next
-        ``start_encoder_stream()``."""
+        ``get_latest()`` returns ``None`` until the next
+        ``start_stream()``."""
         with self._lock:
             self._publish_active = False
             self._latest = None
@@ -157,15 +155,15 @@ class JointEncoderClient:
 
     # ----- Reads ------------------------------------------------------------
 
-    def get_latest_encoder_reading(self) -> EncoderReading | None:
+    def get_latest(self) -> EncoderReading | None:
         """Returns ``None`` before the first frame is published or while
         the stream is stopped."""
         with self._lock:
             return self._latest
 
-    def get_encoder_stats(self) -> EncoderStreamStats:
+    def get_stats(self) -> EncoderStreamStats:
         """Snapshot of the diagnostic counters — safe to call without
-        ``start_encoder_stream``."""
+        ``start_stream``."""
         with self._lock:
             return dataclasses.replace(self._stats)
 
@@ -181,12 +179,12 @@ class JointEncoderClient:
             reading = parse_encoder_frame(frame_bytes, timestamp=timestamp)
         except IOError:
             with self._lock:
-                self._stats.frames_bad_eff_len += 1
+                self._stats.frames_bad_effective_length += 1
             return
 
         with self._lock:
             self._stats.frames_ok += 1
-            self._stats.last_err_byte = reading.err_byte
+            self._stats.last_error_byte = reading.error_byte
             self._stats.last_frame_timestamp = timestamp
             if not self._publish_active:
                 return

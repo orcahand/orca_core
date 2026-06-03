@@ -31,7 +31,7 @@ from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.serial_discovery import find_tactile_port
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
-from .hardware.tactile_client import AutoStreamStats, TactileClient, TactileSensorConfiguration
+from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
 
 if TYPE_CHECKING:
@@ -1541,49 +1541,31 @@ class OrcaHandTouch(OrcaHand):
         sensor is connected or no frame has arrived yet."""
         if self._tactile_client is None:
             return None
-        forces, ts = self._tactile_client.get_auto_latest()
-        if forces is None:
-            return None
-        return ResultantReading(forces=forces, timestamp=ts)
+        return self._tactile_client.get_latest_forces()
 
     def get_tactile_taxels(self) -> TaxelReading | None:
         """Return the latest per-taxel ``TaxelReading``, or ``None`` if no
         sensor is connected or no frame has arrived yet."""
         if self._tactile_client is None:
             return None
-        taxels, ts = self._tactile_client.get_auto_latest_taxels()
-        if taxels is None:
-            return None
-        return TaxelReading(taxels=taxels, timestamp=ts)
+        return self._tactile_client.get_latest_taxels()
 
     def get_tactile_data(self) -> TactileReading | None:
-        """Return resultant and per-taxel forces from the same frame.
-
-        Single locked snapshot of the auto-stream cache, so ``forces`` and
-        ``taxels`` are guaranteed to share a timestamp. Either field is
-        ``None`` if its stream mode is disabled. Returns ``None`` if no
-        sensor is connected or no frame has arrived yet.
-        """
+        """Return resultant and per-taxel forces from the same frame, or
+        ``None`` if no sensor is connected or no frame has arrived yet."""
         if self._tactile_client is None:
             return None
-        forces, taxels, ts = self._tactile_client.get_auto_latest_all()
-        if forces is None and taxels is None:
-            return None
-        return TactileReading(
-            forces=ResultantReading(forces=forces, timestamp=ts) if forces is not None else None,
-            taxels=TaxelReading(taxels=taxels, timestamp=ts) if taxels is not None else None,
-            timestamp=ts,
-        )
+        return self._tactile_client.get_latest()
 
     def start_tactile_stream(
         self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
     ) -> None:
-        self._require_tactile_client().start_auto_stream(
+        self._require_tactile_client().start_stream(
             resultant=resultant, taxels=taxels, min_sensors=min_sensors,
         )
 
     def stop_tactile_stream(self) -> None:
-        self._require_tactile_client().stop_auto_stream()
+        self._require_tactile_client().stop_stream()
 
     def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
         """Capture current readings as zero baseline and return offsets."""
@@ -1597,9 +1579,9 @@ class OrcaHandTouch(OrcaHand):
             return None
         return self._tactile_client.get_tactile_configuration()
 
-    def get_tactile_stats(self) -> AutoStreamStats:
-        """Return ``AutoStreamStats`` for the running auto-stream."""
-        return self._require_tactile_client().get_auto_stats()
+    def get_tactile_stats(self) -> TactileStreamStats:
+        """Return ``TactileStreamStats`` for the running auto-stream."""
+        return self._require_tactile_client().get_stats()
 
 
 class MockOrcaHand(OrcaHand):

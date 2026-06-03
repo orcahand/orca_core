@@ -67,7 +67,7 @@ def test_sample_anchor_count_from_client_averages(encoder_link_and_client):
     counts[5] = 7777
     stop, thread = _start_pump(link, counts)
     try:
-        client.start_encoder_stream(timeout=1.0)
+        client.start_stream(timeout=1.0)
         avg = sample_anchor_count_from_client(client, slot=5, num_samples=20)
         assert avg == 7777
     finally:

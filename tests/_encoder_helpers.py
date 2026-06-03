@@ -2,72 +2,63 @@
 from __future__ import annotations
 
 import time
-from typing import Dict
 
 import numpy as np
 
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import (
-    AUTO_ENC_EFF_LEN,
     AUTO_ENC_NUM_JOINTS,
     ENCODER_COUNTS_PER_REV,
     JOINT_TO_ENCODER_SLOT,
     PROTOCOL_HEADER_AUTO_ENC,
     PROTOCOL_RESERVED,
 )
-from orca_core.hardware.sensing.encoder_protocol import calculate_checksum
+from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.types import EncoderReading
 
 
 def make_encoder_frame(
     raw_counts: np.ndarray | None = None,
-    err_byte: int = 0,
+    error_byte: int = 0,
     *,
     bad_lrc: bool = False,
-    override_eff_len: int | None = None,
+    header: bytes = PROTOCOL_HEADER_AUTO_ENC,
+    effective_length: int | None = None,
 ) -> bytes:
     """Build a wire-format AA A9 encoder frame.
 
-    With ``override_eff_len`` set, the meta and payload sizes follow that
-    value so the link still accepts the frame; the resulting total size
-    differs from ``AUTO_ENC_FRAME_SIZE``, which exercises the client's
-    exact-size check.
+    The payload is always built from ``raw_counts``, so the frame keeps a
+    consistent size and reaches the parser's later checks. ``header`` and
+    ``effective_length`` forge malformed frames: a non-A9 ``header`` exercises the
+    header check, and an ``effective_length`` that disagrees with the payload
+    exercises the length check.
     """
     if raw_counts is None:
         raw_counts = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
-    if override_eff_len is None:
-        eff_len = AUTO_ENC_EFF_LEN
-        payload = bytes([err_byte]) + raw_counts.astype("<u2").tobytes()
-    else:
-        eff_len = override_eff_len
-        payload_bytes = max(eff_len - 1, 0)
-        payload = bytes([err_byte]) + b"\x00" * payload_bytes
+    payload = bytes([error_byte]) + raw_counts.astype("<u2").tobytes()
+    effective_length_field = len(payload) if effective_length is None else effective_length
     body = (
-        PROTOCOL_HEADER_AUTO_ENC
+        header
         + bytes([PROTOCOL_RESERVED])
-        + eff_len.to_bytes(2, "little")
+        + effective_length_field.to_bytes(2, "little")
         + payload
     )
-    lrc = calculate_checksum(body)
-    if bad_lrc:
-        lrc ^= 0xFF
+    lrc = calculate_checksum(body) ^ (0xFF if bad_lrc else 0)
     return body + bytes([lrc])
 
 
 def feed_encoder_frame(
     link: MockHandSerialLink,
     raw_counts: np.ndarray | None = None,
-    err_byte: int = 0,
+    error_byte: int = 0,
     *,
     bad_lrc: bool = False,
-    override_eff_len: int | None = None,
+    header: bytes = PROTOCOL_HEADER_AUTO_ENC,
+    effective_length: int | None = None,
 ) -> None:
     link.feed_bytes(
         make_encoder_frame(
-            raw_counts,
-            err_byte,
-            bad_lrc=bad_lrc,
-            override_eff_len=override_eff_len,
+            raw_counts, error_byte, bad_lrc=bad_lrc, header=header, effective_length=effective_length
         )
     )
 
@@ -83,7 +74,7 @@ _DEFAULT_COUNTS_PER_RAD = ENCODER_COUNTS_PER_REV / (2.0 * np.pi)
 class MockJointEncoderSource:
     """Synthesise per-joint encoder counts from mock motor positions.
 
-    Implements ``get_latest_encoder_reading`` (the only method the
+    Implements ``get_latest`` (the only method the
     calibration sweep calls on its encoder client). Counts wrap into the
     14-bit range so feeding them back through ``_raw_to_joint_angle``
     yields the joint-space the mock motor is in.
@@ -92,10 +83,10 @@ class MockJointEncoderSource:
     def __init__(
         self,
         dxl_client,
-        joint_to_motor_map: Dict[str, int],
+        joint_to_motor_map: dict[str, int],
         counts_per_rad: float = _DEFAULT_COUNTS_PER_RAD,
-        polarities: Dict[str, int] | None = None,
-        motor_offsets: Dict[str, float] | None = None,
+        polarities: dict[str, int] | None = None,
+        motor_offsets: dict[str, float] | None = None,
     ):
         self._dxl = dxl_client
         self._joint_to_motor_map = dict(joint_to_motor_map)
@@ -115,7 +106,7 @@ class MockJointEncoderSource:
         )
         return count % ENCODER_COUNTS_PER_REV
 
-    def get_latest_encoder_reading(self) -> EncoderReading:
+    def get_latest(self) -> EncoderReading:
         raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
         for joint, slot in JOINT_TO_ENCODER_SLOT.items():
             if joint == "wrist":
@@ -125,6 +116,6 @@ class MockJointEncoderSource:
             raw_counts=raw,
             parity_ok=np.ones(AUTO_ENC_NUM_JOINTS, dtype=bool),
             angle_error=np.zeros(AUTO_ENC_NUM_JOINTS, dtype=bool),
-            err_byte=0,
+            error_byte=0,
             timestamp=time.monotonic(),
         )

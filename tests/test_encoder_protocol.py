@@ -7,7 +7,7 @@ import pytest
 
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_ANGLE_ERROR_BIT,
-    AUTO_ENC_EFF_LEN,
+    AUTO_ENC_EFFECTIVE_LENGTH,
     AUTO_ENC_FRAME_SIZE,
     AUTO_ENC_NUM_JOINTS,
     AUTO_ENC_PARITY_BIT,
@@ -17,82 +17,21 @@ from orca_core.hardware.sensing.constants import (
     PROTOCOL_HEADER_AUTO_ENC,
 )
 from orca_core.hardware.sensing.encoder_protocol import (
-    calculate_checksum,
     encoder_to_joint_angle,
     parse_encoder_frame,
-)
-from orca_core.hardware.sensing.tactile_protocol import (
-    calculate_checksum as tactile_calculate_checksum,
 )
 from orca_core.hardware.sensing.types import EncoderReading
 
 from tests._encoder_helpers import make_encoder_frame
 
 
-# ---------------------------------------------------------------------------
-# Frame builders
-#
-# Wire layout: header(2) + reserved(1) + eff_len(2 LE) + err(1) +
-# payload(2 × AUTO_ENC_NUM_JOINTS) + LRC(1). eff_len == 1 + payload bytes.
-# Per-joint u16: bit 15 = even-parity over the whole word, bit 14 = angle
-# error, bits 13:0 = 14-bit absolute angle.
-# ---------------------------------------------------------------------------
+# Wire layout (built by ``make_encoder_frame``): header(2) + reserved(1) +
+# effective_length(2 LE) + err(1) + payload(2 × AUTO_ENC_NUM_JOINTS) + LRC(1), where
+# effective_length == 1 + payload bytes. Per-joint u16: bit 15 = even-parity over the
+# whole word, bit 14 = angle error, bits 13:0 = 14-bit absolute angle.
 
 def _zero_counts() -> np.ndarray:
     return np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
-
-
-def _build_encoder_frame(
-    raw_counts: np.ndarray,
-    err_byte: int = 0,
-    *,
-    eff_len_override: int | None = None,
-    bad_lrc: bool = False,
-    bad_header: bool = False,
-) -> bytes:
-    """Hand-roll an encoder frame; ``bad_*`` knobs build deliberately-corrupt frames."""
-    eff_len = eff_len_override if eff_len_override is not None else 1 + raw_counts.nbytes
-    header = bytes([0xAA, 0x99]) if bad_header else PROTOCOL_HEADER_AUTO_ENC
-    body = (
-        header
-        + bytes([0x00])
-        + eff_len.to_bytes(2, "little")
-        + bytes([err_byte])
-        + raw_counts.astype("<u2").tobytes()
-    )
-    lrc = calculate_checksum(body)
-    if bad_lrc:
-        lrc ^= 0xFF
-    return body + bytes([lrc])
-
-
-def _build_tactile_header_frame() -> bytes:
-    """Build a length-correct frame with the tactile auto-stream header."""
-    raw = _zero_counts()
-    eff_len = 1 + raw.nbytes
-    body = (
-        PROTOCOL_HEADER_AUTO
-        + bytes([0x00])
-        + eff_len.to_bytes(2, "little")
-        + bytes([0x00])
-        + raw.astype("<u2").tobytes()
-    )
-    return body + bytes([calculate_checksum(body)])
-
-
-# ---------------------------------------------------------------------------
-# Checksum
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("frame", [
-    b"",
-    b"\x01\x02\x03",
-    bytes(range(256)),
-    PROTOCOL_HEADER_AUTO_ENC + b"\x00\x21\x00\x00" + b"\xAB" * 32,
-])
-def test_calculate_checksum_matches_tactile_protocol(frame):
-    """The two protocol modules duplicate this primitive; outputs must match."""
-    assert calculate_checksum(frame) == tactile_calculate_checksum(frame)
 
 
 # ---------------------------------------------------------------------------
@@ -110,18 +49,18 @@ def test_parse_encoder_frame_decodes_parity_and_angle_error():
     raw[5] = 0xC003  # popcount=4 (even) → parity OK; bit 14 set
     raw[6] = 0x3FFF  # popcount=14 (even) → parity OK; bit 14 clear
 
-    reading = parse_encoder_frame(_build_encoder_frame(raw))
+    reading = parse_encoder_frame(make_encoder_frame(raw))
     np.testing.assert_array_equal(reading.raw_counts, raw)
     assert list(reading.parity_ok[:7]) == [True, False, True, False, True, True, True]
     assert list(reading.angle_error[:7]) == [False, False, False, True, True, True, False]
 
 
 @pytest.mark.parametrize("frame,error_match", [
-    pytest.param(_build_encoder_frame(_zero_counts(), bad_lrc=True),                              "LRC",     id="bad_lrc"),
-    pytest.param(_build_encoder_frame(_zero_counts(), bad_header=True),                           "header",  id="bad_header"),
-    pytest.param(_build_tactile_header_frame(),                                                   "header",  id="tactile_header"),
-    pytest.param(_build_encoder_frame(_zero_counts(), eff_len_override=AUTO_ENC_EFF_LEN + 1),     "eff_len", id="bad_eff_len"),
-    pytest.param(PROTOCOL_HEADER_AUTO_ENC,                                                        "size",    id="too_short"),
+    pytest.param(make_encoder_frame(_zero_counts(), bad_lrc=True),                            "LRC",     id="bad_lrc"),
+    pytest.param(make_encoder_frame(_zero_counts(), header=bytes([0xAA, 0x99])),              "header",  id="bad_header"),
+    pytest.param(make_encoder_frame(_zero_counts(), header=PROTOCOL_HEADER_AUTO),             "header",  id="tactile_header"),
+    pytest.param(make_encoder_frame(_zero_counts(), effective_length=AUTO_ENC_EFFECTIVE_LENGTH + 1),            "effective_length", id="bad_effective_length"),
+    pytest.param(PROTOCOL_HEADER_AUTO_ENC,                                                    "size",    id="too_short"),
 ])
 def test_parse_encoder_frame_rejects(frame, error_match):
     with pytest.raises(IOError, match=error_match):
@@ -132,8 +71,8 @@ def test_parse_encoder_frame_rejects(frame, error_match):
 # wire-format round-trip
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("err_byte", [0x00, 0xFF])
-def test_make_encoder_frame_round_trips_through_parser(err_byte):
+@pytest.mark.parametrize("error_byte", [0x00, 0xFF])
+def test_make_encoder_frame_round_trips_through_parser(error_byte):
     """``make_encoder_frame`` is the test-side wire-format builder; verify
     its output round-trips through the production parser so any bug in
     either surfaces as a test failure."""
@@ -142,12 +81,12 @@ def test_make_encoder_frame_round_trips_through_parser(err_byte):
     raw[7] |= AUTO_ENC_ANGLE_ERROR_BIT
     raw[11] |= AUTO_ENC_PARITY_BIT | AUTO_ENC_ANGLE_ERROR_BIT
 
-    frame = make_encoder_frame(raw_counts=raw, err_byte=err_byte)
+    frame = make_encoder_frame(raw_counts=raw, error_byte=error_byte)
     assert len(frame) == AUTO_ENC_FRAME_SIZE
 
     reading = parse_encoder_frame(frame, timestamp=12.5)
     assert isinstance(reading, EncoderReading)
-    assert reading.err_byte == err_byte
+    assert reading.error_byte == error_byte
     assert reading.timestamp == 12.5
     np.testing.assert_array_equal(reading.raw_counts, raw)
 

@@ -8,11 +8,18 @@ import numpy as np
 from orca_core.constants import FingerName
 
 
-FingerForces = list[float]
-"""Resultant 3-axis force on one finger: ``[fx, fy, fz]`` in Newtons."""
+ForceVector = list[float]
+"""A 3-axis force ``[fx, fy, fz]`` in Newtons. fx/fy are signed (shear), fz
+is unsigned (normal). Mutable so callers can apply zeroing offsets in place."""
 
-FingerTaxels = list[list[float]]
-"""Per-taxel 3-axis forces on one finger: ``[[fx, fy, fz], ...]`` in Newtons."""
+FingerTaxels = list[ForceVector]
+"""Per-taxel forces on one finger: ``[[fx, fy, fz], ...]``."""
+
+ResultantForces = dict[FingerName, ForceVector]
+"""``{finger: [fx, fy, fz]}`` resultant force per finger."""
+
+TaxelForces = dict[FingerName, FingerTaxels]
+"""``{finger: [[fx, fy, fz], ...]}`` per-taxel forces per finger."""
 
 
 @dataclass(frozen=True)
@@ -22,10 +29,10 @@ class ResultantReading:
     Supports dict-style access: ``reading["thumb"]`` returns ``[fx, fy, fz]``.
     """
 
-    forces: dict[FingerName, FingerForces]
+    forces: ResultantForces
     timestamp: float | None = None
 
-    def __getitem__(self, finger: FingerName) -> FingerForces:
+    def __getitem__(self, finger: FingerName) -> ForceVector:
         return self.forces[finger]
 
     def __contains__(self, finger: FingerName) -> bool:
@@ -48,7 +55,7 @@ class TaxelReading:
     ``[[fx, fy, fz], ...]`` for every taxel on that finger.
     """
 
-    taxels: dict[FingerName, FingerTaxels]
+    taxels: TaxelForces
     timestamp: float | None = None
 
     def __getitem__(self, finger: FingerName) -> FingerTaxels:
@@ -92,7 +99,7 @@ class EncoderReading:
     raw_counts: np.ndarray
     parity_ok: np.ndarray
     angle_error: np.ndarray
-    err_byte: int
+    error_byte: int
     timestamp: float
 
     @property

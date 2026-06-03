@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
 def print_failure_diagnostics(client: JointEncoderClient, link: HandSerialLink) -> None:
     """Surface link + client counters and suggest the likely cause."""
     link_stats = link.get_link_stats()
-    client_stats = client.get_encoder_stats()
+    client_stats = client.get_stats()
 
     print("Link diagnostics:")
     print(f"  bad_header_resyncs           = {link_stats.bad_header_resyncs}")
@@ -67,13 +67,13 @@ def print_failure_diagnostics(client: JointEncoderClient, link: HandSerialLink) 
     print(f"  handler_errors               = {dict(link_stats.handler_errors)}")
     print(f"Encoder client diagnostics:")
     print(f"  frames_ok                    = {client_stats.frames_ok}")
-    print(f"  frames_bad_eff_len           = {client_stats.frames_bad_eff_len}")
+    print(f"  frames_bad_effective_length           = {client_stats.frames_bad_effective_length}")
     print()
     print("Likely causes:")
-    if client_stats.frames_bad_eff_len > 0:
+    if client_stats.frames_bad_effective_length > 0:
         print("  → Firmware/host wire-format mismatch. Most likely the firmware")
         print("    has not been re-flashed with COMMBOARD_NUM_JOINTS=17 yet, so")
-        print("    it emits eff_len=33 but the host expects 35.")
+        print("    it emits effective_length=33 but the host expects 35.")
     if link_stats.frames_dropped_no_handler:
         unhandled = ", ".join(f"0x{b:02X}" for b in link_stats.frames_dropped_no_handler)
         print(f"  → Frames arriving on un-routed second-byte(s): {unhandled}.")
@@ -130,9 +130,9 @@ class SlotHealth:
 def print_snapshot(client: JointEncoderClient, link: HandSerialLink,
                    t_elapsed: float, last_frames_ok: int,
                    health: SlotHealth) -> int:
-    stats = client.get_encoder_stats()
+    stats = client.get_stats()
     link_stats = link.get_link_stats()
-    reading = client.get_latest_encoder_reading()
+    reading = client.get_latest()
 
     rate = stats.frames_ok - last_frames_ok
     bad_lrc = link_stats.frames_bad_lrc[PROTOCOL_BYTE_AUTO_ENC]
@@ -141,9 +141,9 @@ def print_snapshot(client: JointEncoderClient, link: HandSerialLink,
     header = (
         f"[t={t_elapsed:5.1f}s] rate={rate:4d} Hz  "
         f"frames_ok={stats.frames_ok}  "
-        f"bad_lrc={bad_lrc}  bad_eff_len={stats.frames_bad_eff_len}  "
+        f"bad_lrc={bad_lrc}  bad_effective_length={stats.frames_bad_effective_length}  "
         f"handler_errs={handler_errs}  "
-        f"err_byte=0x{stats.last_err_byte:02X}  "
+        f"error_byte=0x{stats.last_error_byte:02X}  "
         f"freshness={stats.last_freshness_ms:5.1f}ms"
     )
     print(header)
@@ -179,7 +179,7 @@ def main() -> int:
     client.connect()
 
     try:
-        client.start_encoder_stream(timeout=2.0)
+        client.start_stream(timeout=2.0)
     except EncodersNotAvailableError as e:
         print(f"FAIL: no encoder frames within timeout ({e})")
         print()
@@ -205,17 +205,17 @@ def main() -> int:
         client.disconnect()
         link.disconnect()
 
-    final_stats = client.get_encoder_stats()
+    final_stats = client.get_stats()
     final_link = link.get_link_stats()
     bad_lrc = final_link.frames_bad_lrc[PROTOCOL_BYTE_AUTO_ENC]
     print()
     print(
         f"Summary: frames_ok={final_stats.frames_ok}  "
-        f"bad_lrc={bad_lrc}  bad_eff_len={final_stats.frames_bad_eff_len}  "
+        f"bad_lrc={bad_lrc}  bad_effective_length={final_stats.frames_bad_effective_length}  "
         f"handler_errs={final_link.handler_errors[PROTOCOL_BYTE_AUTO_ENC]}"
     )
     health.print_summary()
-    if bad_lrc > 0 or final_stats.frames_bad_eff_len > 0:
+    if bad_lrc > 0 or final_stats.frames_bad_effective_length > 0:
         return 1
     return 0
 

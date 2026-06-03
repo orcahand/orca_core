@@ -5,6 +5,8 @@ and Python objects. Pure functions only — no I/O, no state, no threading.
 """
 from typing import TypedDict
 
+from orca_core.hardware.sensing.framing import calculate_checksum
+from orca_core.hardware.sensing.types import ForceVector, ResultantForces, TaxelForces
 from orca_core.hardware.sensing.constants import (
     PROTOCOL_HEADER_REQUEST,
     PROTOCOL_HEADER_RESPONSE,
@@ -23,7 +25,7 @@ from orca_core.hardware.sensing.constants import (
     BYTES_PER_TAXEL,
     SLOT_CONNECTED_BIT_POSITIONS,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
-    MAX_AUTO_FRAME_EFF_LEN,
+    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     RESPONSE_META_SIZE,
     AUTO_FRAME_META_SIZE,
     MODULES_PER_SLOT,
@@ -35,18 +37,6 @@ from orca_core.hardware.sensing.constants import (
 # =========================================================================
 # Types
 # =========================================================================
-
-ForceVector = list[float]
-"""[fx, fy, fz] force components in Newtons. Always exactly 3 elements.
-fx/fy are signed (shear); fz is unsigned (normal force, always >= 0).
-Mutable list (not tuple) because callers apply zeroing offsets in-place."""
-
-ResultantForces = dict[str, ForceVector]
-"""{finger_name: [fx, fy, fz]} resultant forces per sensor."""
-
-TaxelForces = dict[str, list[ForceVector]]
-"""{finger_name: [[fx, fy, fz], ...]} per-taxel forces per sensor."""
-
 
 class AutoDataTypeInfo(TypedDict):
     """Parsed auto-data-type register value."""
@@ -60,11 +50,6 @@ class AutoDataTypeInfo(TypedDict):
 # =========================================================================
 # Checksum
 # =========================================================================
-
-def calculate_checksum(frame: bytes) -> int:
-    """LRC checksum: two's complement of the low byte of the sum."""
-    return (0x100 - (sum(frame) & 0xFF)) & 0xFF
-
 
 def validate_auto_frame_lrc(meta: bytes, payload: bytes, lrc: int) -> bool:
     """Return ``True`` if ``lrc`` matches the checksum over ``header + meta + payload``.
@@ -206,16 +191,16 @@ def parse_write_response(frame: bytes) -> None:
 # Frame Parsers — auto-stream frames
 # =========================================================================
 
-def extract_auto_frame_eff_len(meta: bytes) -> int:
-    """Read eff_len (includes error_code byte) from the 3-byte auto-frame meta.
+def extract_auto_frame_effective_length(meta: bytes) -> int:
+    """Read effective_length (includes error_code byte) from the 3-byte auto-frame meta.
 
-    Raises ``ValueError`` if it exceeds ``MAX_AUTO_FRAME_EFF_LEN``, which would
+    Raises ``ValueError`` if it exceeds ``MAX_AUTO_FRAME_EFFECTIVE_LENGTH``, which would
     almost always indicate stream corruption rather than a real giant payload.
     """
-    eff_len = int.from_bytes(meta[1:3], "little")
-    if eff_len > MAX_AUTO_FRAME_EFF_LEN:
-        raise ValueError(f"Invalid eff_len in auto frame: {eff_len} (possible corruption)")
-    return eff_len
+    effective_length = int.from_bytes(meta[1:3], "little")
+    if effective_length > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
+        raise ValueError(f"Invalid effective_length in auto frame: {effective_length} (possible corruption)")
+    return effective_length
 
 
 def unpack_auto_payload(payload: bytes) -> tuple[int, bytes]:

@@ -98,7 +98,7 @@ def main() -> int:
     client = JointEncoderClient(link)
     client.connect()
     try:
-        client.start_encoder_stream(timeout=2.0)
+        client.start_stream(timeout=2.0)
     except EncodersNotAvailableError as e:
         print(f"FAIL: no encoder frames within timeout ({e})")
         client.disconnect()
@@ -121,7 +121,7 @@ def main() -> int:
     deadline = started + args.duration if args.duration > 0 else math.inf
     try:
         while time.monotonic() < deadline:
-            reading = client.get_latest_encoder_reading()
+            reading = client.get_latest()
             if reading is None:
                 print("(no encoder frame yet)")
                 time.sleep(period)

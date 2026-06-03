@@ -59,14 +59,15 @@ FORCE_VECTORS = {
 @pytest.mark.parametrize("finger", ALL_FINGERS)
 def test_resultant_round_trip_per_finger(tactile_mock, finger):
     link, client, state = tactile_mock
-    client.start_auto_stream(resultant=True, taxels=False)
+    client.start_stream(resultant=True, taxels=False)
     feed_resultant_frame(link, FORCE_VECTORS, state.active_sensors)
-    client.wait_for_first_tactile_frame()
-    result, ts = client.get_auto_latest()
-    client.stop_auto_stream()
+    client.wait_for_first_frame()
+    reading = client.get_latest_forces()
+    client.stop_stream()
 
-    assert ts is not None
-    assert result[finger] == FORCE_VECTORS[finger]
+    assert reading is not None
+    assert reading.timestamp is not None
+    assert reading[finger] == FORCE_VECTORS[finger]
 
 
 @pytest.mark.parametrize(
@@ -81,13 +82,13 @@ def test_resultant_round_trip_per_finger(tactile_mock, finger):
 def test_only_connected_sensors_returned(tactile_mock_factory, subset):
     link, client, state = tactile_mock_factory(subset)
     forces = {f: [1.0, 0.0, 0.5] for f in subset}
-    client.start_auto_stream(resultant=True, taxels=False)
+    client.start_stream(resultant=True, taxels=False)
     feed_resultant_frame(link, forces, state.active_sensors)
-    client.wait_for_first_tactile_frame()
-    result, _ = client.get_auto_latest()
-    client.stop_auto_stream()
+    client.wait_for_first_frame()
+    reading = client.get_latest_forces()
+    client.stop_stream()
 
-    assert set(result.keys()) == set(subset)
+    assert set(reading.fingers) == set(subset)
 
 
 # ---------------------------------------------------------------------------
@@ -101,18 +102,19 @@ def test_combined_mode_returns_both_streams(tactile_mock):
         f: [[1.0, 1.0, 1.0] for _ in range(DEFAULT_TAXEL_COUNTS[f])]
         for f in ALL_FINGERS
     }
-    client.start_auto_stream(resultant=True, taxels=True)
+    client.start_stream(resultant=True, taxels=True)
     feed_combined_frame(link, forces, taxels, state.active_sensors)
-    client.wait_for_first_tactile_frame()
-    forces_out, taxels_out, ts = client.get_auto_latest_all()
-    client.stop_auto_stream()
+    client.wait_for_first_frame()
+    reading = client.get_latest()
+    client.stop_stream()
 
-    assert ts is not None
-    assert set(forces_out.keys()) == set(ALL_FINGERS)
-    assert set(taxels_out.keys()) == set(ALL_FINGERS)
+    assert reading is not None
+    assert reading.timestamp is not None
+    assert set(reading.forces.fingers) == set(ALL_FINGERS)
+    assert set(reading.taxels.fingers) == set(ALL_FINGERS)
     for finger in ALL_FINGERS:
-        assert forces_out[finger] == [1.0, 0.0, 0.5]
-        assert len(taxels_out[finger]) == DEFAULT_TAXEL_COUNTS[finger]
+        assert reading.forces[finger] == [1.0, 0.0, 0.5]
+        assert len(reading.taxels[finger]) == DEFAULT_TAXEL_COUNTS[finger]
 
 
 # ---------------------------------------------------------------------------
@@ -124,23 +126,23 @@ def test_custom_provider_is_used(tactile_mock_factory, kind):
     if kind == "resultant":
         marker = [4.2, -3.0, 20.0]
         link, client, state = tactile_mock_factory(["thumb"])
-        client.start_auto_stream(resultant=True, taxels=False)
+        client.start_stream(resultant=True, taxels=False)
         feed_resultant_frame(link, {"thumb": marker}, state.active_sensors)
-        client.wait_for_first_tactile_frame()
-        result, _ = client.get_auto_latest()
-        client.stop_auto_stream()
-        assert result["thumb"] == marker
+        client.wait_for_first_frame()
+        reading = client.get_latest_forces()
+        client.stop_stream()
+        assert reading["thumb"] == marker
     else:
         marker = [[9.9, -8.8, 7.7]]
         link, client, state = tactile_mock_factory(
             ["thumb"], taxel_counts={"thumb": 1},
         )
-        client.start_auto_stream(resultant=False, taxels=True)
+        client.start_stream(resultant=False, taxels=True)
         feed_taxels_frame(link, {"thumb": marker}, state.active_sensors)
-        client.wait_for_first_tactile_frame()
-        result, _ = client.get_auto_latest_taxels()
-        client.stop_auto_stream()
-        assert result["thumb"] == marker
+        client.wait_for_first_frame()
+        reading = client.get_latest_taxels()
+        client.stop_stream()
+        assert reading["thumb"] == marker
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +187,13 @@ def test_clear_offsets(tactile_mock_factory):
 def test_stream_offsets_applied(tactile_mock_factory, finger):
     link, client, state = tactile_mock_factory([finger])
     client.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
-    client.start_auto_stream(resultant=True, taxels=False)
+    client.start_stream(resultant=True, taxels=False)
     feed_resultant_frame(link, {finger: [5.0, 3.0, 10.0]}, state.active_sensors)
-    client.wait_for_first_tactile_frame()
-    result, _ = client.get_auto_latest()
-    client.stop_auto_stream()
+    client.wait_for_first_frame()
+    reading = client.get_latest_forces()
+    client.stop_stream()
 
-    assert result[finger] == [4.0, 2.5, 8.0]
+    assert reading[finger] == [4.0, 2.5, 8.0]
 
 
 def test_taxel_offsets_applied_in_stream(tactile_mock_factory):
@@ -201,13 +203,13 @@ def test_taxel_offsets_applied_in_stream(tactile_mock_factory):
         ["thumb"], taxel_counts={"thumb": 2},
     )
     client.set_taxel_offsets({"thumb": offsets})
-    client.start_auto_stream(resultant=False, taxels=True)
+    client.start_stream(resultant=False, taxels=True)
     feed_taxels_frame(link, {"thumb": taxels}, state.active_sensors)
-    client.wait_for_first_tactile_frame()
-    result, _ = client.get_auto_latest_taxels()
-    client.stop_auto_stream()
+    client.wait_for_first_frame()
+    reading = client.get_latest_taxels()
+    client.stop_stream()
 
-    assert result["thumb"] == [[1.5, 0.5, 4.0], [2.0, 1.0, 6.0]]
+    assert reading["thumb"] == [[1.5, 0.5, 4.0], [2.0, 1.0, 6.0]]
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +227,9 @@ def test_read_before_connect_raises():
         link.disconnect()
 
 
-def test_get_auto_latest_before_stream_returns_none(tactile_mock):
+def test_get_latest_forces_before_stream_returns_none(tactile_mock):
     _, client, _ = tactile_mock
-    result, ts = client.get_auto_latest()
-    assert result is None
-    assert ts is None
+    assert client.get_latest_forces() is None
 
 
 # ---------------------------------------------------------------------------

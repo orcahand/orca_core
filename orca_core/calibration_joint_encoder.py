@@ -8,7 +8,7 @@
 
 """Encoder-side sampling for the joint-encoder anchor sweep.
 
-Polls a client implementing ``get_latest_encoder_reading`` for fresh
+Polls a client implementing ``get_latest`` for fresh
 frames at the current pose and averages them with cosine-mean to handle
 the 14-bit encoder wraparound.
 """
@@ -29,7 +29,7 @@ class JointEncoderCalibrationError(RuntimeError):
 
 
 class _ReadsLatestEncoderFrame(Protocol):
-    def get_latest_encoder_reading(self) -> EncoderReading | None: ...
+    def get_latest(self) -> EncoderReading | None: ...
 
 
 def average_anchor_count(samples: np.ndarray) -> int:
@@ -62,7 +62,7 @@ def sample_anchor_count_from_client(
     deadline = time.monotonic() + timeout_s
     collected = 0
     while collected < num_samples:
-        reading = client.get_latest_encoder_reading()
+        reading = client.get_latest()
         if reading is not None and reading.timestamp != last_ts:
             counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
             last_ts = reading.timestamp

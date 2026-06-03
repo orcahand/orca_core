@@ -59,8 +59,13 @@ AUTO_DATA_TAXELS = 0x02
 # Force resolution
 RESOLUTION_N_PER_LSB = 0.1
 
-# Decimal places to round force values to (matches RESOLUTION_N_PER_LSB granularity).
+# Decimal places to round returned force values to (matches RESOLUTION_N_PER_LSB granularity).
 FORCE_ROUND_DECIMALS = 1
+
+# Decimal places kept when averaging zeroing offsets. Finer than the sensor's
+# 0.1 N resolution so the averaged baseline isn't biased before it is
+# subtracted; the subtracted force still rounds to FORCE_ROUND_DECIMALS.
+OFFSET_CAPTURE_DECIMALS = 2
 
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
@@ -71,7 +76,7 @@ RESPONSE_META_SIZE = 6
 """Bytes between response header and variable data: reserved(1) + func(1) + addr(2) + count/nbytes(2)."""
 
 AUTO_FRAME_META_SIZE = 3
-"""Bytes between auto-stream header and payload: reserved(1) + eff_len(2)."""
+"""Bytes between auto-stream header and payload: reserved(1) + effective_length(2)."""
 
 # Minimum valid frame sizes
 MIN_READ_RESPONSE_SIZE = 9
@@ -81,13 +86,13 @@ MIN_WRITE_RESPONSE_SIZE = 9
 """Minimum valid write response frame: header(2) + meta(6) + LRC(1)."""
 
 # Maximum valid effective frame length in auto-stream frames.
-# Typical payloads are 6-200 bytes; this guards against corrupted eff_len fields.
-MAX_AUTO_FRAME_EFF_LEN = 8192
+# Typical payloads are 6-200 bytes; this guards against corrupted effective_length fields.
+MAX_AUTO_FRAME_EFFECTIVE_LENGTH = 8192
 
 # Same bound applied to the ``count`` field in AA 55 register responses — a
 # higher value is treated as a corrupted header and resync rather than the
 # start of a multi-megabyte read.
-MAX_RESPONSE_DATA_LEN = MAX_AUTO_FRAME_EFF_LEN
+MAX_RESPONSE_DATA_LEN = MAX_AUTO_FRAME_EFFECTIVE_LENGTH
 
 # Register block structure
 MODULES_PER_SLOT = 4
@@ -115,13 +120,13 @@ AUTO_ENC_NUM_JOINTS = 17
 
 AUTO_ENC_PAYLOAD_BYTES = AUTO_ENC_NUM_JOINTS * 2
 AUTO_ENC_PAYLOAD_OFFSET = 6
-"""Byte offset to the joint payload (past header + reserved + eff_len + err)."""
+"""Byte offset to the joint payload (past header + reserved + effective_length + error_byte)."""
 
-AUTO_ENC_EFF_LEN = 1 + AUTO_ENC_PAYLOAD_BYTES
-"""Value of the eff_len field for a valid encoder frame: err byte + payload."""
+AUTO_ENC_EFFECTIVE_LENGTH = 1 + AUTO_ENC_PAYLOAD_BYTES
+"""Value of the effective_length field for a valid encoder frame: error byte + payload."""
 
 AUTO_ENC_FRAME_SIZE = AUTO_ENC_PAYLOAD_OFFSET + AUTO_ENC_PAYLOAD_BYTES + 1
-"""Wire size: header(2) + reserved(1) + eff_len(2) + err(1) + payload + LRC(1)."""
+"""Wire size: header(2) + reserved(1) + effective_length(2) + error_byte(1) + payload + LRC(1)."""
 
 # Per-joint u16 layout in the encoder payload
 AUTO_ENC_PARITY_BIT = 1 << 15
@@ -172,8 +177,20 @@ LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
 
 LINK_DEFAULT_BAUDRATE = 921600
 
+LINK_DEFAULT_RESPONSE_TIMEOUT_S = 0.5
+"""Default wait for a register response before ``send_register_request`` raises."""
+
+LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
+"""How long ``disconnect`` waits for the demuxer thread to exit."""
+
+LINK_PAUSE_SETTLE_S = 0.05
+"""Pause grace period that lets the demuxer observe the paused flag and stop reading."""
+
+LINK_PAUSED_POLL_S = 0.01
+"""Idle poll interval the demuxer loops on while reads are paused."""
+
 ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
-"""How long ``JointEncoderClient.start_encoder_stream`` waits for the first valid
+"""How long ``JointEncoderClient.start_stream`` waits for the first valid
 AA A9 frame before raising ``EncodersNotAvailableError``."""
 
 # ---------------------------------------------------------------------------
@@ -183,3 +200,9 @@ AA A9 frame before raising ``EncodersNotAvailableError``."""
 # One auto-stream period @ ~1 kHz. Used after clearing offsets so the reader
 # emits at least one fresh frame before averaging.
 OFFSET_CLEAR_SETTLE_S = 0.01
+
+OFFSET_CAPTURE_POLL_S = 0.002
+"""Poll interval while collecting frames to average into zeroing offsets."""
+
+TACTILE_FIRST_FRAME_TIMEOUT_S = 2.0
+"""Default wait for the first stored tactile frame in ``wait_for_first_frame``."""

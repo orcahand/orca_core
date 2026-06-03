@@ -2,7 +2,7 @@
 
 The hand under test owns a real ``JointEncoderClient`` on a
 ``MockHandSerialLink``; a daemon pump installed on the link feeds AA A9
-frames so ``start_encoder_stream`` returns within its first-frame timeout.
+frames so ``start_stream`` returns within its first-frame timeout.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class _LinkFramePump:
 
 class _PumpedMockOrcaHandJointFeedback(MockOrcaHandJointFeedback):
     """``MockOrcaHandJointFeedback`` that owns a frame pump on the encoder
-    link so ``start_encoder_stream`` sees a fresh AA A9 frame within its
+    link so ``start_stream`` sees a fresh AA A9 frame within its
     first-frame timeout. Lifecycle of the pump is bound to the link.
     """
 

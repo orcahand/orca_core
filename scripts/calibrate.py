@@ -44,7 +44,7 @@ def _open_encoder_client(encoder_port_override: str):
     client = JointEncoderClient(link)
     client.connect()
     try:
-        client.start_encoder_stream(timeout=2.0)
+        client.start_stream(timeout=2.0)
     except EncodersNotAvailableError:
         client.disconnect()
         link.disconnect()
@@ -138,7 +138,7 @@ def main():
     finally:
         if client is not None:
             try:
-                client.stop_encoder_stream()
+                client.stop_stream()
             except Exception:
                 pass
             client.disconnect()

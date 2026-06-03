@@ -2,31 +2,20 @@
 
 Pure functions only — no I/O, no state, no threading.
 """
-from __future__ import annotations
-
 import numpy as np
 
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_ANGLE_ERROR_BIT,
     AUTO_ENC_ANGLE_MASK,
-    AUTO_ENC_EFF_LEN,
+    AUTO_ENC_EFFECTIVE_LENGTH,
     AUTO_ENC_FRAME_SIZE,
-    AUTO_ENC_PARITY_BIT,
     AUTO_ENC_PAYLOAD_BYTES,
     AUTO_ENC_PAYLOAD_OFFSET,
     ENCODER_LSB_DEG,
     PROTOCOL_HEADER_AUTO_ENC,
 )
+from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.types import EncoderReading
-
-
-# =========================================================================
-# Checksum
-# =========================================================================
-
-def calculate_checksum(frame: bytes) -> int:
-    """LRC checksum: two's complement of the low byte of the sum."""
-    return (0x100 - (sum(frame) & 0xFF)) & 0xFF
 
 
 # =========================================================================
@@ -36,7 +25,7 @@ def calculate_checksum(frame: bytes) -> int:
 def parse_encoder_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderReading:
     """Validate an encoder auto-stream frame and decode the joint payload.
 
-    Raises ``IOError`` on size, header, eff_len, or LRC mismatch.
+    Raises ``IOError`` on size, header, effective_length, or LRC mismatch.
     """
     if len(frame) != AUTO_ENC_FRAME_SIZE:
         raise IOError(
@@ -50,10 +39,10 @@ def parse_encoder_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderReadi
         )
     if calculate_checksum(frame[:-1]) != frame[-1]:
         raise IOError("Encoder frame LRC mismatch")
-    eff_len = int.from_bytes(frame[3:5], "little")
-    if eff_len != AUTO_ENC_EFF_LEN:
+    effective_length = int.from_bytes(frame[3:5], "little")
+    if effective_length != AUTO_ENC_EFFECTIVE_LENGTH:
         raise IOError(
-            f"Encoder frame eff_len mismatch: expected {AUTO_ENC_EFF_LEN}, got {eff_len}"
+            f"Encoder frame effective_length mismatch: expected {AUTO_ENC_EFFECTIVE_LENGTH}, got {effective_length}"
         )
 
     payload = frame[AUTO_ENC_PAYLOAD_OFFSET : AUTO_ENC_PAYLOAD_OFFSET + AUTO_ENC_PAYLOAD_BYTES]
@@ -62,7 +51,7 @@ def parse_encoder_frame(frame: bytes, *, timestamp: float = 0.0) -> EncoderReadi
         raw_counts=raw_counts,
         parity_ok=_check_even_parity(raw_counts),
         angle_error=(raw_counts & AUTO_ENC_ANGLE_ERROR_BIT) != 0,
-        err_byte=frame[5],
+        error_byte=frame[5],
         timestamp=timestamp,
     )
 

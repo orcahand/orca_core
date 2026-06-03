@@ -28,9 +28,18 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_ENABLE,
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
+    LINK_DEFAULT_RESPONSE_TIMEOUT_S,
+    OFFSET_CAPTURE_DECIMALS,
+    OFFSET_CAPTURE_POLL_S,
     OFFSET_CLEAR_SETTLE_S,
+    TACTILE_FIRST_FRAME_TIMEOUT_S,
 )
-from orca_core.hardware.sensing.types import FingerForces
+from orca_core.hardware.sensing.types import (
+    ResultantForces,
+    ResultantReading,
+    TactileReading,
+    TaxelReading,
+)
 from orca_core.hardware.sensing.tactile_protocol import (
     build_read_request,
     build_write_request,
@@ -57,7 +66,7 @@ class NoSensorsAvailableError(Exception):
 
 
 @dataclass
-class AutoStreamStats:
+class TactileStreamStats:
     """Diagnostic counters for the AA 56 handler."""
     frames_ok: int = 0
     frames_bad_payload_size: int = 0
@@ -91,7 +100,7 @@ class TactileSensorConfiguration:
 
     def __str__(self) -> str:
         active = ", ".join(self.active_sensors) if self.active_sensors else "none"
-        return f"SensorConfig({self.num_active_sensors} active: {active})"
+        return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
 
 
 class TactileClient:
@@ -136,7 +145,7 @@ class TactileClient:
         self._auto_latest = None
         self._auto_latest_taxels = None
         self._auto_latest_ts = None
-        self._auto_stats = AutoStreamStats()
+        self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
@@ -165,12 +174,12 @@ class TactileClient:
         if not self._connected:
             return
         try:
-            self.stop_auto_stream()
-        except Exception:
-            logger.exception("Error stopping auto-stream during disconnect")
+            self.stop_stream()
+        except (OSError, RuntimeError):
+            logger.exception("Error stopping stream during disconnect")
         try:
             self._link.unregister_frame_handler(PROTOCOL_BYTE_AUTO)
-        except Exception:
+        except (OSError, RuntimeError):
             logger.exception("Error unregistering tactile handler during disconnect")
         self._connected = False
 
@@ -184,14 +193,14 @@ class TactileClient:
 
     # ----- Register I/O -----------------------------------------------------
 
-    def _read_register(self, address: int, count: int, response_timeout_s: float = 0.5) -> bytes:
+    def _read_register(self, address: int, count: int, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> bytes:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_read_request(address, count)
         response = self._link.send_register_request(request, response_timeout_s=response_timeout_s)
         return parse_read_response(response)
 
-    def _write_register(self, address: int, data: bytes, response_timeout_s: float = 0.5) -> None:
+    def _write_register(self, address: int, data: bytes, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> None:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_write_request(address, data)
@@ -213,7 +222,7 @@ class TactileClient:
         data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
         return decode_auto_data_type(data)
 
-    def read_resultant_force(self) -> dict[str, FingerForces]:
+    def read_resultant_force(self) -> ResultantForces:
         """Read resultant force from all connected fingertip sensors, applying offsets."""
         result = self._read_raw_resultant()
         offsets = self._resultant_offsets
@@ -221,7 +230,7 @@ class TactileClient:
             self._apply_resultant_offsets(result, offsets)
         return result
 
-    def _read_raw_resultant(self) -> dict[str, FingerForces]:
+    def _read_raw_resultant(self) -> ResultantForces:
         """Raise ``IOError`` if no cached config is available and the read fails."""
         if self._tactile_config is None:
             self._tactile_config = self._get_configuration()
@@ -272,7 +281,7 @@ class TactileClient:
 
     # ----- Auto-stream ------------------------------------------------------
 
-    def start_auto_stream(self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1) -> None:
+    def start_stream(self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1) -> None:
         """Enable the AA 56 stream on the device and start storing frames.
 
         Raises :class:`NoSensorsAvailableError` if fewer than ``min_sensors``
@@ -283,10 +292,11 @@ class TactileClient:
         if not resultant and not taxels:
             raise ValueError("At least one of resultant or taxels must be enabled")
 
-        self._auto_running = False
-        self._first_frame_event.clear()
-        self._auto_mode_resultant = resultant
-        self._auto_mode_taxels = taxels
+        with self._auto_lock:
+            self._auto_running = False
+            self._auto_mode_resultant = resultant
+            self._auto_mode_taxels = taxels
+            self._first_frame_event.clear()
 
         try:
             self._tactile_config = self._get_configuration()
@@ -304,8 +314,8 @@ class TactileClient:
         # register write will surface the error.
         try:
             self.disable_auto_data_transmission()
-        except Exception:
-            pass
+        except (OSError, RuntimeError) as e:
+            logger.debug(f"Idempotent stream clear failed, continuing: {e}")
 
         self.set_auto_data_type(resultant=resultant, taxels=taxels)
         self.enable_auto_data_transmission()
@@ -314,21 +324,22 @@ class TactileClient:
             self._auto_latest = None
             self._auto_latest_taxels = None
             self._auto_latest_ts = None
-            self._auto_stats = AutoStreamStats()
-        self._auto_running = True
+            self._auto_stats = TactileStreamStats()
+            self._auto_running = True
 
-    def stop_auto_stream(self) -> None:
+    def stop_stream(self) -> None:
         """Disable the AA 56 stream on the device and clear the latest cache."""
-        was_running = self._auto_running
-        self._auto_running = False
+        with self._auto_lock:
+            was_running = self._auto_running
+            self._auto_running = False
 
         if self._connected and was_running:
             # Best-effort: if the device is unreachable we still tear down
             # local state.
             try:
                 self.disable_auto_data_transmission()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug(f"Disabling stream during stop failed, continuing: {e}")
 
         with self._auto_lock:
             self._auto_latest = None
@@ -336,31 +347,45 @@ class TactileClient:
             self._auto_latest_ts = None
             self._first_frame_event.clear()
 
-    def wait_for_first_tactile_frame(self, timeout: float = 2.0) -> None:
+    def wait_for_first_frame(self, timeout: float = TACTILE_FIRST_FRAME_TIMEOUT_S) -> None:
         """Block until the first frame has been stored, or raise ``TimeoutError``."""
         if not self._first_frame_event.wait(timeout):
             raise TimeoutError(f"No tactile frame within {timeout}s")
 
-    def get_auto_latest(self):
-        """Return ``(forces, timestamp)`` for the most recent resultant frame, or ``(None, None)``."""
+    def get_latest_forces(self) -> ResultantReading | None:
+        """Return the most recent resultant reading, or ``None`` if none yet."""
         with self._auto_lock:
-            return self._auto_latest, self._auto_latest_ts
+            if self._auto_latest is None:
+                return None
+            return ResultantReading(forces=self._auto_latest, timestamp=self._auto_latest_ts)
 
-    def get_auto_latest_taxels(self):
-        """Return ``(taxels, timestamp)`` for the most recent taxel frame, or ``(None, None)``."""
+    def get_latest_taxels(self) -> TaxelReading | None:
+        """Return the most recent per-taxel reading, or ``None`` if none yet."""
         with self._auto_lock:
-            return self._auto_latest_taxels, self._auto_latest_ts
+            if self._auto_latest_taxels is None:
+                return None
+            return TaxelReading(taxels=self._auto_latest_taxels, timestamp=self._auto_latest_ts)
 
-    def get_auto_latest_all(self):
-        """Return ``(forces, taxels, timestamp)`` from a single locked read.
+    def get_latest(self) -> TactileReading | None:
+        """Return resultant and per-taxel forces from the same frame, or ``None`` if none yet.
 
-        Use this in combined mode so forces and taxels share one timestamp.
+        Single locked snapshot, so ``forces`` and ``taxels`` share one
+        timestamp. Either field is ``None`` if its stream mode is disabled.
         """
         with self._auto_lock:
-            return self._auto_latest, self._auto_latest_taxels, self._auto_latest_ts
+            forces = self._auto_latest
+            taxels = self._auto_latest_taxels
+            timestamp = self._auto_latest_ts
+        if forces is None and taxels is None:
+            return None
+        return TactileReading(
+            forces=ResultantReading(forces=forces, timestamp=timestamp) if forces is not None else None,
+            taxels=TaxelReading(taxels=taxels, timestamp=timestamp) if taxels is not None else None,
+            timestamp=timestamp,
+        )
 
-    def get_auto_stats(self):
-        """Return a snapshot copy of ``AutoStreamStats`` for the current loop."""
+    def get_stats(self):
+        """Return a snapshot copy of ``TactileStreamStats`` for the current loop."""
         with self._auto_lock:
             return dataclasses.replace(self._auto_stats)
 
@@ -401,11 +426,11 @@ class TactileClient:
             frames = []
             last_ts = None
             while len(frames) < num_samples:
-                taxels, ts = self.get_auto_latest_taxels()
-                if taxels is not None and ts != last_ts:
-                    frames.append(taxels)
-                    last_ts = ts
-                time.sleep(0.002)
+                reading = self.get_latest_taxels()
+                if reading is not None and reading.timestamp != last_ts:
+                    frames.append(reading.taxels)
+                    last_ts = reading.timestamp
+                time.sleep(OFFSET_CAPTURE_POLL_S)
 
             fingers = list(frames[0].keys())
             offsets = {}
@@ -417,9 +442,9 @@ class TactileClient:
                     sum_fy = sum(f[finger][t_idx][1] for f in frames)
                     sum_fz = sum(f[finger][t_idx][2] for f in frames)
                     avg.append([
-                        round(sum_fx / num_samples, 2),
-                        round(sum_fy / num_samples, 2),
-                        round(sum_fz / num_samples, 2),
+                        round(sum_fx / num_samples, OFFSET_CAPTURE_DECIMALS),
+                        round(sum_fy / num_samples, OFFSET_CAPTURE_DECIMALS),
+                        round(sum_fz / num_samples, OFFSET_CAPTURE_DECIMALS),
                     ])
                 offsets[finger] = avg
 
@@ -463,69 +488,66 @@ class TactileClient:
         if resultant_offsets and parsed_resultant:
             self._apply_resultant_offsets(parsed_resultant, resultant_offsets)
 
-    def _get_expected_payload_size(self, config: TactileSensorConfiguration) -> int:
-        return compute_expected_payload_size(
-            self._auto_mode_resultant,
-            self._auto_mode_taxels,
-            config.active_sensors,
-            config.num_taxels,
-        )
-
     # ----- Frame handler ----------------------------------------------------
 
     def _on_tactile_frame(self, frame_bytes: bytes) -> None:
         """Parse one AA 56 frame and update the latest cache.
 
         Invoked by the link's demuxer thread; the link has already validated
-        LRC, header alignment, and ``eff_len`` bounds, so the payload slice
+        LRC, header alignment, and ``effective_length`` bounds, so the payload slice
         is well-formed. This method only checks that the payload size matches
         the active stream mode before decoding.
         """
-        if not self._auto_running:
-            return
+        with self._auto_lock:
+            if not self._auto_running:
+                return
+            mode_resultant = self._auto_mode_resultant
+            mode_taxels = self._auto_mode_taxels
+            config = self._tactile_config
 
-        # AA 56 (2) + reserved (1) + eff_len (2) + payload + LRC (1).
+        # AA 56 (2) + reserved (1) + effective_length (2) + payload + LRC (1).
         payload = frame_bytes[2 + AUTO_FRAME_META_SIZE:-1]
         err_code, valid = unpack_auto_payload(payload)
 
         with self._auto_lock:
             self._auto_stats.last_error_code = err_code
 
-        if self._tactile_config is None:
+        if config is None:
             with self._auto_lock:
                 self._auto_stats.frames_bad_payload += 1
             return
 
-        expected_size = self._get_expected_payload_size(self._tactile_config)
+        expected_size = compute_expected_payload_size(
+            mode_resultant, mode_taxels, config.active_sensors, config.num_taxels,
+        )
         if expected_size == 0 or len(valid) != expected_size:
             with self._auto_lock:
                 self._auto_stats.frames_bad_payload_size += 1
             return
 
-        cfg = self._tactile_config
-        if self._auto_mode_resultant and self._auto_mode_taxels:
+        if mode_resultant and mode_taxels:
             parsed_resultant, parsed_taxels = decode_combined_auto(
-                valid, cfg.active_sensors, cfg.num_taxels,
+                valid, config.active_sensors, config.num_taxels,
             )
-        elif self._auto_mode_resultant:
-            parsed_resultant = decode_resultant_auto(valid, cfg.active_sensors)
+        elif mode_resultant:
+            parsed_resultant = decode_resultant_auto(valid, config.active_sensors)
             parsed_taxels = None
-        elif self._auto_mode_taxels:
+        elif mode_taxels:
             parsed_resultant = None
-            parsed_taxels = decode_taxels_auto(valid, cfg.active_sensors, cfg.num_taxels)
+            parsed_taxels = decode_taxels_auto(valid, config.active_sensors, config.num_taxels)
         else:
             return
 
         self._apply_stream_offsets(parsed_resultant, parsed_taxels)
 
         with self._auto_lock:
-            # Re-check under the lock: stop_auto_stream may have flipped
+            # Re-check under the lock: stop_stream may have flipped
             # the flag and cleared the cache while we were decoding.
             if not self._auto_running:
                 return
-            if self._auto_mode_resultant and parsed_resultant is not None:
+            if mode_resultant and parsed_resultant is not None:
                 self._auto_latest = parsed_resultant
-            if self._auto_mode_taxels and parsed_taxels is not None:
+            if mode_taxels and parsed_taxels is not None:
                 self._auto_latest_taxels = parsed_taxels
             self._auto_latest_ts = time.time()
             self._auto_stats.frames_ok += 1

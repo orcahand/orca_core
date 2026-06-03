@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from orca_core.hardware.joint_encoder_client import JointEncoderClient
@@ -9,6 +11,16 @@ from orca_core.hardware.sensing.constants import (
 from orca_core.hardware.tactile_client import TactileClient
 
 from tests._tactile_helpers import TactileMockState, install_tactile_mock
+
+
+def wait_until(predicate, timeout: float = 1.0) -> None:
+    """Spin on ``predicate`` until true; lets async link dispatch settle."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    raise AssertionError(f"predicate not satisfied within {timeout}s")
 
 
 @pytest.fixture

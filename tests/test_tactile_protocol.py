@@ -4,8 +4,8 @@ import struct
 
 import pytest
 
+from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.tactile_protocol import (
-    calculate_checksum,
     validate_auto_frame_lrc,
     read_response_body_size,
     build_read_request,
@@ -13,7 +13,7 @@ from orca_core.hardware.sensing.tactile_protocol import (
     parse_read_response,
     parse_write_response,
     extract_write_response_data_length,
-    extract_auto_frame_eff_len,
+    extract_auto_frame_effective_length,
     unpack_auto_payload,
     compute_resultant_payload_size,
     compute_taxel_payload_size,
@@ -42,7 +42,7 @@ from orca_core.hardware.sensing.constants import (
     AUTO_DATA_TAXELS,
     BYTES_PER_RESULTANT,
     BYTES_PER_TAXEL,
-    MAX_AUTO_FRAME_EFF_LEN,
+    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
 )
 
@@ -243,17 +243,17 @@ def test_extract_write_response_data_length_wrong_size_raises():
 # Auto-stream frame parsers
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("value", [42, MAX_AUTO_FRAME_EFF_LEN])
-def test_extract_auto_frame_eff_len_valid(value):
-    # meta layout: reserved(1) + eff_len(2 LE) = 3 bytes
+@pytest.mark.parametrize("value", [42, MAX_AUTO_FRAME_EFFECTIVE_LENGTH])
+def test_extract_auto_frame_effective_length_valid(value):
+    # meta layout: reserved(1) + effective_length(2 LE) = 3 bytes
     meta = b"\x00" + value.to_bytes(2, "little")
-    assert extract_auto_frame_eff_len(meta) == value
+    assert extract_auto_frame_effective_length(meta) == value
 
 
-def test_extract_auto_frame_eff_len_exceeds_max_raises():
-    meta = b"\x00" + (MAX_AUTO_FRAME_EFF_LEN + 1).to_bytes(2, "little")
-    with pytest.raises(ValueError, match="Invalid eff_len"):
-        extract_auto_frame_eff_len(meta)
+def test_extract_auto_frame_effective_length_exceeds_max_raises():
+    meta = b"\x00" + (MAX_AUTO_FRAME_EFFECTIVE_LENGTH + 1).to_bytes(2, "little")
+    with pytest.raises(ValueError, match="Invalid effective_length"):
+        extract_auto_frame_effective_length(meta)
 
 
 @pytest.mark.parametrize("payload,expected_err,expected_data", [

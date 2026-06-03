@@ -22,7 +22,7 @@ from orca_core.hardware.sensing.constants import (
     PROTOCOL_HEADER_RESPONSE,
     PROTOCOL_RESERVED,
 )
-from orca_core.hardware.sensing.encoder_protocol import calculate_checksum
+from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.tactile_protocol import build_read_request
 
 
@@ -32,11 +32,11 @@ from orca_core.hardware.sensing.tactile_protocol import build_read_request
 
 def _encoder_frame(*, bad_lrc: bool = False) -> bytes:
     raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
-    eff_len = 1 + raw.nbytes  # err byte + payload
+    effective_length = 1 + raw.nbytes  # err byte + payload
     body = (
         PROTOCOL_HEADER_AUTO_ENC
         + bytes([PROTOCOL_RESERVED])
-        + eff_len.to_bytes(2, "little")
+        + effective_length.to_bytes(2, "little")
         + b"\x00"  # err byte
         + raw.astype("<u2").tobytes()
     )
@@ -45,11 +45,11 @@ def _encoder_frame(*, bad_lrc: bool = False) -> bytes:
 
 
 def _tactile_frame() -> bytes:
-    eff_len = 1  # err byte only, no force payload
+    effective_length = 1  # err byte only, no force payload
     body = (
         PROTOCOL_HEADER_AUTO
         + bytes([PROTOCOL_RESERVED])
-        + eff_len.to_bytes(2, "little")
+        + effective_length.to_bytes(2, "little")
         + b"\x00"
     )
     return body + bytes([calculate_checksum(body)])

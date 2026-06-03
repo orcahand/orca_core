@@ -135,7 +135,7 @@ class JointLoopThread:
 
         self._stats["last_dt_s"] = float(dt)
 
-        reading = self._encoder_client.get_latest_encoder_reading()
+        reading = self._encoder_client.get_latest()
         if reading is None:
             self._stats["cycles_no_reading"] += 1
             return
@@ -326,7 +326,7 @@ class JointLoopThread:
         return motor_pos + self._wrap_offsets
 
     def _measure_joint_angles_now(self) -> Optional[np.ndarray]:
-        reading = self._encoder_client.get_latest_encoder_reading()
+        reading = self._encoder_client.get_latest()
         if reading is None:
             return None
         return self._decode_measured(reading)

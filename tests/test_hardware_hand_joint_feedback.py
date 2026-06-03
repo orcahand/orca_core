@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import time
 
 import pytest
 
@@ -19,6 +18,7 @@ from orca_core.hardware_hand_joint_feedback import JointFeedbackConnectError
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
+from tests.conftest import wait_until
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,15 +32,6 @@ def joint_feedback_config(tmp_path):
     config_path = tmp_path / "config.yaml"
     shutil.copy(REAL_CONFIG, config_path)
     return str(config_path)
-
-
-def _wait_until(predicate, timeout=1.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.005)
-    raise AssertionError(f"predicate not satisfied within {timeout}s")
 
 
 def test_connect_starts_loop_without_touching_operating_modes(joint_feedback_config):
@@ -61,7 +52,7 @@ def test_connect_starts_loop_without_touching_operating_modes(joint_feedback_con
                 != MODE_MAP[CURRENT]
             )
 
-        _wait_until(lambda: hand._encoder_client.get_latest_encoder_reading() is not None)
+        wait_until(lambda: hand._encoder_client.get_latest() is not None)
     finally:
         hand.disconnect()
 

@@ -71,7 +71,7 @@ def encoder_reading_from_joint_angles(
         raw_counts=raw,
         parity_ok=np.ones(AUTO_ENC_NUM_JOINTS, dtype=bool),
         angle_error=np.zeros(AUTO_ENC_NUM_JOINTS, dtype=bool),
-        err_byte=0,
+        error_byte=0,
         timestamp=time.monotonic(),
     )
 
@@ -93,7 +93,7 @@ class StaticEncoderSource:
     def set_reading(self, reading: EncoderReading | None) -> None:
         self._reading = reading
 
-    def get_latest_encoder_reading(self) -> EncoderReading | None:
+    def get_latest(self) -> EncoderReading | None:
         if self._reading is None:
             return None
         return dc.replace(

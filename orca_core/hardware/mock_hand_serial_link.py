@@ -12,8 +12,6 @@ the demuxer, dispatcher, and transaction lock are unchanged production
 code, exercised through this mock so there is no parallel link
 implementation to drift.
 """
-from __future__ import annotations
-
 import threading
 from collections.abc import Callable
 

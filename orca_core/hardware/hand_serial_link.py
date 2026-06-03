@@ -29,15 +29,19 @@ import serial
 from orca_core.hardware.sensing.constants import (
     AUTO_FRAME_META_SIZE,
     LINK_DEFAULT_BAUDRATE,
+    LINK_DEFAULT_RESPONSE_TIMEOUT_S,
+    LINK_DEMUX_JOIN_TIMEOUT_S,
     LINK_DEMUX_READ_TIMEOUT_S,
     LINK_HANDLER_ERROR_LOG_INTERVAL_S,
+    LINK_PAUSE_SETTLE_S,
+    LINK_PAUSED_POLL_S,
     LINK_RESPONSE_QUEUE_MAXSIZE,
-    MAX_AUTO_FRAME_EFF_LEN,
+    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     PROTOCOL_BYTE_RESPONSE,
     PROTOCOL_HEADER_RESPONSE,
     RESPONSE_META_SIZE,
 )
-from orca_core.hardware.sensing.tactile_protocol import calculate_checksum
+from orca_core.hardware.sensing.framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
 FrameHandler = Callable[[bytes], None]
@@ -59,6 +63,19 @@ class LinkStats:
     bad_header_resyncs: int = 0
     response_queue_dropped: int = 0
     responses_received: int = 0
+
+    def snapshot(self) -> "LinkStats":
+        """Copy with independent Counters, so a reader sees a stable view while
+        the demuxer keeps mutating the live stats."""
+        return LinkStats(
+            frames_routed=self.frames_routed.copy(),
+            frames_dropped_no_handler=self.frames_dropped_no_handler.copy(),
+            frames_bad_lrc=self.frames_bad_lrc.copy(),
+            handler_errors=self.handler_errors.copy(),
+            bad_header_resyncs=self.bad_header_resyncs,
+            response_queue_dropped=self.response_queue_dropped,
+            responses_received=self.responses_received,
+        )
 
 
 class HandSerialLink:
@@ -124,7 +141,7 @@ class HandSerialLink:
 
         self._demux_running = False
         if self._demux_thread is not None:
-            self._demux_thread.join(timeout=1.0)
+            self._demux_thread.join(timeout=LINK_DEMUX_JOIN_TIMEOUT_S)
             self._demux_thread = None
 
         # Belt-and-braces: ensure a sentinel is on the queue so any blocked
@@ -162,7 +179,7 @@ class HandSerialLink:
     def send_register_request(
         self,
         request_bytes: bytes,
-        response_timeout_s: float = 0.5,
+        response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S,
     ) -> bytes:
         """Write a register request and return the matching AA 55 response.
 
@@ -211,12 +228,12 @@ class HandSerialLink:
 
     def pause_reads(self) -> None:
         """Stop demuxer polling so a sibling USB-CDC endpoint (e.g. the
-        Dynamixel bus) isn't starved during ack-blocking writes. The 50 ms
-        sleep lets the demuxer ack the flag."""
+        Dynamixel bus) isn't starved during ack-blocking writes. Sleeps briefly
+        so the demuxer observes the flag before the caller proceeds."""
         if self._reads_paused:
             return
         self._reads_paused = True
-        time.sleep(0.05)
+        time.sleep(LINK_PAUSE_SETTLE_S)
 
     def resume_reads(self) -> None:
         """Discard stale buffered bytes, then re-enable demuxer reads.
@@ -248,7 +265,8 @@ class HandSerialLink:
     # ----- Stats ------------------------------------------------------------
 
     def get_link_stats(self) -> LinkStats:
-        return self._stats
+        """Return a snapshot copy of the demuxer counters."""
+        return self._stats.snapshot()
 
     # ----- I/O seam (overridden by MockHandSerialLink) ----------------------
 
@@ -294,7 +312,7 @@ class HandSerialLink:
         try:
             while self._demux_running:
                 if self._reads_paused:
-                    time.sleep(0.01)
+                    time.sleep(LINK_PAUSED_POLL_S)
                     continue
                 # Resync: slide one byte at a time until we land on 0xAA.
                 first = self._serial_read(1)
@@ -339,7 +357,7 @@ class HandSerialLink:
         if meta is None:
             return
         count = int.from_bytes(meta[4:6], "little")
-        if count > MAX_AUTO_FRAME_EFF_LEN:
+        if count > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
             # Implausible payload size — treat as garbage rather than read it.
             self._stats.frames_bad_lrc[PROTOCOL_BYTE_RESPONSE] += 1
             return
@@ -356,13 +374,13 @@ class HandSerialLink:
         meta = self._read_exact(AUTO_FRAME_META_SIZE)
         if meta is None:
             return
-        eff_len = int.from_bytes(meta[1:3], "little")
-        if eff_len == 0 or eff_len > MAX_AUTO_FRAME_EFF_LEN:
-            # eff_len is well outside any legal frame — treat as a bad header
+        effective_length = int.from_bytes(meta[1:3], "little")
+        if effective_length == 0 or effective_length > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
+            # effective_length is well outside any legal frame — treat as a bad header
             # alignment and resync rather than read megabytes of garbage.
             self._stats.bad_header_resyncs += 1
             return
-        body = self._read_exact(eff_len + 1)  # payload + LRC
+        body = self._read_exact(effective_length + 1)  # payload + LRC
         if body is None:
             return
         full_frame = bytes([0xAA, second_byte]) + meta + body
