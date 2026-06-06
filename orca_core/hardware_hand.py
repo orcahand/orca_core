@@ -26,6 +26,7 @@ from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import TactileClient
+from .telemetry import Telemetry
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
@@ -89,6 +90,7 @@ class OrcaHand(BaseHand):
         model_version: str | None = None,
         model_name: str | None = None,
         config: OrcaHandConfig | None = None,
+        telemetry_enabled: bool = True,
     ):
         super().__init__(
             config_path=config_path,
@@ -96,6 +98,17 @@ class OrcaHand(BaseHand):
             calibration_path=calibration_path,
             model_version=model_version,
             model_name=model_name,
+        )
+
+        self.telemetry = Telemetry(enabled=telemetry_enabled)
+        self.telemetry.emit(
+            "session_start",
+            hand_class=type(self).__name__,
+            hand_type=self.config.type,
+            model_version=model_version,
+            model_name=model_name,
+            motor_count=len(self.config.motor_ids),
+            joint_count=len(self.config.joint_ids),
         )
 
         self._wrap_offsets_dict: Dict[int, float] = None
@@ -243,10 +256,22 @@ class OrcaHand(BaseHand):
                 self._motor_client.connect()
 
             self._persist_resolved_driver(motor_type, port, baudrate)
+            self.telemetry.emit(
+                "connect",
+                success=True,
+                motor_type=motor_type,
+                baudrate=baudrate,
+            )
             return True, f"Connection successful ({motor_type} @ {port}, {baudrate} baud)"
 
         except Exception as e:
             self._motor_client = None
+            self.telemetry.emit(
+                "connect",
+                success=False,
+                reason="exception",
+                error=type(e).__name__,
+            )
             return False, f"Connection failed on {port}: {str(e)}"
 
     def _persist_resolved_driver(self, motor_type: str, port: str, baudrate: int) -> None:
@@ -289,8 +314,15 @@ class OrcaHand(BaseHand):
                 self.disable_torque()
                 time.sleep(0.1)
                 self._motor_client.disconnect()
+            self.telemetry.emit("disconnect", success=True)
             return True, "Disconnected successfully"
         except Exception as e:
+            self.telemetry.emit(
+                "disconnect",
+                success=False,
+                reason="exception",
+                error=type(e).__name__,
+            )
             return False, f"Disconnection failed: {str(e)}"
 
     def is_connected(self) -> bool:
@@ -480,6 +512,7 @@ class OrcaHand(BaseHand):
     def _set_joint_positions(self, joint_pos: OrcaJointPositions) -> bool:
         motor_pos = self._joint_to_motor_pos(joint_pos.as_dict())
         self._set_motor_pos(motor_pos)
+        self.telemetry.sample("joint_positions", positions=joint_pos.as_dict())
         return True
 
     def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
@@ -584,11 +617,34 @@ class OrcaHand(BaseHand):
         :class:`~orca_core.CalibrationResult`. Partial progress is written to
         disk after every step so an interrupted run is never fully lost.
         """
+        self.telemetry.emit(
+            "calibration_start",
+            blocking=blocking,
+            force_wrist=force_wrist,
+            joint_count=(
+                len(joints) if joints is not None else len(self.config.joint_ids)
+            ),
+        )
         if blocking:
             self._task_stop_event.clear()
-            result = self._calibrate(force_wrist=force_wrist, joints=joints)
+            try:
+                result = self._calibrate(force_wrist=force_wrist, joints=joints)
+            except Exception as e:
+                self.telemetry.emit(
+                    "calibration_end",
+                    success=False,
+                    reason="exception",
+                    error=type(e).__name__,
+                )
+                raise
             if result is not None:
                 self.calibration = result
+            self.telemetry.emit(
+                "calibration_end",
+                success=result is not None,
+                calibrated=result.calibrated if result is not None else False,
+                wrist_calibrated=result.wrist_calibrated if result is not None else False,
+            )
         else:
             self._start_task(self._calibrate_and_apply, force_wrist=force_wrist, joints=joints)
 
@@ -1198,6 +1254,7 @@ class OrcaHand(BaseHand):
 
     def _tension(self, move_motors: bool = True):
         # TODO(fracapuano): Move this to a standard stateless function
+        self.telemetry.emit("tension_start", move_motors=move_motors)
         control_mode = self.config.control_mode
         self.set_control_mode(CURRENT_BASED_POSITION)
         if move_motors:
@@ -1258,6 +1315,11 @@ class OrcaHand(BaseHand):
         finally:
             self.set_control_mode(control_mode)
             self.disable_torque()
+            self.telemetry.emit(
+                "tension_end",
+                move_motors=move_motors,
+                stopped=self._task_stop_event.is_set(),
+            )
 
     def _run_task(self, task_fn, *args, **kwargs):
         with self._lock:
@@ -1304,6 +1366,7 @@ class OrcaHandTouch(OrcaHand):
         model_version: str | None = None,
         model_name: str | None = None,
         config: OrcaHandTouchConfig | None = None,
+        telemetry_enabled: bool = True,
     ):
         super().__init__(
             config_path=config_path,
@@ -1311,6 +1374,7 @@ class OrcaHandTouch(OrcaHand):
             model_version=model_version,
             model_name=model_name,
             config=config,
+            telemetry_enabled=telemetry_enabled,
         )
         self._tactile_client = None
 
@@ -1377,6 +1441,7 @@ class OrcaHandTouch(OrcaHand):
             return success, msg
 
         sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
+        self.telemetry.emit("sensor_connect", success=sensor_ok)
         if not sensor_ok:
             return False, f"{msg} | {sensor_msg}"
         return True, f"{msg} | {sensor_msg}"
@@ -1388,7 +1453,9 @@ class OrcaHandTouch(OrcaHand):
         powered. After this call, tactile methods work; motor-control methods
         will fail because the motor client is not initialised.
         """
-        return self._connect_sensor_with_fallback()
+        success, msg = self._connect_sensor_with_fallback()
+        self.telemetry.emit("sensor_connect", success=success, sensors_only=True)
+        return success, msg
 
     def disconnect(self) -> None:
         if self._tactile_client is not None and self._tactile_client.is_connected:
@@ -1464,6 +1531,10 @@ class MockOrcaHand(OrcaHand):
     port is opened and motor state is simulated in memory.
     """
 
+    def __init__(self, *args, **kwargs):
+        kwargs["telemetry_enabled"] = False
+        super().__init__(*args, **kwargs)
+
     def _resolve_port(self) -> str:
         return self.config.port or "/dev/null"
 
@@ -1486,6 +1557,10 @@ class MockOrcaHand(OrcaHand):
 
 class MockOrcaHandTouch(OrcaHandTouch):
     """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["telemetry_enabled"] = False
+        super().__init__(*args, **kwargs)
 
     def _resolve_port(self) -> str:
         return self.config.port or "/dev/null"
