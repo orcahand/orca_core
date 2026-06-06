@@ -1,7 +1,6 @@
 import argparse
 
 from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
-from orca_core.constants import STEPS_TO_NEUTRAL
 
 
 def main() -> int:

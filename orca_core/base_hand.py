@@ -203,8 +203,8 @@ class BaseHand(ABC):
         self,
         demo_name: str = "main",
         cycles: int = 1,
-        num_steps: int = STEPS_TO_NEUTRAL,
-        step_size: float = STEP_SIZE_NEUTRAL,
+        num_steps: int = NUM_STEPS,
+        step_size: float = STEP_SIZE,
         return_to_neutral: bool = True,
     ) -> tuple[str, ...]:
         if demo_name not in DEMO_POSE_FRACTIONS or demo_name not in DEMO_SEQUENCES:
@@ -226,7 +226,7 @@ class BaseHand(ABC):
 
         return sequence
 
-    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         """Move hand to neutral position."""
         self.set_joint_positions(
             OrcaJointPositions.from_dict(self.config.neutral_position),
