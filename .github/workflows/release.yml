@@ -2,28 +2,58 @@ name: Publish to PyPI
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
 jobs:
+  check:
+    name: Decide whether to release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.decide.outputs.should_release }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version and release decision
+        id: decide
+        run: |
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "pyproject version: $VERSION"
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$VERSION" ]; then
+              echo "Tag v$TAG_VERSION does not match pyproject.toml version $VERSION"
+              exit 1
+            fi
+            echo "Manual tag push for v$VERSION -> releasing"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+              echo "Tag v$VERSION already exists -> nothing to release"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "New version v$VERSION on main -> releasing"
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   build:
     name: Build distribution
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-
-      - name: Verify tag matches pyproject.toml version
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
-          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "Tag v$TAG_VERSION does not match pyproject.toml version $PROJECT_VERSION"
-            exit 1
-          fi
-          echo "Version check passed: $PROJECT_VERSION"
 
       - name: Build sdist and wheel
         run: uv build
@@ -36,7 +66,8 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [check, build]
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -52,3 +83,21 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  tag:
+    name: Tag release
+    needs: [check, publish]
+    if: needs.check.outputs.should_release == 'true' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and push version tag
+        run: |
+          VERSION="${{ needs.check.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
