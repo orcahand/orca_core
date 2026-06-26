@@ -29,10 +29,10 @@ from .calibration_joint_encoder import (
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
-from .hardware.sensing.serial_discovery import find_tactile_port
+from .hardware.sensing.serial_discovery import resolve_sensing_ports
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
-from .utils.utils import auto_detect_port, get_and_choose_port, read_yaml, update_yaml
+from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
 
 if TYPE_CHECKING:
     from .hardware.dynamixel_client import DynamixelClient
@@ -1446,14 +1446,6 @@ class OrcaHandTouch(OrcaHand):
     def _create_tactile_client(self, link: HandSerialLink) -> TactileClient:
         return TactileClient(link, finger_to_sensor_id=self.config.finger_to_sensor_id)
 
-    def _persist_sensor_port(self, chosen_port: str) -> None:
-        """Write a new ``sensors.port`` value to ``config.yaml`` while preserving
-        the rest of the ``sensors`` block (baudrate, finger_to_sensor_id)."""
-        existing = read_yaml(self.config.config_path) or {}
-        sensors = dict(existing.get("sensors") or {})
-        sensors["port"] = chosen_port
-        update_yaml(self.config.config_path, "sensors", sensors)
-
     def _open_tactile_on_port(self, port: str) -> None:
         """Open a link on ``port`` and connect a tactile client to it."""
         link = self._create_tactile_link(port)
@@ -1479,23 +1471,35 @@ class OrcaHandTouch(OrcaHand):
             self._tactile_link = None
 
     def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
-        """Open the sensor link: configured port first, then Paxini VID auto-detect; persist on success."""
-        try:
-            self._open_tactile_on_port(self.config.sensor_port)
-            return True, f"Sensor connected on {self.config.sensor_port}"
-        except Exception as e:
-            print(f"Sensor connection failed on {self.config.sensor_port}: {e}")
-            self._teardown_tactile()
+        """Open the sensor link, resolving the configured ``sensors.port`` against
+        live discovery (Paxini VID, else the OH board's sensor CDC via ORCA_ID?).
 
-        chosen = find_tactile_port()
-        if chosen and chosen != self.config.sensor_port:
+        ``"auto"`` discovers the port; an explicit path is tried first and then
+        falls back to auto-discovery if it fails to open.
+        """
+        configured = self.config.sensor_port
+
+        candidates: list[str] = []
+        resolved = resolve_sensing_ports(
+            tactile_override=configured, encoder_override="disabled"
+        ).tactile
+        if resolved:
+            candidates.append(resolved)
+        if configured not in ("auto", "disabled"):
+            auto = resolve_sensing_ports(
+                tactile_override="auto", encoder_override="disabled"
+            ).tactile
+            if auto and auto not in candidates:
+                candidates.append(auto)
+
+        for port in candidates:
             try:
-                self.config = dataclasses.replace(self.config, sensor_port=chosen)
-                self._open_tactile_on_port(chosen)
-                self._persist_sensor_port(chosen)
-                return True, f"Sensor connected on auto-detected {chosen}"
+                self._open_tactile_on_port(port)
+                if port != configured:
+                    self.config = dataclasses.replace(self.config, sensor_port=port)
+                return True, f"Sensor connected on {port}"
             except Exception as e:
-                print(f"Auto-detected sensor port {chosen} also failed: {e}")
+                print(f"Sensor connection failed on {port}: {e}")
                 self._teardown_tactile()
 
         return False, (

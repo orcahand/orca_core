@@ -127,3 +127,6 @@ dev_scripts/
 .DS_Store
 
 .pytest_cache/
+
+# Per-hand calibration output (machine-specific, not committed)
+calibration.yaml

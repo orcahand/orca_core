@@ -201,7 +201,7 @@ calib_sequence:
   joints:
     wrist: extend
 sensors:
-  port: /dev/ttyACM0
+  port: auto
   baudrate: 921600
   finger_to_sensor_id:
     thumb: 1

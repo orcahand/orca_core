@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 
 VALID_SENSOR_IDS = set(range(5))
-DEFAULT_SENSOR_PORT = "/dev/ttyACM1"
+DEFAULT_SENSOR_PORT = "auto"
 DEFAULT_SENSOR_BAUDRATE = 921600
 DEFAULT_FINGER_TO_SENSOR_ID = {
     "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4,
