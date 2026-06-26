@@ -24,6 +24,7 @@ from .hardware.dynamixel_client import DynamixelClient
 from .hardware.feetech_client import FeetechClient
 from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
+from .hardware.sensing.taxel_geometry import TaxelGeometry
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import TactileClient
 from .utils.utils import (
@@ -1450,6 +1451,23 @@ class OrcaHandTouch(OrcaHand):
 
     def get_tactile_configuration(self):
         return self._tactile_client.get_tactile_configuration()
+
+    def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
+        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+
+        Positions are fixed sensor geometry (fingertip-local frame, mm) and row
+        ``i`` aligns with taxel ``i`` from :meth:`get_tactile_taxels`, so the two
+        join by index::
+
+            geom = hand.get_taxel_geometry()["index"].positions   # (n, 3)
+            forces = hand.get_tactile_taxels()["index"]           # (n, 3)
+            combined = np.hstack([geom, forces])                  # (n, 6)
+
+        Empty if the tactile sensor is not connected/configured.
+        """
+        if self._tactile_client is None:
+            return {}
+        return self._tactile_client.get_taxel_geometry()
 
     def get_tactile_stats(self):
         """Return ``AutoStreamStats`` for the running auto-stream."""
