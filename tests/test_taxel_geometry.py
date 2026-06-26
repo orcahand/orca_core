@@ -50,7 +50,7 @@ class TestConfigWiring:
         client.connect()
         assert set(client.get_taxel_geometry()) == {"index", "thumb"}
 
-    def test_geometry_aligns_with_taxel_forces_by_index(self):
+    def test_geometry_count_matches_taxel_forces(self):
         client = MockTactileClient(connected_sensors=["index"])
         client.connect()
         client.start_auto_stream(resultant=False, taxels=True)

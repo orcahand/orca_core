@@ -1455,7 +1455,7 @@ class OrcaHandTouch(OrcaHand):
     def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
         """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry (fingertip-local frame, mm) and row
+        Positions are fixed sensor geometry (fingertip-local frame) and row
         ``i`` aligns with taxel ``i`` from :meth:`get_tactile_taxels`, so the two
         join by index::
 

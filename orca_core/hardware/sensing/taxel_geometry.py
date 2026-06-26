@@ -14,12 +14,10 @@ once here.
 
 Two facts make this geometry trivial to use alongside the force stream:
 
-* **Index alignment.** Position row ``i`` corresponds to taxel ``i`` in the
-  decoded force stream (see ``decode_taxels_auto``). Positions ``(n, 3)`` and a
-  frame's forces ``(n, 3)`` therefore line up by row with no bookkeeping.
-* **Frame.** Positions are in the sensor-local *fingertip* frame, in
-  millimetres. A future kinematics layer can transform them into the hand/world
-  frame using the joint angles; the ``frame`` label is the hook for that.
+* **Index alignment.** Position row ``i`` is intended to correspond to taxel
+  ``i`` in the decoded force stream (see ``decode_taxels_auto``), so positions
+  ``(n, 3)`` and a frame's forces ``(n, 3)`` line up by row with no bookkeeping.
+* **Frame.** Positions are in the sensor-local *fingertip* frame.
 """
 from __future__ import annotations
 
@@ -41,10 +39,9 @@ FINGERTIP_LOCAL_FRAME = "fingertip_local"
 class TaxelGeometry:
     """Fixed taxel positions for one finger's sensor.
 
-    ``positions`` is an ``(n_taxels, 3)`` array of ``[x, y, z]`` in millimetres;
-    row ``i`` is taxel ``i`` in the force stream. ``frame`` records which
-    coordinate frame the positions are expressed in (currently always
-    ``"fingertip_local"``).
+    ``positions`` is a read-only ``(n_taxels, 3)`` array of ``[x, y, z]``; row
+    ``i`` is taxel ``i`` in the force stream. ``frame`` records which coordinate
+    frame the positions are expressed in
     """
 
     finger: str
@@ -67,9 +64,19 @@ def _load_model_positions(model_name: str) -> np.ndarray:
         with open(config_path) as f:
             config = yaml.safe_load(f)
         coords = config["coordinates"]
-        _model_cache[model_name] = np.array(
+        declared = config.get("num_taxels")
+        if declared is not None and declared != len(coords):
+            raise ValueError(
+                f"{model_name}: num_taxels={declared} disagrees with "
+                f"{len(coords)} coordinate rows"
+            )
+        positions = np.array(
             [[c["x"], c["y"], c["z"]] for c in coords], dtype=float
         )
+        # Cached and shared across callers, so freeze it: an accidental in-place
+        # write would otherwise poison the geometry for every later caller.
+        positions.flags.writeable = False
+        _model_cache[model_name] = positions
     return _model_cache[model_name]
 
 
