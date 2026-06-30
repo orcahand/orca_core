@@ -29,7 +29,7 @@ from orca_core.hardware_hand import MockOrcaHand
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = PACKAGE_DIR / "models" / "v1" / "orcahand_right"
+MODEL_DIR = PACKAGE_DIR / "models" / "v1" / "orcahand-right"
 MODEL_CONFIG = MODEL_DIR / "config.yaml"
 
 CONFIG_KEY_RENAMES = {

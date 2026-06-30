@@ -29,6 +29,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
+    TACTILE_REGISTER_ATTEMPTS,
     OFFSET_CAPTURE_DECIMALS,
     OFFSET_CAPTURE_POLL_S,
     OFFSET_CLEAR_SETTLE_S,
@@ -78,9 +79,9 @@ class TactileStreamStats:
 class TactileSensorConfiguration:
     """Snapshot of connected sensors and their properties.
 
-    Captured at stream start. The Paxini PX-6AX GEN3 firmware enumerates
-    sensors at power-on and does not report mid-stream changes, so this
-    snapshot is treated as immutable for the duration of a stream.
+    Captured at stream start. Sensors are enumerated at power-on and
+    mid-stream changes are not reported, so this snapshot is treated as
+    immutable for the duration of a stream.
     """
     connected: dict[str, bool] = field(default_factory=dict)  # {finger: is_connected}
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
@@ -193,18 +194,34 @@ class TactileClient:
 
     # ----- Register I/O -----------------------------------------------------
 
+    def _send_register_request(self, request: bytes, response_timeout_s: float) -> bytes:
+        """Send a register request, retrying on timeout.
+
+        A single round-trip is occasionally lost on a busy link; the retries
+        recover it. A closed link raises ``RuntimeError`` and is not retried.
+        """
+        last_err: IOError | None = None
+        for _ in range(TACTILE_REGISTER_ATTEMPTS):
+            try:
+                return self._link.send_register_request(
+                    request, response_timeout_s=response_timeout_s
+                )
+            except IOError as e:
+                last_err = e
+        raise last_err
+
     def _read_register(self, address: int, count: int, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> bytes:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_read_request(address, count)
-        response = self._link.send_register_request(request, response_timeout_s=response_timeout_s)
+        response = self._send_register_request(request, response_timeout_s)
         return parse_read_response(response)
 
     def _write_register(self, address: int, data: bytes, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> None:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_write_request(address, data)
-        response = self._link.send_register_request(request, response_timeout_s=response_timeout_s)
+        response = self._send_register_request(request, response_timeout_s)
         parse_write_response(response)
 
     def read_connected_sensors(self) -> dict[str, bool]:

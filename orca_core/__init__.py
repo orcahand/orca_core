@@ -14,6 +14,7 @@ from .hardware_hand import OrcaHand
 from .hardware_hand import OrcaHandTouch
 from .hardware_hand_joint_feedback import (
     JointFeedbackConnectError,
+    OrcaHandFull,
     OrcaHandJointFeedback,
 )
 from .joint_position import OrcaJointPositions
@@ -27,6 +28,7 @@ __all__ = [
     "OrcaHand",
     "OrcaHandTouch",
     "OrcaHandJointFeedback",
+    "OrcaHandFull",
     "JointFeedbackConnectError",
     "OrcaJointPositions",
     "canonical_joint_ids",

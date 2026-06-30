@@ -30,7 +30,7 @@ from tests._loop_helpers import (
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL_CONFIG = os.path.join(
-    REPO_ROOT, "orca_core", "models", "v2", "orcahand_right", "config.yaml"
+    REPO_ROOT, "orca_core", "models", "v2", "orcahand-joint-right", "config.yaml"
 )
 
 
@@ -238,9 +238,9 @@ def test_motor_pos_matches_open_loop_kinematics(calibrated_hand):
     loop.prime_for_step()
 
     encoder_joints = calibrated_hand._encoder_backed_joints()
+    values = [5.0, -5.0, 28.0, -28.0]
     target_deg = {
-        joint: deg
-        for joint, deg in zip(encoder_joints, [5.0, -5.0, 28.0, -28.0][: len(encoder_joints)])
+        joint: values[i % len(values)] for i, joint in enumerate(encoder_joints)
     }
     target_array = np.array(
         [target_deg[j] for j in loop._joint_names], dtype=np.float64

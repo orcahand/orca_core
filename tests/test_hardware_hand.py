@@ -6,7 +6,7 @@ import pytest
 from orca_core.hardware_hand import MockOrcaHand
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
+MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
 REAL_CONFIG = os.path.join(MODEL_DIR, "config.yaml")
 
 

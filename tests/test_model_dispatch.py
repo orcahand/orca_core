@@ -21,7 +21,7 @@ def test_latest_is_hand_selected_default_version():
 
 
 def test_default_hand_is_right():
-    assert DEFAULT_MODEL_NAME == "orcahand_right"
+    assert DEFAULT_MODEL_NAME == "orcahand-right"
 
 
 @pytest.mark.parametrize(
@@ -29,8 +29,8 @@ def test_default_hand_is_right():
     [
         ({}, MODELS_DIR / LATEST_VERSION / DEFAULT_MODEL_NAME),
         (
-            {"model_version": "v1", "model_name": "orcahand_left"},
-            MODELS_DIR / "v1" / "orcahand_left",
+            {"model_version": "v1", "model_name": "orcahand-left"},
+            MODELS_DIR / "v1" / "orcahand-left",
         ),
     ],
 )
@@ -43,8 +43,8 @@ def test_get_model_path_dispatches_model_selection(kwargs, expected_path):
     [
         ({}, MODELS_DIR / LATEST_VERSION / DEFAULT_MODEL_NAME / "config.yaml"),
         (
-            {"model_version": "v1", "model_name": "orcahand_left"},
-            MODELS_DIR / "v1" / "orcahand_left" / "config.yaml",
+            {"model_version": "v1", "model_name": "orcahand-left"},
+            MODELS_DIR / "v1" / "orcahand-left" / "config.yaml",
         ),
     ],
 )
@@ -56,10 +56,10 @@ def test_base_hand_config_dispatches_config_file_path(kwargs, expected_path):
 def test_orca_hand_config_dispatches_calibration_path_for_selected_model():
     config = OrcaHandConfig.from_config_path(
         model_version="v1",
-        model_name="orcahand_left",
+        model_name="orcahand-left",
     )
     assert Path(config.calibration_path) == (
-        MODELS_DIR / "v1" / "orcahand_left" / "calibration.yaml"
+        MODELS_DIR / "v1" / "orcahand-left" / "calibration.yaml"
     )
 
 
@@ -70,14 +70,14 @@ def test_unknown_model_raises_file_not_found():
 
 def test_encoder_serial_port_defaults_to_auto_when_yaml_omits_it(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand_right" / "config.yaml", config_path)
+    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "auto"
 
 
 def test_encoder_serial_port_round_trips_explicit_value(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand_right" / "config.yaml", config_path)
+    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     update_yaml(str(config_path), "encoder_serial_port", "/dev/ttyACM2")
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "/dev/ttyACM2"
@@ -87,10 +87,10 @@ def test_encoder_serial_port_round_trips_explicit_value(tmp_path):
     ("kwargs", "expected_version", "expected_model_name"),
     [
         ({}, LATEST_VERSION, DEFAULT_MODEL_NAME),
-        ({"version": "v1", "type": "left"}, "v1", "orcahand_left"),
-        ({"version": "v2", "type": "right"}, "v2", "orcahand_right"),
+        ({"version": "v1", "type": "left"}, "v1", "orcahand-left"),
+        ({"version": "v2", "type": "right"}, "v2", "orcahand-right"),
         ({"version": LATEST_VERSION}, LATEST_VERSION, DEFAULT_MODEL_NAME),
-        ({"type": "right"}, LATEST_VERSION, "orcahand_right"),
+        ({"type": "right"}, LATEST_VERSION, "orcahand-right"),
     ],
 )
 def test_canonical_joint_ids_dispatches_to_selected_model(kwargs, expected_version, expected_model_name):
@@ -103,17 +103,17 @@ def test_canonical_joint_ids_dispatches_to_selected_model(kwargs, expected_versi
 def patched_models_dir(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         models_dir = Path(temp_dir) / "models"
-        (models_dir / "v1" / "orcahand_right").mkdir(parents=True)
-        (models_dir / "v1" / "orcahand_left").mkdir(parents=True)
-        (models_dir / "v2" / "orcahand_right").mkdir(parents=True)
+        (models_dir / "v1" / "orcahand-right").mkdir(parents=True)
+        (models_dir / "v1" / "orcahand-left").mkdir(parents=True)
+        (models_dir / "v2" / "orcahand-right").mkdir(parents=True)
 
         def write_config(path: Path, joint_ids: list[str]) -> None:
             with open(path, "w", encoding="utf-8") as file:
                 yaml.safe_dump({"joint_ids": joint_ids}, file, sort_keys=False)
 
-        write_config(models_dir / "v1" / "orcahand_right" / "config.yaml", ["v1_right_joint"])
-        write_config(models_dir / "v1" / "orcahand_left" / "config.yaml", ["v1_left_joint"])
-        write_config(models_dir / "v2" / "orcahand_right" / "config.yaml", ["v2_right_joint"])
+        write_config(models_dir / "v1" / "orcahand-right" / "config.yaml", ["v1_right_joint"])
+        write_config(models_dir / "v1" / "orcahand-left" / "config.yaml", ["v1_left_joint"])
+        write_config(models_dir / "v2" / "orcahand-right" / "config.yaml", ["v2_right_joint"])
 
         monkeypatch.setattr("orca_core.utils.utils._get_models_dir", lambda: str(models_dir))
         yield models_dir, write_config
@@ -134,7 +134,7 @@ def test_canonical_joint_ids_tracks_underlying_config_contents(patched_models_di
 def test_canonical_joint_ids_reflects_updated_config_contents(patched_models_dir):
     models_dir, write_config = patched_models_dir
     write_config(
-        models_dir / "v1" / "orcahand_right" / "config.yaml",
+        models_dir / "v1" / "orcahand-right" / "config.yaml",
         ["updated_joint_a", "updated_joint_b"],
     )
     assert canonical_joint_ids() == ("updated_joint_a", "updated_joint_b")

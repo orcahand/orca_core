@@ -14,6 +14,7 @@ from typing import Dict, List, Literal
 from .constants import (
     CONTROL_MODES,
     DEFAULT_MODEL_NAME,
+    DEFAULT_MOTOR_BAUDRATE,
     FINGER_NAMES,
     JOINT_IDS,
     JOINT_ROM_DICT,
@@ -22,8 +23,8 @@ from .constants import (
 )
 from .hardware.sensing.constants import (
     VALID_SENSOR_IDS,
+    DEFAULT_ENCODER_BAUDRATE,
     DEFAULT_SENSOR_PORT,
-    DEFAULT_SENSOR_BAUDRATE,
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
@@ -45,7 +46,7 @@ def _resolve_model_name_from_type(hand_type: str | None) -> str:
     if normalized_type not in {"left", "right"}:
         raise ValueError(f"Unsupported hand type: {hand_type!r}. Expected 'left' or 'right'.")
 
-    return f"orcahand_{normalized_type}"
+    return f"orcahand-{normalized_type}"
 
 
 def _resolve_config_path(
@@ -196,8 +197,8 @@ class OrcaHandConfig(BaseHandConfig):
     """ORCA hand configuration layered on top of the shared base spec."""
 
     calibration_path: str = ""
-    baudrate: int = 3_000_000
-    port: str = "/dev/ttyUSB0"
+    baudrate: int = DEFAULT_MOTOR_BAUDRATE
+    port: str = "auto"
     max_current: int = 300  # mA
     control_mode: str = "current_based_position"
     motor_type: str = "dynamixel"
@@ -214,6 +215,7 @@ class OrcaHandConfig(BaseHandConfig):
     use_joint_feedback: bool = False
     joint_encoder_joints: List[str] | None = None
     encoder_serial_port: str = "auto"
+    encoder_baudrate: int = DEFAULT_ENCODER_BAUDRATE
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -298,6 +300,8 @@ class OrcaHandConfig(BaseHandConfig):
             )
         if "encoder_serial_port" in config:
             kwargs["encoder_serial_port"] = str(config["encoder_serial_port"])
+        if "encoder_baudrate" in config:
+            kwargs["encoder_baudrate"] = int(config["encoder_baudrate"])
 
         return cls(**kwargs)
 
@@ -346,8 +350,13 @@ class OrcaHandConfig(BaseHandConfig):
                     )
 
         if self.joint_encoder_joints is not None:
-            from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+            from .hardware.sensing.constants import (
+                ENCODER_JOINTS_ALL,
+                JOINT_TO_ENCODER_SLOT,
+            )
             for joint in self.joint_encoder_joints:
+                if str(joint).lower() == ENCODER_JOINTS_ALL:
+                    continue
                 if joint == "wrist" or joint not in JOINT_TO_ENCODER_SLOT:
                     raise HandConfigValidationError(
                         f"joint_encoder_joints contains {joint!r}, which has no encoder slot."
@@ -362,7 +371,9 @@ class OrcaHandTouchConfig(OrcaHandConfig):
     """ORCA hand configuration with tactile sensor support."""
 
     sensor_port: str = DEFAULT_SENSOR_PORT
-    sensor_baudrate: int = DEFAULT_SENSOR_BAUDRATE
+    sensor_baudrate: "int | str" = "auto"
+    """``"auto"`` detects the baud from the connected sensor. Set an int in
+    ``sensors.baudrate`` only to force a specific rate."""
     finger_to_sensor_id: Dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID)
     )

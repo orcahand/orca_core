@@ -16,7 +16,7 @@ from orca_core.hardware_hand import MockOrcaHand
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
+CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
 REFERENCE_PATH = os.path.join(REPO_ROOT, "tests", "reference", "calibration_expected.yaml")
 
 

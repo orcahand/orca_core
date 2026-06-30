@@ -1,12 +1,29 @@
 """Constants for ORCA tactile sensing and joint encoders."""
 
 # ---------------------------------------------------------------------------
+# Baud-rate defaults
+#
+# One default per sensing link (the motor-bus default lives in
+# orca_core/constants.py with the other motor settings).
+#
+#   DEFAULT_SENSOR_BAUDRATE   tactile link on its own adapter  (config: sensors.baudrate)
+#   DEFAULT_ENCODER_BAUDRATE  joint-encoder / shared link      (config: encoder_baudrate)
+#
+# When tactile and encoders share one port, the tactile stream rides that link
+# at DEFAULT_ENCODER_BAUDRATE; DEFAULT_SENSOR_BAUDRATE applies only when the
+# tactile sensor is on its own adapter. Both are defaults — set the matching
+# config key to override.
+# ---------------------------------------------------------------------------
+
+DEFAULT_SENSOR_BAUDRATE = 921600
+DEFAULT_ENCODER_BAUDRATE = 2_000_000
+
+# ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
 
 VALID_SENSOR_IDS = set(range(5))
 DEFAULT_SENSOR_PORT = "auto"
-DEFAULT_SENSOR_BAUDRATE = 921600
 DEFAULT_FINGER_TO_SENSOR_ID = {
     "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4,
 }
@@ -148,6 +165,11 @@ JOINT_TO_ENCODER_SLOT = {
 }
 ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 
+# Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry
+# selects every slotted, motor-driven joint (the default for sensing hands),
+# while an explicit joint list narrows to that subset for bring-up/debugging.
+ENCODER_JOINTS_ALL = "all"
+
 # Per-joint encoder polarity.
 JOINT_ENCODER_POLARITY = {
     "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": 1, "thumb_dip": -1,
@@ -175,10 +197,16 @@ its run flag, so disconnect joins promptly."""
 LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
 """Per-second-byte rate limit for handler-exception traceback logging."""
 
-LINK_DEFAULT_BAUDRATE = 921600
+LINK_DEFAULT_BAUDRATE = DEFAULT_ENCODER_BAUDRATE
+"""Transport default for ``HandSerialLink`` when no explicit baud is given."""
 
 LINK_DEFAULT_RESPONSE_TIMEOUT_S = 0.5
 """Default wait for a register response before ``send_register_request`` raises."""
+
+TACTILE_REGISTER_ATTEMPTS = 3
+"""Times a tactile register read/write is attempted before giving up. A single
+round-trip is occasionally lost on a busy link; retrying recovers it. Reads are
+pure and the register writes are idempotent, so re-sending is safe."""
 
 LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 """How long ``disconnect`` waits for the demuxer thread to exit."""

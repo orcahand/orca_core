@@ -36,9 +36,9 @@ from .control.joint_loop import JointLoopThread
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient
 from .hardware.motor_client import MotorClient
-from .hardware.sensing.constants import LINK_DEFAULT_BAUDRATE
-from .hardware.sensing.serial_discovery import resolve_sensing_ports
-from .hardware_hand import OrcaHand
+from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
+from .hand_config import OrcaHandTouchConfig
+from .hardware_hand import MockOrcaHandTouch, OrcaHand, OrcaHandTouch
 from .joint_position import OrcaJointPositions
 
 
@@ -89,10 +89,50 @@ class OrcaHandJointFeedback(OrcaHand):
     # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
 
     def _create_encoder_link(self, port: str) -> HandSerialLink:
-        return HandSerialLink(port=port, baudrate=LINK_DEFAULT_BAUDRATE)
+        return HandSerialLink(port=port, baudrate=self.config.encoder_baudrate)
 
     def _create_encoder_client(self, link: HandSerialLink) -> JointEncoderClient:
         return JointEncoderClient(link)
+
+    def _attach_encoders(self, link: HandSerialLink) -> None:
+        """Start the encoder client and joint loop on an already-open ``link``.
+
+        a hand that also has tactile sensing can share one :class:`HandSerialLink` between both streams.
+        Raises :class:`JointFeedbackConnectError` on missing
+        encoder calibration or no encoder-backed joints; the caller owns
+        rollback. Does not own ``link`` teardown — the caller closes it.
+        """
+        self._encoder_client = self._create_encoder_client(link)
+        self._encoder_client.connect()
+        self._encoder_client.start_stream()
+
+        if not self.is_calibrated(use_joint_feedback=True):
+            raise JointFeedbackConnectError(
+                "Hand is missing joint-encoder calibration; "
+                "run calibration with use_joint_feedback enabled."
+            )
+
+        motor_ids = self._encoder_motor_ids()
+        if not motor_ids:
+            raise JointFeedbackConnectError(
+                "No encoder-backed joints configured "
+                "(set joint_encoder_joints in config.yaml)."
+            )
+
+        # Wrap offsets feed the joint→motor mapping the loop runs every
+        # cycle; populate them once here so the loop's snapshot is
+        # deterministic.
+        self._compute_wrap_offsets_dict()
+
+        self._controller = JointController(num_joints=len(motor_ids))
+        self._controller.set_gains(
+            Kp=DEFAULT_KP,
+            Ki=DEFAULT_KI,
+            correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
+            i_clamp_deg=DEFAULT_I_CLAMP_DEG,
+        )
+        self._loop = JointLoopThread(self, self._encoder_client, self._controller)
+        self._loop.start()
 
     # ----- Internal helpers ------------------------------------------------
 
@@ -119,37 +159,7 @@ class OrcaHandJointFeedback(OrcaHand):
 
             self._encoder_link = self._create_encoder_link(ports.encoder)
             self._encoder_link.connect()
-            self._encoder_client = self._create_encoder_client(self._encoder_link)
-            self._encoder_client.connect()
-            self._encoder_client.start_stream()
-
-            if not self.is_calibrated(use_joint_feedback=True):
-                raise JointFeedbackConnectError(
-                    "Hand is missing joint-encoder calibration; "
-                    "run calibration with use_joint_feedback enabled."
-                )
-
-            motor_ids = self._encoder_motor_ids()
-            if not motor_ids:
-                raise JointFeedbackConnectError(
-                    "No encoder-backed joints configured "
-                    "(set joint_encoder_joints in config.yaml)."
-                )
-
-            # Wrap offsets feed the joint→motor mapping the loop runs every
-            # cycle; populate them once here so the loop's snapshot is
-            # deterministic.
-            self._compute_wrap_offsets_dict()
-
-            self._controller = JointController(num_joints=len(motor_ids))
-            self._controller.set_gains(
-                Kp=DEFAULT_KP,
-                Ki=DEFAULT_KI,
-                correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
-                i_clamp_deg=DEFAULT_I_CLAMP_DEG,
-            )
-            self._loop = JointLoopThread(self, self._encoder_client, self._controller)
-            self._loop.start()
+            self._attach_encoders(self._encoder_link)
         except Exception:
             self._teardown_joint_feedback()
             # The motor bus opened by super().connect() is part of the
@@ -316,4 +326,93 @@ class MockOrcaHandJointFeedback(OrcaHandJointFeedback):
     def _create_encoder_link(self, port: str) -> HandSerialLink:
         from .hardware.mock_hand_serial_link import MockHandSerialLink
 
-        return MockHandSerialLink(port=port, baudrate=LINK_DEFAULT_BAUDRATE)
+        return MockHandSerialLink(port=port, baudrate=self.config.encoder_baudrate)
+
+
+class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
+    """ORCA hand with both tactile sensing and closed-loop joint feedback.
+
+    Combines :class:`OrcaHandTouch` and :class:`OrcaHandJointFeedback` without
+    duplicating either: each capability is inherited, and this class only owns
+    the ``connect``/``disconnect`` orchestration that decides how the two
+    sensing streams share serial links.
+
+    When both streams arrive on the same port, they ride **one** shared
+    :class:`HandSerialLink` and are routed by frame type. When the tactile
+    sensor is on its own port, each stream gets its own link at its own baud.
+    """
+
+    config_cls = OrcaHandTouchConfig
+
+    def connect(self) -> tuple[bool, str]:
+        # Motor bus only — bypass the single-sensor connect() chains so this
+        # class fully controls how the tactile and encoder links are opened.
+        success, msg = OrcaHand.connect(self)
+        if not success:
+            return success, msg
+
+        try:
+            ports = resolve_sensing_ports(
+                tactile_override=self.config.sensor_port,
+                encoder_override=self.config.encoder_serial_port,
+                tactile_baud_override=self.config.sensor_baudrate,
+            )
+            if ports.encoder is None:
+                raise JointFeedbackConnectError(
+                    "No encoder serial port resolved "
+                    f"(encoder_serial_port={self.config.encoder_serial_port!r})."
+                )
+            if ports.tactile is None:
+                raise RuntimeError(
+                    "No tactile sensor port resolved "
+                    f"(sensors.port={self.config.sensor_port!r})."
+                )
+
+            self._encoder_link = self._create_encoder_link(ports.encoder)
+            self._encoder_link.connect()
+            self._attach_encoders(self._encoder_link)
+
+            if ports.shared:
+                # One link carries both streams; attach the tactile client onto
+                # the encoder link (leaves _tactile_link None, so its teardown
+                # won't double-close the shared link).
+                self._attach_tactile_client(self._encoder_link)
+                tactile_where = f"shared link {ports.encoder}"
+            else:
+                # Tactile is on its own port: use the detected baud, or detect
+                # it directly when the port was given explicitly.
+                tactile_baud = ports.tactile_baudrate
+                if tactile_baud is None:
+                    tactile_baud = baud_for_port(ports.tactile)
+                self._open_tactile_on_port(ports.tactile, tactile_baud)
+                tactile_where = f"{ports.tactile} @ {tactile_baud}"
+        except Exception:
+            self._teardown_tactile()
+            self._teardown_joint_feedback()
+            try:
+                OrcaHand.disconnect(self)
+            except Exception:
+                logger.exception("motor disconnect failed during connect rollback")
+            raise
+
+        return True, (
+            f"{msg} | Joint feedback loop running on {ports.encoder} "
+            f"| Tactile on {tactile_where}"
+        )
+
+    def disconnect(self) -> None:
+        # Tactile first: its stop_stream() needs the link alive. Joint-feedback
+        # teardown then closes the shared (or dedicated encoder) link; a shared
+        # link is closed once because tactile left _tactile_link None. Motors
+        # last, mirroring OrcaHandTouch.disconnect ordering.
+        self._teardown_tactile()
+        self._teardown_joint_feedback()
+        OrcaHand.disconnect(self)
+
+
+class MockOrcaHandFull(MockOrcaHandTouch, MockOrcaHandJointFeedback, OrcaHandFull):
+    """Drop-in :class:`OrcaHandFull` with in-memory mock motor + link clients.
+
+    The mock bases supply the in-memory motor client and mock serial links;
+    :class:`OrcaHandFull` supplies the shared-link connect/disconnect logic.
+    """

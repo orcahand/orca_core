@@ -6,8 +6,13 @@ from unittest.mock import patch
 import pytest
 
 from orca_core.constants import ORCA_ID_RESP_MOTOR, ORCA_ID_RESP_SENSOR
+from orca_core.hardware.sensing.constants import (
+    DEFAULT_ENCODER_BAUDRATE,
+    DEFAULT_SENSOR_BAUDRATE,
+)
 from orca_core.hardware.sensing.serial_discovery import (
     SensingPorts,
+    baud_for_port,
     discover_sensing_ports,
     find_tactile_port,
     resolve_sensing_ports,
@@ -50,14 +55,14 @@ def test_find_tactile_port(ports, expected):
 
 
 @pytest.mark.parametrize("ports,probes,expected", [
-    pytest.param([],                      {},                                  SensingPorts(None, None),                     id="nothing"),
-    pytest.param([paxini],                {},                                  SensingPorts(PAXINI_PORT, None),              id="paxini_only"),
-    pytest.param([motor, sensor],         OH_RESPONSES,                        SensingPorts(OH_SENSOR_PORT, OH_SENSOR_PORT), id="oh_only_shared"),
-    pytest.param([sensor, motor],         OH_RESPONSES,                        SensingPorts(OH_SENSOR_PORT, OH_SENSOR_PORT), id="oh_reversed_order"),
-    pytest.param([motor, sensor, paxini], OH_RESPONSES,                        SensingPorts(PAXINI_PORT, OH_SENSOR_PORT),    id="paxini_plus_oh"),
-    pytest.param([motor],                 {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR}, SensingPorts(None, None),                     id="motor_only"),
-    pytest.param([motor, sensor],         {},                                  SensingPorts(None, None),                     id="oh_silent"),
-    pytest.param([motor, paxini],         {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR}, SensingPorts(PAXINI_PORT, None),              id="paxini_with_motor"),
+    pytest.param([],                      {},                                  SensingPorts(None, None),                                            id="nothing"),
+    pytest.param([paxini],                {},                                  SensingPorts(PAXINI_PORT, None, DEFAULT_SENSOR_BAUDRATE),             id="paxini_only"),
+    pytest.param([motor, sensor],         OH_RESPONSES,                        SensingPorts(OH_SENSOR_PORT, OH_SENSOR_PORT, DEFAULT_ENCODER_BAUDRATE), id="oh_only_shared"),
+    pytest.param([sensor, motor],         OH_RESPONSES,                        SensingPorts(OH_SENSOR_PORT, OH_SENSOR_PORT, DEFAULT_ENCODER_BAUDRATE), id="oh_reversed_order"),
+    pytest.param([motor, sensor, paxini], OH_RESPONSES,                        SensingPorts(PAXINI_PORT, OH_SENSOR_PORT, DEFAULT_SENSOR_BAUDRATE),   id="paxini_plus_oh"),
+    pytest.param([motor],                 {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR}, SensingPorts(None, None),                                            id="motor_only"),
+    pytest.param([motor, sensor],         {},                                  SensingPorts(None, None),                                            id="oh_silent"),
+    pytest.param([motor, paxini],         {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR}, SensingPorts(PAXINI_PORT, None, DEFAULT_SENSOR_BAUDRATE),             id="paxini_with_motor"),
 ])
 def test_discover_sensing_ports(ports, probes, expected):
     with patch("serial.tools.list_ports.comports", return_value=ports), \
@@ -86,3 +91,35 @@ def test_resolve_sensing_ports(tactile, encoder, expected, expect_discovery):
     with patch(f"{DISCOVERY}.discover_sensing_ports", return_value=DISCOVERED) as discover:
         assert resolve_sensing_ports(tactile, encoder) == expected
     assert discover.called is expect_discovery
+
+
+def test_resolve_passes_through_discovered_baud():
+    discovered = SensingPorts("/t", "/e", DEFAULT_ENCODER_BAUDRATE)
+    with patch(f"{DISCOVERY}.discover_sensing_ports", return_value=discovered):
+        ports = resolve_sensing_ports("auto", "auto")
+    assert ports.tactile_baudrate == DEFAULT_ENCODER_BAUDRATE
+
+
+def test_resolve_baud_override_wins_over_discovery():
+    discovered = SensingPorts("/t", "/e", DEFAULT_ENCODER_BAUDRATE)
+    with patch(f"{DISCOVERY}.discover_sensing_ports", return_value=discovered):
+        ports = resolve_sensing_ports("auto", "auto", tactile_baud_override=921600)
+    assert ports.tactile_baudrate == 921600
+
+
+def test_resolve_baud_unknown_for_explicit_port():
+    """Explicit ports skip discovery; an auto baud stays None for the caller
+    to resolve via ``baud_for_port``."""
+    ports = resolve_sensing_ports("/dev/x", "/dev/y")
+    assert ports.tactile_baudrate is None
+
+
+@pytest.mark.parametrize("responds,expected", [
+    pytest.param({DEFAULT_ENCODER_BAUDRATE: True},                            DEFAULT_ENCODER_BAUDRATE, id="2M_wins_first"),
+    pytest.param({DEFAULT_ENCODER_BAUDRATE: False, DEFAULT_SENSOR_BAUDRATE: True}, DEFAULT_SENSOR_BAUDRATE, id="falls_back_to_921600"),
+    pytest.param({},                                                          DEFAULT_SENSOR_BAUDRATE, id="nothing_answers_defaults"),
+])
+def test_baud_for_port(responds, expected):
+    with patch(f"{DISCOVERY}._tactile_responds_at",
+               side_effect=lambda port, baud: responds.get(baud, False)):
+        assert baud_for_port("/dev/x") == expected

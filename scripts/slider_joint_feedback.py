@@ -9,7 +9,7 @@ restarting the session.
 
 Usage:
     uv run python scripts/slider_joint_feedback.py \\
-        orca_core/models/v2/orcahand_right/config.yaml --max-current 600
+        orca_core/models/v2/orcahand-joint-right/config.yaml --max-current 600
     uv run python scripts/slider_joint_feedback.py CONFIG --fingers ring
     uv run python scripts/slider_joint_feedback.py CONFIG --joints ring_mcp ring_pip
 """

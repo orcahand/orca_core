@@ -1,4 +1,4 @@
-port: /dev/cu.usbserial-FTAAMLDU
+port: auto
 version: 0.2.1
 baudrate: 3000000
 max_current: 400

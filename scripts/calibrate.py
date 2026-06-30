@@ -8,7 +8,6 @@ from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
     JointEncoderClient,
 )
-from orca_core.hardware.sensing.constants import LINK_DEFAULT_BAUDRATE
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 
 
@@ -24,7 +23,7 @@ FINGER_TO_JOINTS = {
 ALL_JOINTS = [j for joints in FINGER_TO_JOINTS.values() for j in joints]
 
 
-def _open_encoder_client(encoder_port_override: str):
+def _open_encoder_client(encoder_port_override: str, baudrate: int):
     """Resolve the encoder port, open the link, start the AA A9 stream.
 
     Returns ``(link, client)`` when the stream is up; raises on missing
@@ -39,7 +38,7 @@ def _open_encoder_client(encoder_port_override: str):
             f"(encoder_serial_port={encoder_port_override!r}). "
             "Pass --encoder-port to override."
         )
-    link = HandSerialLink(ports.encoder, baudrate=LINK_DEFAULT_BAUDRATE)
+    link = HandSerialLink(ports.encoder, baudrate=baudrate)
     link.connect()
     client = JointEncoderClient(link)
     client.connect()
@@ -123,7 +122,9 @@ def main():
     client = None
     if hand.config.use_joint_feedback:
         try:
-            link, client = _open_encoder_client(hand.config.encoder_serial_port)
+            link, client = _open_encoder_client(
+                hand.config.encoder_serial_port, hand.config.encoder_baudrate
+            )
         except Exception as exc:
             print(f"FAIL: could not open encoder stream ({exc})")
             hand.disconnect()

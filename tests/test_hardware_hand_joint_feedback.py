@@ -23,7 +23,7 @@ from tests.conftest import wait_until
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL_CONFIG = os.path.join(
-    REPO_ROOT, "orca_core", "models", "v2", "orcahand_right", "config.yaml"
+    REPO_ROOT, "orca_core", "models", "v2", "orcahand-joint-right", "config.yaml"
 )
 
 

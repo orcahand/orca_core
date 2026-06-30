@@ -19,7 +19,7 @@ from orca_core.hardware_hand import MockOrcaHand
 from orca_core.utils import read_yaml, update_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand_right")
+MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-joint-right")
 REAL_CONFIG = os.path.join(MODEL_DIR, "config.yaml")
 
 EXPECTED_LIMITS = [-1.0, 1.0]
@@ -273,10 +273,27 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
 
 
 def test_encoder_backed_joints_respects_config_subset(calib_dir):
-    """Only joints in joint_encoder_joints (∩ motor map ∩ protocol slot map)
-    are reported as encoder-backed."""
-    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
-    expected = set(hand.config.joint_encoder_joints or [])
+    """An explicit joint_encoder_joints list (the bring-up/debug override)
+    narrows encoder-backed joints to that subset (∩ motor map ∩ slot map)."""
+    config_path = calib_dir / "config.yaml"
+    update_yaml(str(config_path), "joint_encoder_joints", ["ring_mcp", "ring_pip"])
+    hand = MockOrcaHand(config_path=str(config_path))
+    assert set(hand._encoder_backed_joints()) == {"ring_mcp", "ring_pip"}
+
+
+def test_encoder_backed_joints_all_selects_every_slotted_motor_joint(calib_dir):
+    """The ``["all"]`` default expands to every joint that has both an encoder
+    slot and a driving motor, excluding the wrist."""
+    from orca_core.hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+
+    config_path = calib_dir / "config.yaml"
+    update_yaml(str(config_path), "joint_encoder_joints", ["all"])
+    hand = MockOrcaHand(config_path=str(config_path))
+    expected = {
+        j
+        for j in JOINT_TO_ENCODER_SLOT
+        if j != "wrist" and j in hand.config.joint_to_motor_map
+    }
     assert set(hand._encoder_backed_joints()) == expected
 
 
@@ -294,7 +311,9 @@ def test_calibrate_writes_encoder_block_only_for_configured_subset(calib_dir):
     """Encoder pass runs only for joints listed in joint_encoder_joints."""
     from tests._encoder_helpers import MockJointEncoderSource
 
-    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    config_path = calib_dir / "config.yaml"
+    update_yaml(str(config_path), "joint_encoder_joints", ["ring_mcp", "ring_pip"])
+    hand = MockOrcaHand(config_path=str(config_path))
     hand.connect()
     encoder = MockJointEncoderSource(
         hand._motor_client, hand.config.joint_to_motor_map
@@ -302,9 +321,7 @@ def test_calibrate_writes_encoder_block_only_for_configured_subset(calib_dir):
     hand.calibrate(joint_encoder_client=encoder)
 
     raw = read_yaml(str(calib_dir / "calibration.yaml"))
-    assert set(raw["joint_encoder_calibration"].keys()) == set(
-        hand.config.joint_encoder_joints
-    )
+    assert set(raw["joint_encoder_calibration"].keys()) == {"ring_mcp", "ring_pip"}
 
 
 # ---------------------------------------------------------------------------

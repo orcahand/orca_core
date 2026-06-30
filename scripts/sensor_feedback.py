@@ -1,16 +1,13 @@
 #!/usr/bin/env python
 """Interactive live view of the ORCA joint encoders + tactile sensor.
 
-Opens a Tkinter window that streams, over one HandSerialLink:
-  - joint encoder angles (AA A9, always-on) for all 17 slots, and
-  - tactile forces (AA 56) in a mode YOU pick with the radio buttons:
-        Off  |  Resultant  |  Taxels  |  Combined
-Switching the radio reconfigures the device live (set_auto_data_type +
-enable/disable). Each stream shows its measured frame rate (Hz) so you can
-watch how the rate changes per mode and as you add fingers.
+Opens a Tkinter window that streams joint encoder angles for all 17 slots and
+tactile forces in a mode you pick with the radio buttons:
 
-This drives the real orca_core clients (TactileClient + JointEncoderClient),
-not a bespoke decoder — so the rates you see are the rates orca_core gets.
+        Off  |  Resultant  |  Taxels  |  Combined
+
+Switching the radio reconfigures the device live. Each stream shows its
+measured frame rate (Hz).
 
 Usage:
     PORT=/dev/cu.usbmodem103 uv run --with pyserial python3 scripts/sensor_feedback.py
@@ -32,8 +29,8 @@ from orca_core.hardware.joint_encoder_client import (
     JointEncoderClient,
     EncodersNotAvailableError,
 )
+from orca_core.hardware.sensing.serial_discovery import baud_for_port
 from orca_core.hardware.sensing.constants import (
-    DEFAULT_SENSOR_BAUDRATE,
     ENCODER_SLOT_TO_JOINT,
     ENCODER_LSB_DEG,
     AUTO_ENC_ANGLE_MASK,
@@ -55,8 +52,9 @@ MODES = {
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("--port", default=os.environ.get("PORT", "/dev/cu.usbmodem103"),
-                   help="Sensor serial port (OH bridge SENSOR port, usually …3).")
-    p.add_argument("--baud", type=int, default=DEFAULT_SENSOR_BAUDRATE)
+                   help="Sensor serial port.")
+    p.add_argument("--baud", type=int, default=None,
+                   help="Link baud. Default: auto-detect from the connected sensor.")
     p.add_argument("--start-mode", choices=list(MODES), default="Resultant",
                    help="Tactile mode to start in.")
     return p.parse_args()
@@ -222,8 +220,9 @@ class SensorFeedbackUI:
 def main() -> int:
     args = parse_args()
 
-    link = HandSerialLink(port=args.port, baudrate=args.baud)
-    print(f"connecting: {args.port} @ {args.baud}")
+    baud = args.baud if args.baud is not None else baud_for_port(args.port)
+    link = HandSerialLink(port=args.port, baudrate=baud)
+    print(f"connecting: {args.port} @ {baud}")
     link.connect()
 
     tactile = TactileClient(link)

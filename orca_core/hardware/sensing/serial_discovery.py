@@ -1,9 +1,8 @@
 """Locate the tactile and joint-encoder serial ports.
 
-Paxini board is identified by VID. The OH board's two CDCs share VID/PID and
-are distinguished by an ``ORCA_ID?`` probe (firmware replies ``ORCA:MOTOR``
-or ``ORCA:SENSOR``). When only the OH sensor CDC is present, both fields
-point at it (``shared=True``).
+A dedicated tactile adapter is identified by its USB vendor ID. A combined
+port that carries both streams is identified with an ``ORCA_ID?`` probe; when
+it is the only port present, both fields point at it (``shared=True``).
 """
 
 import logging
@@ -19,6 +18,7 @@ from ...constants import (
     ORCA_ID_RESP_MOTOR,
     ORCA_ID_RESP_SENSOR,
 )
+from .constants import DEFAULT_ENCODER_BAUDRATE, DEFAULT_SENSOR_BAUDRATE
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 class SensingPorts:
     tactile: Optional[str]
     encoder: Optional[str]
+    tactile_baudrate: Optional[int] = None
+    """Baud for the tactile link, or ``None`` when no tactile port is known."""
 
     @property
     def shared(self) -> bool:
@@ -74,7 +76,7 @@ def _probe_orca_id(
 
 
 def find_tactile_port() -> Optional[str]:
-    """Return the Paxini board's device path, or None if zero or >1 match."""
+    """Return the dedicated tactile adapter's device path, or None if zero or >1 match."""
     import serial.tools.list_ports
 
     matches = [
@@ -84,6 +86,49 @@ def find_tactile_port() -> Optional[str]:
     if len(matches) == 1:
         return matches[0].device
     return None
+
+
+TACTILE_BAUD_CANDIDATES = (DEFAULT_ENCODER_BAUDRATE, DEFAULT_SENSOR_BAUDRATE)
+"""Bauds to try when detecting a tactile link, fastest first."""
+
+
+def baud_for_port(port: str) -> int:
+    """Detect the baud of the tactile sensor on ``port``.
+
+    Opens the port at each candidate baud and reads a register; the first baud
+    that gets a valid reply wins. Falls back to ``DEFAULT_SENSOR_BAUDRATE`` when
+    no candidate answers, so a sensor that isn't currently reporting still
+    connects.
+    """
+    for baud in TACTILE_BAUD_CANDIDATES:
+        if _tactile_responds_at(port, baud):
+            logger.debug("tactile baud for %s resolved to %d", port, baud)
+            return baud
+    logger.debug("no tactile reply on %s at any baud; defaulting", port)
+    return DEFAULT_SENSOR_BAUDRATE
+
+
+def _tactile_responds_at(port: str, baud: int) -> bool:
+    """True if a tactile register read succeeds on ``port`` at ``baud``."""
+    # Imported here to avoid a circular import at module load.
+    from ..hand_serial_link import HandSerialLink
+    from ..tactile_client import TactileClient
+    from .constants import ADDR_CONNECTED_SENSORS_LENGTH, ADDR_CONNECTED_SENSORS_START
+
+    link = HandSerialLink(port=port, baudrate=baud)
+    try:
+        link.connect()
+    except Exception:
+        return False
+    try:
+        client = TactileClient(link)
+        client._connected = True
+        client._read_register(ADDR_CONNECTED_SENSORS_START, ADDR_CONNECTED_SENSORS_LENGTH)
+        return True
+    except Exception:
+        return False
+    finally:
+        link.disconnect()
 
 
 def _find_oh_sensor_port() -> Optional[str]:
@@ -102,29 +147,43 @@ def _find_oh_sensor_port() -> Optional[str]:
 def discover_sensing_ports() -> SensingPorts:
     """Resolve tactile and encoder ports from connected hardware.
 
-    Paxini wins the tactile field when present. The OH sensor CDC fills
-    whichever field(s) Paxini didn't take — both, if Paxini is absent
-    (``shared=True``).
+    A dedicated tactile adapter claims the tactile field when present. A
+    combined port fills whichever field(s) the adapter did not take — both, if
+    no dedicated adapter is present (``shared=True``).
     """
     paxini_port = find_tactile_port()
     oh_sensor_port = _find_oh_sensor_port()
 
     if paxini_port is not None:
-        return SensingPorts(tactile=paxini_port, encoder=oh_sensor_port)
+        return SensingPorts(
+            tactile=paxini_port,
+            encoder=oh_sensor_port,
+            tactile_baudrate=DEFAULT_SENSOR_BAUDRATE,
+        )
     if oh_sensor_port is not None:
-        return SensingPorts(tactile=oh_sensor_port, encoder=oh_sensor_port)
+        return SensingPorts(
+            tactile=oh_sensor_port,
+            encoder=oh_sensor_port,
+            tactile_baudrate=DEFAULT_ENCODER_BAUDRATE,
+        )
     return SensingPorts(tactile=None, encoder=None)
 
 
 def resolve_sensing_ports(
     tactile_override: str = "auto",
     encoder_override: str = "auto",
+    tactile_baud_override: "int | str" = "auto",
 ) -> SensingPorts:
     """Apply per-field overrides on top of discovery.
 
-    Each override: ``"auto"`` uses the discovered value, ``"disabled"`` forces
-    None, any other string is an explicit device path. Discovery is skipped
-    entirely if neither field is ``"auto"``.
+    Each port override: ``"auto"`` uses the discovered value, ``"disabled"``
+    forces None, any other string is an explicit device path. Discovery is
+    skipped entirely if neither port field is ``"auto"``.
+
+    ``tactile_baud_override``: ``"auto"`` keeps the detected baud; any int forces
+    that baud. When the tactile port is given explicitly (so discovery was
+    skipped), an ``"auto"`` baud stays ``None`` for the caller to resolve with
+    :func:`baud_for_port`.
     """
     needs_discovery = tactile_override == "auto" or encoder_override == "auto"
     discovered = (
@@ -139,7 +198,14 @@ def resolve_sensing_ports(
             return None
         return override
 
+    tactile_baud: Optional[int]
+    if tactile_baud_override == "auto":
+        tactile_baud = discovered.tactile_baudrate
+    else:
+        tactile_baud = int(tactile_baud_override)
+
     return SensingPorts(
         tactile=_resolve_field(tactile_override, discovered.tactile),
         encoder=_resolve_field(encoder_override, discovered.encoder),
+        tactile_baudrate=tactile_baud,
     )

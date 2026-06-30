@@ -29,7 +29,7 @@ from .calibration_joint_encoder import (
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
-from .hardware.sensing.serial_discovery import resolve_sensing_ports
+from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
@@ -172,6 +172,17 @@ class OrcaHand(BaseHand):
             successful connection.
         """
         # TODO(fracapuano): Refactor: this is basically always connecting to one port and looking at multiple ports
+
+        # ``port: auto`` keeps the tracked config hardware-agnostic: resolve it
+        # to a live device before the first attempt, without persisting the
+        # detected path back to config.yaml. If detection finds no unique
+        # adapter the port is left as ``"auto"`` and the open below fails into
+        # the same auto-detect/picker recovery path an explicit port uses.
+        if self.config.port == "auto":
+            detected = auto_detect_port(self.config.motor_type)
+            if detected is not None:
+                self.config = dataclasses.replace(self.config, port=detected)
+
         try:
             self._motor_client = self._create_motor_client()
             with self._motor_lock:
@@ -510,21 +521,28 @@ class OrcaHand(BaseHand):
     def _encoder_backed_joints(self) -> list[str]:
         """Joints with a protocol slot, a driving motor on this hand, and an
         entry in ``config.joint_encoder_joints``. Returns ``[]`` when the
-        config field is ``None``. Wrist is always excluded.
+        config field is ``None``. The sentinel ``["all"]`` selects every
+        slotted, motor-driven joint. Wrist is always excluded.
         """
-        from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+        from .hardware.sensing.constants import (
+            ENCODER_JOINTS_ALL,
+            JOINT_TO_ENCODER_SLOT,
+        )
 
         configured = self.config.joint_encoder_joints
         if configured is None:
             return []
-        configured_set = set(configured)
-        return [
+
+        available = [
             joint
             for joint in JOINT_TO_ENCODER_SLOT
-            if joint != WRIST
-            and joint in self.config.joint_to_motor_map
-            and joint in configured_set
+            if joint != WRIST and joint in self.config.joint_to_motor_map
         ]
+        if any(str(j).lower() == ENCODER_JOINTS_ALL for j in configured):
+            return available
+
+        configured_set = set(configured)
+        return [joint for joint in available if joint in configured_set]
 
     def _raw_to_joint_angle(self, raw_counts: np.ndarray) -> Dict[str, float]:
         """Convert raw encoder counts ``(AUTO_ENC_NUM_JOINTS,)`` into joint
@@ -1440,20 +1458,30 @@ class OrcaHandTouch(OrcaHand):
         self._tactile_link: HandSerialLink | None = None
         self._tactile_client: TactileClient | None = None
 
-    def _create_tactile_link(self, port: str) -> HandSerialLink:
-        return HandSerialLink(port=port, baudrate=self.config.sensor_baudrate)
+    def _create_tactile_link(self, port: str, baudrate: int) -> HandSerialLink:
+        return HandSerialLink(port=port, baudrate=baudrate)
 
     def _create_tactile_client(self, link: HandSerialLink) -> TactileClient:
         return TactileClient(link, finger_to_sensor_id=self.config.finger_to_sensor_id)
 
-    def _open_tactile_on_port(self, port: str) -> None:
-        """Open a link on ``port`` and connect a tactile client to it."""
-        link = self._create_tactile_link(port)
-        link.connect()
-        self._tactile_link = link
+    def _attach_tactile_client(self, link: HandSerialLink) -> None:
+        """Connect a tactile client onto an already-open ``link``.
+
+        Split out of :meth:`_open_tactile_on_port` so a hand that also runs
+        joint feedback can attach tactile onto the shared encoder link
+        instead of opening a second port. The caller owns ``link`` teardown,
+        so this does not set ``self._tactile_link``.
+        """
         client = self._create_tactile_client(link)
         client.connect()
         self._tactile_client = client
+
+    def _open_tactile_on_port(self, port: str, baudrate: int) -> None:
+        """Open a link on ``port`` at ``baudrate`` and connect a tactile client."""
+        link = self._create_tactile_link(port, baudrate)
+        link.connect()
+        self._tactile_link = link
+        self._attach_tactile_client(link)
 
     def _teardown_tactile(self) -> None:
         """Disconnect and drop the tactile client + link, tolerating partial state."""
@@ -1472,32 +1500,38 @@ class OrcaHandTouch(OrcaHand):
 
     def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
         """Open the sensor link, resolving the configured ``sensors.port`` against
-        live discovery (Paxini VID, else the OH board's sensor CDC via ORCA_ID?).
+        live discovery.
 
         ``"auto"`` discovers the port; an explicit path is tried first and then
         falls back to auto-discovery if it fails to open.
         """
         configured = self.config.sensor_port
+        baud_override = self.config.sensor_baudrate
 
-        candidates: list[str] = []
+        candidates: list[tuple[str, int | None]] = []
         resolved = resolve_sensing_ports(
-            tactile_override=configured, encoder_override="disabled"
-        ).tactile
-        if resolved:
-            candidates.append(resolved)
+            tactile_override=configured, encoder_override="disabled",
+            tactile_baud_override=baud_override,
+        )
+        if resolved.tactile:
+            candidates.append((resolved.tactile, resolved.tactile_baudrate))
         if configured not in ("auto", "disabled"):
             auto = resolve_sensing_ports(
-                tactile_override="auto", encoder_override="disabled"
-            ).tactile
-            if auto and auto not in candidates:
-                candidates.append(auto)
+                tactile_override="auto", encoder_override="disabled",
+                tactile_baud_override=baud_override,
+            )
+            if auto.tactile and auto.tactile not in [p for p, _ in candidates]:
+                candidates.append((auto.tactile, auto.tactile_baudrate))
 
-        for port in candidates:
+        for port, baud in candidates:
+            # An explicit port skips discovery, so detect its baud directly.
+            if baud is None:
+                baud = baud_for_port(port)
             try:
-                self._open_tactile_on_port(port)
+                self._open_tactile_on_port(port, baud)
                 if port != configured:
                     self.config = dataclasses.replace(self.config, sensor_port=port)
-                return True, f"Sensor connected on {port}"
+                return True, f"Sensor connected on {port} @ {baud}"
             except Exception as e:
                 print(f"Sensor connection failed on {port}: {e}")
                 self._teardown_tactile()
@@ -1614,7 +1648,7 @@ class MockOrcaHandTouch(OrcaHandTouch):
             self.config.motor_ids, self.config.port, self.config.baudrate
         )
 
-    def _create_tactile_link(self, port: str) -> HandSerialLink:
+    def _create_tactile_link(self, port: str, baudrate: int) -> HandSerialLink:
         from .hardware.mock_hand_serial_link import MockHandSerialLink
 
-        return MockHandSerialLink(port=port, baudrate=self.config.sensor_baudrate)
+        return MockHandSerialLink(port=port, baudrate=baudrate)
