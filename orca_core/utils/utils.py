@@ -179,6 +179,21 @@ def auto_detect_port(motor_type: str = "dynamixel") -> str:
     import serial.tools.list_ports
     from ..constants import KNOWN_VIDS
 
+    # The ORCA OH board carries the motor bus on a dual-CDC device whose two
+    # interfaces share a VID/PID, so VID matching can't separate the motor port
+    # from the sensor port. Identify it with the ORCA_ID? handshake first (the
+    # same mechanism the sensor discovery uses); fall back to VID matching for
+    # classic adapters (U2D2, Feetech) that don't speak ORCA_ID?.
+    try:
+        from ..hardware.sensing.serial_discovery import find_motor_port
+
+        orca_motor_port = find_motor_port()
+    except Exception:
+        orca_motor_port = None
+    if orca_motor_port is not None:
+        print(f"Auto-detected ORCA motor bus via ORCA_ID?: {orca_motor_port}")
+        return orca_motor_port
+
     known_vids = KNOWN_VIDS.get(motor_type, [])
     ports = serial.tools.list_ports.comports()
     matches = [p for p in ports if p.vid in known_vids]

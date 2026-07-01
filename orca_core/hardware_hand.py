@@ -467,10 +467,12 @@ class OrcaHand(BaseHand):
                 motor instead of returning early.
             use_joint_feedback: When ``True``, also require every encoder-backed
                 joint to have a :class:`~orca_core.calibration.JointEncoderCal`
-                entry. ``None`` defers to ``self.config.use_joint_feedback``.
+                entry. ``None`` defers to ``self.config.joint_feedback_enabled``.
         """
         if use_joint_feedback is None:
-            use_joint_feedback = bool(getattr(self.config, "use_joint_feedback", False))
+            use_joint_feedback = bool(
+                getattr(self.config, "joint_feedback_enabled", False)
+            )
 
         overall_calibrated = True
         uncalibrated_messages = []
@@ -600,8 +602,8 @@ class OrcaHand(BaseHand):
             force_wrist: Recalibrate the wrist even if already calibrated.
             joints: Restrict to calibration steps touching these joint names.
                 Joints not visited keep their previously-persisted values.
-            joint_encoder_client: With ``self.config.use_joint_feedback`` and
-                an encoder client, the encoder pass also runs and writes a
+            joint_encoder_client: With ``self.config.joint_feedback_enabled``
+                and an encoder client, the encoder pass also runs and writes a
                 ``joint_encoder_calibration:`` block.
         """
         if blocking:
@@ -716,7 +718,7 @@ class OrcaHand(BaseHand):
         joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
 
         encoder_pass_active = (
-            getattr(self.config, "use_joint_feedback", False)
+            getattr(self.config, "joint_feedback_enabled", False)
             and joint_encoder_client is not None
         )
         joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
@@ -1059,6 +1061,31 @@ class OrcaHand(BaseHand):
         super().set_neutral_position(num_steps, step_size)
         self.set_control_mode(control_mode)
     
+    def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
+        """Read motor positions for wrap-offset detection, rejecting a read the
+        bus never actually answered.
+
+        A dropped status packet leaves ``read_pos_vel_cur`` returning its
+        zero-initialised cache — every motor reads ``0.0``, below its lower
+        limit — and the caller would bake a spurious ``-2π`` wrap offset into
+        all 17 motors, corrupting the joint→motor mapping for the whole
+        session. Retry while the reader reports the read failed; raise loudly
+        rather than proceed on stale cache.
+        """
+        reader = getattr(self._motor_client, "_pos_vel_cur_reader", None)
+        for _ in range(retries):
+            motor_pos = self.get_motor_pos()
+            # Mocks and clients without an SDK reader have no failure signal;
+            # treat their reads as authoritative.
+            if reader is None or getattr(reader, "last_read_ok", True):
+                return motor_pos
+            time.sleep(retry_interval)
+        raise RuntimeError(
+            "motor position read failed while computing wrap offsets: the motor "
+            "bus returned no status packets. Retry; if it persists, power-cycle "
+            "the board."
+        )
+
     def _compute_wrap_offsets_dict(self):
         """Detect per-motor encoder wrap-arounds and store correction offsets.
 
@@ -1070,7 +1097,7 @@ class OrcaHand(BaseHand):
         configured limits, or whose positions are within tolerance, receive an
         offset of 0.
         """
-        motor_pos = self.get_motor_pos()
+        motor_pos = self._read_motor_pos_for_offsets()
 
         lower_limit = np.array(
             [self.motor_limits_dict[motor_id][0] for motor_id in self.config.motor_ids]

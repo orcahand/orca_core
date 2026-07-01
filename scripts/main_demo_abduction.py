@@ -1,4 +1,4 @@
-from orca_core import OrcaHand
+from orca_core import load_hand
 import time
 import numpy as np
 import argparse # Added import
@@ -17,7 +17,7 @@ def main(): # Added main function
     args = parser.parse_args()
 
     # Initialize the hand
-    hand = OrcaHand(config_path=args.config_path)
+    hand = load_hand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

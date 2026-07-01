@@ -14,7 +14,7 @@ import os
 import time
 import logging
 import numpy as np
-from orca_core import OrcaHand
+from orca_core import load_hand
 
 FINGER_JOINTS = {
     'thumb':  ['thumb_mcp', 'thumb_dip'],
@@ -42,7 +42,7 @@ def main():
 
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
 
-    hand = OrcaHand(config_path=args.config_path)
+    hand = load_hand(config_path=args.config_path)
     hand.connect()
 
     if not hand.calibrated:

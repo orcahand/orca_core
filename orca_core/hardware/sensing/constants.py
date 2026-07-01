@@ -172,7 +172,7 @@ ENCODER_JOINTS_ALL = "all"
 
 # Per-joint encoder polarity.
 JOINT_ENCODER_POLARITY = {
-    "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": 1, "thumb_dip": -1,
+    "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
     "index_abd": 1, "index_mcp": 1, "index_pip": -1,
     "middle_abd": 1, "middle_mcp": 1, "middle_pip": -1,
     "ring_abd": 1, "ring_mcp": 1, "ring_pip": -1,

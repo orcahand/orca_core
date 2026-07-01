@@ -131,17 +131,38 @@ def _tactile_responds_at(port: str, baud: int) -> bool:
         link.disconnect()
 
 
-def _find_oh_sensor_port() -> Optional[str]:
+ORCA_ID_PROBE_ATTEMPTS = 3
+"""Passes over the OH-board CDCs when probing ORCA_ID?. The probe is racy on
+macOS composite CDC devices (an occasional empty read), so a few passes make
+detection reliable without masking a genuinely absent/silent board."""
+
+
+def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
+    """Return the OH-board CDC whose ``ORCA_ID?`` reply matches ``expected_resp``."""
     import serial.tools.list_ports
 
     oh_candidates = [
         p for p in serial.tools.list_ports.comports()
         if p.vid in KNOWN_VIDS["oh_board"]
     ]
-    for candidate in oh_candidates:
-        if _probe_orca_id(candidate.device) == ORCA_ID_RESP_SENSOR:
-            return candidate.device
+    for _ in range(ORCA_ID_PROBE_ATTEMPTS):
+        for candidate in oh_candidates:
+            if _probe_orca_id(candidate.device) == expected_resp:
+                return candidate.device
     return None
+
+
+def find_motor_port() -> Optional[str]:
+    """Return the OH-board CDC that identifies as the motor bus via ``ORCA_ID?``.
+
+    Returns None for classic motor adapters that don't speak
+    ORCA_ID?, so the caller can fall back to USB-VID matching.
+    """
+    return _find_oh_board_port(ORCA_ID_RESP_MOTOR)
+
+
+def _find_oh_sensor_port() -> Optional[str]:
+    return _find_oh_board_port(ORCA_ID_RESP_SENSOR)
 
 
 def discover_sensing_ports() -> SensingPorts:

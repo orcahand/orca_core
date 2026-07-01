@@ -1,7 +1,7 @@
 import time
 import yaml
 import threading
-from orca_core import OrcaHand
+from orca_core import load_hand
 import argparse
 import os  # Added import
 
@@ -21,7 +21,7 @@ def main():
     elif user_prefix.endswith(".yml"):
         user_prefix = user_prefix[:-4]
     
-    hand = OrcaHand(config_path=args.config_path)
+    hand = load_hand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

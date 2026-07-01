@@ -130,3 +130,6 @@ dev_scripts/
 
 # Per-hand calibration output (machine-specific, not committed)
 calibration.yaml
+
+# Generated soak-test output (metrics.csv, progress.png)
+soak_logs/

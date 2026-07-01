@@ -7,7 +7,7 @@ import os
 # Add the parent directory to the Python path so we can import orca_core
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from orca_core import OrcaHand
+from orca_core import load_hand
 
 def main():
     parser = argparse.ArgumentParser(description='Move OrcaHand to neutral position.')
@@ -23,7 +23,7 @@ def main():
 
     try:
         # Initialize the hand
-        hand = OrcaHand(config_path=args.config_path)
+        hand = load_hand(config_path=args.config_path)
             
         # Connect to the hand
         success, message = hand.connect()

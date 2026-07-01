@@ -212,7 +212,7 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_threshold: float = 0.01  # rad
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
-    use_joint_feedback: bool = False
+    use_joint_feedback: bool | None = None
     joint_encoder_joints: List[str] | None = None
     encoder_serial_port: str = "auto"
     encoder_baudrate: int = DEFAULT_ENCODER_BAUDRATE
@@ -226,6 +226,24 @@ class OrcaHandConfig(BaseHandConfig):
     def motor_to_joint_dict(self) -> Dict[int, str]:
         """Map motor ID to joint name."""
         return {motor_id: joint for joint, motor_id in self.joint_to_motor_map.items()}
+
+    @property
+    def has_joint_encoders(self) -> bool:
+        """Whether this hand declares any joint-encoder hardware."""
+        return bool(self.joint_encoder_joints)
+
+    @property
+    def joint_feedback_enabled(self) -> bool:
+        """Whether the closed-loop joint-feedback controller should engage.
+
+        ``use_joint_feedback`` is tri-state: ``None`` (unset) defers to the
+        presence of encoder hardware, so a hand that declares
+        ``joint_encoder_joints`` runs closed-loop by default. An explicit
+        ``False`` forces plain motor-only control even when encoders exist.
+        """
+        if self.use_joint_feedback is None:
+            return self.has_joint_encoders
+        return self.use_joint_feedback
 
     @classmethod
     def from_config_path(
@@ -292,7 +310,8 @@ class OrcaHandConfig(BaseHandConfig):
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
         if "use_joint_feedback" in config:
-            kwargs["use_joint_feedback"] = bool(config["use_joint_feedback"])
+            raw_ujf = config["use_joint_feedback"]
+            kwargs["use_joint_feedback"] = None if raw_ujf is None else bool(raw_ujf)
         if "joint_encoder_joints" in config:
             raw = config["joint_encoder_joints"]
             kwargs["joint_encoder_joints"] = (
@@ -348,6 +367,11 @@ class OrcaHandConfig(BaseHandConfig):
                     raise HandConfigValidationError(
                         f"Invalid direction for joint {joint}."
                     )
+
+        if self.use_joint_feedback is True and not self.has_joint_encoders:
+            raise HandConfigValidationError(
+                "use_joint_feedback: true requires joint_encoder_joints to be set."
+            )
 
         if self.joint_encoder_joints is not None:
             from .hardware.sensing.constants import (

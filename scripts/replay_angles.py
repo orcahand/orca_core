@@ -2,7 +2,7 @@ import time
 import yaml
 import numpy as np
 import argparse
-from orca_core import OrcaHand
+from orca_core import load_hand
 import os
 
 def linear_interp(t):
@@ -53,7 +53,7 @@ def main():
         print("No waypoints found in the file.")
         return
 
-    hand = OrcaHand(config_path=args.config_path)
+    hand = load_hand(config_path=args.config_path)
     status = hand.connect()
     print(status)
 

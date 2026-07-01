@@ -2,7 +2,7 @@ import os
 import time
 import yaml
 import argparse
-from orca_core import OrcaHand
+from orca_core import load_hand
 from datetime import datetime
 
 
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the output file, relative to the project root. Defaults to 'replay_sequences/' at project root if not specified.")
     args = parser.parse_args()
 
-    hand = OrcaHand(config_path=args.config_path)
+    hand = load_hand(config_path=args.config_path)
 
     
     script_dir = os.path.dirname(os.path.abspath(__file__))

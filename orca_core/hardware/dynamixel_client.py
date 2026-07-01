@@ -621,6 +621,7 @@ class DynamixelReader:
         self.motor_ids = motor_ids
         self.address = address
         self.size = size
+        self.last_read_ok = True
         self._initialize_data()
 
         self.operation = _AlertCaptureBulkRead(client.port_handler,
@@ -643,6 +644,10 @@ class DynamixelReader:
             success = self.client.handle_packet_result(
                 comm_result, context='read')
             retries -= 1
+
+        # Expose whether the bus actually answered, so callers can tell a real
+        # reading apart from the stale cache returned on a dropped status packet.
+        self.last_read_ok = success
 
         # If we failed, send a copy of the previous data.
         if not success:

@@ -23,6 +23,7 @@ synchronous motor-position path.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 from .control.constants import (
@@ -203,6 +204,34 @@ class OrcaHandJointFeedback(OrcaHand):
                 logger.exception("failed to disconnect encoder link")
             self._encoder_link = None
 
+    # ----- Torque toggles (fence loop writes off the bus) ------------------
+
+    @contextmanager
+    def _loop_writes_paused(self):
+        """Pause the joint loop's motor writes for the duration of a round-trip
+        motor op. The loop's 100 Hz sync_writes otherwise interleave with the
+        op's status-packet reads on the shared motor CDC and intermittently
+        stall them into "no status packet" timeouts (measured: reads spike from
+        14 ms to 300-450 ms with the writer running). Encoder decoding keeps
+        running, so ``get_measured_joints`` stays live throughout."""
+        loop = self._loop
+        if loop is None:
+            yield
+            return
+        loop.pause_writes()
+        try:
+            yield
+        finally:
+            loop.resume_writes()
+
+    def disable_torque(self, motor_ids: Optional[List[int]] = None):
+        with self._loop_writes_paused():
+            super().disable_torque(motor_ids)
+
+    def enable_torque(self, motor_ids: Optional[List[int]] = None):
+        with self._loop_writes_paused():
+            super().enable_torque(motor_ids)
+
     # ----- Joint position routing ------------------------------------------
 
     def _set_joint_positions(self, joint_pos) -> bool:
@@ -289,6 +318,15 @@ class OrcaHandJointFeedback(OrcaHand):
             correction_max_deg=correction_max_deg,
             i_clamp_deg=clamp,
         )
+
+    def rebase_loop(self) -> None:
+        """Re-anchor the running loop to the current pose (target=measured,
+        fresh feed-forward bias, integral reset). Call after the motors have
+        moved out from under the loop — e.g. torque was disabled to hand-pose
+        the hand — so re-enabling torque doesn't lurch."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        self._loop.rebase()
 
     def get_measured_joints(self) -> Dict[str, float]:
         """Encoder-measured joint angles in degrees, per encoder-backed joint."""

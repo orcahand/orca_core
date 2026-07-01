@@ -80,6 +80,7 @@ class JointLoopThread:
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._writes_paused = threading.Event()
         self._lock = threading.Lock()
 
         self._joint_names: List[str] = []
@@ -98,6 +99,7 @@ class JointLoopThread:
         self._target_deg = np.zeros(0, dtype=np.float64)
         self._latest_measured = np.zeros(0, dtype=np.float64)
         self._last_correction = np.zeros(0, dtype=np.float64)
+        self._motor_bias = np.zeros(0, dtype=np.float64)
 
         self._stats = {
             "cycles_ok": 0,
@@ -120,13 +122,40 @@ class JointLoopThread:
         """Snapshot calibration, latch the target to the measured pose for
         bumpless entry, and reset the controller."""
         self._snapshot_calibration()
+        self._anchor_to_current_pose()
+
+    def rebase(self) -> None:
+        """Re-anchor a running loop to the current pose without a full restart:
+        latch the target to the live measured pose, recapture the feed-forward
+        bias from the current motor position, and reset the controller. Use
+        after the motors have moved out from under the loop (e.g. torque was
+        disabled to hand-pose the hand) so re-enabling torque doesn't lurch."""
+        self._anchor_to_current_pose()
+
+    def _anchor_to_current_pose(self) -> None:
         measured = self._measure_joint_angles_now()
         if measured is None:
             measured = np.zeros(len(self._joint_names), dtype=np.float64)
+        motor_now = self._read_motor_pos_now()
         with self._lock:
             self._target_deg = measured.copy()
             self._latest_measured = measured.copy()
+            # Bumpless feed-forward: hold the constant motor↔encoder mapping
+            # offset so the loop starts where the motors are, not lurching.
+            if motor_now is not None:
+                self._motor_bias = motor_now - self._joint_to_motor_pos(measured)
+            else:
+                self._motor_bias = np.zeros(len(self._joint_names), dtype=np.float64)
         self._controller.reset()
+
+    def _read_motor_pos_now(self) -> Optional[np.ndarray]:
+        """Current motor positions (rad) for the snapshotted joints, or None
+        if the read fails — the caller falls back to a zero bias."""
+        try:
+            pos = self._hand.get_motor_pos(as_dict=True)
+            return np.array([pos[mid] for mid in self._motor_ids], dtype=np.float64)
+        except Exception:
+            return None
 
     def step_once(self, dt: float) -> None:
         """One cycle: encoder read → watchdog → PI → motor-pos write."""
@@ -138,6 +167,18 @@ class JointLoopThread:
         reading = self._encoder_client.get_latest()
         if reading is None:
             self._stats["cycles_no_reading"] += 1
+            return
+
+        if self._writes_paused.is_set():
+            # A round-trip motor op (torque toggle / bulk read) is in flight on
+            # the bus. Keep measurements live for callers but issue no motor
+            # writes, so the loop's high-rate sync_writes don't interleave with
+            # that op's status-packet reads and stall them into "no status
+            # packet" timeouts.
+            measured = self._decode_measured(reading)
+            with self._lock:
+                self._latest_measured = measured.copy()
+            self._controller.freeze_integral()
             return
 
         freshness_ms = float(reading.freshness_ms)
@@ -152,7 +193,7 @@ class JointLoopThread:
             target = self._target_deg.copy()
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
-            motor_targets = self._joint_to_motor_pos(target)
+            motor_targets = self._joint_to_motor_pos(target) + self._motor_bias
             self._hand.write_motor_pos(self._motor_ids, motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
@@ -170,7 +211,7 @@ class JointLoopThread:
         measured = self._decode_measured(reading)
 
         correction = self._controller.step(target, measured, dt)
-        motor_targets = self._joint_to_motor_pos(target + correction)
+        motor_targets = self._joint_to_motor_pos(target + correction) + self._motor_bias
         self._hand.write_motor_pos(self._motor_ids, motor_targets)
 
         with self._lock:
@@ -237,6 +278,19 @@ class JointLoopThread:
         clean = not self._thread.is_alive()
         self._thread = None
         return clean
+
+    def pause_writes(self) -> None:
+        """Fence the loop's motor writes off the bus (encoder decoding and
+        ``get_measured_joints`` keep running) so a round-trip motor op — a
+        torque toggle or a bulk read — can complete without the loop's
+        sync_writes interleaving with its status-packet reads and stalling
+        them. Idempotent; pair with :meth:`resume_writes`."""
+        self._writes_paused.set()
+
+    def resume_writes(self) -> None:
+        """Re-enable motor writes after :meth:`pause_writes`. The controller
+        integral was frozen while paused; the next live cycle unfreezes it."""
+        self._writes_paused.clear()
 
     def _snapshot_calibration(self) -> None:
         """Freeze the joint set and the kinematics arrays for one loop run.
@@ -305,6 +359,7 @@ class JointLoopThread:
         self._target_deg = np.zeros(len(joints), dtype=np.float64)
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
         self._last_correction = np.zeros(len(joints), dtype=np.float64)
+        self._motor_bias = np.zeros(len(joints), dtype=np.float64)
 
     def _joint_to_motor_pos(self, joint_command_deg: np.ndarray) -> np.ndarray:
         """Vectorised joint→motor mapping for the snapshotted joint set.
