@@ -1,0 +1,45 @@
+[2026-07-03 19:21:20] ===== stress run started 2026-07-03 19:21:20 =====
+[2026-07-03 19:21:20] loaded hand class: OrcaHand (feedback=False tactile=False)
+[2026-07-03 19:21:20] connect: True | Connection successful
+[2026-07-03 19:21:20] encoder-feedback joints: []
+[2026-07-03 19:21:20] normal-controller joints: ['index_abd', 'index_mcp', 'index_pip', 'middle_abd', 'middle_mcp', 'middle_pip', 'pinky_abd', 'pinky_mcp', 'ring_abd', 'ring_mcp', 'ring_pip', 'thumb_abd', 'thumb_cmc', 'thumb_dip', 'thumb_mcp']
+[2026-07-03 19:21:20] frozen (never moved): ['wrist', 'pinky_pip']
+[2026-07-03 19:21:22] CSV -> stresstest/logs/stress-20260703-192120.csv (60 cols)
+[2026-07-03 19:21:22] config: half_cycle=2.0s steps=50 hold=0.3s window=5.6s
+[2026-07-03 19:21:22] ramping to OPEN pose...
+[2026-07-03 19:21:24] [2mhb[0m t= 0.00h cyc=0 close MOVE loop_ok=0 noread=0 overrun=0 estop=0 [92mTmax=0C[0m rdfail=0 [92manom=none[0m
+[2026-07-03 19:21:28] [2mhb[0m t= 0.00h cyc=0 open  MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=51C[0m rdfail=0 [92manom=none[0m
+[2026-07-03 19:21:32] [2mhb[0m t= 0.00h cyc=1 close MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=51C[0m rdfail=0 [92manom=none[0m
+[2026-07-03 19:21:33] [91m[1mANOMALY[0m motor joint index_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:33] [91m[1mANOMALY[0m motor joint middle_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:33] [91m[1mANOMALY[0m motor joint ring_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:33] [91m[1mANOMALY[0m motor joint ring_pip: not moving NOISY (motor stall/overload?) range=0.0046 rad over 6 samples
+[2026-07-03 19:21:35] [92mRECOVERED[0m mot_frozen_middle_abd (lasted 2.1s)
+[2026-07-03 19:21:35] [92mRECOVERED[0m mot_frozen_ring_abd (lasted 2.1s)
+[2026-07-03 19:21:35] [92mRECOVERED[0m mot_frozen_ring_pip (lasted 2.1s)
+[2026-07-03 19:21:36] [2mhb[0m t= 0.00h cyc=1 open  MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=55C[0m rdfail=0 [91manom=['mot_frozen_index_abd'][0m
+[2026-07-03 19:21:39] [92mRECOVERED[0m mot_frozen_index_abd (lasted 6.1s)
+[2026-07-03 19:21:40] [91m[1mANOMALY[0m motor joint thumb_dip: not moving NOISY (motor stall/overload?) range=0.0077 rad over 6 samples
+[2026-07-03 19:21:40] [91m[1mANOMALY[0m motor joint thumb_mcp: not moving NOISY (motor stall/overload?) range=0.0015 rad over 6 samples
+[2026-07-03 19:21:40] [2mhb[0m t= 0.00h cyc=2 close MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=56C[0m rdfail=0 [91manom=['mot_frozen_thumb_dip', 'mot_frozen_thumb_mcp'][0m
+[2026-07-03 19:21:44] [91m[1mANOMALY[0m motor joint index_mcp: not moving NOISY (motor stall/overload?) range=0.0215 rad over 6 samples
+[2026-07-03 19:21:44] [91m[1mANOMALY[0m motor joint index_pip: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:44] [2mhb[0m t= 0.01h cyc=2 open  MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=55C[0m rdfail=0 [91manom=['mot_frozen_index_mcp', 'mot_frozen_index_pip', 'mot_frozen_thumb_dip', 'mot_frozen_thumb_mcp'][0m
+[2026-07-03 19:21:46] [91m[1mANOMALY[0m motor joint index_abd: not moving NOISY (motor stall/overload?) range=0.0123 rad over 6 samples
+[2026-07-03 19:21:46] [91m[1mANOMALY[0m motor joint middle_abd: not moving NOISY (motor stall/overload?) range=0.0092 rad over 6 samples
+[2026-07-03 19:21:46] [91m[1mANOMALY[0m motor joint ring_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:46] [91m[1mANOMALY[0m motor joint ring_pip: not moving NOISY (motor stall/overload?) range=0.0015 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint middle_mcp: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint middle_pip: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint pinky_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint pinky_mcp: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint ring_mcp: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint thumb_abd: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:47] [91m[1mANOMALY[0m motor joint thumb_cmc: not moving EXACT (read stuck?) range=0.0000 rad over 6 samples
+[2026-07-03 19:21:48] [2mhb[0m t= 0.01h cyc=3 close MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=55C[0m rdfail=0 [91manom=['mot_frozen_index_abd', 'mot_frozen_index_mcp', 'mot_frozen_index_pip', 'mot_frozen_middle_abd', 'mot_frozen_middle_mcp', 'mot_frozen_middle_pip', 'mot_frozen_pinky_abd', 'mot_frozen_pinky_mcp', 'mot_frozen_ring_abd', 'mot_frozen_ring_mcp', 'mot_frozen_ring_pip', 'mot_frozen_thumb_abd', 'mot_frozen_thumb_cmc', 'mot_frozen_thumb_dip', 'mot_frozen_thumb_mcp'][0m
+[2026-07-03 19:21:52] [2mhb[0m t= 0.01h cyc=4 close MOVE loop_ok=0 noread=0 overrun=0 estop=0 [93mTmax=55C[0m rdfail=0 [91manom=['mot_frozen_index_abd', 'mot_frozen_index_mcp', 'mot_frozen_index_pip', 'mot_frozen_middle_abd', 'mot_frozen_middle_mcp', 'mot_frozen_middle_pip', 'mot_frozen_pinky_abd', 'mot_frozen_pinky_mcp', 'mot_frozen_ring_abd', 'mot_frozen_ring_mcp', 'mot_frozen_ring_pip', 'mot_frozen_thumb_abd', 'mot_frozen_thumb_cmc', 'mot_frozen_thumb_dip', 'mot_frozen_thumb_mcp'][0m
+[2026-07-03 19:21:54] signal 15 received; shutting down
+[2026-07-03 19:21:54] signal 15 received; shutting down
+[2026-07-03 19:35:33] disable_torque error: SerialException('read failed: [Errno 6] Device not configured')
+[2026-07-04 22:03:22] signal 15 received; shutting down
+[2026-07-04 22:03:22] ===== stress run ended 2026-07-04 22:03:22 =====

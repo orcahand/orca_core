@@ -1,0 +1,17 @@
+[2026-07-03 19:20:58] ===== stress run started 2026-07-03 19:20:58 =====
+[2026-07-03 19:20:58] loaded hand class: OrcaHand (feedback=False tactile=False)
+[2026-07-03 19:20:58] connect: True | Connection successful
+[2026-07-03 19:20:58] encoder-feedback joints: []
+[2026-07-03 19:20:58] normal-controller joints: ['index_abd', 'index_mcp', 'index_pip', 'middle_abd', 'middle_mcp', 'middle_pip', 'pinky_abd', 'pinky_mcp', 'ring_abd', 'ring_mcp', 'ring_pip', 'thumb_abd', 'thumb_cmc', 'thumb_dip', 'thumb_mcp']
+[2026-07-03 19:20:58] frozen (never moved): ['wrist', 'pinky_pip']
+[2026-07-03 19:20:58] [91mFATAL: AttributeError("'OrcaHand' object has no attribute 'motor_to_joint_dict'")[0m
+Traceback (most recent call last):
+  File "/Users/fbourquin/Documents/orca/orca_core/stresstest/stress_comm.py", line 610, in main
+    test.connect()
+    ~~~~~~~~~~~~^^
+  File "/Users/fbourquin/Documents/orca/orca_core/stresstest/stress_comm.py", line 256, in connect
+    self._m2j = self.hand.motor_to_joint_dict
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'OrcaHand' object has no attribute 'motor_to_joint_dict'
+
+[2026-07-03 19:20:59] ===== stress run ended 2026-07-03 19:20:59 =====
