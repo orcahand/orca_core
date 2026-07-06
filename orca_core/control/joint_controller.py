@@ -40,6 +40,19 @@ class JointController:
     def num_joints(self) -> int:
         return self._num_joints
 
+    @property
+    def correction_max_deg(self) -> np.ndarray:
+        return self._correction_max_deg.copy()
+
+    @property
+    def i_clamp_deg(self) -> np.ndarray:
+        return self._i_clamp_deg.copy()
+
+    @property
+    def integral_output(self) -> np.ndarray:
+        """Integral contribution to the correction, ``Ki * ierr``, degrees."""
+        return self._Ki * self._ierr
+
     def set_gains(
         self,
         Kp: ScalarOrArray,
@@ -99,6 +112,21 @@ class JointController:
         )
         self._last_correction = u
         return u.copy()
+
+    def drain_integral(self, delta_deg: np.ndarray) -> None:
+        """Remove ``delta_deg`` (output degrees) from the integral
+        contribution. Used when persistent trim is transferred into the
+        adaptive feed-forward bias: draining the same amount the bias gained
+        keeps the total command continuous. Joints with ``Ki == 0`` are left
+        untouched (their integral contributes nothing)."""
+        delta = np.asarray(delta_deg, dtype=np.float64)
+        if delta.shape != (self._num_joints,):
+            raise ValueError(
+                f"delta_deg must have shape ({self._num_joints},), got {delta.shape}"
+            )
+        safe_ki = np.where(self._Ki > 0, self._Ki, 1.0)
+        drained = self._ierr - np.where(self._Ki > 0, delta / safe_ki, 0.0)
+        self._ierr = np.clip(drained, -self._i_clamp_deg, self._i_clamp_deg)
 
     def reset(self) -> None:
         """Zero the integrator and the last-correction snapshot."""

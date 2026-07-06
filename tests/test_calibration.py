@@ -32,6 +32,18 @@ def calib_dir(tmp_path):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def fast_waypoint_settle(monkeypatch):
+    """The default-enabled waypoint-fit pass settles on real-time windows;
+    shrink them so mock calibrations (instant motors) stay fast."""
+    from orca_core import calibration_joint_encoder as jec
+
+    monkeypatch.setattr(jec, "WAYPOINT_SETTLE_WINDOW_S", 0.02)
+    monkeypatch.setattr(jec, "WAYPOINT_SETTLE_POLL_S", 0.0005)
+    monkeypatch.setattr(jec, "WAYPOINT_SETTLE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(jec, "WAYPOINT_SETTLE_MIN_SAMPLES", 3)
+
+
 def check_calibrated(hand, calib_path):
     assert hand.calibrated, "Hand should be marked as calibrated"
 

@@ -340,6 +340,24 @@ class OrcaHandJointFeedback(OrcaHand):
             raise RuntimeError("joint loop not running; call connect() first")
         return self._loop.get_correction()
 
+    def get_adaptive_bias(self) -> Dict[str, float]:
+        """Per-joint adaptive feed-forward bias in degrees — the persistent
+        trim (slack buildup, calibration offset) the loop has migrated out of
+        the PI integrator. A joint pinned at the clamp (±3° by default) means
+        the joint→motor map is off by more than the adapter can absorb."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        return self._loop.get_adaptive_bias()
+
+    def reset_adaptive_bias(self) -> None:
+        """Zero the learned feed-forward bias. The command changes by the
+        discarded bias on the next cycle and the PI re-trims it, so expect a
+        small transient — use after a recalibration or when the learned
+        offsets are suspect."""
+        if self._loop is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        self._loop.reset_adaptive_bias()
+
     def get_loop_stats(self) -> Dict[str, float]:
         """Diagnostic counters from the joint-loop thread (cycles_ok,
         cycles_overrun, e_stops, last_dt_s, fallback_active, …)."""

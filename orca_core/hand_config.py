@@ -211,6 +211,7 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_step_period: float = 0.01  # s
     calibration_threshold: float = 0.01  # rad
     calibration_num_stable: int = 20
+    calibration_waypoint_fit: bool = True
     calibration_sequence: List[dict] = field(default_factory=list)
     use_joint_feedback: bool | None = None
     joint_encoder_joints: List[str] | None = None
@@ -307,6 +308,8 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["calibration_threshold"] = float(config["calibration_threshold"])
         if "calibration_num_stable" in config:
             kwargs["calibration_num_stable"] = int(config["calibration_num_stable"])
+        if "calibration_waypoint_fit" in config:
+            kwargs["calibration_waypoint_fit"] = bool(config["calibration_waypoint_fit"])
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
         if "use_joint_feedback" in config:

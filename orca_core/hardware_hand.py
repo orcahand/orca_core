@@ -22,9 +22,13 @@ from .calibration import (
     JointEncoderCal,
     joint_encoder_calibration_to_yaml,
 )
+from . import calibration_joint_encoder
 from .calibration_joint_encoder import (
     JointEncoderCalibrationError,
+    fit_linear_joint_map,
+    fold_linear_correction,
     sample_anchor_count_from_client,
+    wait_for_settled_angles,
 )
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
@@ -604,7 +608,11 @@ class OrcaHand(BaseHand):
                 Joints not visited keep their previously-persisted values.
             joint_encoder_client: With ``self.config.joint_feedback_enabled``
                 and an encoder client, the encoder pass also runs and writes a
-                ``joint_encoder_calibration:`` block.
+                ``joint_encoder_calibration:`` block. Unless
+                ``calibration_waypoint_fit`` is disabled, each joint's map is
+                then refined from settled interior waypoints measured by the
+                encoders — the persisted ``motor_limits`` become effective map
+                endpoints rather than raw released-hardstop readings.
         """
         if blocking:
             self._task_stop_event.clear()
@@ -939,6 +947,23 @@ class OrcaHand(BaseHand):
                 print("Joint calibrated: ", joint)
                 calibrated_joints[joint] = 0.0
 
+            # With the endpoint map for this step's joints fresh, refine it
+            # from settled interior waypoints before persisting — the fold
+            # happens here so the yaml is written once, with corrected values.
+            if (
+                encoder_pass_active
+                and self.config.calibration_waypoint_fit
+                and calibrated_joints
+            ):
+                self._run_waypoint_fit_for_step(
+                    step=step,
+                    calibrated_joints=calibrated_joints,
+                    motor_limits=motor_limits,
+                    joint_to_motor_ratios=joint_to_motor_ratios,
+                    joint_encoder_calibration=joint_encoder_calibration,
+                    joint_encoder_client=joint_encoder_client,
+                )
+
             # Persist partial progress after every step so an interrupted run
             # never loses the work already done.
             update_yaml(
@@ -1054,6 +1079,227 @@ class OrcaHand(BaseHand):
                 f"Joint {joint} encoder anchor sampled: "
                 f"anchor_count={anchor_count} (at ROM upper {anchor_angle_deg:.2f}°)"
             )
+
+    def _run_waypoint_fit_for_step(
+        self,
+        *,
+        step,
+        calibrated_joints: Dict[str, float],
+        motor_limits: Dict[int, list],
+        joint_to_motor_ratios: Dict[int, float],
+        joint_encoder_calibration: Dict[str, JointEncoderCal],
+        joint_encoder_client,
+    ) -> None:
+        """Refine the joint→motor map of the joints completed in ``step``
+        from settled interior waypoints measured by the joint encoders.
+
+        The endpoint calibration reads motor limits after a torque release,
+        so the map inherits the tendon settle-back bias (offset and scale,
+        worst near the hardstops). This pass commands each completed joint
+        through interior waypoints on its way back to neutral, waits for the
+        encoder to settle at each (see :func:`wait_for_settled_angles`), fits
+        ``measured = a·commanded + b`` and folds the correction into
+        ``motor_limits`` / ``joint_to_motor_ratios`` in place. Waypoints the
+        return leg crosses again are re-sampled from the opposite direction,
+        making the fit direction-balanced; the out-vs-back difference is
+        printed as a per-joint hysteresis diagnostic. A fit failing the
+        sanity bounds leaves the endpoint calibration untouched. No motor
+        reads are issued, so the encoder stream is not contended.
+        """
+        from .hardware.sensing.constants import (
+            JOINT_ENCODER_POLARITY,
+            JOINT_TO_ENCODER_SLOT,
+        )
+
+        encoder_backed = set(self._encoder_backed_joints())
+        joints = [
+            j
+            for j in step[JOINTS]
+            if j in calibrated_joints
+            and j in encoder_backed
+            and j in joint_encoder_calibration
+        ]
+        if not joints:
+            return
+
+        slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
+        anchors = np.array(
+            [joint_encoder_calibration[j].enc_at_anchor_count for j in joints],
+            dtype=np.int64,
+        )
+        polarities = np.array(
+            [JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64
+        )
+        anchor_angles = np.array(
+            [self.config.joint_roms_dict[j][1] for j in joints], dtype=np.float64
+        )
+
+        schedules = {j: self._waypoint_schedule(j, step[JOINTS][j]) for j in joints}
+        num_poses = max(len(s) for s in schedules.values())
+        for schedule in schedules.values():
+            # Pad with the final (neutral, no-sample) pose so all joints in
+            # the step move in lockstep.
+            schedule.extend([schedule[-1]] * (num_poses - len(schedule)))
+
+        samples: Dict[str, list] = {j: [] for j in joints}
+        for pose_idx in range(num_poses):
+            if self._task_stop_event.is_set():
+                print(
+                    "Calibration stop requested; keeping endpoint calibration "
+                    "for this step (waypoint fit skipped)."
+                )
+                return
+            command = {
+                self.config.joint_to_motor_map[j]: self._waypoint_motor_pos(
+                    j, schedules[j][pose_idx][0], motor_limits, joint_to_motor_ratios
+                )
+                for j in joints
+            }
+            self._set_motor_pos(command)
+            try:
+                measured = wait_for_settled_angles(
+                    joint_encoder_client, slots, anchors, polarities, anchor_angles
+                )
+            except JointEncoderCalibrationError as e:
+                print(
+                    f"\033[93mWARNING: waypoint fit aborted, keeping endpoint "
+                    f"calibration: {e}\033[0m"
+                )
+                return
+            for i, j in enumerate(joints):
+                angle, record = schedules[j][pose_idx]
+                if not record:
+                    continue
+                if np.isfinite(measured[i]):
+                    samples[j].append((angle, float(measured[i])))
+                else:
+                    print(
+                        f"\033[93mWARNING: joint {j} did not settle at waypoint "
+                        f"{angle:.1f}°; sample skipped\033[0m"
+                    )
+
+        for j in joints:
+            self._fold_waypoint_fit(j, samples[j], motor_limits, joint_to_motor_ratios)
+
+    def _waypoint_schedule(self, joint: str, direction: str) -> list:
+        """Ordered ``(angle_deg, record_sample)`` poses for one joint: the
+        interior waypoints swept away from the just-pressed hardstop, then
+        any waypoint the way back to neutral re-crosses (opposite-direction
+        samples), ending at neutral."""
+        rom_lo, rom_up = self.config.joint_roms_dict[joint]
+        span = rom_up - rom_lo
+        waypoints = [
+            rom_lo + f * span
+            for f in calibration_joint_encoder.WAYPOINT_FIT_FRACTIONS
+        ]
+        start = rom_up if direction == FLEX else rom_lo
+        outbound = sorted(waypoints, key=lambda w: abs(w - start))
+        neutral = float(np.clip(0.0, rom_lo, rom_up))
+        last = outbound[-1]
+        toward_neutral = np.sign(neutral - last)
+        reversal = [
+            w
+            for w in waypoints
+            if toward_neutral != 0
+            and (w - last) * toward_neutral > 1e-9
+            and (w - neutral) * toward_neutral <= 1e-9
+        ]
+        reversal.sort(key=lambda w: abs(w - last))
+        poses = [(w, True) for w in outbound] + [(w, True) for w in reversal]
+        if not (reversal and abs(reversal[-1] - neutral) < 1e-9):
+            poses.append((neutral, False))
+        return poses
+
+    def _waypoint_motor_pos(
+        self,
+        joint: str,
+        angle_deg: float,
+        motor_limits: Dict[int, list],
+        joint_to_motor_ratios: Dict[int, float],
+    ) -> float:
+        """Joint→motor mapping using the in-flight calibration values (the
+        instance calibration is not updated until the step persists)."""
+        motor_id = self.config.joint_to_motor_map[joint]
+        lower = motor_limits[motor_id][0]
+        ratio = joint_to_motor_ratios[motor_id]
+        rom_lo, rom_up = self.config.joint_roms_dict[joint]
+        if self.config.joint_inversion_dict.get(joint, False):
+            base = lower + (rom_up - angle_deg) * ratio
+        else:
+            base = lower + (angle_deg - rom_lo) * ratio
+        return base + (self._wrap_offsets_dict or {}).get(motor_id, 0.0)
+
+    def _fold_waypoint_fit(
+        self,
+        joint: str,
+        points: list,
+        motor_limits: Dict[int, list],
+        joint_to_motor_ratios: Dict[int, float],
+    ) -> None:
+        """Fit the collected waypoint samples for one joint and, when the fit
+        passes the sanity bounds, fold it into the in-flight calibration
+        dicts. Any failure keeps the endpoint calibration and warns."""
+        motor_id = self.config.joint_to_motor_map[joint]
+        if len(points) < calibration_joint_encoder.WAYPOINT_FIT_MIN_POINTS:
+            print(
+                f"\033[93mWARNING: joint {joint} has only {len(points)} settled "
+                f"waypoint(s); keeping endpoint calibration\033[0m"
+            )
+            return
+
+        by_angle: Dict[float, list] = {}
+        for cmd, meas in points:
+            by_angle.setdefault(round(cmd, 6), []).append(meas)
+        for cmd, values in by_angle.items():
+            if len(values) == 2:
+                print(
+                    f"Joint {joint} hysteresis at {cmd:.1f}°: "
+                    f"{values[0] - values[1]:+.2f}° (outbound − return)"
+                )
+
+        try:
+            a, b, residuals = fit_linear_joint_map(points)
+        except ValueError as e:
+            print(
+                f"\033[93mWARNING: joint {joint} waypoint fit failed ({e}); "
+                f"keeping endpoint calibration\033[0m"
+            )
+            return
+
+        scale_lo, scale_hi = calibration_joint_encoder.WAYPOINT_FIT_SCALE_BOUNDS
+        offset_max = calibration_joint_encoder.WAYPOINT_FIT_OFFSET_MAX_DEG
+        if not (scale_lo <= a <= scale_hi) or abs(b) > offset_max:
+            print(
+                f"\033[93mWARNING: joint {joint} waypoint fit out of bounds "
+                f"(a={a:.3f}, b={b:+.2f}°); keeping endpoint calibration\033[0m"
+            )
+            return
+
+        max_residual = float(np.max(np.abs(residuals)))
+        if max_residual > calibration_joint_encoder.WAYPOINT_FIT_RESIDUAL_WARN_DEG:
+            print(
+                f"\033[93mWARNING: joint {joint} waypoint fit residual "
+                f"{max_residual:.2f}° suggests nonlinearity beyond the linear "
+                f"map; folding the linear part anyway\033[0m"
+            )
+
+        rom_lo, rom_up = self.config.joint_roms_dict[joint]
+        inverted = self.config.joint_inversion_dict.get(joint, False)
+        new_lower, new_upper, new_ratio = fold_linear_correction(
+            a,
+            b,
+            motor_limits[motor_id][0],
+            joint_to_motor_ratios[motor_id],
+            rom_lo,
+            rom_up,
+            inverted,
+        )
+        motor_limits[motor_id] = [new_lower, new_upper]
+        joint_to_motor_ratios[motor_id] = new_ratio
+        print(
+            f"Joint {joint} waypoint fit applied: a={a:.3f}, b={b:+.2f}°, "
+            f"max residual {max_residual:.2f}°"
+        )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
         control_mode = self.config.control_mode

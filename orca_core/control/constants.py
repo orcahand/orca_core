@@ -28,6 +28,18 @@ DEFAULT_KI = 12.0          # degrees of correction per degree·second of error
 DEFAULT_CORRECTION_MAX_DEG = 60.0
 DEFAULT_I_CLAMP_DEG = 15.0
 
+# Adaptive feed-forward bias (BiasAdapter): persistent PI trim migrates
+# into a per-joint offset with a minutes-scale time constant, gated to
+# quasistatic, unsaturated, low-velocity cycles. The clamp bounds the
+# worst case of any wrong adaptation; the deadband sits above encoder
+# quantisation (~0.022°/LSB) so noise is never chased.
+BIAS_ADAPT_TAU_S = 120.0
+BIAS_ADAPT_MAX_DEG = 3.0
+BIAS_ADAPT_DEADBAND_DEG = 0.05
+BIAS_ADAPT_SETTLE_S = 2.0
+BIAS_ADAPT_VEL_MAX_DEG_S = 2.0
+BIAS_ADAPT_VEL_FILTER_TAU_S = 0.2
+
 # Freshness warning is rate-limited so a chronic stale-encoder condition
 # doesn't drown the log file.
 FRESHNESS_WARN_INTERVAL_S = 1.0

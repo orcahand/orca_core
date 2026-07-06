@@ -331,6 +331,88 @@ def test_pause_writes_holds_motors_but_keeps_measurements_live(calibrated_hand):
     assert motor_snapshot() != before  # commands flow again
 
 
+def test_adaptive_bias_learns_persistent_offset(calibrated_hand):
+    """A quasistatic target the measured pose never reaches (persistent map
+    error) migrates from the integrator into the adaptive bias once the
+    settle gate passes, and the motor command includes the learned bias."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(
+        calibrated_hand, encoder, Kp=0.1, Ki=0.2, correction_max_deg=30.0
+    )
+    loop.prime_for_step()
+    target_deg = 2.0
+    loop.set_target({j: target_deg for j in calibrated_hand._encoder_backed_joints()})
+    for _ in range(400):  # 4 s at dt=0.01; settle gate opens at 2 s
+        loop.step_once(dt=0.01)
+
+    bias = loop.get_adaptive_bias()
+    assert all(v > 0.0 for v in bias.values())
+    correction = loop.get_correction()
+    for joint in calibrated_hand._encoder_backed_joints():
+        motor_id = calibrated_hand.config.joint_to_motor_map[joint]
+        idx = loop._joint_names.index(joint)
+        expected = _expected_motor_pos(
+            calibrated_hand, joint, target_deg + correction[joint] + bias[joint]
+        ) + loop._motor_bias[idx]
+        assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
+            expected, abs=1e-6
+        )
+
+
+def test_rebase_preserves_adaptive_bias_and_stays_bumpless(calibrated_hand):
+    """``rebase()`` keeps the learned bias (it is feed-forward knowledge, not
+    transient state) and the recaptured motor-bias anchor accounts for it, so
+    the next cycle still leaves the motors where they are."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, Ki=8.0)
+    loop.prime_for_step()
+    loop._bias_adapter._bias[:] = 1.5
+
+    for mid in loop._motor_ids:
+        calibrated_hand._motor_client._pos[mid] = 0.123
+    loop.rebase()
+
+    assert all(v == pytest.approx(1.5) for v in loop.get_adaptive_bias().values())
+    pos_before = dict(calibrated_hand._motor_client._pos)
+    loop.step_once(dt=0.01)
+    assert calibrated_hand._motor_client._pos == pytest.approx(pos_before, abs=1e-6)
+
+
+def test_prime_for_step_resets_adaptive_bias(calibrated_hand):
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    loop.prime_for_step()
+    loop._bias_adapter._bias[:] = 1.0
+    loop.prime_for_step()
+    assert all(v == 0.0 for v in loop.get_adaptive_bias().values())
+
+
+def test_tier3_base_target_includes_adaptive_bias(calibrated_hand):
+    """The open-loop fallback keeps the learned feed-forward bias — that is
+    the part of the trim that works without feedback."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=10.0)
+    loop.prime_for_step()
+    bias_deg = 1.0
+    loop._bias_adapter._bias[:] = bias_deg
+    target_deg = 4.0
+    loop.set_target({j: target_deg for j in calibrated_hand._encoder_backed_joints()})
+
+    encoder.freshness_ms = WATCHDOG_HOLD_BASE_MS + 50
+    loop.step_once(dt=0.005)
+
+    for joint in calibrated_hand._encoder_backed_joints():
+        motor_id = calibrated_hand.config.joint_to_motor_map[joint]
+        idx = loop._joint_names.index(joint)
+        expected = _expected_motor_pos(
+            calibrated_hand, joint, target_deg + bias_deg
+        ) + loop._motor_bias[idx]
+        assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
+            expected, abs=1e-6
+        )
+    assert loop.get_stats()["cycles_held_base"] >= 1
+
+
 def test_offset_read_rejects_failed_bus_read(calibrated_hand):
     """A failed bulk read (reader reports not-ok) must not be turned into wrap
     offsets — the guard raises instead of baking -2π from stale cache."""
