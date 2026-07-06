@@ -303,6 +303,9 @@ def test_encoder_backed_joints_empty_when_field_unset(tmp_path):
     config_path = tmp_path / "config.yaml"
     shutil.copy(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", None)
+    # Clearing the encoder hardware also clears the feedback opt-in; an
+    # explicit use_joint_feedback: true with no encoders is now rejected.
+    update_yaml(str(config_path), "use_joint_feedback", None)
     hand = MockOrcaHand(config_path=str(config_path))
     assert hand._encoder_backed_joints() == []
 

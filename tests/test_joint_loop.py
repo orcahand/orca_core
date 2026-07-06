@@ -85,10 +85,11 @@ def _expected_motor_pos(hand, joint: str, joint_command_deg: float) -> float:
     return base + hand._wrap_offsets_dict.get(motor_id, 0.0)
 
 
-def test_bumpless_first_step_writes_base_motor_target_with_no_correction(calibrated_hand):
-    """At ``prime_for_step`` the target latches to the measured pose, so
-    the first ``step_once`` produces a zero correction and writes the
-    base motor target for the (decoded) measured pose."""
+def test_bumpless_first_step_leaves_motors_where_they_are(calibrated_hand):
+    """At ``prime_for_step`` the target latches to the measured pose and the
+    feed-forward bias absorbs the motor↔encoder calibration offset, so the
+    first ``step_once`` produces a zero correction and leaves every motor at
+    its current position (no startup lurch)."""
     measured_angle_deg = 3.0
     encoder = StaticEncoderSource(
         encoder_reading_from_joint_angles(
@@ -98,8 +99,10 @@ def test_bumpless_first_step_writes_base_motor_target_with_no_correction(calibra
     )
     loop = _make_loop(calibrated_hand, encoder, Kp=1.0)
     loop.prime_for_step()
-    primed_targets = {
-        joint: loop._target_deg[loop._joint_names.index(joint)]
+    pos_before = {
+        calibrated_hand.config.joint_to_motor_map[joint]: calibrated_hand._motor_client._pos[
+            calibrated_hand.config.joint_to_motor_map[joint]
+        ]
         for joint in calibrated_hand._encoder_backed_joints()
     }
     loop.step_once(dt=0.01)
@@ -108,9 +111,8 @@ def test_bumpless_first_step_writes_base_motor_target_with_no_correction(calibra
     for joint in calibrated_hand._encoder_backed_joints():
         assert correction[joint] == pytest.approx(0.0, abs=1e-9)
         motor_id = calibrated_hand.config.joint_to_motor_map[joint]
-        expected = _expected_motor_pos(calibrated_hand, joint, primed_targets[joint])
         actual = calibrated_hand._motor_client._pos[motor_id]
-        assert actual == pytest.approx(expected, abs=1e-6)
+        assert actual == pytest.approx(pos_before[motor_id], abs=1e-6)
 
 
 def test_step_once_applies_correction_to_motor_target(calibrated_hand):
@@ -136,12 +138,37 @@ def test_step_once_applies_correction_to_motor_target(calibrated_hand):
     for joint in calibrated_hand._encoder_backed_joints():
         assert correction[joint] == pytest.approx(expected_correction, abs=correction_tol)
         motor_id = calibrated_hand.config.joint_to_motor_map[joint]
+        bias = loop._motor_bias[loop._joint_names.index(joint)]
         expected_motor = _expected_motor_pos(
             calibrated_hand, joint, target_offset_deg + correction[joint],
-        )
+        ) + bias
         assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
             expected_motor, abs=1e-6
         )
+
+
+def test_rebase_is_bumpless_after_motors_moved(calibrated_hand):
+    """After the motors are moved out from under a running loop (torque off)
+    and the integrator has wound up, ``rebase()`` re-anchors so the next
+    ``step_once`` leaves the motors where they are — no lurch."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, Ki=8.0)
+    loop.prime_for_step()
+    # Wind up the integrator by holding a target away from the measured pose.
+    loop.set_target({j: 8.0 for j in calibrated_hand._encoder_backed_joints()})
+    for _ in range(20):
+        loop.step_once(dt=0.01)
+    assert np.any(loop._controller.get_state()["ierr_deg"] != 0.0)
+
+    # Simulate the hand being posed by hand while torque was off.
+    for mid in loop._motor_ids:
+        calibrated_hand._motor_client._pos[mid] = 0.123
+
+    loop.rebase()
+    assert np.allclose(loop._controller.get_state()["ierr_deg"], 0.0)
+    pos_before = dict(calibrated_hand._motor_client._pos)
+    loop.step_once(dt=0.01)
+    assert calibrated_hand._motor_client._pos == pytest.approx(pos_before, abs=1e-6)
 
 
 def test_step_once_with_no_reading_writes_nothing(calibrated_hand):
@@ -209,7 +236,8 @@ def test_tier3_drops_trim_writes_base_motor_target_only(calibrated_hand):
 
     for joint in calibrated_hand._encoder_backed_joints():
         motor_id = calibrated_hand.config.joint_to_motor_map[joint]
-        expected = _expected_motor_pos(calibrated_hand, joint, target_deg)
+        bias = loop._motor_bias[loop._joint_names.index(joint)]
+        expected = _expected_motor_pos(calibrated_hand, joint, target_deg) + bias
         assert calibrated_hand._motor_client._pos[motor_id] == pytest.approx(
             expected, abs=1e-6
         )
@@ -268,3 +296,47 @@ def test_jitter_monitor_estops_after_pathological_streak(calibrated_hand):
     assert loop.get_stats()["fallback_active"] is False
     loop._record_loop_period(loop._target_period * 12.0)
     assert loop.get_stats()["fallback_active"] is True
+
+
+def test_pause_writes_holds_motors_but_keeps_measurements_live(calibrated_hand):
+    """While writes are paused, ``step_once`` issues no motor command (so a
+    concurrent round-trip op — e.g. a torque toggle — isn't stalled by the
+    loop's sync_writes) yet still decodes the encoder into the measured pose.
+    Resuming restores normal command output."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0)
+    loop.prime_for_step()
+    loop.set_target({j: 5.0 for j in calibrated_hand._encoder_backed_joints()})
+
+    def motor_snapshot():
+        return {
+            mid: calibrated_hand._motor_client._pos[mid]
+            for mid in (calibrated_hand.config.joint_to_motor_map[j]
+                        for j in calibrated_hand._encoder_backed_joints())
+        }
+
+    before = motor_snapshot()
+    loop.pause_writes()
+    loop.step_once(dt=0.01)
+
+    # No motor moved while paused ...
+    assert motor_snapshot() == before
+    # ... but the measured pose is still updated from the encoder stream.
+    measured = loop.get_measured_joints()
+    for j in calibrated_hand._encoder_backed_joints():
+        assert measured[j] == pytest.approx(0.0, abs=0.05)  # within one encoder LSB
+
+    loop.resume_writes()
+    loop.step_once(dt=0.01)
+    assert motor_snapshot() != before  # commands flow again
+
+
+def test_offset_read_rejects_failed_bus_read(calibrated_hand):
+    """A failed bulk read (reader reports not-ok) must not be turned into wrap
+    offsets — the guard raises instead of baking -2π from stale cache."""
+    reader = getattr(calibrated_hand._motor_client, "_pos_vel_cur_reader", None)
+    if reader is None:
+        pytest.skip("mock has no SDK reader to simulate a failed read")
+    reader.last_read_ok = False
+    with pytest.raises(RuntimeError, match="no status packets"):
+        calibrated_hand._read_motor_pos_for_offsets(retries=2, retry_interval=0.0)
