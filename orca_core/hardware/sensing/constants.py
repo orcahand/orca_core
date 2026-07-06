@@ -19,6 +19,14 @@ DEFAULT_SENSOR_BAUDRATE = 921600
 DEFAULT_ENCODER_BAUDRATE = 2_000_000
 
 # ---------------------------------------------------------------------------
+# Serial discovery
+# ---------------------------------------------------------------------------
+
+FTDI_VID = 0x0403
+"""USB vendor ID for FTDI USB-serial adapters, used as a discovery fallback
+(see serial_discovery.detect_encoder_stream)."""
+
+# ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
 
@@ -210,12 +218,6 @@ pure and the register writes are idempotent, so re-sending is safe."""
 
 LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 """How long ``disconnect`` waits for the demuxer thread to exit."""
-
-LINK_PAUSE_SETTLE_S = 0.05
-"""Pause grace period that lets the demuxer observe the paused flag and stop reading."""
-
-LINK_PAUSED_POLL_S = 0.01
-"""Idle poll interval the demuxer loops on while reads are paused."""
 
 ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
 """How long ``JointEncoderClient.start_stream`` waits for the first valid

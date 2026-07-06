@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import serial as pyserial
 
 from orca_core.constants import ORCA_ID_RESP_MOTOR, ORCA_ID_RESP_SENSOR
 from orca_core.hardware.sensing.constants import (
+    AUTO_ENC_PAYLOAD_BYTES,
     DEFAULT_ENCODER_BAUDRATE,
     DEFAULT_SENSOR_BAUDRATE,
+    FTDI_VID,
+    PROTOCOL_HEADER_AUTO_ENC,
 )
+from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.serial_discovery import (
     SensingPorts,
+    _probe_orca_id,
+    _tactile_responds_at,
     baud_for_port,
+    detect_encoder_stream,
     discover_sensing_ports,
     find_motor_port,
     find_tactile_port,
@@ -25,11 +34,14 @@ PAXINI_VID, OH_VID = 0x28E9, 0x2F5D
 PAXINI_PORT = "/dev/cu.paxini"
 OH_MOTOR_PORT = "/dev/cu.oh_motor"
 OH_SENSOR_PORT = "/dev/cu.oh_sensor"
+FTDI_PORT = "/dev/cu.ft232"
 DISCOVERY = "orca_core.hardware.sensing.serial_discovery"
 
 paxini = SimpleNamespace(device=PAXINI_PORT, vid=PAXINI_VID)
 motor = SimpleNamespace(device=OH_MOTOR_PORT, vid=OH_VID)
 sensor = SimpleNamespace(device=OH_SENSOR_PORT, vid=OH_VID)
+ftdi = SimpleNamespace(device=FTDI_PORT, vid=FTDI_VID)
+unknown = SimpleNamespace(device="/dev/cu.mystery", vid=0x1234)
 OH_RESPONSES = {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR, OH_SENSOR_PORT: ORCA_ID_RESP_SENSOR}
 DISCOVERED = SensingPorts("/auto/t", "/auto/e")
 
@@ -152,3 +164,160 @@ def test_baud_for_port(responds, expected):
     with patch(f"{DISCOVERY}._tactile_responds_at",
                side_effect=lambda port, baud: responds.get(baud, False)):
         assert baud_for_port("/dev/x") == expected
+
+
+def test_baud_for_port_warns_on_unverified_fallback(caplog):
+    with patch(f"{DISCOVERY}._tactile_responds_at", return_value=False), \
+            caplog.at_level(logging.WARNING, logger=DISCOVERY):
+        assert baud_for_port("/dev/x") == DEFAULT_SENSOR_BAUDRATE
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "/dev/x" in message
+    assert str(DEFAULT_SENSOR_BAUDRATE) in message
+    assert "config.yaml" in message
+
+
+def test_baud_for_port_silent_when_verified(caplog):
+    with patch(f"{DISCOVERY}._tactile_responds_at", return_value=True), \
+            caplog.at_level(logging.WARNING, logger=DISCOVERY):
+        assert baud_for_port("/dev/x") == DEFAULT_ENCODER_BAUDRATE
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ----- Exclusive probing (busy port = not a candidate) -----------------------
+
+
+def test_probe_orca_id_opens_exclusive_and_skips_busy_port():
+    """A port another client already holds must never be probed."""
+    with patch("serial.Serial",
+               side_effect=pyserial.SerialException("Could not exclusively lock port")) as ser:
+        assert _probe_orca_id(OH_MOTOR_PORT) is None
+    assert ser.call_args.kwargs["exclusive"] is True
+
+
+def test_tactile_probe_opens_exclusive_and_skips_busy_port():
+    with patch("serial.Serial",
+               side_effect=pyserial.SerialException("Could not exclusively lock port")) as ser:
+        assert _tactile_responds_at("/dev/x", DEFAULT_SENSOR_BAUDRATE) is False
+    assert ser.call_args.kwargs["exclusive"] is True
+
+
+# ----- Encoder-stream detection (AA A9) --------------------------------------
+
+
+class FakeSerial:
+    """In-memory pyserial stand-in feeding a fixed byte stream in small chunks."""
+
+    def __init__(self, data: bytes, max_chunk: int = 7):
+        self._data = bytes(data)
+        self._pos = 0
+        self._max_chunk = max_chunk
+
+    def read(self, n: int = 1) -> bytes:
+        n = min(n, self._max_chunk)
+        chunk = self._data[self._pos:self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+    def reset_input_buffer(self) -> None:
+        pass
+
+    def __enter__(self) -> "FakeSerial":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+def _encoder_frame(payload: bytes = bytes(AUTO_ENC_PAYLOAD_BYTES), error_byte: int = 0) -> bytes:
+    """Build a wire-exact AA A9 frame: header + reserved + eff_len(LE) + err + payload + LRC."""
+    body = (
+        PROTOCOL_HEADER_AUTO_ENC
+        + bytes([0x00])
+        + (1 + len(payload)).to_bytes(2, "little")
+        + bytes([error_byte])
+        + payload
+    )
+    return body + bytes([calculate_checksum(body)])
+
+
+def test_detect_encoder_stream_finds_valid_frame():
+    frame = _encoder_frame(payload=bytes(range(AUTO_ENC_PAYLOAD_BYTES)))
+    # Garbage prefix includes a fake AA A9 header with an implausible length,
+    # then a truncated frame, then real frames.
+    stream = b"\x12\x34" + PROTOCOL_HEADER_AUTO_ENC + b"\x00garbage" + frame[:10] + frame + frame
+    with patch("serial.Serial", return_value=FakeSerial(stream)) as ser:
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.2) is True
+    assert ser.call_args.kwargs["exclusive"] is True
+    assert ser.call_args.kwargs["baudrate"] == DEFAULT_ENCODER_BAUDRATE
+
+
+def test_detect_encoder_stream_rejects_bad_lrc():
+    corrupted = bytearray(_encoder_frame())
+    corrupted[-1] ^= 0xFF
+    stream = b"\x00" * 4 + bytes(corrupted) + bytes(corrupted)
+    with patch("serial.Serial", return_value=FakeSerial(stream)):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+def test_detect_encoder_stream_rejects_pure_garbage():
+    with patch("serial.Serial", return_value=FakeSerial(b"\xaa\x55" * 40 + b"noise")):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+def test_detect_encoder_stream_busy_port_is_false():
+    with patch("serial.Serial",
+               side_effect=pyserial.SerialException("Could not exclusively lock port")):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+# ----- FTDI encoder-stream fallback ------------------------------------------
+
+
+def test_ftdi_fallback_used_when_nothing_else_found():
+    """With no dedicated tactile or combined port found, an FTDI port with a
+    live encoder stream fills only the encoder field."""
+    with patch("serial.tools.list_ports.comports", return_value=[ftdi, unknown]), \
+            patch(f"{DISCOVERY}.detect_encoder_stream",
+                  side_effect=lambda port, *a, **kw: port == FTDI_PORT) as det:
+        assert discover_sensing_ports() == SensingPorts(None, FTDI_PORT)
+    # Only FTDI-VID ports are probed; unknown VIDs are never touched.
+    assert [c.args[0] for c in det.call_args_list] == [FTDI_PORT]
+
+
+def test_ftdi_fallback_without_stream_finds_nothing():
+    with patch("serial.tools.list_ports.comports", return_value=[ftdi]), \
+            patch(f"{DISCOVERY}.detect_encoder_stream", return_value=False):
+        assert discover_sensing_ports() == SensingPorts(None, None)
+
+
+def test_ftdi_fallback_not_tried_when_paxini_present():
+    with patch("serial.tools.list_ports.comports", return_value=[paxini, ftdi]), \
+            patch(f"{DISCOVERY}.detect_encoder_stream") as det:
+        ports = discover_sensing_ports()
+    assert ports.tactile == PAXINI_PORT
+    det.assert_not_called()
+
+
+def test_ftdi_fallback_not_tried_when_oh_sensor_present():
+    with patch("serial.tools.list_ports.comports", return_value=[sensor, ftdi]), \
+            patch(f"{DISCOVERY}._probe_orca_id", side_effect=lambda p, *a, **kw: OH_RESPONSES.get(p)), \
+            patch(f"{DISCOVERY}.detect_encoder_stream") as det:
+        ports = discover_sensing_ports()
+    assert ports.encoder == OH_SENSOR_PORT
+    det.assert_not_called()
+
+
+# ----- Zero-probing invariant for fully explicit configuration ---------------
+
+
+def test_resolve_explicit_ports_and_baud_probe_nothing():
+    """Explicit ports + explicit baud must neither open a serial port nor
+    enumerate the system's ports."""
+    with patch("serial.Serial") as ser, \
+            patch("serial.tools.list_ports.comports") as comports:
+        ports = resolve_sensing_ports("/dev/x", "/dev/y", tactile_baud_override=921600)
+    assert ports == SensingPorts("/dev/x", "/dev/y", 921600)
+    ser.assert_not_called()
+    comports.assert_not_called()

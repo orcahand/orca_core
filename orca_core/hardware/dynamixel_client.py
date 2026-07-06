@@ -16,8 +16,9 @@
 
 import atexit
 import logging
+import threading
 import time
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from .motor_client import MotorClient
@@ -110,6 +111,25 @@ class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
 
     NOTE: This only supports Protocol 2.
+
+    Thread safety / lock contract:
+        All bus I/O is serialized by a single reentrant lock
+        (``self._bus_lock``). Every public method that touches the port holds
+        the lock for the whole transaction (request + status reply), so
+        transactions from different threads can never interleave on the wire.
+        Callers therefore do not need their own locking around individual
+        calls; external locks remain harmless but redundant.
+
+        Some methods hold the lock for longer than a single transaction:
+        ``set_torque_enabled`` keeps it across its retry loop (including the
+        ``retry_interval`` sleeps between failed attempts), and hardware-alert
+        recovery (``_handle_hardware_alert``, ``check_overload_and_reboot``)
+        holds it across the motor reboot sequence. Other threads block on the
+        bus for that duration.
+
+        On any failed transaction (comm error/timeout), the OS receive buffer
+        is flushed before the lock is released, so a late status reply can
+        never be consumed as the response to a later transaction.
     """
 
     # The currently open clients.
@@ -152,6 +172,9 @@ class DynamixelClient(MotorClient):
         self.port_handler = self.dxl.PortHandler(port)
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
 
+        # RLock: alert handling re-enters from within a locked read/write path.
+        self._bus_lock = threading.RLock()
+
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
             self.motor_ids,
@@ -186,33 +209,42 @@ class DynamixelClient(MotorClient):
         """
         assert not self.is_connected, 'Client is already connected.'
 
-        if self.port_handler.openPort():
-            logging.info('Succeeded to open port: %s', self.port_name)
-        else:
-            raise OSError(
-                ('Failed to open port at {} (Check that the device is powered '
-                 'on and connected to your computer).').format(self.port_name))
+        with self._bus_lock:
+            if self.port_handler.openPort():
+                logging.info('Succeeded to open port: %s', self.port_name)
+            else:
+                raise OSError(
+                    ('Failed to open port at {} (Check that the device is powered '
+                     'on and connected to your computer).').format(self.port_name))
 
-        if self.port_handler.setBaudRate(self.baudrate):
-            logging.info('Succeeded to set baudrate to %d', self.baudrate)
-        else:
-            raise OSError(
-                ('Failed to set the baudrate to {} (Ensure that the device was '
-                 'configured for this baudrate).').format(self.baudrate))
+            if self.port_handler.setBaudRate(self.baudrate):
+                logging.info('Succeeded to set baudrate to %d', self.baudrate)
+            else:
+                raise OSError(
+                    ('Failed to set the baudrate to {} (Ensure that the device was '
+                     'configured for this baudrate).').format(self.baudrate))
 
-        # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
-        if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+            # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
             try:
-                self.port_handler.ser.set_low_latency_mode(True)
-                logging.info('Enabled low latency mode for USB serial')
-            except Exception:
-                pass  # Not critical if it fails
+                import fcntl
+                fcntl.flock(self.port_handler.ser.fileno(),
+                            fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (ImportError, AttributeError, OSError):
+                pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
 
-        # Clear any pre-existing hardware errors before enabling torque.
-        self.check_overload_and_reboot(self.motor_ids)
+            # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
+            if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                try:
+                    self.port_handler.ser.set_low_latency_mode(True)
+                    logging.info('Enabled low latency mode for USB serial')
+                except Exception:
+                    pass  # Not critical if it fails
 
-        # Start with all motors enabled.
-        self.set_torque_enabled(self.motor_ids, True)
+            # Clear any pre-existing hardware errors before enabling torque.
+            self.check_overload_and_reboot(self.motor_ids)
+
+            # Start with all motors enabled.
+            self.set_torque_enabled(self.motor_ids, True)
 
     def disconnect(self):
         """Disconnects from the Dynamixel device."""
@@ -221,41 +253,61 @@ class DynamixelClient(MotorClient):
         if self.port_handler.is_using:
             logging.error('Port handler in use; cannot disconnect.')
             return
-        # Ensure motors are disabled at the end.
-        self.set_torque_enabled(self.motor_ids, False, retries=0)
-        self.port_handler.closePort()
+        with self._bus_lock:
+            # Ensure motors are disabled at the end.
+            self.set_torque_enabled(self.motor_ids, False, retries=0)
+            self.port_handler.closePort()
         if self in self.OPEN_CLIENTS:
             self.OPEN_CLIENTS.remove(self)
+
+    def _flush_input_buffer(self):
+        """Discards stale RX bytes so a late reply can't be misread as the next response."""
+        ser = getattr(self.port_handler, 'ser', None)
+        if ser is None or not hasattr(ser, 'reset_input_buffer'):
+            return
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
-                           retries: int = -1,
-                           retry_interval: float = 0.25):
+                           retries: int = 3,
+                           retry_interval: float = 0.25) -> List[int]:
         """Sets whether torque is enabled for the motors.
+
+        Holds the bus lock for the entire call, including any retry sleeps.
 
         Args:
             motor_ids: The motor IDs to configure.
             enabled: Whether to engage or disengage the motors.
-            retries: The number of times to retry. If this is <0, will retry
-                forever.
+            retries: The number of times to retry after the first attempt.
+                0 means a single attempt; <0 retries forever.
             retry_interval: The number of seconds to wait between retries.
+
+        Returns:
+            A list of motor IDs that could not be set.
         """
-        remaining_ids = list(motor_ids)
-        while remaining_ids:
-            remaining_ids = self.write_byte(
-                remaining_ids,
-                int(enabled),
-                ADDR_TORQUE_ENABLE,
-            )
-            if remaining_ids:
+        with self._bus_lock:
+            remaining_ids = list(motor_ids)
+            while remaining_ids:
+                remaining_ids = self.write_byte(
+                    remaining_ids,
+                    int(enabled),
+                    ADDR_TORQUE_ENABLE,
+                )
+                if not remaining_ids:
+                    break
                 logging.error('Could not set torque %s for IDs: %s',
                               'enabled' if enabled else 'disabled',
                               str(remaining_ids))
-            if retries == 0:
-                break
-            time.sleep(retry_interval)
-            retries -= 1
+                if retries == 0:
+                    break
+                self._flush_input_buffer()
+                time.sleep(retry_interval)
+                retries -= 1
+            return remaining_ids
 
     def set_operating_mode(self, motor_ids: Sequence[int], mode_value: int):
         """
@@ -266,12 +318,13 @@ class DynamixelClient(MotorClient):
         4: multi-turn position control mode
         5: current-based position control mode
         """
-        # data in EEPROM area can only be written when torque is disabled
-        self.set_torque_enabled(motor_ids, False)
-        self.sync_write(motor_ids, [mode_value]*len(motor_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-        self.set_torque_enabled(motor_ids, True)
-        for mid in motor_ids:
-            self._operating_modes[mid] = mode_value
+        with self._bus_lock:
+            # data in EEPROM area can only be written when torque is disabled
+            self.set_torque_enabled(motor_ids, False)
+            self.sync_write(motor_ids, [mode_value]*len(motor_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+            self.set_torque_enabled(motor_ids, True)
+            for mid in motor_ids:
+                self._operating_modes[mid] = mode_value
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the positions, velocities, and currents.
@@ -333,13 +386,15 @@ class DynamixelClient(MotorClient):
         """
         self.check_connected()
         errored_ids = []
-        for motor_id in motor_ids:
-            comm_result, dxl_error = self.packet_handler.write1ByteTxRx(
-                self.port_handler, motor_id, address, value)
-            success = self.handle_packet_result(
-                comm_result, dxl_error, motor_id, context='write_byte')
-            if not success:
-                errored_ids.append(motor_id)
+        with self._bus_lock:
+            for motor_id in motor_ids:
+                comm_result, dxl_error = self.packet_handler.write1ByteTxRx(
+                    self.port_handler, motor_id, address, value)
+                success = self.handle_packet_result(
+                    comm_result, dxl_error, motor_id, context='write_byte')
+                if not success:
+                    errored_ids.append(motor_id)
+                    self._flush_input_buffer()
         return errored_ids
 
     def sync_write(self, motor_ids: Sequence[int],
@@ -355,44 +410,55 @@ class DynamixelClient(MotorClient):
         """
         times = [time.monotonic()]
         self.check_connected()
-        key = (address, size)
-        if key not in self._sync_writers:
-            self._sync_writers[key] = self.dxl.GroupSyncWrite(
-                self.port_handler, self.packet_handler, address, size)
-        sync_writer = self._sync_writers[key]
-        times.append(time.monotonic())
-        errored_ids = []
-        for motor_id, desired_pos in zip(motor_ids, values):
-            value = signed_to_unsigned(int(desired_pos), size=size)
-            value = value.to_bytes(size, byteorder='little')
-            success = sync_writer.addParam(motor_id, value)
-            if not success:
-                errored_ids.append(motor_id)
+        with self._bus_lock:
+            key = (address, size)
+            if key not in self._sync_writers:
+                self._sync_writers[key] = self.dxl.GroupSyncWrite(
+                    self.port_handler, self.packet_handler, address, size)
+            sync_writer = self._sync_writers[key]
+            times.append(time.monotonic())
+            errored_ids = []
+            for motor_id, desired_pos in zip(motor_ids, values):
+                value = signed_to_unsigned(int(desired_pos), size=size)
+                value = value.to_bytes(size, byteorder='little')
+                success = sync_writer.addParam(motor_id, value)
+                if not success:
+                    errored_ids.append(motor_id)
 
-        if errored_ids:
-            logging.error('Sync write failed for: %s', str(errored_ids))
-        times.append(time.monotonic())
+            if errored_ids:
+                logging.error('Sync write failed for: %s', str(errored_ids))
+            times.append(time.monotonic())
 
-        comm_result = sync_writer.txPacket()
-        self.handle_packet_result(comm_result, context='sync_write')
-        times.append(time.monotonic())
+            comm_result = sync_writer.txPacket()
+            self.handle_packet_result(comm_result, context='sync_write')
+            times.append(time.monotonic())
 
-        sync_writer.clearParam()
+            sync_writer.clearParam()
         times.append(time.monotonic())
         return times
 
     def reboot_motor(self, motor_id: int):
         """Reboots a single motor using the Protocol 2.0 reboot instruction."""
-        comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
-        self.handle_packet_result(comm_result, dxl_error, motor_id, context='reboot')
+        with self._bus_lock:
+            comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
+            success = self.handle_packet_result(
+                comm_result, dxl_error, motor_id, context='reboot')
+            if not success:
+                self._flush_input_buffer()
 
-    def read_hardware_error(self, motor_id: int) -> int:
-        """Reads the Hardware Error Status register (address 70). Returns raw byte or 0 on failure."""
-        value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
-            self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
-        if comm_result != self.dxl.COMM_SUCCESS:
-            return 0
-        return value
+    def read_hardware_error(self, motor_id: int) -> Optional[int]:
+        """Reads the Hardware Error Status register (address 70).
+
+        Returns:
+            The raw error byte, or None if the read failed (no/garbled reply).
+        """
+        with self._bus_lock:
+            value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
+                self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
+            if comm_result != self.dxl.COMM_SUCCESS:
+                self._flush_input_buffer()
+                return None
+            return value
 
     def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> list:
         """Checks for overload errors and reboots affected motors.
@@ -401,25 +467,33 @@ class DynamixelClient(MotorClient):
         """
         OVERLOAD_BIT = 0x20
         rebooted = []
-        for mid in motor_ids:
-            error_status = self.read_hardware_error(mid)
-            if error_status & OVERLOAD_BIT:
-                logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
-                self.reboot_motor(mid)
-                rebooted.append(mid)
-        if rebooted:
-            time.sleep(0.3)
-            for mid in rebooted:
-                mode = self._operating_modes.get(mid)
-                if mode is not None:
-                    # Reboot clears RAM — restore operating mode and torque.
-                    # Use retries=0 to avoid hanging if motor isn't ready yet.
-                    self.set_torque_enabled([mid], False, retries=0)
-                    self.sync_write([mid], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-                    self.set_torque_enabled([mid], True, retries=0)
-                    self._operating_modes[mid] = mode
-                else:
-                    self.set_torque_enabled([mid], True, retries=0)
+        with self._bus_lock:
+            for mid in motor_ids:
+                error_status = self.read_hardware_error(mid)
+                if error_status is None:
+                    error_status = self.read_hardware_error(mid)
+                if error_status is None:
+                    logging.warning(
+                        'Could not read hardware error status for motor %d; '
+                        'skipping overload check.', mid)
+                    continue
+                if error_status & OVERLOAD_BIT:
+                    logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
+                    self.reboot_motor(mid)
+                    rebooted.append(mid)
+            if rebooted:
+                time.sleep(0.3)
+                for mid in rebooted:
+                    mode = self._operating_modes.get(mid)
+                    if mode is not None:
+                        # Reboot clears RAM — restore operating mode and torque.
+                        # Use retries=0 to avoid hanging if motor isn't ready yet.
+                        self.set_torque_enabled([mid], False, retries=0)
+                        self.sync_write([mid], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+                        self.set_torque_enabled([mid], True, retries=0)
+                        self._operating_modes[mid] = mode
+                    else:
+                        self.set_torque_enabled([mid], True, retries=0)
         return rebooted
 
     def check_connected(self):
@@ -461,12 +535,23 @@ class DynamixelClient(MotorClient):
         return True
 
     def _handle_hardware_alert(self, motor_id: int):
-        """React to a hardware alert by reading the error register and rebooting if overloaded."""
+        """Reads the error register and reboots the motor if overloaded, under the bus lock."""
+        with self._bus_lock:
+            self._handle_hardware_alert_locked(motor_id)
+
+    def _handle_hardware_alert_locked(self, motor_id: int):
         if motor_id in self._recovering:
             return
         self._recovering.add(motor_id)
         try:
             error_status = self.read_hardware_error(motor_id)
+            if error_status is None:
+                error_status = self.read_hardware_error(motor_id)
+            if error_status is None:
+                logging.warning(
+                    'Could not read hardware error status for motor %d; '
+                    'skipping alert recovery.', motor_id)
+                return
             OVERLOAD_BIT = 0x20
             if error_status & OVERLOAD_BIT:
                 import os as _os
@@ -636,49 +721,52 @@ class DynamixelReader:
                     .format(motor_id))
 
     def read(self, retries: int = 1):
-        """Reads data from the motors."""
+        """Reads data from the motors, holding the bus lock for the whole transaction."""
         self.client.check_connected()
-        success = False
-        while not success and retries >= 0:
-            comm_result = self.operation.txRxPacket()
-            success = self.client.handle_packet_result(
-                comm_result, context='read')
-            retries -= 1
+        with self.client._bus_lock:
+            success = False
+            while not success and retries >= 0:
+                comm_result = self.operation.txRxPacket()
+                success = self.client.handle_packet_result(
+                    comm_result, context='read')
+                if not success:
+                    self.client._flush_input_buffer()
+                retries -= 1
 
-        # Expose whether the bus actually answered, so callers can tell a real
-        # reading apart from the stale cache returned on a dropped status packet.
-        self.last_read_ok = success
+            # Expose whether the bus actually answered, so callers can tell a real
+            # reading apart from the stale cache returned on a dropped status packet.
+            self.last_read_ok = success
 
-        # If we failed, send a copy of the previous data.
-        if not success:
+            # If we failed, send a copy of the previous data.
+            if not success:
+                return self._get_data()
+
+            # Check for Alert bits in the status packets we already received.
+            for motor_id, error in self.operation.motor_errors.items():
+                if error & _AlertCaptureBulkRead.ALERT_BIT:
+                    self.client._handle_hardware_alert(motor_id)
+
+            errored_ids = []
+            for i, motor_id in enumerate(self.motor_ids):
+                # Check if the data is available.
+                available = self.operation.isAvailable(motor_id, self.address,
+                                                       self.size)
+                if not available:
+                    errored_ids.append(motor_id)
+                    continue
+
+                try:
+                    self._update_data(i, motor_id)
+                except Exception as e:
+                    logging.error(f'Error updating data for motor {motor_id}: {e}')
+                    errored_ids.append(motor_id)
+                    continue
+
+            if errored_ids:
+                logging.error('Bulk read data is unavailable for: %s',
+                              str(errored_ids))
+
             return self._get_data()
-
-        # Check for Alert bits in the status packets we already received.
-        for motor_id, error in self.operation.motor_errors.items():
-            if error & _AlertCaptureBulkRead.ALERT_BIT:
-                self.client._handle_hardware_alert(motor_id)
-
-        errored_ids = []
-        for i, motor_id in enumerate(self.motor_ids):
-            # Check if the data is available.
-            available = self.operation.isAvailable(motor_id, self.address,
-                                                   self.size)
-            if not available:
-                errored_ids.append(motor_id)
-                continue
-
-            try:
-                self._update_data(i, motor_id)
-            except Exception as e:
-                logging.error(f'Error updating data for motor {motor_id}: {e}')
-                errored_ids.append(motor_id)
-                continue
-
-        if errored_ids:
-            logging.error('Bulk read data is unavailable for: %s',
-                          str(errored_ids))
-
-        return self._get_data()
 
     def _initialize_data(self):
         """Initializes the cached data."""

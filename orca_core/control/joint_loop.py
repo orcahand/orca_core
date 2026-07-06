@@ -107,6 +107,7 @@ class JointLoopThread:
             "cycles_no_reading": 0,
             "cycles_held": 0,
             "cycles_held_base": 0,
+            "cycles_paused": 0,
             "cycles_exception": 0,
             "commands_sent": 0,
             "e_stops": 0,
@@ -179,6 +180,14 @@ class JointLoopThread:
             with self._lock:
                 self._latest_measured = measured.copy()
             self._controller.freeze_integral()
+            self._stats["cycles_paused"] += 1
+            # A dead encoder must still trip the e-stop while paused —
+            # otherwise a leaked pause silently disables the watchdog.
+            if float(reading.freshness_ms) > WATCHDOG_STOP_LOOP_MS:
+                self._trigger_estop(
+                    f"encoder freshness {reading.freshness_ms:.0f} ms exceeds "
+                    "stop threshold (while writes paused)"
+                )
             return
 
         freshness_ms = float(reading.freshness_ms)

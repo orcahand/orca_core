@@ -2,7 +2,11 @@
 
 A dedicated tactile adapter is identified by its USB vendor ID. A combined
 port that carries both streams is identified with an ``ORCA_ID?`` probe; when
-it is the only port present, both fields point at it (``shared=True``).
+it is the only port present, both fields point at it (``shared=True``). A
+final fallback scans FTDI-VID ports for the encoder auto-stream directly.
+
+All probes open ports with ``exclusive=True`` and treat a busy port as "not a
+candidate", never stealing bytes from a link another client already holds.
 """
 
 import logging
@@ -18,7 +22,15 @@ from ...constants import (
     ORCA_ID_RESP_MOTOR,
     ORCA_ID_RESP_SENSOR,
 )
-from .constants import DEFAULT_ENCODER_BAUDRATE, DEFAULT_SENSOR_BAUDRATE
+from .constants import (
+    AUTO_FRAME_META_SIZE,
+    DEFAULT_ENCODER_BAUDRATE,
+    DEFAULT_SENSOR_BAUDRATE,
+    FTDI_VID,
+    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
+    PROTOCOL_HEADER_AUTO_ENC,
+)
+from .framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +67,9 @@ def _probe_orca_id(
     import serial
 
     try:
-        with serial.Serial(port, baudrate=baudrate, timeout=0.05) as link:
+        # exclusive=True: skip a port another client already holds instead of
+        # writing onto its live bus.
+        with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
             link.reset_input_buffer()
             link.write(ORCA_ID_QUERY)
             link.flush()
@@ -104,18 +118,30 @@ def baud_for_port(port: str) -> int:
         if _tactile_responds_at(port, baud):
             logger.debug("tactile baud for %s resolved to %d", port, baud)
             return baud
-    logger.debug("no tactile reply on %s at any baud; defaulting", port)
+    logger.warning(
+        "Could not verify sensing baud on %s: no tactile register reply at %s baud; "
+        "assuming %d. If this link runs at a different baud (e.g. a 2 Mbaud "
+        "encoder-only or combined link), set sensors.baudrate / encoder_baudrate "
+        "explicitly in config.yaml.",
+        port,
+        "/".join(str(b) for b in TACTILE_BAUD_CANDIDATES),
+        DEFAULT_SENSOR_BAUDRATE,
+    )
     return DEFAULT_SENSOR_BAUDRATE
 
 
 def _tactile_responds_at(port: str, baud: int) -> bool:
-    """True if a tactile register read succeeds on ``port`` at ``baud``."""
+    """True if a tactile register read succeeds on ``port`` at ``baud``.
+
+    The port is opened exclusively (see :func:`_probe_orca_id`); a busy port
+    is quietly treated as "does not respond".
+    """
     # Imported here to avoid a circular import at module load.
     from ..hand_serial_link import HandSerialLink
     from ..tactile_client import TactileClient
     from .constants import ADDR_CONNECTED_SENSORS_LENGTH, ADDR_CONNECTED_SENSORS_START
 
-    link = HandSerialLink(port=port, baudrate=baud)
+    link = HandSerialLink(port=port, baudrate=baud, exclusive=True)
     try:
         link.connect()
     except Exception:
@@ -165,12 +191,78 @@ def _find_oh_sensor_port() -> Optional[str]:
     return _find_oh_board_port(ORCA_ID_RESP_SENSOR)
 
 
+def detect_encoder_stream(
+    port: str,
+    baudrate: int = DEFAULT_ENCODER_BAUDRATE,
+    timeout: float = 0.3,
+) -> bool:
+    """True iff an LRC-valid AA A9 encoder frame arrives on ``port``.
+
+    Passive (nothing is written) and opened exclusively; a busy or
+    unopenable port returns False.
+    """
+    import serial
+
+    try:
+        with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
+            link.reset_input_buffer()
+            deadline = time.monotonic() + timeout
+            buf = bytearray()
+            while time.monotonic() < deadline:
+                chunk = link.read(256)
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if _contains_valid_encoder_frame(buf):
+                    return True
+            return False
+    except (OSError, serial.SerialException) as exc:
+        logger.debug("encoder-stream probe on %s failed: %s", port, exc)
+        return False
+
+
+def _contains_valid_encoder_frame(data: bytes) -> bool:
+    """Scan ``data`` for one complete, LRC-valid AA A9 frame (mirrors the ``HandSerialLink`` demuxer)."""
+    start = 0
+    while True:
+        start = data.find(PROTOCOL_HEADER_AUTO_ENC, start)
+        if start < 0:
+            return False
+        meta_end = start + len(PROTOCOL_HEADER_AUTO_ENC) + AUTO_FRAME_META_SIZE
+        if len(data) < meta_end:
+            # Header at the buffer tail; the caller retries once more bytes arrive.
+            return False
+        effective_length = int.from_bytes(data[meta_end - 2:meta_end], "little")
+        frame_end = meta_end + effective_length + 1
+        if (
+            0 < effective_length <= MAX_AUTO_FRAME_EFFECTIVE_LENGTH
+            and len(data) >= frame_end
+        ):
+            frame = data[start:frame_end]
+            if calculate_checksum(frame[:-1]) == frame[-1]:
+                return True
+        start += 1  # resync one byte forward, like the demuxer
+
+
+def _find_ftdi_encoder_port() -> Optional[str]:
+    """Last-resort scan: probes only FTDI-VID ports, read-only, for a live encoder stream."""
+    import serial.tools.list_ports
+
+    for candidate in serial.tools.list_ports.comports():
+        if candidate.vid == FTDI_VID and detect_encoder_stream(candidate.device):
+            return candidate.device
+    return None
+
+
 def discover_sensing_ports() -> SensingPorts:
     """Resolve tactile and encoder ports from connected hardware.
 
     A dedicated tactile adapter claims the tactile field when present. A
     combined port fills whichever field(s) the adapter did not take — both, if
     no dedicated adapter is present (``shared=True``).
+
+    When neither is found, FTDI-VID ports are scanned for a live encoder
+    stream as a last resort; a hit fills only the encoder field.
     """
     paxini_port = find_tactile_port()
     oh_sensor_port = _find_oh_sensor_port()
@@ -187,6 +279,9 @@ def discover_sensing_ports() -> SensingPorts:
             encoder=oh_sensor_port,
             tactile_baudrate=DEFAULT_ENCODER_BAUDRATE,
         )
+    ftdi_encoder_port = _find_ftdi_encoder_port()
+    if ftdi_encoder_port is not None:
+        return SensingPorts(tactile=None, encoder=ftdi_encoder_port)
     return SensingPorts(tactile=None, encoder=None)
 
 
@@ -205,6 +300,9 @@ def resolve_sensing_ports(
     that baud. When the tactile port is given explicitly (so discovery was
     skipped), an ``"auto"`` baud stays ``None`` for the caller to resolve with
     :func:`baud_for_port`.
+
+    With all fields explicit, this function probes nothing (no port is
+    opened or enumerated).
     """
     needs_discovery = tactile_override == "auto" or encoder_override == "auto"
     discovered = (

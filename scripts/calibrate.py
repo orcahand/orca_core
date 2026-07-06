@@ -2,7 +2,7 @@ import argparse
 import dataclasses
 import sys
 
-from orca_core import load_hand
+from orca_core import OrcaHand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -105,11 +105,9 @@ def main():
         joints = args.joints
         print(f"Calibrating joints: {joints}")
 
-    # Calibration drives the motors before the joint encoders are calibrated,
-    # so connect motor-only (engage_feedback=False) even when the config
-    # enables feedback; the encoder stream for the calibration pass is opened
-    # explicitly below.
-    hand = load_hand(config_path=args.config_path, engage_feedback=False)
+    # Connect motor-only, regardless of config: calibration doesn't need
+    # tactile, and a second reader on the encoder port would corrupt the stream.
+    hand = OrcaHand(config_path=args.config_path)
     if args.encoder_port is not None:
         hand.config = dataclasses.replace(
             hand.config, encoder_serial_port=args.encoder_port,

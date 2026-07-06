@@ -149,7 +149,9 @@ class OrcaHandJointFeedback(OrcaHand):
             return success, msg
 
         try:
+            # Tactile isn't consumed here, so skip its discovery probing entirely.
             ports = resolve_sensing_ports(
+                tactile_override="disabled",
                 encoder_override=self.config.encoder_serial_port,
             )
             if ports.encoder is None:
@@ -231,6 +233,23 @@ class OrcaHandJointFeedback(OrcaHand):
     def enable_torque(self, motor_ids: Optional[List[int]] = None):
         with self._loop_writes_paused():
             super().enable_torque(motor_ids)
+
+    def set_control_mode(self, mode: str, motor_ids: Optional[List[int]] = None):
+        # Mode changes are torque-off/mode-write/torque-on round-trip
+        # sequences; fence the loop's write stream like the torque toggles.
+        with self._loop_writes_paused():
+            super().set_control_mode(mode, motor_ids)
+
+    def calibrate(self, *args, **kwargs):
+        """Refuse to calibrate while the joint loop is running (it would fight for the same motors)."""
+        if self._loop is not None:
+            raise RuntimeError(
+                "calibrate() while the joint-feedback loop is running is not "
+                "supported: the 100 Hz loop and the calibration routine would "
+                "command the same motors. Connect without engaging feedback "
+                "(e.g. scripts/calibrate.py) and retry."
+            )
+        return super().calibrate(*args, **kwargs)
 
     # ----- Joint position routing ------------------------------------------
 

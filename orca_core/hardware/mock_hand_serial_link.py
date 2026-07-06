@@ -101,7 +101,3 @@ class MockHandSerialLink(HandSerialLink):
             chunk = bytes(self._injected_buffer[:n])
             del self._injected_buffer[:n]
             return chunk
-
-    def _flush_input_buffer(self) -> None:
-        with self._injected_cv:
-            self._injected_buffer.clear()
