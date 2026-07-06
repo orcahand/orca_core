@@ -14,9 +14,11 @@ from orca_core.hardware.sensing.serial_discovery import (
     SensingPorts,
     baud_for_port,
     discover_sensing_ports,
+    find_motor_port,
     find_tactile_port,
     resolve_sensing_ports,
 )
+from orca_core.utils.utils import auto_detect_port
 
 
 PAXINI_VID, OH_VID = 0x28E9, 0x2F5D
@@ -68,6 +70,33 @@ def test_discover_sensing_ports(ports, probes, expected):
     with patch("serial.tools.list_ports.comports", return_value=ports), \
             patch(f"{DISCOVERY}._probe_orca_id", side_effect=lambda p, *_a, **_kw: probes.get(p)):
         assert discover_sensing_ports() == expected
+
+
+@pytest.mark.parametrize("ports,probes,expected", [
+    pytest.param([motor, sensor], OH_RESPONSES,                          OH_MOTOR_PORT, id="motor_and_sensor"),
+    pytest.param([sensor, motor], OH_RESPONSES,                          OH_MOTOR_PORT, id="reversed_order"),
+    pytest.param([sensor],        {OH_SENSOR_PORT: ORCA_ID_RESP_SENSOR}, None,          id="sensor_only"),
+    pytest.param([motor, sensor], {},                                    None,          id="oh_silent"),
+    pytest.param([],              {},                                    None,          id="no_oh_board"),
+])
+def test_find_motor_port(ports, probes, expected):
+    with patch("serial.tools.list_ports.comports", return_value=ports), \
+            patch(f"{DISCOVERY}._probe_orca_id", side_effect=lambda p, *_a, **_kw: probes.get(p)):
+        assert find_motor_port() == expected
+
+
+def test_auto_detect_port_prefers_orca_motor_bus():
+    """ORCA_ID? wins over VID matching when an OH board names the motor bus."""
+    with patch(f"{DISCOVERY}.find_motor_port", return_value=OH_MOTOR_PORT):
+        assert auto_detect_port("dynamixel") == OH_MOTOR_PORT
+
+
+def test_auto_detect_port_falls_back_to_vid_match():
+    """Classic U2D2 (no ORCA_ID?) still resolves via its FTDI VID."""
+    u2d2 = SimpleNamespace(device="/dev/cu.u2d2", vid=0x0403, description="U2D2")
+    with patch(f"{DISCOVERY}.find_motor_port", return_value=None), \
+            patch("serial.tools.list_ports.comports", return_value=[u2d2]):
+        assert auto_detect_port("dynamixel") == "/dev/cu.u2d2"
 
 
 def test_discover_does_not_probe_paxini():

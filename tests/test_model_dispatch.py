@@ -17,7 +17,7 @@ MODELS_DIR = REPO_ROOT / "orca_core" / "models"
 
 
 def test_latest_is_hand_selected_default_version():
-    assert LATEST_VERSION == "v1"
+    assert LATEST_VERSION == "v2"
 
 
 def test_default_hand_is_right():
@@ -122,9 +122,9 @@ def patched_models_dir(monkeypatch):
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({}, ("v1_right_joint",)),
-        ({"type": "left"}, ("v1_left_joint",)),
-        ({"version": "v2", "type": "right"}, ("v2_right_joint",)),
+        ({}, ("v2_right_joint",)),  # default version is v2
+        ({"version": "v1", "type": "left"}, ("v1_left_joint",)),
+        ({"version": "v1", "type": "right"}, ("v1_right_joint",)),
     ],
 )
 def test_canonical_joint_ids_tracks_underlying_config_contents(patched_models_dir, kwargs, expected):
@@ -134,7 +134,7 @@ def test_canonical_joint_ids_tracks_underlying_config_contents(patched_models_di
 def test_canonical_joint_ids_reflects_updated_config_contents(patched_models_dir):
     models_dir, write_config = patched_models_dir
     write_config(
-        models_dir / "v1" / "orcahand-right" / "config.yaml",
+        models_dir / "v2" / "orcahand-right" / "config.yaml",
         ["updated_joint_a", "updated_joint_b"],
     )
     assert canonical_joint_ids() == ("updated_joint_a", "updated_joint_b")
