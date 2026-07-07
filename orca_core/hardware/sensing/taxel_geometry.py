@@ -17,7 +17,11 @@ Two facts make this geometry trivial to use alongside the force stream:
 * **Index alignment.** Position row ``i`` is intended to correspond to taxel
   ``i`` in the decoded force stream (see ``decode_taxels_auto``), so positions
   ``(n, 3)`` and a frame's forces ``(n, 3)`` line up by row with no bookkeeping.
-* **Frame.** Positions are in the sensor-local *fingertip* frame.
+* **Frame.** Positions are in the *sensor* frame: origin on the mounting plane
+  at the connector tail, X across the sensor width, Y along the sensor toward
+  the fingertip dome, Z outward through the sensing surface (right-handed).
+  The streamed per-taxel forces use the same axes. Positions are converted to
+  meters on load; the YAMLs store millimeters as supplied by the vendor.
 """
 from __future__ import annotations
 
@@ -31,23 +35,25 @@ from orca_core.hardware.sensing.constants import FINGER_MODELS, FingerName
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
 
-FINGERTIP_LOCAL_FRAME = "fingertip_local"
-"""Coordinate frame of the loaded positions: relative to the fingertip itself."""
+SENSOR_FRAME = "sensor"
+"""Coordinate frame of the loaded positions: the sensor's own frame (see module docstring)."""
+
+_YAML_UNITS_TO_METERS = {"mm": 1e-3, "m": 1.0}
 
 
 @dataclass(frozen=True)
 class TaxelGeometry:
     """Fixed taxel positions for one finger's sensor.
 
-    ``positions`` is a read-only ``(n_taxels, 3)`` array of ``[x, y, z]``; row
-    ``i`` is taxel ``i`` in the force stream. ``frame`` records which coordinate
-    frame the positions are expressed in
+    ``positions`` is a read-only ``(n_taxels, 3)`` array of ``[x, y, z]`` in
+    meters; row ``i`` is taxel ``i`` in the force stream. ``frame`` records
+    which coordinate frame the positions are expressed in.
     """
 
     finger: str
     model: str
     positions: np.ndarray
-    frame: str = FINGERTIP_LOCAL_FRAME
+    frame: str = SENSOR_FRAME
 
     @property
     def num_taxels(self) -> int:
@@ -70,7 +76,13 @@ def _load_model_positions(model_name: str) -> np.ndarray:
                 f"{model_name}: num_taxels={declared} disagrees with "
                 f"{len(coords)} coordinate rows"
             )
-        positions = np.array(
+        frame = config.get("frame", SENSOR_FRAME)
+        if frame != SENSOR_FRAME:
+            raise ValueError(f"{model_name}: unsupported frame {frame!r}")
+        units = config.get("units", "mm")
+        if units not in _YAML_UNITS_TO_METERS:
+            raise ValueError(f"{model_name}: unsupported units {units!r}")
+        positions = _YAML_UNITS_TO_METERS[units] * np.array(
             [[c["x"], c["y"], c["z"]] for c in coords], dtype=float
         )
         # Cached and shared across callers, so freeze it: an accidental in-place

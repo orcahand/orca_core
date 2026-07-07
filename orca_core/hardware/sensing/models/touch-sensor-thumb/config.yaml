@@ -1,5 +1,7 @@
 name: touch-sensor-thumb
 description: ORCA Fingertip - Thumb
+frame: sensor
+units: mm
 num_taxels: 51
 coordinates:
 - x: -9.98783684

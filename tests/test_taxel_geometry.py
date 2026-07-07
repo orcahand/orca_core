@@ -6,7 +6,7 @@ import pytest
 from orca_core.hardware.mock_tactile_client import MockTactileClient
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS, FINGER_NAMES
 from orca_core.hardware.sensing.taxel_geometry import (
-    FINGERTIP_LOCAL_FRAME,
+    SENSOR_FRAME,
     load_all_taxel_geometry,
     load_taxel_geometry,
 )
@@ -25,9 +25,21 @@ class TestLoadGeometry:
             assert geom.positions.shape == (geom.num_taxels, 3)
             assert geom.positions.dtype == np.float64
 
-    def test_frame_is_fingertip_local(self):
+    def test_frame_is_sensor(self):
         for geom in load_all_taxel_geometry().values():
-            assert geom.frame == FINGERTIP_LOCAL_FRAME
+            assert geom.frame == SENSOR_FRAME
+
+    def test_positions_are_meters(self):
+        # Sensor bodies are a few cm long; mm values would exceed this by 1000x.
+        for geom in load_all_taxel_geometry().values():
+            assert np.all(np.abs(geom.positions) < 0.05)
+            assert np.max(np.abs(geom.positions)) > 0.005
+
+    def test_known_first_taxel_converted(self):
+        positions = load_taxel_geometry("index").positions
+        np.testing.assert_allclose(
+            positions[0], [4.03569563e-3, 28.08244307e-3, 3.72577291e-3]
+        )
 
     def test_cache_returns_equal_data(self):
         assert np.array_equal(

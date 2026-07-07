@@ -1,5 +1,7 @@
 name: touch-sensor-finger
 description: ORCA Fingertip - Finger
+frame: sensor
+units: mm
 num_taxels: 87
 coordinates:
 - x: 4.03569563

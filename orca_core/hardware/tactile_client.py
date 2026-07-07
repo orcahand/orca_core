@@ -374,9 +374,10 @@ class TactileClient:
     def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
         """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry (fingertip-local frame), read once
-        at connect. Row ``i`` of ``geometry[finger].positions`` aligns with
-        taxel ``i`` in the force stream. Empty until the configuration is read.
+        Positions are fixed sensor geometry in the sensor frame (meters), read
+        once at connect. Row ``i`` of ``geometry[finger].positions`` aligns
+        with taxel ``i`` in the force stream. Empty until the configuration is
+        read.
         """
         if self._tactile_config is None:
             return {}

@@ -1,5 +1,7 @@
 name: touch-sensor-pinky
 description: ORCA Fingertip - Pinky
+frame: sensor
+units: mm
 num_taxels: 51
 coordinates:
 - x: -7.31378277
