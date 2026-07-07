@@ -52,6 +52,9 @@ class TactileMockState:
         default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID)
     )
     resultant_forces: ResultantForces = field(default_factory=dict)
+    write_log: list[tuple[int, bytes]] = field(default_factory=list)
+    """Every register write the mock ACKed, as (address, data) — lets tests
+    assert on device-bound side effects like the stream re-arm."""
 
     @property
     def active_sensors(self) -> list[str]:
@@ -126,6 +129,7 @@ def _respond_to_request(request: bytes, state: TactileMockState) -> bytes | None
         data = _read_register_value(address, count, state)
         return _build_read_response(address, data)
     if func == FUNC_CODE_WRITE:
+        state.write_log.append((address, bytes(request[8:8 + count])))
         return _build_write_response(address)
     return None
 

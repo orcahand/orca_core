@@ -236,3 +236,11 @@ OFFSET_CAPTURE_POLL_S = 0.002
 
 TACTILE_FIRST_FRAME_TIMEOUT_S = 2.0
 """Default wait for the first stored tactile frame in ``wait_for_first_frame``."""
+
+TACTILE_STREAM_STALE_REARM_S = 2.0
+"""Mid-stream silence (seconds) after which a read triggers a stream re-arm.
+"""
+
+TACTILE_STREAM_REARM_MIN_INTERVAL_S = 5.0
+"""Minimum spacing between re-arm attempts, so a genuinely dead device can't
+cause a register-write retry storm from a fast reader loop."""
