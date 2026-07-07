@@ -239,17 +239,21 @@ python scripts/tension.py /path/to/orcahand_v1_left/config.yaml
 </details>
 
 <details>
-<summary><strong>test.py</strong></summary>
+<summary><strong>stress_test.py</strong></summary>
 
-A test script that connects to the ORCA Hand, enables torque, sets a specific pose for a few joints (index_mcp, middle_pip, pinky_abd), waits for 2 seconds, disables torque, and disconnects.
+Cycles the hand between OPEN and CLOSE poses while monitoring motor temperatures, aborting if any motor exceeds the safe operating temperature.
 
 <br><strong>Args:</strong><br>
 <ul>
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
+    <li><strong>--num-steps</strong> (<strong>int</strong>, optional): Interpolation steps per move (default 25).</li>
+    <li><strong>--step-size</strong> (<strong>float</strong>, optional): Sleep between interpolation steps in seconds (default 0.001).</li>
+    <li><strong>--hold</strong> (<strong>float</strong>, optional): Extra seconds to hold each pose AFTER motion completes (default 0).</li>
+    <li><strong>--motion-timeout</strong> (<strong>float</strong>, optional): Max seconds to wait for a pose to be reached (default 5).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/test.py
+python scripts/stress_test.py
 ```
 </details>

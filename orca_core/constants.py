@@ -88,3 +88,15 @@ WRIST_CALIBRATED = "wrist_calibrated"
 CALIBRATED = "calibrated"
 STEPS_TO_NEUTRAL = 25
 STEP_SIZE_NEUTRAL = 0.001
+
+# Defaults for interpolated multi-step motions (BaseHand.set_joint_positions).
+NUM_STEPS = 50
+STEP_SIZE = 0.01
+
+# Baudrates the connect-time probe will try, per motor family, in priority
+# order. Used only when ``baudrate`` is not pinned in config.yaml. Feetech
+# motors ship at 1M; Dynamixels run at 1M (v2 hands) or 3M (v1 hands).
+MOTOR_BAUD_RATES: dict[str, list[int]] = {
+    "dynamixel": [1_000_000, 3_000_000],
+    "feetech": [1_000_000],
+}
