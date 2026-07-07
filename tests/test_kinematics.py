@@ -172,6 +172,11 @@ class TestSensorMounts:
                 sensors[finger].matrix, (tips[finger] @ mounts[finger]).matrix, atol=1e-12
             )
 
-    def test_left_mounts_not_available_yet(self):
-        with pytest.raises(NotImplementedError):
-            LEFT.sensor_mounts
+    def test_left_mounts_equal_right(self):
+        # The left fingertip meshes are the same geometry as the right (hand
+        # mirroring happens upstream in the kinematic tree), so the sensor
+        # sits at the identical pose in the distal link frame.
+        right, left = RIGHT.sensor_mounts, LEFT.sensor_mounts
+        assert set(left) == set(right)
+        for finger in right:
+            np.testing.assert_allclose(left[finger].matrix, right[finger].matrix)

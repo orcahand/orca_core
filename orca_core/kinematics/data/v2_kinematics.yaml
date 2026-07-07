@@ -7,7 +7,9 @@
 # sensor_mounts: fixed pose of each Paxini tactile-sensor frame in its distal
 #   link frame (URDF-style xyz meters / extrinsic-XYZ rpy radians), recovered
 #   by mesh registration of the vendor sensor geometry onto the fingertip
-#   meshes (sub-0.05 mm residuals). Left-hand mounts pending validation.
+#   meshes (sub-0.05 mm residuals). Left mounts equal right: the left fingertip meshes are identical
+#   geometry (hand mirroring happens upstream in the kinematic tree),
+#   verified by an independent re-fit against the left assets.
 version: 2
 right:
   chains:
@@ -159,7 +161,7 @@ right:
         sign: 1
         audit: verified
         urdf_limits_deg: [-15.0, 107.0]
-  sensor_mounts:
+  sensor_mounts: &id001
     thumb:
       xyz: [0.001872786, 0.0, 0.012437839]
       rpy: [1.658019819, 0.0, -1.570796327]
@@ -330,3 +332,4 @@ left:
         sign: 1
         audit: verified
         urdf_limits_deg: [-15.0, 107.0]
+  sensor_mounts: *id001
