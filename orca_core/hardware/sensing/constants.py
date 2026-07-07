@@ -188,10 +188,9 @@ JOINT_ENCODER_POLARITY = {
     "wrist": 1,
 }
 
-# Slots the production hand currently ships with sensors wired. The wrist
-# (slot 16) is reserved in the wire format but not yet physically present;
-# remove it from this set once wrist hardware lands.
-EXPECTED_ENCODER_SLOTS = frozenset(range(16))
+# Slots the production hand ships with encoders wired (all 17, wrist included).
+# Diagnostics treat a stuck slot outside this set as reserved rather than faulty.
+EXPECTED_ENCODER_SLOTS = frozenset(range(17))
 
 # ---------------------------------------------------------------------------
 # Hand serial link

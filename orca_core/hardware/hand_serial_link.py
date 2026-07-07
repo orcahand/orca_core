@@ -80,7 +80,7 @@ class HandSerialLink:
     """Serial-port owner and demultiplexer for AA-XX framed traffic.
 
     Frame layout: ``AA`` header, ``XX`` type byte, payload, LRC checksum
-    (longitudinal redundancy check) on the last byte.
+    on the last byte.
 
     Lifecycle: ``connect()`` opens the port and starts the demuxer thread;
     ``disconnect()`` stops it and closes the port. Handlers may be

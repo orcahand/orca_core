@@ -33,7 +33,8 @@ orca_core/
 ├── calibration.py / calibration_joint_encoder.py  # Calibration result types
 └── constants.py                    # Control modes, protocol constants
 
-scripts/              # CLI tools for calibration, tensioning, demos, diagnostics
+scripts/              # CLI tools for calibration, tensioning, diagnostics
+examples/             # Demo and record/replay scripts built on the public API
 tests/                # Unit tests
 docs/                 # MkDocs site sources (docs/pages/) - partially stale, verify against code
 ```
