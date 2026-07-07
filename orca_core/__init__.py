@@ -18,7 +18,9 @@ from .hardware_hand_joint_feedback import (
     OrcaHandJointFeedback,
 )
 from .hand_factory import load_hand
+from .hardware.sensing.types import TaxelData
 from .joint_position import OrcaJointPositions
+from .kinematics import HandKinematics, Transform, frames
 from .version import LATEST_VERSION
 
 __all__ = [
@@ -33,6 +35,10 @@ __all__ = [
     "JointFeedbackConnectError",
     "load_hand",
     "OrcaJointPositions",
+    "HandKinematics",
+    "TaxelData",
+    "Transform",
+    "frames",
     "canonical_joint_ids",
     "LATEST_VERSION",
 ]

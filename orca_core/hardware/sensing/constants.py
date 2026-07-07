@@ -41,6 +41,15 @@ DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
 }
 
+# Sensor model (taxel-geometry YAML under sensing/models/) per finger.
+FINGER_MODELS = {
+    "thumb": "touch-sensor-thumb",
+    "index": "touch-sensor-finger",
+    "middle": "touch-sensor-finger",
+    "ring": "touch-sensor-finger",
+    "pinky": "touch-sensor-pinky",
+}
+
 # ---------------------------------------------------------------------------
 # Protocol wire format (shared between I/O layer and codec)
 # ---------------------------------------------------------------------------

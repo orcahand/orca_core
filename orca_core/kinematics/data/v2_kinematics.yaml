@@ -1,0 +1,335 @@
+# Kinematic constants for the v2 ORCA hand, used by orca_core.kinematics.
+#
+# chains: extracted from orcahand_description v2 URDFs by
+#   scripts/extract_urdf_kinematics.py (joint origins/axes in meters/radians;
+#   sign relates orca_core joint angles to URDF axis direction, audited
+#   against config joint_roms vs URDF limits).
+# sensor_mounts: fixed pose of each Paxini tactile-sensor frame in its distal
+#   link frame (URDF-style xyz meters / extrinsic-XYZ rpy radians), recovered
+#   by mesh registration of the vendor sensor geometry onto the fingertip
+#   meshes (sub-0.05 mm residuals). Left mounts equal right: the left fingertip meshes are identical
+#   geometry (hand mirroring happens upstream in the kinematic tree),
+#   verified by an independent re-fit against the left assets.
+version: 2
+right:
+  chains:
+    base_link: ForeArmStructure-Model_e18f2368
+    palm_link: R-Carpals_8d1f1041
+    base_chain:
+    - fixed: TopTower-Model_4a80d30e_to_ForeArmStructure-Model_e18f2368
+      xyz: [-0.01, 0.0523, 0.0]
+      rpy: [-1.570796327, 1.570796327, 0.0]
+    - joint: wrist
+      urdf_joint: R-Carpals_8d1f1041_to_TopTower-Model_4a80d30e
+      xyz: [0.0, 0.0, 0.04]
+      rpy: [-0.610865286, 0.0, -1.570796327]
+      axis: [-1.0, 0.0, 0.0]
+      sign: 1
+      audit: verified
+      urdf_limits_deg: [-65.0, 35.0]
+    fingers:
+      thumb:
+      - joint: thumb_cmc
+        urdf_joint: T-TP-R_1c2b802d_to_R-Carpals_8d1f1041
+        xyz: [-0.028398719, 0.010997181, 0.030589533]
+        rpy: [0.66149514, 0.386056856, -1.432867705]
+        axis: [0.0, 0.0, -1.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-45.0, 33.0]
+      - joint: thumb_abd
+        urdf_joint: R-T-AP_a9723101_to_T-TP-R_1c2b802d
+        xyz: [-0.008, 0.0, -0.00385]
+        rpy: [-1.221730476, 0.0, 0.0]
+        axis: [0.0, 0.342020143, 0.939692621]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-18.0, 55.0]
+      - joint: thumb_mcp
+        urdf_joint: T-PP_68395e98_to_R-T-AP_a9723101
+        xyz: [-0.028, 0.0, 0.0]
+        rpy: [-3.141592654, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: thumb_dip
+        urdf_joint: T-DP_b7429e50_to_T-PP_68395e98
+        xyz: [0.001, 0.0, 0.032]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      index:
+      - joint: index_abd
+        urdf_joint: I-AP-R_d95d02d1_to_R-Carpals_8d1f1041
+        xyz: [-0.027240979, -0.002206967, 0.069406803]
+        rpy: [1.653856814, 1.387349649, -0.004274219]
+        axis: [0.0, 0.0, 1.0]
+        sign: -1
+        audit: verified (mirrored limits)
+        urdf_limits_deg: [-25.0, 30.0]
+      - joint: index_mcp
+        urdf_joint: I-PP_bacbd481_to_I-AP-R_d95d02d1
+        xyz: [-0.019150968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: index_pip
+        urdf_joint: I-FingerTipAssembly_ec49c16c_to_I-PP_bacbd481
+        xyz: [0.0015, 0.0, 0.037]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      middle:
+      - joint: middle_abd
+        urdf_joint: M-AP_e04a96f2_to_R-Carpals_8d1f1041
+        xyz: [-0.005706334, -0.004023404, 0.078501893]
+        rpy: [1.570796327, 1.568178333, 0.0]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-27.0, 27.0]
+      - joint: middle_mcp
+        urdf_joint: M-PP_08efa608_to_M-AP_e04a96f2
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: middle_pip
+        urdf_joint: M-FingerTipAssembly_34afb748_to_M-PP_08efa608
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      ring:
+      - joint: ring_abd
+        urdf_joint: M-AP_6ec59111_to_R-Carpals_8d1f1041
+        xyz: [0.015307722, -0.003218365, 0.071304797]
+        rpy: [-1.570796327, 1.425061334, -3.054326191]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-27.0, 27.0]
+      - joint: ring_mcp
+        urdf_joint: M-PP_8660a1eb_to_M-AP_6ec59111
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: ring_pip
+        urdf_joint: M-FingerTipAssembly_424a8e75_to_M-PP_8660a1eb
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      pinky:
+      - joint: pinky_abd
+        urdf_joint: P-AP_f5e42b61_to_R-Carpals_8d1f1041
+        xyz: [0.035641716, 0.000689159, 0.062054242]
+        rpy: [-1.529473574, 1.202862211, -2.911989536]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-30.0, 30.0]
+      - joint: pinky_mcp
+        urdf_joint: P-PP_1d411b9b_to_P-AP_f5e42b61
+        xyz: [-0.01775, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: pinky_pip
+        urdf_joint: P-FingerTipAssembly_cd219176_to_P-PP_1d411b9b
+        xyz: [0.001, 0.0, 0.031]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+  sensor_mounts: &id001
+    thumb:
+      xyz: [0.001872786, 0.0, 0.012437839]
+      rpy: [1.658019819, 0.0, -1.570796327]
+      fit: thumb
+    index:
+      xyz: [0.005230764, 0.0, 0.017874796]
+      rpy: [1.920376767, 0.0, -1.570796327]
+      fit: index
+    middle:
+      xyz: [0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, -1.570796327]
+      fit: middle
+    ring:
+      xyz: [0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, -1.570796327]
+      fit: middle
+    pinky:
+      xyz: [-0.000216892, 0.0, 0.021992313]
+      rpy: [2.190846631, 0.0, -1.570796327]
+      fit: pinky
+left:
+  chains:
+    base_link: ForeArmStructure-Model_e18f2368
+    palm_link: L-Carpals_719fff8c
+    base_chain:
+    - fixed: TopTower-Model_4a80d30e_to_ForeArmStructure-Model_e18f2368
+      xyz: [-0.01, 0.0523, 0.0]
+      rpy: [-1.570796327, 1.570796327, 0.0]
+    - joint: wrist
+      urdf_joint: L-Carpals_719fff8c_to_TopTower-Model_4a80d30e
+      xyz: [0.0, 0.0, 0.04]
+      rpy: [0.0, 0.0, -1.570796327]
+      axis: [-1.0, 0.0, 0.0]
+      sign: 1
+      audit: verified
+      urdf_limits_deg: [-65.0, 35.0]
+    fingers:
+      thumb:
+      - joint: thumb_cmc
+        urdf_joint: T-TP-L_92b8100b_to_L-Carpals_719fff8c
+        xyz: [0.028398719, 0.010997181, 0.030589533]
+        rpy: [-0.661668573, 0.385724452, -1.709185735]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-45.0, 33.0]
+      - joint: thumb_abd
+        urdf_joint: L-T-AP_58680c44_to_T-TP-L_92b8100b
+        xyz: [-0.008, 0.0, -0.00385]
+        rpy: [1.221730476, 0.0, 0.0]
+        axis: [0.0, 0.342020143, -0.939692621]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-18.0, 55.0]
+      - joint: thumb_mcp
+        urdf_joint: T-PP_ef067304_to_L-T-AP_58680c44
+        xyz: [-0.028, 0.0, 0.0]
+        rpy: [-3.141592654, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: thumb_dip
+        urdf_joint: T-DP_307db3cc_to_T-PP_ef067304
+        xyz: [0.001, 0.0, 0.032]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      index:
+      - joint: index_abd
+        urdf_joint: I-AP-L_57ce92f7_to_L-Carpals_719fff8c
+        xyz: [0.027240979, -0.002206967, 0.069406803]
+        rpy: [-1.653934934, 1.387523579, -3.137397888]
+        axis: [-0.031285101, 0.168144095, -0.985265855]
+        sign: -1
+        audit: verified (mirrored limits)
+        urdf_limits_deg: [-25.0, 30.0]
+      - joint: index_mcp
+        urdf_joint: I-PP_3df4f91d_to_I-AP-L_57ce92f7
+        xyz: [-0.019150968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: index_pip
+        urdf_joint: I-FingerTipAssembly_ed91b18a_to_I-PP_3df4f91d
+        xyz: [0.0015, 0.0, 0.037]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      middle:
+      - joint: middle_abd
+        urdf_joint: M-AP_e04a96f2_to_L-Carpals_719fff8c
+        xyz: [0.005706334, -0.004023404, 0.078501893]
+        rpy: [-1.570796327, 1.56810852, -3.141592654]
+        axis: [0.0, 0.0, -1.0]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-27.0, 27.0]
+      - joint: middle_mcp
+        urdf_joint: M-PP_08efa608_to_M-AP_e04a96f2
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: middle_pip
+        urdf_joint: M-FingerTipAssembly_34afb748_to_M-PP_08efa608
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      ring:
+      - joint: ring_abd
+        urdf_joint: M-AP_6ec59111_to_L-Carpals_719fff8c
+        xyz: [-0.015307722, -0.003218365, 0.071304797]
+        rpy: [1.570796327, 1.425113694, -0.087266463]
+        axis: [-0.025208135, -0.171808729, -0.984807753]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-27.0, 27.0]
+      - joint: ring_mcp
+        urdf_joint: M-PP_8660a1eb_to_M-AP_6ec59111
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: ring_pip
+        urdf_joint: M-FingerTipAssembly_424a8e75_to_M-PP_8660a1eb
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+      pinky:
+      - joint: pinky_abd
+        urdf_joint: P-AP_f5e42b61_to_L-Carpals_719fff8c
+        xyz: [-0.035641716, 0.000689159, 0.062054242]
+        rpy: [1.529467962, 1.202914527, -0.229609132]
+        axis: [-0.132979941, -0.348294762, -0.92790468]
+        sign: 1
+        audit: unverified (symmetric limits)
+        urdf_limits_deg: [-30.0, 30.0]
+      - joint: pinky_mcp
+        urdf_joint: P-PP_1d411b9b_to_P-AP_f5e42b61
+        xyz: [-0.01775, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-25.0, 100.0]
+      - joint: pinky_pip
+        urdf_joint: P-FingerTipAssembly_cd219176_to_P-PP_1d411b9b
+        xyz: [0.001, 0.0, 0.031]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+        audit: verified
+        urdf_limits_deg: [-15.0, 107.0]
+  sensor_mounts: *id001
