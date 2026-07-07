@@ -106,7 +106,9 @@ def make_calibrated_joint_feedback_hand(
     ratios = {mid: 0.01 for mid in hand.config.motor_ids}
     encoder_cal = (
         {
-            joint: JointEncoderCal(enc_at_anchor_count=0)
+            joint: JointEncoderCal(
+                zero_count=0, zero_angle_deg=hand.config.joint_roms_dict[joint][1]
+            )
             for joint in hand._encoder_backed_joints()
         }
         if install_encoder_calibration

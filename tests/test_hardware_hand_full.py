@@ -93,7 +93,9 @@ def make_full_hand(config_path: str) -> MockOrcaHandFull:
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
     ratios = {mid: 0.01 for mid in hand.config.motor_ids}
     encoder_cal = {
-        joint: JointEncoderCal(enc_at_anchor_count=0)
+        joint: JointEncoderCal(
+            zero_count=0, zero_angle_deg=hand.config.joint_roms_dict[joint][1]
+        )
         for joint in hand._encoder_backed_joints()
     }
     hand.calibration = dc.replace(

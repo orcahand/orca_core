@@ -170,12 +170,21 @@ class BaseHandConfig:
     def clamp_joint_positions(
         self,
         joint_pos: OrcaJointPositions,
+        joint_roms: Dict[str, List[float]] | None = None,
     ) -> OrcaJointPositions:
-        """Clamp joint positions to the configured ROM bounds."""
+        """Clamp joint positions to ROM bounds.
+
+        Args:
+            joint_pos: Target joint positions.
+            joint_roms: ROM dict to clamp against; defaults to the configured
+                nominal ROMs. Hands pass their effective (measured-aware)
+                ROMs here.
+        """
         if not isinstance(joint_pos, OrcaJointPositions):
             raise HandConfigValidationError(
                 "joint_pos must be an OrcaJointPositions instance."
             )
+        roms = self.joint_roms_dict if joint_roms is None else joint_roms
 
         normalized = {}
         for joint, pos in joint_pos:
@@ -183,12 +192,18 @@ class BaseHandConfig:
                 raise HandConfigValidationError(
                     f"Joint {joint} is not defined among the hand's joint IDs: {self.joint_ids}"
                 )
-            normalized[joint] = self._clamp_joint_value(joint, pos)
+            normalized[joint] = self._clamp_joint_value(joint, pos, roms)
 
         return OrcaJointPositions.from_dict(normalized)
 
-    def _clamp_joint_value(self, joint_name: str, joint_pos: float) -> float:
-        min_pos, max_pos = self.joint_roms_dict[joint_name]
+    def _clamp_joint_value(
+        self,
+        joint_name: str,
+        joint_pos: float,
+        joint_roms: Dict[str, List[float]] | None = None,
+    ) -> float:
+        roms = self.joint_roms_dict if joint_roms is None else joint_roms
+        min_pos, max_pos = roms[joint_name]
         return max(min_pos, min(max_pos, float(joint_pos)))
 
 

@@ -19,6 +19,7 @@ from .hardware_hand_joint_feedback import (
 )
 from .hand_factory import load_hand
 from .joint_position import OrcaJointPositions
+from .sensor_cal_store import FileSensorCalStore, SensorCalStore
 from .version import LATEST_VERSION
 
 __all__ = [
@@ -33,6 +34,8 @@ __all__ = [
     "JointFeedbackConnectError",
     "load_hand",
     "OrcaJointPositions",
+    "SensorCalStore",
+    "FileSensorCalStore",
     "canonical_joint_ids",
     "LATEST_VERSION",
 ]

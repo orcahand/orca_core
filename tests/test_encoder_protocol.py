@@ -145,3 +145,19 @@ def test_encoder_to_joint_angle_polarity_flip():
     plus = encoder_to_joint_angle(raw, anchor, np.array([1], dtype=np.int8), anchor_angle)
     minus = encoder_to_joint_angle(raw, anchor, np.array([-1], dtype=np.int8), anchor_angle)
     np.testing.assert_allclose(plus - anchor_angle, -(minus - anchor_angle), atol=1e-12)
+
+
+def test_encoder_to_joint_angle_scale():
+    """scale multiplies the count delta (not the zero angle) and defaults to 1."""
+    midpoint = ENCODER_COUNTS_PER_REV // 2
+    raw = np.array([midpoint + 200], dtype=np.uint16)
+    zero = np.array([midpoint], dtype=np.int32)
+    polarity = np.array([1], dtype=np.int8)
+    zero_angle = np.array([10.0])
+
+    unscaled = encoder_to_joint_angle(raw, zero, polarity, zero_angle)
+    scaled = encoder_to_joint_angle(raw, zero, polarity, zero_angle, np.array([0.5]))
+    default = encoder_to_joint_angle(raw, zero, polarity, zero_angle, 1.0)
+
+    np.testing.assert_allclose(scaled - zero_angle, (unscaled - zero_angle) * 0.5, atol=1e-12)
+    np.testing.assert_allclose(default, unscaled, atol=1e-12)

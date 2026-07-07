@@ -76,20 +76,22 @@ def _check_even_parity(raw_counts: np.ndarray) -> np.ndarray:
 
 def encoder_to_joint_angle(
     raw_counts: np.ndarray,
-    anchor_count: np.ndarray,
+    zero_count: np.ndarray,
     polarity: np.ndarray,
-    anchor_angle_deg: np.ndarray,
+    zero_angle_deg: np.ndarray,
+    scale: np.ndarray | float = 1.0,
 ) -> np.ndarray:
-    """Convert raw 14-bit encoder counts into joint angles in degrees.
+    """Convert raw 14-bit encoder counts into joint angles in degrees:
+    ``polarity * scale * Δ_wrapped + zero_angle_deg``.
 
-    All four inputs are per-joint arrays of the same shape; the math
-    runs element-wise. Wrap correction is needed because the encoder is
-    absolute over one turn
+    All per-joint inputs are arrays of the same shape; the math runs
+    element-wise. Wrap correction runs on the raw count delta (before
+    ``scale``) because the encoder is absolute over one mechanical turn.
     """
     a14 = raw_counts.astype(np.int64) & AUTO_ENC_ANGLE_MASK
-    delta_deg = (a14 - anchor_count.astype(np.int64)) * ENCODER_LSB_DEG
+    delta_deg = (a14 - zero_count.astype(np.int64)) * ENCODER_LSB_DEG
     delta_deg = np.where(delta_deg > 180.0, delta_deg - 360.0, delta_deg)
     delta_deg = np.where(delta_deg <= -180.0, delta_deg + 360.0, delta_deg)
-    return polarity.astype(np.float64) * delta_deg + anchor_angle_deg
+    return polarity.astype(np.float64) * np.asarray(scale, dtype=np.float64) * delta_deg + zero_angle_deg
 
 

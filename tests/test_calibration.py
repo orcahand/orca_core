@@ -79,8 +79,10 @@ def test_joint_encoder_calibration_yaml_round_trip(tmp_path):
     calib_path = tmp_path / "calibration.yaml"
     calib_path.touch()
     cals = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=12345),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=4321),
+        "thumb_cmc": JointEncoderCal(zero_count=12345, zero_angle_deg=95.0),
+        "index_mcp": JointEncoderCal(
+            zero_count=4321, zero_angle_deg=41.5, scale=0.98, source="fixture"
+        ),
     }
 
     update_yaml(
@@ -100,6 +102,117 @@ def test_calibration_result_loads_missing_encoder_block_as_empty(tmp_path):
 
     result = CalibrationResult.from_calibration_path(str(calib_path), motor_ids=[1])
     assert result.joint_encoder_calibration_dict == {}
+
+
+def test_unrecognized_encoder_entry_is_dropped(tmp_path, capsys):
+    """Entries not in the current format (including pre-release
+    ``enc_at_anchor_count`` files) are dropped with a warning; the joint
+    reads as uncalibrated until the next calibration rewrites it."""
+    calib_path = tmp_path / "calibration.yaml"
+    with open(calib_path, "w") as f:
+        yaml.safe_dump(
+            {"joint_encoder_calibration": {"ring_mcp": {"enc_at_anchor_count": 100}}},
+            f,
+        )
+
+    result = CalibrationResult.from_calibration_path(str(calib_path), motor_ids=[1])
+    assert result.joint_encoder_calibration_dict == {}
+    assert "dropping unrecognized" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Measured joint ROMs
+# ---------------------------------------------------------------------------
+
+
+def test_joint_roms_measured_loads_and_defaults_empty(tmp_path):
+    calib_path = tmp_path / "calibration.yaml"
+    with open(calib_path, "w") as f:
+        yaml.safe_dump(
+            {
+                "joint_roms_measured": {
+                    "ring_mcp": [-11.5, 105.2],
+                    "bad_entry": [1.0],
+                }
+            },
+            f,
+        )
+
+    result = CalibrationResult.from_calibration_path(str(calib_path), motor_ids=[1])
+    assert result.joint_roms_measured_dict == {"ring_mcp": [-11.5, 105.2]}
+
+    empty = CalibrationResult.empty([1])
+    assert empty.joint_roms_measured_dict == {}
+
+
+def test_effective_joint_roms_overlays_measured(calib_dir):
+    import dataclasses as dc
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    config_roms = hand.config.joint_roms_dict
+    assert hand.effective_joint_roms_dict == config_roms
+
+    hand.calibration = dc.replace(
+        hand.calibration,
+        joint_roms_measured_dict={
+            "ring_mcp": [-11.5, 105.2],
+            "not_a_joint": [0.0, 10.0],
+        },
+    )
+    effective = hand.effective_joint_roms_dict
+    assert effective["ring_mcp"] == [-11.5, 105.2]
+    assert "not_a_joint" not in effective
+    for joint, rom in config_roms.items():
+        if joint != "ring_mcp":
+            assert effective[joint] == rom
+
+
+def test_set_joint_positions_clamps_to_measured_rom(calib_dir):
+    import dataclasses as dc
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    _populate_motor_calibration(hand)
+    config_upper = hand.config.joint_roms_dict["ring_mcp"][1]
+    measured_upper = config_upper - 5.0
+    hand.calibration = dc.replace(
+        hand.calibration,
+        joint_roms_measured_dict={"ring_mcp": [0.0, measured_upper]},
+    )
+
+    hand.set_joint_positions({"ring_mcp": config_upper})
+    assert hand.get_joint_position().as_dict()["ring_mcp"] == pytest.approx(
+        measured_upper, abs=1e-6
+    )
+
+
+def test_clamp_measured_roms_bounds_and_warns(capsys):
+    from orca_core.calibration import clamp_measured_roms
+
+    config_roms = {"ring_mcp": [-15.0, 107.0], "ring_pip": [0.0, 110.0]}
+    measured = {
+        "ring_mcp": [-12.0, 105.0],   # within warn tol: passes through
+        "ring_pip": [0.5, 130.0],     # upper way out: warned + clamped
+        "ghost": [0.0, 10.0],         # unknown joint: dropped
+    }
+
+    clamped = clamp_measured_roms(measured, config_roms)
+    out = capsys.readouterr().out
+
+    assert clamped["ring_mcp"] == [-12.0, 105.0]
+    assert clamped["ring_pip"] == [0.5, 118.0]  # 110 + 8 hard tol
+    assert "ghost" not in clamped
+    assert "deviates" in out
+    assert "unknown joint" in out
+
+
+def test_clamp_measured_roms_drops_empty_range():
+    from orca_core.calibration import clamp_measured_roms
+
+    # An inverted measurement stays inverted after clamping → dropped.
+    config_roms = {"ring_mcp": [0.0, 10.0]}
+    clamped = clamp_measured_roms({"ring_mcp": [9.0, 3.0]}, config_roms)
+    assert clamped == {}
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +254,9 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
     )
 
     full_dict = {
-        joint: JointEncoderCal(enc_at_anchor_count=0)
+        joint: JointEncoderCal(
+            zero_count=0, zero_angle_deg=hand.config.joint_roms_dict[joint][1]
+        )
         for joint in hand._encoder_backed_joints()
     }
     hand.calibration = dc.replace(
@@ -163,14 +278,20 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
 
 
 def test_raw_to_joint_angle_at_anchor_returns_anchor_angle(calib_dir):
-    """raw == enc_at_anchor_count decodes to the joint's ROM upper (the
-    pose the calibration sweep stalls the motor at)."""
+    """raw == zero_count decodes to the record's zero angle (here the
+    joint's ROM upper, the pose the calibration sweep stalls the motor at)."""
     import dataclasses as dc
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=1000),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=8000),
+        "thumb_cmc": JointEncoderCal(
+            zero_count=1000,
+            zero_angle_deg=hand.config.joint_roms_dict["thumb_cmc"][1],
+        ),
+        "index_mcp": JointEncoderCal(
+            zero_count=8000,
+            zero_angle_deg=hand.config.joint_roms_dict["index_mcp"][1],
+        ),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -202,8 +323,14 @@ def test_raw_to_joint_angle_polarity_and_wrap(calib_dir, monkeypatch):
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     encoder_cal = {
-        "thumb_cmc": JointEncoderCal(enc_at_anchor_count=10),
-        "index_mcp": JointEncoderCal(enc_at_anchor_count=10),
+        "thumb_cmc": JointEncoderCal(
+            zero_count=10,
+            zero_angle_deg=hand.config.joint_roms_dict["thumb_cmc"][1],
+        ),
+        "index_mcp": JointEncoderCal(
+            zero_count=10,
+            zero_angle_deg=hand.config.joint_roms_dict["index_mcp"][1],
+        ),
     }
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict=encoder_cal
@@ -264,7 +391,9 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
     assert hand.is_calibrated(use_joint_feedback=True) is True
 
     sample_entry = next(iter(raw["joint_encoder_calibration"].values()))
-    assert set(sample_entry.keys()) == {"enc_at_anchor_count"}
+    assert set(sample_entry.keys()) == {"zero_count", "zero_angle_deg", "scale", "source"}
+    assert sample_entry["source"] == "hardstop"
+    assert sample_entry["scale"] == 1.0
 
 
 # ---------------------------------------------------------------------------

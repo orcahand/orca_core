@@ -65,6 +65,16 @@ class BaseHand(ABC):
         self.recorded_positions: dict[str, OrcaJointPositions] = {}
     
 
+    @property
+    def effective_joint_roms_dict(self) -> dict[str, list[float]]:
+        """Joint ROMs used for target clamping and joint↔motor mapping.
+
+        The base implementation returns the configured nominal ROMs;
+        hardware hands overlay per-hand measured ROMs from calibration
+        where available.
+        """
+        return self.config.joint_roms_dict
+
     @abstractmethod
     def _get_joint_positions(self) -> OrcaJointPositions:
         """Return the current joint configuration."""
@@ -116,7 +126,9 @@ class BaseHand(ABC):
                 Ignored when *num_steps* is ``1``.
         """
         joint_pos = self._coerce_joint_positions(joint_pos)
-        joint_pos = self.config.clamp_joint_positions(joint_pos)
+        joint_pos = self.config.clamp_joint_positions(
+            joint_pos, joint_roms=self.effective_joint_roms_dict
+        )
         waypoints = self._linear_waypoints_to(joint_pos, num_steps)
         for i, wp in enumerate(waypoints):
             self._set_joint_positions(wp)

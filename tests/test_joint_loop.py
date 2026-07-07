@@ -340,3 +340,24 @@ def test_offset_read_rejects_failed_bus_read(calibrated_hand):
     reader.last_read_ok = False
     with pytest.raises(RuntimeError, match="no status packets"):
         calibrated_hand._read_motor_pos_for_offsets(retries=2, retry_interval=0.0)
+
+
+def test_snapshot_uses_measured_roms_when_present(calibrated_hand):
+    """The loop's ROM bounds (and hence its joint→motor map) come from the
+    hand's effective ROMs, so a measured ROM overrides the config nominal."""
+    import dataclasses as dc
+
+    joint = calibrated_hand._encoder_backed_joints()[0]
+    config_rom = calibrated_hand.config.joint_roms_dict[joint]
+    measured_rom = [config_rom[0] + 2.0, config_rom[1] - 3.0]
+    calibrated_hand.calibration = dc.replace(
+        calibrated_hand.calibration,
+        joint_roms_measured_dict={joint: measured_rom},
+    )
+
+    loop = _make_loop(calibrated_hand, _static_at_zero(calibrated_hand))
+    loop.prime_for_step()
+
+    idx = loop._joint_names.index(joint)
+    assert loop._joint_rom_lower[idx] == pytest.approx(measured_rom[0])
+    assert loop._joint_rom_upper[idx] == pytest.approx(measured_rom[1])

@@ -85,9 +85,10 @@ class JointLoopThread:
 
         self._joint_names: List[str] = []
         self._slots = np.zeros(0, dtype=np.int64)
-        self._anchors = np.zeros(0, dtype=np.int64)
+        self._enc_zero_counts = np.zeros(0, dtype=np.int64)
         self._enc_polarities = np.zeros(0, dtype=np.int64)
-        self._anchor_angles = np.zeros(0, dtype=np.float64)
+        self._enc_zero_angles = np.zeros(0, dtype=np.float64)
+        self._enc_scales = np.zeros(0, dtype=np.float64)
         self._motor_ids: List[int] = []
         self._motor_limits_lower = np.zeros(0, dtype=np.float64)
         self._joint_to_motor_ratios = np.zeros(0, dtype=np.float64)
@@ -313,7 +314,7 @@ class JointLoopThread:
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map
         inversion = self._hand.config.joint_inversion_dict
-        joint_roms = self._hand.config.joint_roms_dict
+        joint_roms = self._hand.effective_joint_roms_dict
         motor_limits = self._hand.motor_limits_dict
         ratios = self._hand.calibration.joint_to_motor_ratios_dict
 
@@ -336,14 +337,17 @@ class JointLoopThread:
 
         self._joint_names = joints
         self._slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
-        self._anchors = np.array(
-            [encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64
+        self._enc_zero_counts = np.array(
+            [encoder_dict[j].zero_count for j in joints], dtype=np.int64
         )
         self._enc_polarities = np.array(
             [JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64
         )
-        self._anchor_angles = np.array(
-            [joint_roms[j][1] for j in joints], dtype=np.float64
+        self._enc_zero_angles = np.array(
+            [encoder_dict[j].zero_angle_deg for j in joints], dtype=np.float64
+        )
+        self._enc_scales = np.array(
+            [encoder_dict[j].scale for j in joints], dtype=np.float64
         )
         self._motor_ids = [joint_to_motor[j] for j in joints]
         self._motor_limits_lower = np.array(
@@ -406,9 +410,10 @@ class JointLoopThread:
             )
         return encoder_to_joint_angle(
             raw_counts[self._slots],
-            self._anchors,
+            self._enc_zero_counts,
             self._enc_polarities,
-            self._anchor_angles,
+            self._enc_zero_angles,
+            self._enc_scales,
         )
 
     def _trigger_estop(self, reason: str) -> None:

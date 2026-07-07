@@ -22,7 +22,9 @@ synchronous motor-position path.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import os
 from contextlib import contextmanager
 from typing import Dict, List, Optional
 
@@ -41,6 +43,10 @@ from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_po
 from .hand_config import OrcaHandTouchConfig
 from .hardware_hand import MockOrcaHandTouch, OrcaHand, OrcaHandTouch
 from .joint_position import OrcaJointPositions
+from .sensor_cal_store import FileSensorCalStore, SensorCalStore
+
+SENSOR_CALIBRATION_FILENAME = "sensor_calibration.yaml"
+SENSOR_CAL_PROVENANCE_CALIBRATION_YAML = "calibration.yaml"
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +92,7 @@ class OrcaHandJointFeedback(OrcaHand):
         self._encoder_client: Optional[JointEncoderClient] = None
         self._controller: Optional[JointController] = None
         self._loop: Optional[JointLoopThread] = None
+        self._sensor_cal_provenance = SENSOR_CAL_PROVENANCE_CALIBRATION_YAML
 
     # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
 
@@ -141,12 +148,64 @@ class OrcaHandJointFeedback(OrcaHand):
         joint_to_motor = self.config.joint_to_motor_map
         return [joint_to_motor[j] for j in self._encoder_backed_joints()]
 
+    # ----- Absolute sensor calibration -------------------------------------
+
+    @property
+    def sensor_cal_provenance(self) -> str:
+        """Where the active joint-sensor calibration came from:
+        ``"file"`` (a ``sensor_calibration.yaml`` next to calibration.yaml)
+        or ``"calibration.yaml"`` (the hardstop-anchored entries written by
+        the calibration sweep)."""
+        return self._sensor_cal_provenance
+
+    def _default_sensor_cal_path(self) -> str:
+        return os.path.join(
+            os.path.dirname(self.config.calibration_path),
+            SENSOR_CALIBRATION_FILENAME,
+        )
+
+    def _sensor_cal_stores(self) -> List[SensorCalStore]:
+        """Provenance chain, highest priority first. The device-blob store
+        (connector-board flash) will be prepended once available."""
+        return [FileSensorCalStore(self._default_sensor_cal_path())]
+
+    def _install_sensor_calibration(self) -> None:
+        """Overlay per-joint sensor calibration from the first store in the
+        chain that has one; fall back to calibration.yaml's entries."""
+        for store in self._sensor_cal_stores():
+            try:
+                loaded = store.load()
+            except Exception:
+                logger.exception(
+                    "sensor-cal store %r failed to load; trying next",
+                    store.provenance,
+                )
+                continue
+            if not loaded:
+                continue
+
+            merged = dict(self.calibration.joint_encoder_calibration_dict)
+            merged.update(loaded)
+            self.calibration = dataclasses.replace(
+                self.calibration, joint_encoder_calibration_dict=merged
+            )
+            self._sensor_cal_provenance = store.provenance
+            logger.info(
+                "installed sensor calibration for %d joint(s) from %s",
+                len(loaded),
+                store.provenance,
+            )
+            return
+        self._sensor_cal_provenance = SENSOR_CAL_PROVENANCE_CALIBRATION_YAML
+
     # ----- Lifecycle -------------------------------------------------------
 
     def connect(self) -> tuple[bool, str]:
         success, msg = super().connect()
         if not success:
             return success, msg
+
+        self._install_sensor_calibration()
 
         try:
             # Tactile isn't consumed here, so skip its discovery probing entirely.
@@ -309,9 +368,10 @@ class OrcaHandJointFeedback(OrcaHand):
         motor_pos = self.get_motor_pos()
         idx = self.config.motor_id_to_idx_dict[wrist_motor_id]
         wrapped = motor_pos[idx] - (self._wrap_offsets_dict or {}).get(wrist_motor_id, 0.0)
+        rom = self.effective_joint_roms_dict[wrist_joint]
         if self.config.joint_inversion_dict.get(wrist_joint, False):
-            return self.config.joint_roms_dict[wrist_joint][1] - (wrapped - limits[0]) / ratio
-        return self.config.joint_roms_dict[wrist_joint][0] + (wrapped - limits[0]) / ratio
+            return rom[1] - (wrapped - limits[0]) / ratio
+        return rom[0] + (wrapped - limits[0]) / ratio
 
     # ----- Public facade onto the loop + controller ------------------------
 
