@@ -34,6 +34,8 @@ from orca_core.hardware.sensing.constants import (
     OFFSET_CAPTURE_POLL_S,
     OFFSET_CLEAR_SETTLE_S,
     TACTILE_FIRST_FRAME_TIMEOUT_S,
+    TACTILE_STREAM_REARM_MIN_INTERVAL_S,
+    TACTILE_STREAM_STALE_REARM_S,
 )
 from orca_core.hardware.sensing.types import (
     ResultantForces,
@@ -73,6 +75,7 @@ class TactileStreamStats:
     frames_bad_payload_size: int = 0
     frames_bad_payload: int = 0
     last_error_code: int = 0  # most recent sensor-reported error code (0 = no error)
+    stream_rearms: int = 0  # re-arm attempts after mid-stream silence (device reset)
 
 
 @dataclass
@@ -146,8 +149,13 @@ class TactileClient:
         self._auto_latest = None
         self._auto_latest_taxels = None
         self._auto_latest_ts = None
+        self._auto_started_ts: float | None = None
         self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
+
+        # Stream re-arm state (see _maybe_rearm_stream).
+        self._last_rearm_ts = 0.0
+        self._rearm_thread: threading.Thread | None = None
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
@@ -341,8 +349,10 @@ class TactileClient:
             self._auto_latest = None
             self._auto_latest_taxels = None
             self._auto_latest_ts = None
+            self._auto_started_ts = time.time()
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
+            self._last_rearm_ts = 0.0
 
     def stop_stream(self) -> None:
         """Disable the AA 56 stream on the device and clear the latest cache."""
@@ -369,8 +379,47 @@ class TactileClient:
         if not self._first_frame_event.wait(timeout):
             raise TimeoutError(f"No tactile frame within {timeout}s")
 
+    def _maybe_rearm_stream(self) -> None:
+        """Re-enable the stream if it went silent mid-run (a device reset
+        clears its volatile enable register)."""
+        now = time.time()
+        with self._auto_lock:
+            if not self._auto_running:
+                return
+            last = self._auto_latest_ts or self._auto_started_ts
+            if last is None or now - last < TACTILE_STREAM_STALE_REARM_S:
+                return
+            if now - self._last_rearm_ts < TACTILE_STREAM_REARM_MIN_INTERVAL_S:
+                return
+            if self._rearm_thread is not None and self._rearm_thread.is_alive():
+                return
+            self._last_rearm_ts = now
+            self._auto_stats.stream_rearms += 1
+            stale_s = now - last
+            self._rearm_thread = threading.Thread(
+                target=self._rearm_stream,
+                args=(stale_s, self._auto_mode_resultant, self._auto_mode_taxels),
+                name="TactileStreamRearm",
+                daemon=True,
+            )
+        self._rearm_thread.start()
+
+    def _rearm_stream(self, stale_s: float, resultant: bool, taxels: bool) -> None:
+        """Best-effort; on failure the next stale read past the rate limit retries."""
+        logger.warning(
+            "tactile stream silent for %.1f s while running — re-arming "
+            "(a device reset clears its volatile enable register)",
+            stale_s,
+        )
+        try:
+            self.set_auto_data_type(resultant=resultant, taxels=taxels)
+            self.enable_auto_data_transmission()
+        except Exception as e:
+            logger.warning("tactile stream re-arm failed: %s", e)
+
     def get_latest_forces(self) -> ResultantReading | None:
         """Return the most recent resultant reading, or ``None`` if none yet."""
+        self._maybe_rearm_stream()
         with self._auto_lock:
             if self._auto_latest is None:
                 return None
@@ -378,6 +427,7 @@ class TactileClient:
 
     def get_latest_taxels(self) -> TaxelReading | None:
         """Return the most recent per-taxel reading, or ``None`` if none yet."""
+        self._maybe_rearm_stream()
         with self._auto_lock:
             if self._auto_latest_taxels is None:
                 return None
