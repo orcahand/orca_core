@@ -42,7 +42,7 @@ python scripts/check_motor.py --motor_id 5 --port /dev/ttyUSB0
 ```
 </details>
 
-### Demonstration Scripts
+### Demo Examples (`examples/`)
 
 <details>
 <summary><strong>main_demo.py</strong></summary>
@@ -56,7 +56,7 @@ Runs a demonstration of the ORCA Hand, making the fingers perform a wave-like mo
 
 <strong>Example:</strong>
 ```bash
-python scripts/main_demo.py
+python examples/main_demo.py
 ```
 </details>
 
@@ -72,7 +72,7 @@ Runs a demonstration of the ORCA Hand, similar to `main_demo.py`, but with a foc
 
 <strong>Example:</strong>
 ```bash
-python scripts/main_demo_abduction.py
+python examples/main_demo_abduction.py
 ```
 </details>
 
@@ -110,7 +110,7 @@ python scripts/zero.py /path/to/orcahand_v1_right/config.yaml
 ```
 </details>
 
-### Recording and Replay Scripts
+### Recording and Replay Examples (`examples/`)
 
 <details>
 <summary><strong>record_angles.py</strong></summary>
@@ -125,7 +125,7 @@ Records a sequence of joint angle waypoints for the ORCA Hand. The user is promp
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_angles.py /path/to/orcahand_v1_left/config.yaml --output_dir my_recordings
+python examples/record_angles.py /path/to/orcahand_v1_left/config.yaml --output_dir my_recordings
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -145,7 +145,7 @@ Continuously records joint angles from the ORCA Hand at a specified frequency an
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_continuous.py /path/to/orcahand_v1_right/config.yaml --frequency 100 --duration 10 --output_dir ./custom_replays
+python examples/record_continuous.py /path/to/orcahand_v1_right/config.yaml --frequency 100 --duration 10 --output_dir ./custom_replays
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -164,7 +164,7 @@ Replays a recorded sequence of hand movements (waypoints) from a YAML file. It i
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_angles.py /path/to/orcahand_v1_right/config.yaml --replay_file my_capture_replay_sequence_TIMESTAMP.yaml --step_time 0.01
+python examples/replay_angles.py /path/to/orcahand_v1_right/config.yaml --replay_file my_capture_replay_sequence_TIMESTAMP.yaml --step_time 0.01
 ```
 </details>
 
@@ -181,7 +181,7 @@ Replays continuously recorded hand joint movements from a YAML file. It attempts
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_continuous.py /path/to/orcahand_v1_right/config.yaml --replay_file continuous_angles_YYYYMMDD_HHMMSS.yaml
+python examples/replay_continuous.py /path/to/orcahand_v1_right/config.yaml --replay_file continuous_angles_YYYYMMDD_HHMMSS.yaml
 ```
 </details>
 
@@ -238,22 +238,49 @@ python scripts/tension.py /path/to/orcahand_v1_left/config.yaml
 ```
 </details>
 
+
+### Sensing Diagnostic Scripts
+
 <details>
-<summary><strong>stress_test.py</strong></summary>
+<summary><strong>sensor_feedback.py</strong></summary>
 
-Cycles the hand between OPEN and CLOSE poses while monitoring motor temperatures, aborting if any motor exceeds the safe operating temperature.
-
-<br><strong>Args:</strong><br>
-<ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
-    <li><strong>--num-steps</strong> (<strong>int</strong>, optional): Interpolation steps per move (default 25).</li>
-    <li><strong>--step-size</strong> (<strong>float</strong>, optional): Sleep between interpolation steps in seconds (default 0.001).</li>
-    <li><strong>--hold</strong> (<strong>float</strong>, optional): Extra seconds to hold each pose AFTER motion completes (default 0).</li>
-    <li><strong>--motion-timeout</strong> (<strong>float</strong>, optional): Max seconds to wait for a pose to be reached (default 5).</li>
-</ul>
+Live diagnostic stream for the hand's sensing link: joint-encoder angles and/or tactile readings, depending on the flags given. Takes the raw serial port of the sensing link.
 
 <strong>Example:</strong>
 ```bash
-python scripts/stress_test.py
+python scripts/sensor_feedback.py --port /dev/cu.usbmodemXXXX
+```
+</details>
+
+<details>
+<summary><strong>test_sensors.py</strong></summary>
+
+Guided check of the hand's sensors (joint encoders and tactile), stepping through per-finger press phases and reporting health.
+
+<strong>Example:</strong>
+```bash
+python scripts/test_sensors.py
+```
+</details>
+
+<details>
+<summary><strong>verify_encoder_stream.py</strong></summary>
+
+Validates the raw joint-encoder auto-stream on a serial port (frame integrity, rates, per-slot status).
+
+<strong>Example:</strong>
+```bash
+python scripts/verify_encoder_stream.py /dev/cu.usbmodemXXXX
+```
+</details>
+
+<details>
+<summary><strong>example_taxel_frames.py</strong></summary>
+
+Streams per-taxel forces with 3D taxel positions in a chosen coordinate frame (sensor, fingertip, palm, base, world). Runs without hardware via <code>--mock</code>.
+
+<strong>Example:</strong>
+```bash
+python scripts/example_taxel_frames.py --mock --frame base
 ```
 </details>
