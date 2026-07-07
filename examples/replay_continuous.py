@@ -6,7 +6,7 @@ import time
 import numpy as np
 import yaml
 
-from common import (
+from orca_core.utils.cli import (
     add_hand_arguments,
     connect_hand,
     create_hand,

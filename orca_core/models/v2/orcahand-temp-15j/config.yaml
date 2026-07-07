@@ -220,3 +220,10 @@ calibration_sequence:
     wrist: extend
 sensors:
   port: auto
+  # Fixed production wiring: connector N carries finger N (slot = connector - 1).
+  finger_to_sensor_id:
+    thumb: 0
+    index: 1
+    middle: 2
+    ring: 3
+    pinky: 4

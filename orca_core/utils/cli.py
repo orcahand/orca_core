@@ -1,16 +1,24 @@
+# ==============================================================================
+# Copyright (c) 2025 ORCA Dexterity, Inc. All rights reserved.
+#
+# This file is part of ORCA Dexterity and is licensed under the MIT License.
+# You may use, copy, modify, and distribute this file under the terms of the MIT License.
+# See the LICENSE file at the root of this repository for full license information.
+# ==============================================================================
+"""Shared CLI helpers for the operator scripts and examples."""
+
+import os
 import sys
 import types
 from argparse import ArgumentParser
 from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MOCK_CONFIG_PATH = PROJECT_ROOT / "orca_core" / "models" / "v2" / "orcahand-right" / "config.yaml"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+import orca_core
 from orca_core import OrcaHand
 from orca_core.hardware_hand import MockOrcaHand
+
+PACKAGE_ROOT = Path(os.path.dirname(orca_core.__file__))
+DEFAULT_MOCK_CONFIG_PATH = PACKAGE_ROOT / "models" / "v2" / "orcahand-right" / "config.yaml"
 
 
 def _install_fake_dynamixel_sdk() -> None:
@@ -96,7 +104,7 @@ def shutdown_hand(hand) -> None:
 
 
 def prepare_output_dir(path: str | None, *, default_name: str = "replay_sequences") -> Path:
-    output_dir = Path(path) if path is not None else PROJECT_ROOT / default_name
+    output_dir = Path(path) if path is not None else Path.cwd() / default_name
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
@@ -108,6 +116,6 @@ def resolve_input_path(path: str, *, default_dir: str = "replay_sequences") -> P
         return candidate
 
     if candidate.parent != Path("."):
-        return (PROJECT_ROOT / candidate).resolve()
+        return (Path.cwd() / candidate).resolve()
 
-    return (PROJECT_ROOT / default_dir / candidate).resolve()
+    return (Path.cwd() / default_dir / candidate).resolve()

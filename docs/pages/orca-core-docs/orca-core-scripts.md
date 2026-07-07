@@ -239,6 +239,17 @@ python scripts/tension.py /path/to/orcahand_v1_left/config.yaml
 </details>
 
 
+<details>
+<summary><strong>stress_test.py</strong></summary>
+
+Runs continuous random-pose cycles to stress-test the hand's motors and tendons, auto-calibrating first when needed. Supports <code>--mock</code>.
+
+<strong>Example:</strong>
+```bash
+python scripts/stress_test.py --cycles 100
+```
+</details>
+
 ### Sensing Diagnostic Scripts
 
 <details>

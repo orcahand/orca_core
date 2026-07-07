@@ -140,3 +140,23 @@ def fake_serial_port(device: str, vid: int):
     from types import SimpleNamespace
 
     return SimpleNamespace(device=device, vid=vid, description="fake")
+
+
+@pytest.fixture
+def connected_mock_hand(mock_config_dir):
+    from orca_core.hardware_hand import MockOrcaHand
+
+    hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
+    success, msg = hand.connect()
+    assert success, f"Failed to connect mock hand: {msg}"
+    try:
+        yield hand
+    finally:
+        hand.stop_task()
+        hand.disconnect()
+
+
+@pytest.fixture
+def initialized_mock_hand(connected_mock_hand):
+    connected_mock_hand.init_joints(force_calibrate=True)
+    return connected_mock_hand
