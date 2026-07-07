@@ -220,9 +220,3 @@ calibration_sequence:
     wrist: extend
 sensors:
   port: auto
-  finger_to_sensor_id:
-    thumb: 1
-    index: 3
-    middle: 0
-    ring: 2
-    pinky: 4

@@ -134,6 +134,37 @@ def test_set_neutral_position_uses_configured_neutral_pose(hand):
     }
 
 
+def test_pose_from_fractions_defaults_to_neutral_for_unspecified_joints(hand):
+    pose = hand.pose_from_fractions({"joint_a": 0.75, "joint_c": 0.25})
+    assert pose.as_dict() == {
+        "joint_a": 0.5,
+        "joint_b": 1.25,
+        "joint_c": -0.25,
+    }
+
+
+def test_play_named_positions_reuses_registered_poses(hand):
+    positions = {
+        "pose_one": OrcaJointPositions.from_dict({"joint_a": -0.5, "joint_b": 0.5, "joint_c": 0.0}),
+        "pose_two": OrcaJointPositions.from_dict({"joint_a": 1.0, "joint_b": 2.0, "joint_c": -0.5}),
+    }
+    for name, joint_pos in positions.items():
+        hand.register_position(name, joint_pos)
+
+    hand.play_named_positions(
+        list(positions.keys()),
+        cycles=2,
+        num_steps=1,
+        step_size=0.0,
+    )
+
+    assert hand.get_joint_position().as_dict() == {
+        "joint_a": 1.0,
+        "joint_b": 2.0,
+        "joint_c": -0.5,
+    }
+
+
 def test_set_neutral_position_without_configured_neutral_pose_is_noop(tmp_path):
     config_path = tmp_path / "config.yaml"
     with open(config_path, "w", encoding="utf-8") as file:

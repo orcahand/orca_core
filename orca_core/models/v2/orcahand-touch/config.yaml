@@ -204,9 +204,3 @@ sensors:
   port: auto
   # baudrate auto-detected from the connected sensor; set an explicit int
   # only to force a specific rate.
-  finger_to_sensor_id:
-    thumb: 1
-    index: 3
-    middle: 0
-    ring: 2
-    pinky: 4

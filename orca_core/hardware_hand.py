@@ -1879,11 +1879,17 @@ class OrcaHandTouch(OrcaHand):
 
 
 class MockMotorResolutionMixin:
-    """Skips connect-time driver probing and yaml persistence for mock hands.
+    """Skips connect-time port/driver resolution and yaml persistence for mock hands.
 
-    Mock motors don't sit on a real bus, so there is nothing to probe and no
+    Mock motors don't sit on a real bus, so there is nothing to detect or
+    probe (``port: auto`` must not handshake real USB devices) and no
     auto-detected values worth writing back to config.yaml.
     """
+
+    def connect(self) -> tuple[bool, str]:
+        if self.config.port == "auto":
+            self.config = dataclasses.replace(self.config, port="mock")
+        return super().connect()
 
     def _resolve_motor_driver(self, port: str) -> bool:
         if self.config.motor_type is None or self.config.baudrate is None:
