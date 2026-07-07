@@ -366,7 +366,7 @@ class OrcaHand(BaseHand):
             Motor positions in radians as an array or dict.
         """
         with self._motor_lock:
-            motor_pos = self._motor_client.read_pos_vel_cur()[0]
+            motor_pos = self._motor_client.read_position_velocity_current().position
 
             if as_dict:
                 return {
@@ -386,7 +386,7 @@ class OrcaHand(BaseHand):
             Motor currents (mA) as an array, or dict.
         """
         with self._motor_lock:
-            motor_current = self._motor_client.read_pos_vel_cur()[2]
+            motor_current = self._motor_client.read_position_velocity_current().current
 
             if as_dict:
                 return {
@@ -1076,7 +1076,7 @@ class OrcaHand(BaseHand):
         """Read motor positions for wrap-offset detection, rejecting a read the
         bus never actually answered.
 
-        A dropped status packet leaves ``read_pos_vel_cur`` returning its
+        A dropped status packet leaves ``read_position_velocity_current`` returning its
         zero-initialised cache — every motor reads ``0.0``, below its lower
         limit — and the caller would bake a spurious ``-2π`` wrap offset into
         all 17 motors, corrupting the joint→motor mapping for the whole
