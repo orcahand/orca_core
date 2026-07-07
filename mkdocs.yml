@@ -57,6 +57,7 @@ nav:
   - ORCA Core:
       - Structure: pages/orca-core-docs/orca-core-structure.md
       - OrcaHand Class API: pages/orca-core-docs/orcahand-api.md
+      - Tactile Data in 3D Frames: pages/orca-core-docs/tactile-frames.md
       - Scripts: pages/orca-core-docs/orca-core-scripts.md
 
 extra:

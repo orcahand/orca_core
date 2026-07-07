@@ -72,3 +72,23 @@ class TactileReading:
     forces: ResultantReading | None
     taxels: TaxelReading | None
     timestamp: float | None = None
+
+
+@dataclass(frozen=True)
+class TaxelData:
+    """Per-taxel positions and forces for one finger, expressed in a common frame.
+
+    Row ``i`` of ``positions`` (meters) and ``forces`` (Newtons) describe the
+    same taxel. ``frame`` names the coordinate frame both are expressed in
+    (see ``orca_core.kinematics.frames``).
+    """
+
+    finger: str
+    frame: str
+    positions: np.ndarray
+    forces: np.ndarray
+    timestamp: float | None = None
+
+    @property
+    def num_taxels(self) -> int:
+        return len(self.positions)

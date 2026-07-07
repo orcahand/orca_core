@@ -12,7 +12,9 @@ from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
 from .hardware_hand import OrcaHand
 from .hardware_hand import OrcaHandTouch
+from .hardware.sensing.types import TaxelData
 from .joint_position import OrcaJointPositions
+from .kinematics import HandKinematics, Transform, frames
 from .version import LATEST_VERSION
 
 __all__ = [
@@ -23,6 +25,10 @@ __all__ = [
     "OrcaHand",
     "OrcaHandTouch",
     "OrcaJointPositions",
+    "HandKinematics",
+    "TaxelData",
+    "Transform",
+    "frames",
     "canonical_joint_ids",
     "LATEST_VERSION",
 ]

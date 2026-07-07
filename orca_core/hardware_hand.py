@@ -25,8 +25,10 @@ from .hardware.feetech_client import FeetechClient
 from .hardware.mock_tactile_client import MockTactileClient
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.taxel_geometry import TaxelGeometry
-from .hardware.sensing.types import ResultantReading, TactileReading, TaxelReading
+from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData, TaxelReading
 from .hardware.tactile_client import TactileClient
+from .kinematics import HandKinematics, Transform
+from .kinematics import frames as tactile_frames
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
@@ -1314,6 +1316,7 @@ class OrcaHandTouch(OrcaHand):
             config=config,
         )
         self._tactile_client = None
+        self._base_pose = Transform.identity()
 
     def _create_tactile_client(self):
         return TactileClient(
@@ -1468,6 +1471,103 @@ class OrcaHandTouch(OrcaHand):
         if self._tactile_client is None:
             return {}
         return self._tactile_client.get_taxel_geometry()
+
+    @property
+    def kinematics(self) -> HandKinematics:
+        """Packaged forward kinematics for this hand model."""
+        if "thumb_cmc" not in self.config.joint_ids:
+            raise NotImplementedError(
+                "packaged kinematics are only available for v2 hand models"
+            )
+        if self.config.type not in ("left", "right"):
+            raise ValueError("config must declare a hand type ('left' or 'right')")
+        return HandKinematics.load(self.config.type)
+
+    def set_base_pose(self, pose: Transform | np.ndarray) -> None:
+        """Set the hand's pose in the world frame (``T_world_base``).
+
+        Used by ``frame="world"`` lookups; identity until set. Pass e.g. the
+        robot arm's end-effector pose whenever it moves.
+        """
+        self._base_pose = pose if isinstance(pose, Transform) else Transform(pose)
+
+    def get_base_pose(self) -> Transform:
+        return self._base_pose
+
+    def _resolve_joint_pos(self, joint_pos) -> dict:
+        if joint_pos is None:
+            return dict(self.get_joint_position().data)
+        if isinstance(joint_pos, OrcaJointPositions):
+            return dict(joint_pos.data)
+        return dict(joint_pos)
+
+    def get_sensor_transforms(
+        self,
+        frame: str = tactile_frames.FINGERTIP,
+        joint_pos: OrcaJointPositions | Dict[str, float] | None = None,
+    ) -> Dict[str, Transform]:
+        """Return ``{finger: T_frame_sensor}`` mapping sensor-frame data into ``frame``.
+
+        ``frame`` is one of ``orca_core.kinematics.frames``: ``"sensor"``
+        (identity), ``"fingertip"`` (static mount pose), ``"palm"``/``"base"``
+        (forward kinematics), or ``"world"`` (``base`` composed with
+        :meth:`set_base_pose`). Frames beyond ``fingertip`` need joint angles
+        (degrees): pass ``joint_pos`` or the current motor-derived joint
+        positions are read from the hand.
+        """
+        kin = self.kinematics
+        if frame == tactile_frames.SENSOR:
+            return {finger: Transform.identity() for finger in kin.sensor_mounts}
+        if frame == tactile_frames.FINGERTIP:
+            return kin.sensor_mounts
+        if frame in (tactile_frames.PALM, tactile_frames.BASE):
+            return kin.sensor_poses(self._resolve_joint_pos(joint_pos), in_frame=frame)
+        if frame == tactile_frames.WORLD:
+            poses = kin.sensor_poses(
+                self._resolve_joint_pos(joint_pos), in_frame=tactile_frames.BASE
+            )
+            return {finger: self._base_pose @ pose for finger, pose in poses.items()}
+        raise ValueError(f"unknown frame {frame!r}; expected one of {tactile_frames.FRAMES}")
+
+    def get_taxel_data(
+        self,
+        frame: str = tactile_frames.SENSOR,
+        joint_pos: OrcaJointPositions | Dict[str, float] | None = None,
+    ) -> Dict[str, TaxelData] | None:
+        """Return joined per-taxel positions and forces per finger, in ``frame``.
+
+        Positions (meters) come from the static sensor geometry and forces
+        (Newtons) from the latest tactile stream frame; row ``i`` of both
+        describes the same taxel. Positions get the full rigid transform into
+        ``frame``; forces, being free vectors, are only rotated. See
+        :meth:`get_sensor_transforms` for the available frames and how joint
+        angles are sourced. Returns ``None`` if no stream frame has arrived
+        yet; fingers whose geometry does not match the streamed taxel count
+        are skipped.
+        """
+        reading = self.get_tactile_taxels()
+        if reading is None:
+            return None
+        geometry = self.get_taxel_geometry()
+        transforms = self.get_sensor_transforms(frame, joint_pos)
+
+        data: Dict[str, TaxelData] = {}
+        for finger in reading.fingers:
+            if finger not in geometry or finger not in transforms:
+                continue
+            positions = geometry[finger].positions
+            forces = reading.as_array(finger)
+            if len(positions) != len(forces):
+                continue
+            transform = transforms[finger]
+            data[finger] = TaxelData(
+                finger=finger,
+                frame=frame,
+                positions=transform.apply_to_points(positions),
+                forces=transform.apply_to_vectors(forces),
+                timestamp=reading.timestamp,
+            )
+        return data
 
     def get_tactile_stats(self):
         """Return ``AutoStreamStats`` for the running auto-stream."""
