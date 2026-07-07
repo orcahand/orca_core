@@ -8,6 +8,7 @@
 
 import dataclasses
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -35,13 +36,19 @@ from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData,
 from .kinematics import HandKinematics, Transform
 from .kinematics import frames as tactile_frames
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
-from .utils.utils import auto_detect_port, get_and_choose_port, update_yaml
+from .utils.utils import (
+    auto_detect_port,
+    find_single_usb_serial_port,
+    get_and_choose_port,
+    update_yaml,
+)
 
 if TYPE_CHECKING:
     from .hardware.dynamixel_client import DynamixelClient
     from .hardware.feetech_client import FeetechClient
 
 from .constants import (
+    MOTOR_BAUD_RATES,
     SUPPORTED_MOTOR_TYPES,
     MODE_MAP,
     WRIST_MODE_VALUE,
@@ -162,51 +169,141 @@ class OrcaHand(BaseHand):
             f"Unknown motor_type: {self.config.motor_type}. Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
         )
 
+    def _trial_probe(self, port: str) -> "tuple[str | None, int | None]":
+        """Probe ``port`` until a (motor_type, baudrate) combination responds.
+
+        Iterates each motor family x the baudrates listed in
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
+        ``baudrate`` is pinned in yaml, that dimension is fixed and the
+        probe only iterates the other.
+        """
+        from .hardware.dynamixel_client import DynamixelClient
+        from .hardware.feetech_client import FeetechClient
+
+        candidates = {
+            "dynamixel": DynamixelClient,
+            "feetech": FeetechClient,
+        }
+        motor_types = (
+            [self.config.motor_type]
+            if self.config.motor_type
+            else list(SUPPORTED_MOTOR_TYPES)
+        )
+        for motor_type in motor_types:
+            client_cls = candidates.get(motor_type)
+            if client_cls is None:
+                continue
+            baudrates = (
+                [self.config.baudrate]
+                if self.config.baudrate is not None
+                else list(MOTOR_BAUD_RATES.get(motor_type, []))
+            )
+            for baudrate in baudrates:
+                print(f"Probing {motor_type} on {port} @ {baudrate} baud...")
+                try:
+                    if client_cls.probe(port, baudrate, self.config.motor_ids):
+                        print(f"  -> {motor_type} responded at {baudrate} baud.")
+                        return motor_type, baudrate
+                except Exception as e:
+                    print(f"  -> probe errored: {e}")
+        return None, None
+
+    def _resolve_motor_driver(self, port: str) -> bool:
+        """Fill in ``motor_type``/``baudrate`` for ``port`` when not pinned in yaml.
+
+        Returns False when a probe was needed but no motor family responded.
+        """
+        if self.config.motor_type is not None and self.config.baudrate is not None:
+            return True
+        motor_type, baudrate = self._trial_probe(port)
+        if motor_type is None or baudrate is None:
+            return False
+        self.config = dataclasses.replace(
+            self.config, motor_type=motor_type, baudrate=baudrate
+        )
+        return True
+
+    def _persist_resolved_driver(self, existing: "OrcaHandConfig") -> None:
+        """Persist auto-detected driver fields to config.yaml.
+
+        Each field is only written when it was missing (or, for the port,
+        different) in yaml before this connect. Once written, the next
+        connect short-circuits the probe and uses the yaml values directly.
+        Clear the yaml fields to trigger a fresh probe.
+        """
+        updates = {}
+        if existing.port != self.config.port and existing.port != "auto":
+            updates["port"] = self.config.port
+        if existing.motor_type is None and self.config.motor_type is not None:
+            updates["motor_type"] = self.config.motor_type
+        if existing.baudrate is None and self.config.baudrate is not None:
+            updates["baudrate"] = self.config.baudrate
+        for key, value in updates.items():
+            update_yaml(self.config.config_path, key, value)
+        if updates:
+            print(
+                f"Wrote auto-detected {', '.join(updates.keys())} to "
+                f"{os.path.basename(self.config.config_path)}."
+            )
+
+    def _connect_on_port(self, port: str) -> None:
+        """Resolve the motor driver for ``port`` and open the client on it.
+
+        Raises on failure so callers can run their recovery cascade.
+        """
+        self.config = dataclasses.replace(self.config, port=port)
+        if not self._resolve_motor_driver(port):
+            raise ConnectionError(
+                f"no motor responded on {port} (check power and wiring)"
+            )
+        self._motor_client = self._create_motor_client()
+        with self._motor_lock:
+            self._motor_client.connect()
+
     def connect(self) -> tuple[bool, str]:
         """Open connection to the motor bus.
 
-        Attempts to connect on the port in ``config.yaml``. On failure it
-        tries auto-detection via USB vendor ID, then falls back to an
-        interactive terminal port picker. A successful connection updates
-        ``config.yaml`` if the port changed.
+        Resolves (port, motor_type, baudrate) at connect time: the values in
+        ``config.yaml`` win when present; a missing port is auto-detected via
+        USB vendor ID (interactive picker as a last resort) and a missing
+        motor_type/baudrate is found by pinging each candidate family from
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Resolved values are
+        persisted back to ``config.yaml``.
 
         Returns:
             A ``(success, message)`` tuple where *success* is ``True`` on a
             successful connection.
         """
-        # TODO(fracapuano): Refactor: this is basically always connecting to one port and looking at multiple ports
+        existing_config = self.config
 
         # ``port: auto`` keeps the tracked config hardware-agnostic: resolve it
-        # to a live device before the first attempt, without persisting the
-        # detected path back to config.yaml. If detection finds no unique
-        # adapter the port is left as ``"auto"`` and the open below fails into
-        # the same auto-detect/picker recovery path an explicit port uses.
-        if self.config.port == "auto":
-            detected = auto_detect_port(self.config.motor_type)
+        # to a live device before the first attempt. If detection finds no
+        # unique adapter the port is left as ``"auto"`` and the open below
+        # fails into the same auto-detect/picker recovery path an explicit
+        # port uses.
+        first_port = self.config.port
+        if first_port == "auto":
+            detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
             if detected is not None:
-                self.config = dataclasses.replace(self.config, port=detected)
+                first_port = detected
 
         try:
-            self._motor_client = self._create_motor_client()
-            with self._motor_lock:
-                self._motor_client.connect()
-
-            return True, "Connection successful"
+            self._connect_on_port(first_port)
+            self._persist_resolved_driver(existing_config)
+            return True, (
+                f"Connection successful ({self.config.motor_type} @ "
+                f"{self.config.port}, {self.config.baudrate} baud)"
+            )
 
         except Exception as e:
-            # 1. The port is not correct
             self._motor_client = None
-            print(f"Connection failed on {self.config.port}: {str(e)}")
+            print(f"Connection failed on {first_port}: {str(e)}")
 
             chosen_port = auto_detect_port(self.config.motor_type)
-            if chosen_port and chosen_port != self.config.port:
-                # TODO(fracapuano): Replace replace replace this try except Exception is madness
+            if chosen_port and chosen_port != first_port:
                 try:
-                    self.config = dataclasses.replace(self.config, port=chosen_port)
-                    self._motor_client = self._create_motor_client()
-                    with self._motor_lock:
-                        self._motor_client.connect()
-                    update_yaml(self.config.config_path, "port", chosen_port)
+                    self._connect_on_port(chosen_port)
+                    self._persist_resolved_driver(existing_config)
                     return (
                         True,
                         f"Connection successful with auto-detected port {chosen_port}",
@@ -221,11 +318,8 @@ class OrcaHand(BaseHand):
                 return False, "Connection failed: No port selected"
 
             try:
-                self.config = dataclasses.replace(self.config, port=chosen_port)
-                self._motor_client = self._create_motor_client()
-                with self._motor_lock:
-                    self._motor_client.connect()
-                update_yaml(self.config.config_path, "port", chosen_port)
+                self._connect_on_port(chosen_port)
+                self._persist_resolved_driver(existing_config)
                 return True, f"Connection successful with port {chosen_port}"
             except Exception as e2:
                 self._motor_client = None
@@ -1784,7 +1878,27 @@ class OrcaHandTouch(OrcaHand):
         return data
 
 
-class MockOrcaHand(OrcaHand):
+class MockMotorResolutionMixin:
+    """Skips connect-time driver probing and yaml persistence for mock hands.
+
+    Mock motors don't sit on a real bus, so there is nothing to probe and no
+    auto-detected values worth writing back to config.yaml.
+    """
+
+    def _resolve_motor_driver(self, port: str) -> bool:
+        if self.config.motor_type is None or self.config.baudrate is None:
+            self.config = dataclasses.replace(
+                self.config,
+                motor_type=self.config.motor_type or "dynamixel",
+                baudrate=self.config.baudrate or 1_000_000,
+            )
+        return True
+
+    def _persist_resolved_driver(self, existing) -> None:
+        pass
+
+
+class MockOrcaHand(MockMotorResolutionMixin, OrcaHand):
     """Drop-in :class:`OrcaHand` backed by an in-memory mock motor client,
     for testing and prototyping.
 
@@ -1800,7 +1914,7 @@ class MockOrcaHand(OrcaHand):
         )
 
 
-class MockOrcaHandTouch(OrcaHandTouch):
+class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
     """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
 
     def _create_motor_client(self) -> MotorClient:

@@ -246,6 +246,39 @@ class DynamixelClient(MotorClient):
             # Start with all motors enabled.
             self.set_torque_enabled(self.motor_ids, True)
 
+    @staticmethod
+    def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
+        """Open ``port`` at ``baudrate`` and ping the first and last motor IDs.
+
+        Returns True if either motor responds — i.e. the bus is speaking the
+        Dynamixel Protocol 2.0 at this baudrate. Used at connect time to
+        auto-detect the driver family without enabling torque.
+        """
+        import dynamixel_sdk
+
+        ids = list(motor_ids)
+        if not ids:
+            return False
+        sample = [ids[0]] if len(ids) == 1 else [ids[0], ids[-1]]
+
+        handler = dynamixel_sdk.PortHandler(port)
+        try:
+            if not handler.openPort():
+                return False
+            if not handler.setBaudRate(baudrate):
+                return False
+            packet = dynamixel_sdk.PacketHandler(PROTOCOL_VERSION)
+            for motor_id in sample:
+                _, comm, _ = packet.ping(handler, motor_id)
+                if comm == dynamixel_sdk.COMM_SUCCESS:
+                    return True
+            return False
+        finally:
+            try:
+                handler.closePort()
+            except Exception:
+                pass
+
     def disconnect(self):
         """Disconnects from the Dynamixel device."""
         if not self.is_connected:

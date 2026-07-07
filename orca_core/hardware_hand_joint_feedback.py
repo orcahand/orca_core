@@ -39,7 +39,12 @@ from .hardware.joint_encoder_client import JointEncoderClient
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hand_config import OrcaHandTouchConfig
-from .hardware_hand import MockOrcaHandTouch, OrcaHand, OrcaHandTouch
+from .hardware_hand import (
+    MockMotorResolutionMixin,
+    MockOrcaHandTouch,
+    OrcaHand,
+    OrcaHandTouch,
+)
 from .joint_position import OrcaJointPositions
 
 
@@ -367,7 +372,7 @@ class OrcaHandJointFeedback(OrcaHand):
         return self._loop.get_stats()
 
 
-class MockOrcaHandJointFeedback(OrcaHandJointFeedback):
+class MockOrcaHandJointFeedback(MockMotorResolutionMixin, OrcaHandJointFeedback):
     """Drop-in :class:`OrcaHandJointFeedback` with in-memory mock motor +
     encoder-link clients (no serial I/O). The encoder client itself is real
     so the demuxer + AA A9 handler path is exercised in tests.

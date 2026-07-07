@@ -166,11 +166,12 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
-def auto_detect_port(motor_type: str = "dynamixel") -> str:
+def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     """Auto-detect a serial adapter port for the given motor type.
 
     Args:
-        motor_type: The motor driver type (``"dynamixel"`` or ``"feetech"``).
+        motor_type: The motor driver type (``"dynamixel"`` or ``"feetech"``),
+            or ``None`` to match adapters of any known motor family.
 
     Returns:
         The port device string if exactly one matching adapter is found,
@@ -194,15 +195,52 @@ def auto_detect_port(motor_type: str = "dynamixel") -> str:
         print(f"Auto-detected ORCA motor bus via ORCA_ID?: {orca_motor_port}")
         return orca_motor_port
 
-    known_vids = KNOWN_VIDS.get(motor_type, [])
+    if motor_type is None:
+        known_vids = [
+            vid
+            for family in ("dynamixel", "feetech")
+            for vid in KNOWN_VIDS.get(family, [])
+        ]
+    else:
+        known_vids = KNOWN_VIDS.get(motor_type, [])
     ports = serial.tools.list_ports.comports()
     matches = [p for p in ports if p.vid in known_vids]
 
     if len(matches) == 1:
         port = matches[0]
-        print(f"Auto-detected {motor_type} adapter: {port.device} ({port.description or 'unknown'})")
+        print(f"Auto-detected {motor_type or 'motor'} adapter: {port.device} ({port.description or 'unknown'})")
         return port.device
 
+    return None
+
+
+def motor_type_for_port(port_device: str) -> "str | None":
+    """Return the motor family whose USB VID matches ``port_device``, or None."""
+    import serial.tools.list_ports
+    from ..constants import KNOWN_VIDS
+
+    for port in serial.tools.list_ports.comports():
+        if port.device != port_device:
+            continue
+        for motor_type, vids in KNOWN_VIDS.items():
+            if port.vid in vids:
+                return motor_type
+        return None
+    return None
+
+
+def find_single_usb_serial_port() -> "str | None":
+    """Return the device path of the only attached USB serial adapter, or None.
+
+    Filters out built-in / non-USB serial endpoints (Bluetooth, debug console)
+    by requiring a USB VID. Used as a last-resort port pick when no VID is
+    in :data:`~orca_core.constants.KNOWN_VIDS`.
+    """
+    import serial.tools.list_ports
+
+    ports = [p for p in serial.tools.list_ports.comports() if p.vid is not None]
+    if len(ports) == 1:
+        return ports[0].device
     return None
 
 

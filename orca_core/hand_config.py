@@ -14,7 +14,6 @@ from typing import Dict, List, Literal
 from .constants import (
     CONTROL_MODES,
     DEFAULT_MODEL_NAME,
-    DEFAULT_MOTOR_BAUDRATE,
     FINGER_NAMES,
     JOINT_IDS,
     JOINT_ROM_DICT,
@@ -197,11 +196,12 @@ class OrcaHandConfig(BaseHandConfig):
     """ORCA hand configuration layered on top of the shared base spec."""
 
     calibration_path: str = ""
-    baudrate: int = DEFAULT_MOTOR_BAUDRATE
+    # None = auto-detect at connect time (probed and persisted to config.yaml).
+    baudrate: int | None = None
     port: str = "auto"
     max_current: int = 300  # mA
     control_mode: str = "current_based_position"
-    motor_type: str = "dynamixel"
+    motor_type: str | None = None
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
