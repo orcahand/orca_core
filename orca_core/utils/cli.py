@@ -7,57 +7,12 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
-import os
-import sys
-import types
 from argparse import ArgumentParser
 from pathlib import Path
 
-import orca_core
 from orca_core import OrcaHand
 from orca_core.hardware_hand import MockOrcaHand
 
-PACKAGE_ROOT = Path(os.path.dirname(orca_core.__file__))
-DEFAULT_MOCK_CONFIG_PATH = PACKAGE_ROOT / "models" / "v2" / "orcahand-right" / "config.yaml"
-
-
-def _install_fake_dynamixel_sdk() -> None:
-    if "dynamixel_sdk" in sys.modules:
-        return
-
-    module = types.ModuleType("dynamixel_sdk")
-
-    class PortHandler:
-        def __init__(self, port: str):
-            self.port_name = port
-            self.is_using = False
-
-    class PacketHandler:
-        def __init__(self, protocol_version: float):
-            self.protocol_version = protocol_version
-
-    class GroupBulkRead:
-        def __init__(self, port_handler: PortHandler, packet_handler: PacketHandler):
-            self.port_handler = port_handler
-            self.packet_handler = packet_handler
-
-        def addParam(self, motor_id: int, address: int, size: int) -> bool:
-            return True
-
-        def txRxPacket(self) -> int:
-            return 0
-
-        def isAvailable(self, motor_id: int, address: int, size: int) -> bool:
-            return True
-
-        def getData(self, motor_id: int, address: int, size: int) -> int:
-            return 0
-
-    module.PortHandler = PortHandler
-    module.PacketHandler = PacketHandler
-    module.GroupBulkRead = GroupBulkRead
-    module.COMM_SUCCESS = 0
-    sys.modules["dynamixel_sdk"] = module
 
 
 def add_hand_arguments(parser: ArgumentParser, *, mock_default: bool = False) -> None:
@@ -76,10 +31,6 @@ def add_hand_arguments(parser: ArgumentParser, *, mock_default: bool = False) ->
 
 
 def create_hand(config_path: str | None, *, use_mock: bool):
-    if use_mock:
-        _install_fake_dynamixel_sdk()
-        if config_path is None:
-            config_path = str(DEFAULT_MOCK_CONFIG_PATH)
     hand_cls = MockOrcaHand if use_mock else OrcaHand
     return hand_cls(config_path=config_path)
 
@@ -97,8 +48,10 @@ def shutdown_hand(hand) -> None:
     except Exception:
         pass
     try:
-        success, message = hand.disconnect()
-        print(f"disconnect() -> success={success}, message={message}")
+        result = hand.disconnect()
+        if result is not None:
+            success, message = result
+            print(f"disconnect() -> success={success}, message={message}")
     except Exception as exc:
         print(f"disconnect() failed: {exc}")
 

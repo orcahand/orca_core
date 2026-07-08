@@ -246,12 +246,15 @@ class OrcaHand(BaseHand):
                 f"{os.path.basename(self.config.config_path)}."
             )
 
-    def _connect_on_port(self, port: str) -> None:
+    def _connect_on_port(self, port: str, base_config: "OrcaHandConfig" = None) -> None:
         """Resolve the motor driver for ``port`` and open the client on it.
 
-        Raises on failure so callers can run their recovery cascade.
+        Resolution starts from ``base_config`` (the yaml-pinned values), so a
+        failed probe on an earlier port never leaks motor_type/baudrate into
+        this attempt. Raises on failure so callers can run their recovery
+        cascade.
         """
-        self.config = dataclasses.replace(self.config, port=port)
+        self.config = dataclasses.replace(base_config or self.config, port=port)
         if not self._resolve_motor_driver(port):
             raise ConnectionError(
                 f"no motor responded on {port} (check power and wiring)"
@@ -276,11 +279,8 @@ class OrcaHand(BaseHand):
         """
         existing_config = self.config
 
-        # ``port: auto`` keeps the tracked config hardware-agnostic: resolve it
-        # to a live device before the first attempt. If detection finds no
-        # unique adapter the port is left as ``"auto"`` and the open below
-        # fails into the same auto-detect/picker recovery path an explicit
-        # port uses.
+        # ``port: auto`` keeps the tracked config hardware-agnostic; if no
+        # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
         if first_port == "auto":
             detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
@@ -288,7 +288,7 @@ class OrcaHand(BaseHand):
                 first_port = detected
 
         try:
-            self._connect_on_port(first_port)
+            self._connect_on_port(first_port, existing_config)
             self._persist_resolved_driver(existing_config)
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "
@@ -302,7 +302,7 @@ class OrcaHand(BaseHand):
             chosen_port = auto_detect_port(self.config.motor_type)
             if chosen_port and chosen_port != first_port:
                 try:
-                    self._connect_on_port(chosen_port)
+                    self._connect_on_port(chosen_port, existing_config)
                     self._persist_resolved_driver(existing_config)
                     return (
                         True,
@@ -318,7 +318,7 @@ class OrcaHand(BaseHand):
                 return False, "Connection failed: No port selected"
 
             try:
-                self._connect_on_port(chosen_port)
+                self._connect_on_port(chosen_port, existing_config)
                 self._persist_resolved_driver(existing_config)
                 return True, f"Connection successful with port {chosen_port}"
             except Exception as e2:
@@ -1518,19 +1518,26 @@ class OrcaHand(BaseHand):
                 motor_id: -increment_per_step for motor_id in motors_to_move
             }
 
-            # Drive each direction until the motors stall (tendons taut) for
-            # stall_hold seconds rather than a fixed duration.
+            # Drive each direction until the commanded motors stall (tendons
+            # taut) for stall_hold seconds, bounded by max_wind_s per direction.
             stall_threshold = 0.01
             stall_hold = 1.0
+            max_wind_s = 20.0
+            moved_idx = np.array(
+                [self.config.motor_ids.index(mid) for mid in motors_to_move]
+            )
 
             for increments in (motor_increments_left, motor_increments_right):
                 stall_start = None
+                phase_start = time.time()
                 prev_pos = self.get_motor_pos()
-                while not self._task_stop_event.is_set():
+                while (not self._task_stop_event.is_set()
+                       and time.time() - phase_start < max_wind_s):
                     self._set_motor_pos(increments, rel_to_current=True)
                     time.sleep(0.1)
                     cur_pos = self.get_motor_pos()
-                    if np.max(np.abs(cur_pos - prev_pos)) < stall_threshold:
+                    delta = np.max(np.abs(cur_pos[moved_idx] - prev_pos[moved_idx]))
+                    if delta < stall_threshold:
                         if stall_start is None:
                             stall_start = time.time()
                         elif time.time() - stall_start >= stall_hold:
@@ -1539,19 +1546,20 @@ class OrcaHand(BaseHand):
                         stall_start = None
                     prev_pos = cur_pos
 
-        # Gradually release torque so tendons don't snap back, then
-        # re-engage at the relaxed position for a stable hold.
         max_cur = self.config.max_current
-        self.set_max_current(max_cur)
-        self.enable_torque()
-        steps = 20
-        for i in range(steps):
-            if self._task_stop_event.is_set():
-                break
-            self.set_max_current(max_cur * (1 - (i + 1) / steps))
-            time.sleep(1.0 / steps)
-        self.disable_torque()
-        time.sleep(0.05)
+        if move_motors:
+            # Gradually release torque so tendons don't snap back, then
+            # re-engage at the relaxed position for a stable hold.
+            self.set_max_current(max_cur)
+            self.enable_torque()
+            steps = 20
+            for i in range(steps):
+                if self._task_stop_event.is_set():
+                    break
+                self.set_max_current(max_cur * (1 - (i + 1) / steps))
+                time.sleep(1.0 / steps)
+            self.disable_torque()
+            time.sleep(0.05)
         self.set_max_current(max_cur)
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
@@ -1823,6 +1831,11 @@ class OrcaHandTouch(OrcaHand):
 
     def _resolve_joint_pos(self, joint_pos) -> dict:
         if joint_pos is None:
+            if self._motor_client is None:
+                raise RuntimeError(
+                    "joint angles unavailable (motor bus not connected); "
+                    "pass joint_pos explicitly"
+                )
             return dict(self.get_joint_position().data)
         if isinstance(joint_pos, OrcaJointPositions):
             return dict(joint_pos.data)
@@ -1842,9 +1855,11 @@ class OrcaHandTouch(OrcaHand):
         (degrees): pass ``joint_pos`` or the hand's current joint positions
         are used.
         """
-        kin = self.kinematics
         if frame == tactile_frames.SENSOR:
-            return {finger: Transform.identity() for finger in kin.sensor_mounts}
+            from .kinematics import FINGERS
+
+            return {finger: Transform.identity() for finger in FINGERS}
+        kin = self.kinematics
         if frame == tactile_frames.FINGERTIP:
             return kin.sensor_mounts
         if frame in (tactile_frames.PALM, tactile_frames.BASE):
@@ -1872,26 +1887,38 @@ class OrcaHandTouch(OrcaHand):
         yet; fingers whose geometry does not match the streamed taxel count
         are skipped.
         """
+        if frame not in tactile_frames.FRAMES:
+            raise ValueError(
+                f"unknown frame {frame!r}; expected one of {tactile_frames.FRAMES}"
+            )
         reading = self.get_tactile_taxels()
         if reading is None:
             return None
         geometry = self.get_taxel_geometry()
-        transforms = self.get_sensor_transforms(frame, joint_pos)
+        is_sensor_frame = frame == tactile_frames.SENSOR
+        transforms = None if is_sensor_frame else self.get_sensor_transforms(frame, joint_pos)
 
         data: Dict[str, TaxelData] = {}
         for finger in reading.fingers:
-            if finger not in geometry or finger not in transforms:
+            if finger not in geometry:
+                continue
+            if transforms is not None and finger not in transforms:
                 continue
             positions = geometry[finger].positions
             forces = reading.as_array(finger)
             if len(positions) != len(forces):
                 continue
-            transform = transforms[finger]
+            if is_sensor_frame:
+                transformed_positions, transformed_forces = positions, forces
+            else:
+                transform = transforms[finger]
+                transformed_positions = transform.apply_to_points(positions)
+                transformed_forces = transform.apply_to_vectors(forces)
             data[finger] = TaxelData(
                 finger=finger,
                 frame=frame,
-                positions=transform.apply_to_points(positions),
-                forces=transform.apply_to_vectors(forces),
+                positions=transformed_positions,
+                forces=transformed_forces,
                 timestamp=reading.timestamp,
             )
         return data

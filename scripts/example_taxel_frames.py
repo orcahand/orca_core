@@ -33,7 +33,11 @@ def _connect_mock(hand):
     from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
     from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
     from orca_core.hardware.tactile_client import TactileClient
-    from tests._tactile_helpers import TactileMockState, feed_taxels_frame, install_tactile_mock
+    from orca_core.hardware.sensing.tactile_mock import (
+        TactileMockState,
+        feed_taxels_frame,
+        install_tactile_mock,
+    )
 
     state = TactileMockState()
     link = MockHandSerialLink()
@@ -64,7 +68,6 @@ def main():
     hand = OrcaHandTouch(config_path=args.config_path)
     feed = None
     if args.mock:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         feed = _connect_mock(hand)
     else:
         ok, msg = hand.connect_sensors_only()

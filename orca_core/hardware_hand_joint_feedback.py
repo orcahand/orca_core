@@ -462,14 +462,14 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
             f"| Tactile on {tactile_where}"
         )
 
-    def disconnect(self) -> None:
+    def disconnect(self) -> tuple[bool, str]:
         # Tactile first: its stop_stream() needs the link alive. Joint-feedback
         # teardown then closes the shared (or dedicated encoder) link; a shared
         # link is closed once because tactile left _tactile_link None. Motors
         # last, mirroring OrcaHandTouch.disconnect ordering.
         self._teardown_tactile()
         self._teardown_joint_feedback()
-        OrcaHand.disconnect(self)
+        return OrcaHand.disconnect(self)
 
 
 class MockOrcaHandFull(MockOrcaHandTouch, MockOrcaHandJointFeedback, OrcaHandFull):

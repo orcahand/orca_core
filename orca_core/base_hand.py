@@ -166,7 +166,11 @@ class BaseHand(ABC):
         return out
 
     def register_position(self, name: str, joint_pos: OrcaJointPositions):
-        self.recorded_positions[name] = self.config.clamp_joint_positions(joint_pos)
+        # Uncalibrated joints read as None and carry no pose information.
+        defined = {joint: value for joint, value in joint_pos if value is not None}
+        self.recorded_positions[name] = self.config.clamp_joint_positions(
+            OrcaJointPositions.from_dict(defined)
+        )
 
     def remove_position(self, name: str):
         try:

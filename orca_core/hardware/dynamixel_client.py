@@ -25,6 +25,11 @@ from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
 
+# Per-motor fallback bounds: skip a motor whose individual read failed for
+# this long, and allow at most one full-bus fallback sweep per interval.
+FALLBACK_MOTOR_COOLDOWN_S = 2.0
+FALLBACK_FULL_SWEEP_MIN_INTERVAL_S = 1.0
+
 # The following addresses assume XC motors.
 # see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ for control table
 ADDR_ID = 7
@@ -741,6 +746,11 @@ class DynamixelReader:
         self.address = address
         self.size = size
         self.last_read_ok = True
+        # Fallback bounds: a motor whose individual read failed is skipped for
+        # a cooldown, and full-bus sweeps are rate limited, so a dead motor
+        # cannot stall every read cycle while the bus lock is held.
+        self._fallback_skip_until: Dict[int, float] = {}
+        self._last_full_fallback = 0.0
         self._initialize_data()
 
         self.operation = _AlertCaptureBulkRead(client.port_handler,
@@ -769,11 +779,16 @@ class DynamixelReader:
 
             if not success:
                 # Bulk transaction failed entirely: try each motor individually
-                # (still under the bus lock) before giving up on fresh data.
+                # (still under the bus lock), at most once per rate-limit window.
+                now = time.monotonic()
+                if now - self._last_full_fallback < FALLBACK_FULL_SWEEP_MIN_INTERVAL_S:
+                    self.last_read_ok = False
+                    return self._get_data()
+                self._last_full_fallback = now
                 logging.warning(
                     'Bulk read failed; falling back to per-motor reads for %d motor(s)',
                     len(self.motor_ids))
-                still_failed = self._read_per_motor_fallback(list(self.motor_ids))
+                still_failed = self._run_bounded_fallback(list(self.motor_ids))
                 self.last_read_ok = not still_failed
                 return self._get_data()
 
@@ -801,13 +816,27 @@ class DynamixelReader:
             if errored_ids:
                 logging.warning('Bulk read missing data for %s; per-motor fallback',
                                 str(errored_ids))
-                errored_ids = self._read_per_motor_fallback(errored_ids)
+                errored_ids = self._run_bounded_fallback(errored_ids)
 
             # Expose whether every motor produced fresh data, so callers can tell
             # a real reading apart from the stale cache kept on failed reads.
             self.last_read_ok = not errored_ids
 
             return self._get_data()
+
+    def _run_bounded_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Run the per-motor fallback, skipping motors in their failure cooldown.
+
+        Returns the IDs still lacking fresh data (failed now or cooling down).
+        """
+        now = time.monotonic()
+        eligible = [m for m in motor_ids
+                    if self._fallback_skip_until.get(m, 0.0) <= now]
+        cooling = [m for m in motor_ids if m not in eligible]
+        still_failed = self._read_per_motor_fallback(eligible) if eligible else []
+        for motor_id in still_failed:
+            self._fallback_skip_until[motor_id] = now + FALLBACK_MOTOR_COOLDOWN_S
+        return still_failed + cooling
 
     def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
         """Read each motor individually after a failed bulk read.

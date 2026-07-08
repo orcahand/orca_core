@@ -29,14 +29,30 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 
+class _ChainEntry:
+    """One precompiled chain element: constant origin plus optional joint axis."""
+
+    __slots__ = ("joint", "origin", "axis", "sign")
+
+    def __init__(self, entry: dict):
+        self.joint = entry.get("joint")
+        self.origin = Transform.from_xyz_rpy(entry["xyz"], entry["rpy"])
+        self.axis = np.array(entry["axis"]) if self.joint else None
+        self.sign = entry.get("sign", 1)
+
+    def transform(self, joint_pos_deg: Mapping[str, float]) -> Transform:
+        if self.joint is None:
+            return self.origin
+        angle_deg = joint_pos_deg.get(self.joint, 0.0) or 0.0
+        if angle_deg == 0.0:
+            return self.origin
+        angle = self.sign * np.deg2rad(angle_deg)
+        rotation = rotation_about_axis(self.axis, angle)
+        return self.origin @ Transform.from_rotation_translation(rotation, np.zeros(3))
+
+
 def _joint_transform(entry: dict, joint_pos_deg: Mapping[str, float]) -> Transform:
-    origin = Transform.from_xyz_rpy(entry["xyz"], entry["rpy"])
-    if "joint" not in entry:  # fixed
-        return origin
-    angle_deg = joint_pos_deg.get(entry["joint"], 0.0) or 0.0
-    angle = entry["sign"] * np.deg2rad(angle_deg)
-    rotation = rotation_about_axis(np.array(entry["axis"]), angle)
-    return origin @ Transform.from_rotation_translation(rotation, np.zeros(3))
+    return _ChainEntry(entry).transform(joint_pos_deg)
 
 
 class HandKinematics:
@@ -44,6 +60,11 @@ class HandKinematics:
 
     def __init__(self, chains: dict, sensor_mounts: dict[str, dict] | None, hand_type: str):
         self._chains = chains
+        self._base_chain = [_ChainEntry(entry) for entry in chains["base_chain"]]
+        self._finger_chains = {
+            finger: [_ChainEntry(entry) for entry in chain]
+            for finger, chain in chains["fingers"].items()
+        }
         self._sensor_mounts = {
             finger: Transform.from_xyz_rpy(mount["xyz"], mount["rpy"])
             for finger, mount in (sensor_mounts or {}).items()
@@ -86,16 +107,16 @@ class HandKinematics:
             root = Transform.identity()
         elif in_frame == frames.BASE:
             root = Transform.identity()
-            for entry in self._chains["base_chain"]:
-                root = root @ _joint_transform(entry, joint_pos_deg)
+            for entry in self._base_chain:
+                root = root @ entry.transform(joint_pos_deg)
         else:
             raise ValueError(f"in_frame must be 'palm' or 'base', got {in_frame!r}")
 
         poses = {}
         for finger in fingers:
             pose = root
-            for entry in self._chains["fingers"][finger]:
-                pose = pose @ _joint_transform(entry, joint_pos_deg)
+            for entry in self._finger_chains[finger]:
+                pose = pose @ entry.transform(joint_pos_deg)
             poses[finger] = pose
         return poses
 

@@ -21,10 +21,7 @@ def main() -> int:
     hand = create_hand(args.config_path, use_mock=args.mock)
     try:
         connect_hand(hand)
-        hand.init_joints(
-            force_calibrate=args.force_calibrate or args.mock,
-            move_to_neutral=False,
-        )
+        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
         print("Moving all joints to zero...")
         hand.set_zero_position(num_steps=args.num_steps, step_size=args.step_size)
         print("Reached zero position.")

@@ -306,7 +306,12 @@ class TactileClient:
                 if connected.get(finger, False):
                     sensor_id = self._finger_to_sensor_id[finger]
                     module_indices[finger] = compute_distal_module_index(sensor_id)
-                    taxel_geometry[finger] = self._load_finger_geometry(finger, num_taxels.get(finger))
+                    try:
+                        taxel_geometry[finger] = self._load_finger_geometry(
+                            finger, num_taxels.get(finger))
+                    except Exception as e:
+                        logger.warning(
+                            f"Taxel geometry unavailable for {finger}: {e}")
 
             config = TactileSensorConfiguration(
                 connected=connected,

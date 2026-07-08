@@ -16,13 +16,14 @@ def main() -> int:
     hand = create_hand(args.config_path, use_mock=args.mock)
     try:
         connect_hand(hand)
-        hand.init_joints(False)
+        hand.init_joints(force_calibrate=args.mock)
 
         print("Cycling through open_hand -> power_grasp -> pinch -> neutral")
         hand.run_demo(
             "main",
             cycles=args.cycles,
-            num_steps=250
+            num_steps=args.num_steps,
+            step_size=args.step_size,
         )
 
         return 0

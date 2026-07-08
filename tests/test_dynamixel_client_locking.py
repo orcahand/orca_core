@@ -445,3 +445,26 @@ def test_check_overload_retries_once_then_skips_on_no_reply(
     assert any('skipping overload check' in record.getMessage()
                for record in caplog.records)
     assert not bus.events('reboot')
+
+
+def test_full_fallback_is_rate_limited(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL] * 4  # two reads x two attempts
+    bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
+    bus.read2_hook = lambda motor_id, address: (100, COMM_SUCCESS, 0)
+    reader = client._pos_vel_cur_reader
+    reader.read(retries=1)
+    first_sweep_reads = len(bus.events('read4'))
+    assert first_sweep_reads > 0
+    # Immediately after, another total bulk failure must NOT sweep again.
+    reader.read(retries=1)
+    assert len(bus.events('read4')) == first_sweep_reads
+    assert reader.last_read_ok is False
+
+
+def test_failed_motor_enters_cooldown(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.read4_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
+    bus.read2_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
+    reader = client._pos_vel_cur_reader
+    reader.read(retries=1)
+    assert set(reader._fallback_skip_until) == set(reader.motor_ids)
