@@ -33,3 +33,32 @@ def test_second_tension_is_rejected(connected_mock_hand):
     connected_mock_hand.stop_task()
     time.sleep(0.1)
     assert not connected_mock_hand._task_thread.is_alive()
+
+
+def test_tension_emits_phase_events(connected_mock_hand):
+    import threading
+
+    events = []
+    holding = threading.Event()
+
+    def cb(event):
+        events.append(event)
+        if event.get("phase") == "holding":
+            holding.set()
+
+    thread = threading.Thread(
+        target=lambda: connected_mock_hand.tension(
+            blocking=True, progress_callback=cb
+        )
+    )
+    thread.start()
+    assert holding.wait(timeout=120), f"never reached holding: {events}"
+    connected_mock_hand._task_stop_event.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    phases = [e["phase"] for e in events if e["event"] == "phase"]
+    assert phases[0] == "winding"
+    assert "ramp" in phases and "holding" in phases
+    assert phases[-1] == "released"
+    assert any(e["event"] == "winding_progress" for e in events)

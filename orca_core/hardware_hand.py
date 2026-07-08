@@ -690,6 +690,7 @@ class OrcaHand(BaseHand):
         force_wrist: bool = False,
         joints: list[str] | None = None,
         joint_encoder_client=None,
+        progress_callback=None,
     ):
         """Run the joint calibration routine.
 
@@ -705,6 +706,12 @@ class OrcaHand(BaseHand):
             joint_encoder_client: With ``self.config.joint_feedback_enabled``
                 and an encoder client, the encoder pass also runs and writes a
                 ``joint_encoder_calibration:`` block.
+            progress_callback: Optional ``callable(dict)`` invoked with
+                structured progress events (``calibration_started``,
+                ``step_started``, ``joint_calibrated``, ``step_done``,
+                ``calibration_done``, ``calibration_aborted``). Called from
+                the calibrating thread; must be fast and non-blocking.
+                Exceptions raised by the callback are swallowed.
         """
         if blocking:
             self._task_stop_event.clear()
@@ -714,6 +721,7 @@ class OrcaHand(BaseHand):
                     force_wrist=force_wrist,
                     joints=joints,
                     joint_encoder_client=joint_encoder_client,
+                    progress_callback=progress_callback,
                 )
             finally:
                 self._cleanup_aborted_calibration(result)
@@ -725,6 +733,7 @@ class OrcaHand(BaseHand):
                 force_wrist=force_wrist,
                 joints=joints,
                 joint_encoder_client=joint_encoder_client,
+                progress_callback=progress_callback,
             )
 
     def _calibrate_and_apply(self, **kwargs):
@@ -780,6 +789,7 @@ class OrcaHand(BaseHand):
         force_wrist: bool = False,
         joints: list[str] | None = None,
         joint_encoder_client=None,
+        progress_callback=None,
     ) -> CalibrationResult | None:
         """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
 
@@ -795,6 +805,15 @@ class OrcaHand(BaseHand):
         - If missing from sequence, is calibrated.
         - If force_wrist=True, always include wrist in calibration steps.
         """
+
+        def _emit(event: str, **payload) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback({"event": event, **payload})
+            except Exception as e:
+                print(f"Warning: calibration progress callback failed: {e}")
+
         wrist_in_sequence = any(
             "wrist" in step[JOINTS] for step in self.config.calibration_sequence
         )
@@ -871,11 +890,25 @@ class OrcaHand(BaseHand):
         self.set_control_mode(CURRENT_BASED_POSITION)
         self.set_max_current(self.config.calibration_current)
 
-        for step in calibration_sequence:
+        _emit(
+            "calibration_started",
+            steps=len(calibration_sequence),
+            joints=sorted({j for step in calibration_sequence for j in step[JOINTS]}),
+        )
+
+        for step_index, step in enumerate(calibration_sequence):
             self.disable_torque()
 
             if self._task_stop_event.is_set():
+                _emit("calibration_aborted")
                 return None
+
+            _emit(
+                "step_started",
+                index=step_index,
+                total=len(calibration_sequence),
+                joints={j: d for j, d in step[JOINTS].items()},
+            )
 
             desired_increment, motor_reached_limit, directions = {}, {}, {}
             position_buffers, calibrated_joints, position_logs, current_log = (
@@ -893,6 +926,7 @@ class OrcaHand(BaseHand):
                 )
 
                 if self._task_stop_event.is_set():
+                    _emit("calibration_aborted")
                     return None
 
                 self.set_max_current(
@@ -974,6 +1008,13 @@ class OrcaHand(BaseHand):
                                 if directions[motor_id] == -1:
                                     pending_limits[motor_id][0] = avg_limit
 
+            # Stop requested mid-drive: the joints are NOT at their hardstops.
+            # Bail out before the encoder-anchor pass and limit capture would
+            # sample — and persist — values taken at an arbitrary pose.
+            if self._task_stop_event.is_set():
+                _emit("calibration_aborted")
+                return None
+
             # All motors are pressing their hardstops with calibration current;
             # joints are firmly at the mechanical limit. Sample encoder anchors
             # NOW, before the torque release, so the anchor count corresponds
@@ -1042,6 +1083,11 @@ class OrcaHand(BaseHand):
                 )
                 joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
                 print("Joint calibrated: ", joint)
+                _emit(
+                    "joint_calibrated",
+                    joint=joint,
+                    ratio=joint_to_motor_ratios[motor_id],
+                )
                 calibrated_joints[joint] = 0.0
 
             # Persist partial progress after every step so an interrupted run
@@ -1084,6 +1130,8 @@ class OrcaHand(BaseHand):
                     calibrated_joints, num_steps=25, step_size=0.001
                 )
 
+            _emit("step_done", index=step_index, total=len(calibration_sequence))
+
             # TODO(fracapuano): Is this necessary?
             time.sleep(0.1)
 
@@ -1108,6 +1156,7 @@ class OrcaHand(BaseHand):
 
         self.set_max_current(self.config.max_current)
 
+        _emit("calibration_done")
         return final_result
 
     def _run_joint_encoder_pass_for_step(
@@ -1395,7 +1444,12 @@ class OrcaHand(BaseHand):
                 )
                 update_yaml(self.config.calibration_path, "calibrated", False)
 
-    def tension(self, move_motors: bool = True, blocking: bool = True):
+    def tension(
+        self,
+        move_motors: bool = True,
+        blocking: bool = True,
+        progress_callback=None,
+    ):
         """Hold motors under current to allow manual tendon tensioning.
 
         Optionally pre-conditions the tendons with a short back-and-forth
@@ -1407,12 +1461,19 @@ class OrcaHand(BaseHand):
                 before holding (default ``True``).
             blocking: When ``True`` (default) blocks until the user interrupts
                 with Ctrl-C. When ``False`` runs in a background thread.
+            progress_callback: Optional ``callable(dict)`` invoked with
+                structured progress events (``phase`` with
+                winding/ramp/holding/released, ``winding_progress``). Called
+                from the tensioning thread; must be fast and non-blocking.
+                Exceptions raised by the callback are swallowed.
         """
         if blocking:
             self._task_stop_event.clear()
-            self._tension(move_motors)
+            self._tension(move_motors, progress_callback=progress_callback)
         else:
-            self._start_task(self._tension, move_motors)
+            self._start_task(
+                self._tension, move_motors, progress_callback=progress_callback
+            )
 
     def jitter(
         self,
@@ -1498,11 +1559,20 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, start_pos_array)
 
-    def _tension(self, move_motors: bool = True):
+    def _tension(self, move_motors: bool = True, progress_callback=None):
         # TODO(fracapuano): Move this to a standard stateless function
+        def _emit(event: str, **payload) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback({"event": event, **payload})
+            except Exception as e:
+                print(f"Warning: tension progress callback failed: {e}")
+
         control_mode = self.config.control_mode
         self.set_control_mode(CURRENT_BASED_POSITION)
         if move_motors:
+            _emit("phase", phase="winding")
             motors_to_move = [
                 motor_id
                 for joint, motor_id in self.config.joint_to_motor_map.items()
@@ -1527,7 +1597,10 @@ class OrcaHand(BaseHand):
                 [self.config.motor_ids.index(mid) for mid in motors_to_move]
             )
 
-            for increments in (motor_increments_left, motor_increments_right):
+            for wind_pass, increments in enumerate(
+                (motor_increments_left, motor_increments_right)
+            ):
+                _emit("winding_progress", stage=wind_pass + 1, stages=2)
                 stall_start = None
                 phase_start = time.time()
                 prev_pos = self.get_motor_pos()
@@ -1550,6 +1623,7 @@ class OrcaHand(BaseHand):
         if move_motors:
             # Gradually release torque so tendons don't snap back, then
             # re-engage at the relaxed position for a stable hold.
+            _emit("phase", phase="ramp")
             self.set_max_current(max_cur)
             self.enable_torque()
             steps = 20
@@ -1563,10 +1637,12 @@ class OrcaHand(BaseHand):
         self.set_max_current(max_cur)
         self.enable_torque()
         print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
+        _emit("phase", phase="holding")
         try:
             while not self._task_stop_event.is_set():
                 time.sleep(0.1)
         finally:
+            _emit("phase", phase="released")
             self.set_control_mode(control_mode)
             self.disable_torque()
 
