@@ -5,7 +5,7 @@ import dataclasses
 from types import SimpleNamespace
 
 from orca_core.constants import KNOWN_VIDS
-from orca_core.hardware_hand import OrcaHand
+from orca_core import OrcaHand
 from orca_core.utils.utils import (
     find_single_usb_serial_port,
     motor_type_for_port,
@@ -165,7 +165,7 @@ def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
     """A successful auto-probe writes motor_type/baudrate back to config.yaml."""
     import yaml
 
-    from orca_core.hardware_hand import MockOrcaHand
+    from orca_core import MockOrcaHand
     from orca_core.utils.utils import read_yaml
 
     class ProbedMockOrcaHand(MockOrcaHand):

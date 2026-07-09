@@ -1,5 +1,5 @@
 from orca_core import OrcaHand, OrcaJointPositions
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 import pytest
 
 

@@ -3,7 +3,7 @@
 import pytest
 
 from orca_core.demo_poses import DemoPoseError, DemoPoses, load_demo_poses
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 
 
 def test_packaged_demos_load():

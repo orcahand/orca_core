@@ -9,8 +9,10 @@ Control package for the ORCA Hand - a dexterous open-source robotic hand. Provid
 ```
 orca_core/
 ├── api/                          # FastAPI app exposing OrcaHand over HTTP (early/incomplete)
-├── maintenance/                  # Interaction-free hardware ops (motor-chain setup)
-│   └── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
+├── maintenance/                  # Interaction-free hardware routines (callback-driven)
+│   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
+│   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
+│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
@@ -18,6 +20,7 @@ orca_core/
 │   └── constants.py                 # Loop rate, watchdog tiers, PI defaults
 ├── hardware/                      # Hardware interfaces
 │   ├── motor_client.py               # MotorClient base interface
+│   ├── motor_resolution.py           # Connect-time driver probing + yaml persistence
 │   ├── dynamixel_client.py           # Dynamixel motor control (bus-locked, thread-safe)
 │   ├── feetech_client.py             # Feetech motor control
 │   ├── mock_dynamixel_client.py      # In-memory motor client for tests/dev
@@ -29,8 +32,8 @@ orca_core/
 ├── utils/                         # Shared utilities
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
-├── hardware_hand.py                # OrcaHand / OrcaHandTouch (motor [+ tactile], open-loop)
-├── hardware_hand_joint_feedback.py # OrcaHandJointFeedback / OrcaHandFull (+ closed-loop joint encoders)
+├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)
+├── hardware_hand_sensing.py        # Sensing variants: OrcaHandTouch / OrcaHandJointFeedback / OrcaHandFull (+ mocks)
 ├── hand_factory.py                 # load_hand(): picks the right class from config.yaml
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
@@ -51,8 +54,8 @@ so a terminal and a GUI drive the identical routine.
 
 ### Key Files
 
-- [orca_core/hardware_hand.py](orca_core/hardware_hand.py) - `OrcaHand` / `OrcaHandTouch`: the main motor-only (or motor+tactile) API
-- [orca_core/hardware_hand_joint_feedback.py](orca_core/hardware_hand_joint_feedback.py) - `OrcaHandJointFeedback` / `OrcaHandFull`: adds the closed-loop joint-encoder control loop
+- [orca_core/hardware_hand.py](orca_core/hardware_hand.py) - `OrcaHand`: the main motor-only hand API
+- [orca_core/hardware_hand_sensing.py](orca_core/hardware_hand_sensing.py) - `OrcaHandTouch` / `OrcaHandJointFeedback` / `OrcaHandFull`: the sensing-equipped variants
 - [orca_core/hand_factory.py](orca_core/hand_factory.py) - `load_hand()`, the recommended entry point (picks the right class from `config.yaml`)
 - [orca_core/base_hand.py](orca_core/base_hand.py) - Shared joint-space interface all hand backends implement
 - [orca_core/hardware/dynamixel_client.py](orca_core/hardware/dynamixel_client.py) - Dynamixel motor control interface

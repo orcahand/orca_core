@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from orca_core import OrcaHand
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 
 
 

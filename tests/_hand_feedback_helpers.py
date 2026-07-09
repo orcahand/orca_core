@@ -17,7 +17,7 @@ import numpy as np
 from orca_core.calibration import JointEncoderCal
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
-from orca_core.hardware_hand_joint_feedback import MockOrcaHandJointFeedback
+from orca_core import MockOrcaHandJointFeedback
 
 from tests._encoder_helpers import make_encoder_frame
 

@@ -14,7 +14,7 @@ import pytest
 
 from orca_core.constants import CURRENT, MODE_MAP, WRIST
 from orca_core.control import JointController, JointLoopThread
-from orca_core.hardware_hand_joint_feedback import JointFeedbackConnectError
+from orca_core import JointFeedbackConnectError
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand

@@ -37,7 +37,7 @@ from orca_core.control.constants import (
     DEFAULT_KI,
     DEFAULT_KP,
 )
-from orca_core.hardware_hand_joint_feedback import JointFeedbackConnectError
+from orca_core import JointFeedbackConnectError
 from orca_core.joint_position import OrcaJointPositions
 
 FINGER_TO_JOINTS = {

@@ -12,7 +12,7 @@ import tempfile
 import pytest
 import yaml
 
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

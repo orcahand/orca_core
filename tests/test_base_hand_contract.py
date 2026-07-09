@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import yaml
 
-from orca_core.base_hand import BaseHand
+from orca_core import BaseHand
 from orca_core.joint_position import OrcaJointPositions
 
 

@@ -30,17 +30,14 @@ from .hand_config import (
     OrcaHandTouchConfig,
     _resolve_config_path,
 )
-from .hardware_hand import (
-    MockOrcaHand,
-    MockOrcaHandTouch,
-    OrcaHand,
-    OrcaHandTouch,
-)
-from .hardware_hand_joint_feedback import (
+from .hardware_hand import MockOrcaHand, OrcaHand
+from .hardware_hand_sensing import (
     MockOrcaHandFull,
     MockOrcaHandJointFeedback,
+    MockOrcaHandTouch,
     OrcaHandFull,
     OrcaHandJointFeedback,
+    OrcaHandTouch,
 )
 from .utils.utils import read_yaml
 

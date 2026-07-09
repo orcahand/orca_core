@@ -15,7 +15,7 @@ from orca_core.hardware.sensing.constants import (
     ENCODER_LSB_DEG,
     JOINT_TO_ENCODER_SLOT,
 )
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml, update_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

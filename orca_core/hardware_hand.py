@@ -17,17 +17,10 @@ import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
-from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
-from .hardware.hand_serial_link import HandSerialLink
+from .hand_config import OrcaHandConfig
 from .hardware.motor_factory import create_motor_client
 from .hardware.motor_client import MotorClient
 from .hardware.motor_resolution import persist_resolved_driver, trial_probe
-from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
-from .hardware.sensing.taxel_geometry import TaxelGeometry
-from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData, TaxelReading
-from .kinematics import HandKinematics, Transform
-from .kinematics import frames as tactile_frames
-from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
 from .utils.utils import (
@@ -1018,343 +1011,27 @@ class OrcaHand(BaseHand):
             print("No running task to stop.")
 
 
-class OrcaHandTouch(OrcaHand):
-    """ORCA hand with integrated tactile sensing.
-
-    ``connect()`` opens both the motor bus and the sensor serial link;
-    ``disconnect()`` tears down both.
-    """
-
-    config_cls = OrcaHandTouchConfig
-
-    def __init__(
-        self,
-        config_path: str | None = None,
-        calibration_path: str | None = None,
-        model_version: str | None = None,
-        model_name: str | None = None,
-        config: OrcaHandTouchConfig | None = None,
-    ):
-        super().__init__(
-            config_path=config_path,
-            calibration_path=calibration_path,
-            model_version=model_version,
-            model_name=model_name,
-            config=config,
-        )
-        self._tactile_link: HandSerialLink | None = None
-        self._tactile_client: TactileClient | None = None
-        self._base_pose = Transform.identity()
-
-    def _create_tactile_link(self, port: str, baudrate: int) -> HandSerialLink:
-        return HandSerialLink(port=port, baudrate=baudrate)
-
-    def _create_tactile_client(self, link: HandSerialLink) -> TactileClient:
-        return TactileClient(link, finger_to_sensor_id=self.config.finger_to_sensor_id)
-
-    def _attach_tactile_client(self, link: HandSerialLink) -> None:
-        """Connect a tactile client onto an already-open ``link``.
-
-        Split out of :meth:`_open_tactile_on_port` so a hand that also runs
-        joint feedback can attach tactile onto the shared encoder link
-        instead of opening a second port. The caller owns ``link`` teardown,
-        so this does not set ``self._tactile_link``.
-        """
-        client = self._create_tactile_client(link)
-        client.connect()
-        self._tactile_client = client
-
-    def _open_tactile_on_port(self, port: str, baudrate: int) -> None:
-        """Open a link on ``port`` at ``baudrate`` and connect a tactile client."""
-        link = self._create_tactile_link(port, baudrate)
-        link.connect()
-        self._tactile_link = link
-        self._attach_tactile_client(link)
-
-    def _teardown_tactile(self) -> None:
-        """Disconnect and drop the tactile client + link, tolerating partial state."""
-        if self._tactile_client is not None:
-            try:
-                self._tactile_client.disconnect()
-            except Exception:
-                pass
-            self._tactile_client = None
-        if self._tactile_link is not None:
-            try:
-                self._tactile_link.disconnect()
-            except Exception:
-                pass
-            self._tactile_link = None
-
-    def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
-        """Open the sensor link, resolving the configured ``sensors.port`` against
-        live discovery.
-
-        ``"auto"`` discovers the port; an explicit path is tried first and then
-        falls back to auto-discovery if it fails to open.
-        """
-        configured = self.config.sensor_port
-        baud_override = self.config.sensor_baudrate
-
-        candidates: list[tuple[str, int | None]] = []
-        resolved = resolve_sensing_ports(
-            tactile_override=configured, encoder_override="disabled",
-            tactile_baud_override=baud_override,
-        )
-        if resolved.tactile:
-            candidates.append((resolved.tactile, resolved.tactile_baudrate))
-        if configured not in ("auto", "disabled"):
-            auto = resolve_sensing_ports(
-                tactile_override="auto", encoder_override="disabled",
-                tactile_baud_override=baud_override,
-            )
-            if auto.tactile and auto.tactile not in [p for p, _ in candidates]:
-                candidates.append((auto.tactile, auto.tactile_baudrate))
-
-        for port, baud in candidates:
-            # An explicit port skips discovery, so detect its baud directly.
-            if baud is None:
-                baud = baud_for_port(port)
-            try:
-                self._open_tactile_on_port(port, baud)
-                if port != configured:
-                    self.config = dataclasses.replace(self.config, sensor_port=port)
-                return True, f"Sensor connected on {port} @ {baud}"
-            except Exception as e:
-                print(f"Sensor connection failed on {port}: {e}")
-                self._teardown_tactile()
-
-        return False, (
-            "Sensor connection failed: no usable port (set sensors.port in config.yaml "
-            "or check that the sensor adapter is plugged in)"
-        )
-
-    def connect(self) -> tuple[bool, str]:
-        success, msg = super().connect()
-        if not success:
-            return success, msg
-
-        sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
-        if not sensor_ok:
-            return False, f"{msg} | {sensor_msg}"
-        return True, f"{msg} | {sensor_msg}"
-
-    def connect_sensors_only(self) -> tuple[bool, str]:
-        """Connect only the tactile sensor, skipping the motor bus.
-
-        Useful for sensor bring-up and testing on a hand whose motors are not
-        powered. After this call, tactile methods work; motor-control methods
-        will fail because the motor client is not initialised.
-        """
-        return self._connect_sensor_with_fallback()
-
-    def disconnect(self) -> None:
-        # Tear motors down before sensors: motor disable_torque needs the bus
-        # responsive, while the tactile teardown only blocks on its own port.
-        super().disconnect()
-        self._teardown_tactile()
-
-    def _require_tactile_client(self) -> TactileClient:
-        if self._tactile_client is None:
-            raise RuntimeError(
-                "Tactile sensor is not connected. Call connect() or "
-                "connect_sensors_only() first."
-            )
-        return self._tactile_client
-
-    def get_tactile_forces(self) -> ResultantReading | None:
-        """Return the latest resultant ``ResultantReading``, or ``None`` if no
-        sensor is connected or no frame has arrived yet."""
-        if self._tactile_client is None:
-            return None
-        return self._tactile_client.get_latest_forces()
-
-    def get_tactile_taxels(self) -> TaxelReading | None:
-        """Return the latest per-taxel ``TaxelReading``, or ``None`` if no
-        sensor is connected or no frame has arrived yet."""
-        if self._tactile_client is None:
-            return None
-        return self._tactile_client.get_latest_taxels()
-
-    def get_tactile_data(self) -> TactileReading | None:
-        """Return resultant and per-taxel forces from the same frame, or
-        ``None`` if no sensor is connected or no frame has arrived yet."""
-        if self._tactile_client is None:
-            return None
-        return self._tactile_client.get_latest()
-
-    def start_tactile_stream(
-        self, resultant: bool = True, taxels: bool = False, min_sensors: int = 1
-    ) -> None:
-        self._require_tactile_client().start_stream(
-            resultant=resultant, taxels=taxels, min_sensors=min_sensors,
-        )
-
-    def stop_tactile_stream(self) -> None:
-        self._require_tactile_client().stop_stream()
-
-    def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
-        """Capture current readings as zero baseline and return offsets."""
-        return self._require_tactile_client().capture_taxel_offsets(num_samples=num_samples)
-
-    def clear_tactile_zero(self) -> None:
-        self._require_tactile_client().clear_taxel_offsets()
-
-    def get_tactile_configuration(self) -> TactileSensorConfiguration | None:
-        if self._tactile_client is None:
-            return None
-        return self._tactile_client.get_tactile_configuration()
-
-    def get_tactile_stats(self) -> TactileStreamStats:
-        """Return ``TactileStreamStats`` for the running auto-stream."""
-        return self._require_tactile_client().get_stats()
-
-    def get_taxel_geometry(self) -> Dict[str, TaxelGeometry]:
-        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
-
-        Positions are fixed sensor geometry in the sensor frame (meters) and
-        row ``i`` aligns with taxel ``i`` from :meth:`get_tactile_taxels`, so
-        the two join by index::
-
-            geom = hand.get_taxel_geometry()["index"].positions   # (n, 3)
-            forces = hand.get_tactile_taxels().as_array("index")  # (n, 3)
-            combined = np.hstack([geom, forces])                  # (n, 6)
-
-        Empty if the tactile sensor is not connected/configured.
-        """
-        if self._tactile_client is None:
-            return {}
-        return self._tactile_client.get_taxel_geometry()
-
-    @property
-    def kinematics(self) -> HandKinematics:
-        """Packaged forward kinematics for this hand model."""
-        if "thumb_cmc" not in self.config.joint_ids:
-            raise NotImplementedError(
-                "packaged kinematics are only available for v2 hand models"
-            )
-        if self.config.type not in ("left", "right"):
-            raise ValueError("config must declare a hand type ('left' or 'right')")
-        return HandKinematics.load(self.config.type)
-
-    def set_base_pose(self, pose: Transform | np.ndarray) -> None:
-        """Set the hand's pose in the world frame (``T_world_base``).
-
-        Used by ``frame="world"`` lookups; identity until set. Pass e.g. the
-        robot arm's end-effector pose whenever it moves.
-        """
-        self._base_pose = pose if isinstance(pose, Transform) else Transform(pose)
-
-    def get_base_pose(self) -> Transform:
-        return self._base_pose
-
-    def _resolve_joint_pos(self, joint_pos) -> dict:
-        if joint_pos is None:
-            if self._motor_client is None:
-                raise RuntimeError(
-                    "joint angles unavailable (motor bus not connected); "
-                    "pass joint_pos explicitly"
-                )
-            return dict(self.get_joint_position().data)
-        if isinstance(joint_pos, OrcaJointPositions):
-            return dict(joint_pos.data)
-        return dict(joint_pos)
-
-    def get_sensor_transforms(
-        self,
-        frame: str = tactile_frames.FINGERTIP,
-        joint_pos: OrcaJointPositions | Dict[str, float] | None = None,
-    ) -> Dict[str, Transform]:
-        """Return ``{finger: T_frame_sensor}`` mapping sensor-frame data into ``frame``.
-
-        ``frame`` is one of ``orca_core.kinematics.frames``: ``"sensor"``
-        (identity), ``"fingertip"`` (static mount pose), ``"palm"``/``"base"``
-        (forward kinematics), or ``"world"`` (``base`` composed with
-        :meth:`set_base_pose`). Frames beyond ``fingertip`` need joint angles
-        (degrees): pass ``joint_pos`` or the hand's current joint positions
-        are used.
-        """
-        if frame == tactile_frames.SENSOR:
-            from .kinematics import FINGERS
-
-            return {finger: Transform.identity() for finger in FINGERS}
-        kin = self.kinematics
-        if frame == tactile_frames.FINGERTIP:
-            return kin.sensor_mounts
-        if frame in (tactile_frames.PALM, tactile_frames.BASE):
-            return kin.sensor_poses(self._resolve_joint_pos(joint_pos), in_frame=frame)
-        if frame == tactile_frames.WORLD:
-            poses = kin.sensor_poses(
-                self._resolve_joint_pos(joint_pos), in_frame=tactile_frames.BASE
-            )
-            return {finger: self._base_pose @ pose for finger, pose in poses.items()}
-        raise ValueError(f"unknown frame {frame!r}; expected one of {tactile_frames.FRAMES}")
-
-    def get_taxel_data(
-        self,
-        frame: str = tactile_frames.SENSOR,
-        joint_pos: OrcaJointPositions | Dict[str, float] | None = None,
-    ) -> Dict[str, TaxelData] | None:
-        """Return joined per-taxel positions and forces per finger, in ``frame``.
-
-        Positions (meters) come from the static sensor geometry and forces
-        (Newtons) from the latest tactile stream frame; row ``i`` of both
-        describes the same taxel. Positions get the full rigid transform into
-        ``frame``; forces, being free vectors, are only rotated. See
-        :meth:`get_sensor_transforms` for the available frames and how joint
-        angles are sourced. Returns ``None`` if no stream frame has arrived
-        yet; fingers whose geometry does not match the streamed taxel count
-        are skipped.
-        """
-        if frame not in tactile_frames.FRAMES:
-            raise ValueError(
-                f"unknown frame {frame!r}; expected one of {tactile_frames.FRAMES}"
-            )
-        reading = self.get_tactile_taxels()
-        if reading is None:
-            return None
-        geometry = self.get_taxel_geometry()
-        is_sensor_frame = frame == tactile_frames.SENSOR
-        transforms = None if is_sensor_frame else self.get_sensor_transforms(frame, joint_pos)
-
-        data: Dict[str, TaxelData] = {}
-        for finger in reading.fingers:
-            if finger not in geometry:
-                continue
-            if transforms is not None and finger not in transforms:
-                continue
-            positions = geometry[finger].positions
-            forces = reading.as_array(finger)
-            if len(positions) != len(forces):
-                continue
-            if is_sensor_frame:
-                transformed_positions, transformed_forces = positions, forces
-            else:
-                transform = transforms[finger]
-                transformed_positions = transform.apply_to_points(positions)
-                transformed_forces = transform.apply_to_vectors(forces)
-            data[finger] = TaxelData(
-                finger=finger,
-                frame=frame,
-                positions=transformed_positions,
-                forces=transformed_forces,
-                timestamp=reading.timestamp,
-            )
-        return data
-
-
 class MockMotorResolutionMixin:
-    """Skips connect-time port/driver resolution and yaml persistence for mock hands.
+    """Swaps the motor bus for an in-memory mock on ``Mock*`` hand classes.
 
-    Mock motors don't sit on a real bus, so there is nothing to detect or
-    probe (``port: auto`` must not handshake real USB devices) and no
-    auto-detected values worth writing back to config.yaml.
+    Supplies the mock motor client and skips connect-time port/driver
+    resolution and yaml persistence: mock motors don't sit on a real bus, so
+    there is nothing to detect or probe (``port: auto`` must not handshake
+    real USB devices) and no auto-detected values worth writing back to
+    config.yaml.
     """
 
     def connect(self) -> tuple[bool, str]:
         if self.config.port == "auto":
             self.config = dataclasses.replace(self.config, port="mock")
         return super().connect()
+
+    def _create_motor_client(self) -> MotorClient:
+        from .hardware.mock_dynamixel_client import MockDynamixelClient
+
+        return MockDynamixelClient(
+            self.config.motor_ids, self.config.port, self.config.baudrate
+        )
 
     def _resolve_motor_driver(self, port: str) -> bool:
         if self.config.motor_type is None or self.config.baudrate is None:
@@ -1377,25 +1054,22 @@ class MockOrcaHand(MockMotorResolutionMixin, OrcaHand):
     port is opened and motor state is simulated in memory.
     """
 
-    def _create_motor_client(self) -> MotorClient:
-        from .hardware.mock_dynamixel_client import MockDynamixelClient
 
-        return MockDynamixelClient(
-            self.config.motor_ids, self.config.port, self.config.baudrate
+_MOVED_TO_SENSING = ("OrcaHandTouch", "MockOrcaHandTouch")
+
+
+def __getattr__(name):
+    if name in _MOVED_TO_SENSING:
+        import warnings
+
+        warnings.warn(
+            f"importing {name} from orca_core.hardware_hand is deprecated; "
+            "import it from orca_core (package root) or "
+            "orca_core.hardware_hand_sensing instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        from . import hardware_hand_sensing
 
-
-class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
-    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
-
-    def _create_motor_client(self) -> MotorClient:
-        from .hardware.mock_dynamixel_client import MockDynamixelClient
-
-        return MockDynamixelClient(
-            self.config.motor_ids, self.config.port, self.config.baudrate
-        )
-
-    def _create_tactile_link(self, port: str, baudrate: int) -> HandSerialLink:
-        from .hardware.mock_hand_serial_link import MockHandSerialLink
-
-        return MockHandSerialLink(port=port, baudrate=baudrate)
+        return getattr(hardware_hand_sensing, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

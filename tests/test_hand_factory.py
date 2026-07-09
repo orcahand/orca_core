@@ -13,8 +13,8 @@ import pytest
 
 from orca_core import load_hand
 from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
-from orca_core.hardware_hand import MockOrcaHand, MockOrcaHandTouch
-from orca_core.hardware_hand_joint_feedback import (
+from orca_core import MockOrcaHand, MockOrcaHandTouch
+from orca_core.hardware_hand_sensing import (
     MockOrcaHandFull,
     MockOrcaHandJointFeedback,
 )

@@ -20,7 +20,7 @@ import yaml
 from orca_core.calibration import JointEncoderCal
 from orca_core.control import JointLoopThread
 from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
-from orca_core.hardware_hand_joint_feedback import MockOrcaHandFull
+from orca_core import MockOrcaHandFull
 
 from tests._encoder_helpers import make_encoder_frame
 from tests._hand_feedback_helpers import _LinkFramePump

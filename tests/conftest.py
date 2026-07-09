@@ -130,7 +130,7 @@ def mock_config_dir(tmp_path):
 @pytest.fixture
 def mock_hand(mock_config_dir):
     """Bare MockOrcaHand (not connected) for unit-testing helper methods."""
-    from orca_core.hardware_hand import MockOrcaHand
+    from orca_core import MockOrcaHand
 
     return MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
 
@@ -144,7 +144,7 @@ def fake_serial_port(device: str, vid: int):
 
 @pytest.fixture
 def connected_mock_hand(mock_config_dir):
-    from orca_core.hardware_hand import MockOrcaHand
+    from orca_core import MockOrcaHand
 
     hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
     success, msg = hand.connect()
