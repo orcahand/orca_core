@@ -2,7 +2,7 @@ import argparse
 import dataclasses
 import sys
 
-from orca_core import OrcaHand
+from orca_core import OrcaHand, detect_hand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -105,9 +105,16 @@ def main():
         joints = args.joints
         print(f"Calibrating joints: {joints}")
 
+    # With no config given, pick the bundled model matching the connected hand.
+    model_name = None
+    if args.config_path is None:
+        detection = detect_hand()
+        model_name = detection.model_name
+        print(f"Detected hand: {detection.model_name}")
+
     # Connect motor-only, regardless of config: calibration doesn't need
     # tactile, and a second reader on the encoder port would corrupt the stream.
-    hand = OrcaHand(config_path=args.config_path)
+    hand = OrcaHand(config_path=args.config_path, model_name=model_name)
     if args.encoder_port is not None:
         hand.config = dataclasses.replace(
             hand.config, encoder_serial_port=args.encoder_port,
