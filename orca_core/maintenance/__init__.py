@@ -13,6 +13,7 @@ and request human action through ``prompt_callback``, so the same operation
 drives a terminal, a GUI, or a web front-end.
 """
 
+from .calibration_routine import run_calibration
 from .motor_chain import (
     ChainScan,
     MotorChainAborted,
@@ -39,6 +40,7 @@ __all__ = [
     "plan_motor_chain",
     "reset_all_motors",
     "resolve_port",
+    "run_calibration",
     "scan_configured_motors",
     "valid_baudrates",
 ]

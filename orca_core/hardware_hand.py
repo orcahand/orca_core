@@ -11,24 +11,15 @@ import math
 import os
 import threading
 import time
-from collections import deque
 from threading import RLock
 from typing import Dict, List, TYPE_CHECKING, Union
 
 import numpy as np
 
 from .base_hand import BaseHand
-from .calibration import (
-    CalibrationResult,
-    JointEncoderCal,
-    joint_encoder_calibration_to_yaml,
-)
+from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
-from .hardware.joint_encoder_client import (
-    JointEncoderCalibrationError,
-    sample_anchor_count_from_client,
-)
 from .hardware.motor_factory import create_motor_client
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
@@ -37,6 +28,7 @@ from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData,
 from .kinematics import HandKinematics, Transform
 from .kinematics import frames as tactile_frames
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
+from .maintenance.calibration_routine import run_calibration
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
@@ -56,16 +48,6 @@ from .constants import (
     CURRENT_BASED_POSITION,
     CURRENT,
     WRIST,
-    FLEX,
-    EXTEND,
-    JOINTS,
-    STEP,
-    TINY_SLEEP,
-    JOINT_ENCODER_CALIBRATION,
-    JOINT_TO_MOTOR_RATIOS,
-    MOTOR_LIMITS_DICT,
-    WRIST_CALIBRATED,
-    CALIBRATED,
     STEPS_TO_NEUTRAL,
     POSITION,
     STEP_SIZE_NEUTRAL,
@@ -150,6 +132,15 @@ class OrcaHand(BaseHand):
     @property
     def wrist_calibrated(self) -> bool:
         return self.calibration.wrist_calibrated
+
+    @property
+    def motor_client(self) -> MotorClient:
+        """The connected motor client, or ``None`` before ``connect()``.
+
+        Advanced use only: reads and writes that race the hand's own bus
+        traffic must go through the hand's lock-fenced methods instead.
+        """
+        return self._motor_client
 
     def _create_motor_client(self) -> MotorClient:
         return create_motor_client(
@@ -705,18 +696,12 @@ class OrcaHand(BaseHand):
         """
         if blocking:
             self._task_stop_event.clear()
-            result = None
-            try:
-                result = self._calibrate(
-                    force_wrist=force_wrist,
-                    joints=joints,
-                    joint_encoder_client=joint_encoder_client,
-                    progress_callback=progress_callback,
-                )
-            finally:
-                self._cleanup_aborted_calibration(result)
-            if result is not None:
-                self.calibration = result
+            self._calibrate_and_apply(
+                force_wrist=force_wrist,
+                joints=joints,
+                joint_encoder_client=joint_encoder_client,
+                progress_callback=progress_callback,
+            )
         else:
             self._start_task(
                 self._calibrate_and_apply,
@@ -727,476 +712,12 @@ class OrcaHand(BaseHand):
             )
 
     def _calibrate_and_apply(self, **kwargs):
-        """Task-thread wrapper for the non-blocking :meth:`calibrate` path."""
-        result = None
-        try:
-            result = self._calibrate(**kwargs)
-        finally:
-            self._cleanup_aborted_calibration(result)
+        """Run the calibration routine and apply a completed result."""
+        result = run_calibration(
+            self, should_stop=self._task_stop_event.is_set, **kwargs
+        )
         if result is not None:
             self.calibration = result
-
-    def _cleanup_aborted_calibration(self, result) -> None:
-        """On abnormal exit (``result is None``), release torque and restore the
-        configured current limit so the hand doesn't strain against a hardstop."""
-        if result is not None:
-            return
-        try:
-            self.set_max_current(self.config.max_current)
-            self.disable_torque()
-        except Exception as e:
-            print(
-                f"\033[91mWarning: cleanup after aborted calibration failed: {e}\033[0m"
-            )
-
-    def _build_calibration_result(
-        self,
-        motor_limits: Dict[int, list],
-        joint_to_motor_ratios: Dict[int, float],
-        wrist_calibrated: bool,
-        joint_encoder_calibration_dict: Dict[str, JointEncoderCal] | None = None,
-    ) -> CalibrationResult:
-        calibrated = all(
-            limits[0] is not None and limits[1] is not None
-            for limits in motor_limits.values()
-        ) and all(
-            ratio is not None and ratio != 0.0
-            for ratio in joint_to_motor_ratios.values()
-        )
-
-        return CalibrationResult(
-            motor_limits_dict={
-                motor_id: list(limits) for motor_id, limits in motor_limits.items()
-            },
-            joint_to_motor_ratios_dict=dict(joint_to_motor_ratios),
-            calibrated=calibrated,
-            wrist_calibrated=wrist_calibrated,
-            joint_encoder_calibration_dict=dict(joint_encoder_calibration_dict or {}),
-        )
-
-    def _calibrate(
-        self,
-        force_wrist: bool = False,
-        joints: list[str] | None = None,
-        joint_encoder_client=None,
-        progress_callback=None,
-    ) -> CalibrationResult | None:
-        """Execute the calibration routine and return a :class:`~orca_core.CalibrationResult`.
-
-        Drives each joint through its mechanical limits following ``calib_sequence``
-        from ``config.yaml``, records motor positions at each limit, and persists
-        the resulting motor limits and joint-to-motor ratios to ``calibration.yaml``
-        after every step. Returns ``None`` on early exit (stop event triggered).
-
-        Wrist calibration logic:
-        - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
-        - Uses a higher calibration current.
-        - If already calibrated (and calibration run is not forcing), skip wrist steps.
-        - If missing from sequence, is calibrated.
-        - If force_wrist=True, always include wrist in calibration steps.
-        """
-
-        def _emit(event: str, **payload) -> None:
-            if progress_callback is None:
-                return
-            try:
-                progress_callback({"event": event, **payload})
-            except Exception as e:
-                print(f"Warning: calibration progress callback failed: {e}")
-
-        wrist_in_sequence = any(
-            "wrist" in step[JOINTS] for step in self.config.calibration_sequence
-        )
-        calibration_sequence = list(self.config.calibration_sequence)
-
-        if self.wrist_calibrated and not force_wrist:
-            if wrist_in_sequence:
-                print(
-                    "WARNING: Wrist is already calibrated. Skipping wrist calibration. Use --force-wrist to override."
-                )
-            calibration_sequence = [
-                step for step in calibration_sequence if WRIST not in step[JOINTS]
-            ]
-        elif not wrist_in_sequence:
-            # Adds wrist to calibration sequence
-            calibration_sequence.append(
-                {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: FLEX}}
-            )
-            calibration_sequence.append(
-                {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}}
-            )
-
-        if joints is not None:
-            joints_set = set(joints)
-            filtered = []
-            for step in calibration_sequence:
-                step_joints = {
-                    j: d for j, d in step[JOINTS].items() if j in joints_set
-                }
-                if step_joints:
-                    filtered.append({STEP: step[STEP], JOINTS: step_joints})
-            print(
-                f"Calibrating {len(joints_set)} joint(s) across {len(filtered)} "
-                f"step(s) (out of {len(calibration_sequence)} total)."
-            )
-            calibration_sequence = filtered
-
-        # motor_limits is committed only once both flex and extend land for a
-        # joint; pending_limits holds the in-flight half so a single-direction
-        # run does not erase prior good values.
-        motor_limits = {
-            motor_id: list(limits)
-            for motor_id, limits in self.calibration.motor_limits_dict.items()
-        }
-        pending_limits: Dict[int, list] = {
-            motor_id: [None, None] for motor_id in self.config.motor_ids
-        }
-        joint_to_motor_ratios = dict(self.calibration.joint_to_motor_ratios_dict)
-
-        encoder_pass_active = (
-            getattr(self.config, "joint_feedback_enabled", False)
-            and joint_encoder_client is not None
-        )
-        joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
-            self.calibration.joint_encoder_calibration_dict
-        )
-        if encoder_pass_active:
-            for step in calibration_sequence:
-                for joint in step[JOINTS]:
-                    joint_encoder_calibration.pop(joint, None)
-
-        self._compute_wrap_offsets_dict()
-
-        for step in calibration_sequence:
-            for joint in step[JOINTS].keys():
-                motor_id = self.config.joint_to_motor_map[joint]
-                self._wrap_offsets_dict[motor_id] = 0.0
-
-        motors_with_initial_offset = set()
-        motors_with_final_offset = set()
-        
-        calibrated_joints: dict = {}
-
-        self.set_control_mode(CURRENT_BASED_POSITION)
-        self.set_max_current(self.config.calibration_current)
-
-        _emit(
-            "calibration_started",
-            steps=len(calibration_sequence),
-            joints=sorted({j for step in calibration_sequence for j in step[JOINTS]}),
-        )
-
-        for step_index, step in enumerate(calibration_sequence):
-            self.disable_torque()
-
-            if self._task_stop_event.is_set():
-                _emit("calibration_aborted")
-                return None
-
-            _emit(
-                "step_started",
-                index=step_index,
-                total=len(calibration_sequence),
-                joints={j: d for j, d in step[JOINTS].items()},
-            )
-
-            desired_increment, motor_reached_limit, directions = {}, {}, {}
-            position_buffers, calibrated_joints, position_logs, current_log = (
-                {},
-                {},
-                {},
-                {},
-            )
-
-            for joint, direction in step[JOINTS].items():
-                self.enable_torque(motor_ids=[self.config.joint_to_motor_map[joint]])
-                print(
-                    "Enabling torque for the following motor: ",
-                    self.config.joint_to_motor_map[joint],
-                )
-
-                if self._task_stop_event.is_set():
-                    _emit("calibration_aborted")
-                    return None
-
-                self.set_max_current(
-                    self.config.calibration_current
-                    if joint != WRIST
-                    else self.config.wrist_calibration_current
-                )
-
-                motor_id = self.config.joint_to_motor_map[joint]
-                sign = 1 if direction == FLEX else -1
-                if self.config.joint_inversion_dict.get(joint, False):
-                    sign = -sign
-
-                directions[motor_id] = sign
-                position_buffers[motor_id] = deque(
-                    maxlen=self.config.calibration_num_stable
-                )
-                position_logs[motor_id] = []
-                current_log[motor_id] = []
-                motor_reached_limit[motor_id] = False
-
-                if (
-                    self._motor_client.requires_offset_calibration
-                    and motor_id not in motors_with_initial_offset
-                ):
-                    self._motor_client.calibrate_offset(motor_id, upper=(sign < 0))
-                    motors_with_initial_offset.add(motor_id)
-
-            while (
-                not all(motor_reached_limit.values())
-                and not self._task_stop_event.is_set()
-            ):
-                desired_increment = {}
-                for motor_id, reached_limit in motor_reached_limit.items():
-                    if not reached_limit:
-                        desired_increment[motor_id] = (
-                            directions[motor_id] * self.config.calibration_step_size
-                        )
-
-                self._set_motor_pos(desired_increment, rel_to_current=True)
-                time.sleep(self.config.calibration_step_period)
-                curr_pos = self.get_motor_pos()
-                curr_current = self.get_motor_current()
-
-                # A failed bulk read returns the stale cache; feeding it into
-                # the stability buffers would fake a "motor stopped moving"
-                # hardstop detection. Skip this sample and try again.
-                if not self._motor_client.last_read_ok:
-                    continue
-
-                for motor_id in desired_increment.keys():
-                    if not motor_reached_limit[motor_id]:
-                        idx = self.config.motor_id_to_idx_dict[motor_id]
-                        position_buffers[motor_id].append(curr_pos[idx])
-                        position_logs[motor_id].append(float(curr_pos[idx]))
-                        current_log[motor_id].append(float(curr_current[idx]))
-
-                        if len(
-                            position_buffers[motor_id]
-                        ) == self.config.calibration_num_stable and np.allclose(
-                            position_buffers[motor_id],
-                            position_buffers[motor_id][0],
-                            atol=self.config.calibration_threshold,
-                        ):
-                            motor_reached_limit[motor_id] = True
-                            # Wrist limit is read from the stable-position
-                            # buffer (no torque release). Non-wrist motors
-                            # are kept under torque for the encoder anchor
-                            # pass below; their motor-side limit is read
-                            # post-release after that.
-                            if WRIST in self.config.motor_to_joint_dict[motor_id]:
-                                avg_limit = float(np.mean(position_buffers[motor_id]))
-                                print(
-                                    f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
-                                )
-                                if directions[motor_id] == 1:
-                                    pending_limits[motor_id][1] = avg_limit
-                                if directions[motor_id] == -1:
-                                    pending_limits[motor_id][0] = avg_limit
-
-            # Stop requested mid-drive: the joints are NOT at their hardstops.
-            # Bail out before the encoder-anchor pass and limit capture would
-            # sample — and persist — values taken at an arbitrary pose.
-            if self._task_stop_event.is_set():
-                _emit("calibration_aborted")
-                return None
-
-            # All motors are pressing their hardstops with calibration current;
-            # joints are firmly at the mechanical limit. Sample encoder anchors
-            # NOW, before the torque release, so the anchor count corresponds
-            # to the actual hardstop pose.
-            if encoder_pass_active:
-                self._run_joint_encoder_pass_for_step(
-                    step=step,
-                    directions=directions,
-                    joint_encoder_calibration=joint_encoder_calibration,
-                    joint_encoder_client=joint_encoder_client,
-                )
-
-            # Motor-side limit capture: release torque so tendon tension
-            # doesn't bias the motor encoder reading at the hardstop, then
-            # read the relaxed motor position, run any motor-type-specific
-            # offset calibration, and re-enable torque.
-            for motor_id in directions.keys():
-                if motor_id not in motor_reached_limit or not motor_reached_limit[motor_id]:
-                    continue
-                if WRIST in self.config.motor_to_joint_dict[motor_id]:
-                    continue
-                idx = self.config.motor_id_to_idx_dict[motor_id]
-
-                self.disable_torque([motor_id])
-                time.sleep(TINY_SLEEP)
-                avg_limit = float(self.get_motor_pos()[idx])
-                print(
-                    f"Motor {motor_id} corresponding to joint {self.config.motor_to_joint_dict[motor_id]} reached the limit at {avg_limit} rad."
-                )
-                if directions[motor_id] == 1:
-                    pending_limits[motor_id][1] = avg_limit
-                if directions[motor_id] == -1:
-                    pending_limits[motor_id][0] = avg_limit
-
-                if (
-                    self._motor_client.requires_offset_calibration
-                    and motor_id not in motors_with_final_offset
-                ):
-                    is_positive = directions[motor_id] > 0
-                    self._motor_client.calibrate_offset(
-                        motor_id, upper=is_positive
-                    )
-                    time.sleep(TINY_SLEEP)
-                    new_limit = float(self.get_motor_pos()[idx])
-                    pending_limits[motor_id][1 if is_positive else 0] = new_limit
-                    print(
-                        f"  (Offset adjusted: limit now at {new_limit} rad)"
-                    )
-                    motors_with_final_offset.add(motor_id)
-
-                self.enable_torque([motor_id])
-
-            for joint in step[JOINTS].keys():
-                motor_id = self.config.joint_to_motor_map[joint]
-                if (
-                    pending_limits[motor_id][0] is None
-                    or pending_limits[motor_id][1] is None
-                ):
-                    continue
-
-                motor_limits[motor_id] = list(pending_limits[motor_id])
-                delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
-                delta_joint = (
-                    self.config.joint_roms_dict[joint][1]
-                    - self.config.joint_roms_dict[joint][0]
-                )
-                joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
-                print("Joint calibrated: ", joint)
-                _emit(
-                    "joint_calibrated",
-                    joint=joint,
-                    ratio=joint_to_motor_ratios[motor_id],
-                )
-                calibrated_joints[joint] = 0.0
-
-            # Persist partial progress after every step so an interrupted run
-            # never loses the work already done.
-            update_yaml(
-                self.config.calibration_path,
-                JOINT_TO_MOTOR_RATIOS,
-                joint_to_motor_ratios,
-            )
-            update_yaml(self.config.calibration_path, MOTOR_LIMITS_DICT, motor_limits)
-
-            step_wrist_calibrated = self.calibration.wrist_calibrated or (
-                WRIST in calibrated_joints
-            )
-            self.calibration = self._build_calibration_result(
-                motor_limits=motor_limits,
-                joint_to_motor_ratios=joint_to_motor_ratios,
-                wrist_calibrated=step_wrist_calibrated,
-                joint_encoder_calibration_dict=joint_encoder_calibration,
-            )
-            update_yaml(
-                self.config.calibration_path,
-                WRIST_CALIBRATED,
-                self.calibration.wrist_calibrated,
-            )
-            update_yaml(
-                self.config.calibration_path,
-                CALIBRATED,
-                self.calibration.calibrated,
-            )
-            if encoder_pass_active:
-                update_yaml(
-                    self.config.calibration_path,
-                    JOINT_ENCODER_CALIBRATION,
-                    joint_encoder_calibration_to_yaml(joint_encoder_calibration),
-                )
-
-            if calibrated_joints:
-                self.set_joint_positions(
-                    calibrated_joints, num_steps=25, step_size=0.001
-                )
-
-            _emit("step_done", index=step_index, total=len(calibration_sequence))
-
-            # TODO(fracapuano): Is this necessary?
-            time.sleep(0.1)
-
-        new_wrist_calibrated = self.calibration.wrist_calibrated
-        if any(WRIST in step[JOINTS] for step in calibration_sequence):
-            new_wrist_calibrated = True
-            update_yaml(self.config.calibration_path, WRIST_CALIBRATED, True)
-
-        final_result = self._build_calibration_result(
-            motor_limits=motor_limits,
-            joint_to_motor_ratios=joint_to_motor_ratios,
-            wrist_calibrated=new_wrist_calibrated,
-            joint_encoder_calibration_dict=joint_encoder_calibration,
-        )
-        self.calibration = final_result
-        update_yaml(self.config.calibration_path, CALIBRATED, final_result.calibrated)
-
-        if calibrated_joints:
-            self.set_joint_positions(
-                calibrated_joints, num_steps=STEPS_TO_NEUTRAL, step_size=TINY_SLEEP
-            )
-
-        self.set_max_current(self.config.max_current)
-
-        _emit("calibration_done")
-        return final_result
-
-    def _run_joint_encoder_pass_for_step(
-        self,
-        *,
-        step,
-        directions: Dict[int, int],
-        joint_encoder_calibration: Dict[str, JointEncoderCal],
-        joint_encoder_client,
-    ) -> None:
-        """Sample anchor count for each not-yet-anchored joint in ``step``
-        whose direction is FLEX (i.e. driven to its max ROM). Caller must
-        hold motors torque-enabled at the FLEX hardstop. Joints not in
-        ``_encoder_backed_joints()`` (no protocol slot, no motor, or not
-        configured as sensed), joints already present in
-        ``joint_encoder_calibration``, and EXTEND-direction steps are skipped.
-        """
-        from .hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
-
-        encoder_backed = set(self._encoder_backed_joints())
-
-        for joint, direction in step[JOINTS].items():
-            if direction != FLEX:
-                continue
-            if joint not in encoder_backed:
-                continue
-            if joint in joint_encoder_calibration:
-                continue
-
-            slot = JOINT_TO_ENCODER_SLOT[joint]
-            if self.config.joint_to_motor_map.get(joint) is None:
-                continue
-
-            try:
-                anchor_count = sample_anchor_count_from_client(
-                    joint_encoder_client, slot=slot
-                )
-            except JointEncoderCalibrationError as e:
-                print(
-                    f"\033[93mWARNING: encoder anchor sample failed for joint {joint}: {e}\033[0m"
-                )
-                continue
-
-            joint_encoder_calibration[joint] = JointEncoderCal(
-                enc_at_anchor_count=int(anchor_count),
-            )
-            anchor_angle_deg = float(self.config.joint_roms_dict[joint][1])
-            print(
-                f"Joint {joint} encoder anchor sampled: "
-                f"anchor_count={anchor_count} (at ROM upper {anchor_angle_deg:.2f}°)"
-            )
 
     def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
         control_mode = self.config.control_mode
@@ -1267,6 +788,10 @@ class OrcaHand(BaseHand):
 
         print(f"Offsets: {offsets}")
         self._wrap_offsets_dict = offsets
+
+    def _clear_wrap_offset(self, motor_id: int) -> None:
+        """Zero one motor's wrap offset so its raw position is read unshifted."""
+        self._wrap_offsets_dict[motor_id] = 0.0
 
     def _set_motor_pos(
         self, desired_pos: Union[dict, np.ndarray, list], rel_to_current: bool = False
