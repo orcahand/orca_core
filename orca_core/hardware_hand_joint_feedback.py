@@ -14,12 +14,18 @@ import them from there or from the package root.
 
 import warnings
 
+from .hardware_hand import (  # noqa: F401  (importable from here pre-split)
+    MockMotorResolutionMixin,
+    OrcaHand,
+)
 from .hardware_hand_sensing import (  # noqa: F401
     JointFeedbackConnectError,
     MockOrcaHandFull,
     MockOrcaHandJointFeedback,
+    MockOrcaHandTouch,
     OrcaHandFull,
     OrcaHandJointFeedback,
+    OrcaHandTouch,
 )
 
 warnings.warn(

@@ -27,6 +27,16 @@ from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform, frames
 from .version import LATEST_VERSION
 
+def __getattr__(name):
+    # Keep `orca_core.hardware_hand_joint_feedback` attribute access working
+    # for one release; importing the shim module raises its DeprecationWarning.
+    if name == "hardware_hand_joint_feedback":
+        import importlib
+
+        return importlib.import_module(f".{name}", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "CalibrationResult",
     "BaseHand",

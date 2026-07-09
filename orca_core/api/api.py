@@ -84,7 +84,8 @@ def connect_hand():
     if hand.is_connected():
         return {"message": "Hand already connected."}
     try:
-        success, msg = hand.connect()
+        # Headless server: fail cleanly instead of opening the terminal picker.
+        success, msg = hand.connect(interactive=False)
         if success:
              return {"message": msg}
         else:

@@ -87,6 +87,21 @@ def test_joint_feedback_module_shim_warns_and_reexports():
     assert shim.JointFeedbackConnectError is orca_core.JointFeedbackConnectError
 
 
+def test_shim_reachable_as_package_attribute():
+    # Drop both the module cache and the attribute a prior import bound on
+    # the package, so this exercises the bare `import orca_core` case.
+    sys.modules.pop("orca_core.hardware_hand_joint_feedback", None)
+    orca_core.__dict__.pop("hardware_hand_joint_feedback", None)
+    with pytest.warns(DeprecationWarning):
+        shim = orca_core.hardware_hand_joint_feedback
+    # The shim mirrors the old module's full importable namespace.
+    assert shim.OrcaHand is orca_core.OrcaHand
+    assert shim.OrcaHandTouch is orca_core.OrcaHandTouch
+    assert shim.MockOrcaHandTouch is orca_core.MockOrcaHandTouch
+    with pytest.raises(AttributeError):
+        orca_core.no_such_attribute
+
+
 def test_moved_touch_names_warn_and_reexport():
     import orca_core.hardware_hand as hardware_hand
 

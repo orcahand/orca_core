@@ -122,7 +122,7 @@ class OrcaHand(BaseHand):
         return self.calibration.wrist_calibrated
 
     @property
-    def motor_client(self) -> MotorClient:
+    def motor_client(self) -> MotorClient | None:
         """The connected motor client, or ``None`` before ``connect()``.
 
         Advanced use only: reads and writes that race the hand's own bus
