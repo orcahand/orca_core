@@ -168,8 +168,8 @@ class OrcaHandTouch(OrcaHand):
             "or check that the sensor adapter is plugged in)"
         )
 
-    def connect(self) -> tuple[bool, str]:
-        success, msg = super().connect()
+    def connect(self, interactive: bool = True) -> tuple[bool, str]:
+        success, msg = super().connect(interactive)
         if not success:
             return success, msg
 
@@ -485,8 +485,8 @@ class OrcaHandJointFeedback(OrcaHand):
 
     # ----- Lifecycle -------------------------------------------------------
 
-    def connect(self) -> tuple[bool, str]:
-        success, msg = super().connect()
+    def connect(self, interactive: bool = True) -> tuple[bool, str]:
+        success, msg = super().connect(interactive)
         if not success:
             return success, msg
 
@@ -724,10 +724,10 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
 
     config_cls = OrcaHandTouchConfig
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, interactive: bool = True) -> tuple[bool, str]:
         # Motor bus only — bypass the single-sensor connect() chains so this
         # class fully controls how the tactile and encoder links are opened.
-        success, msg = OrcaHand.connect(self)
+        success, msg = OrcaHand.connect(self, interactive)
         if not success:
             return success, msg
 

@@ -178,7 +178,7 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.connect()
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, interactive: bool = True) -> tuple[bool, str]:
         """Open connection to the motor bus.
 
         Resolves (port, motor_type, baudrate) at connect time: the values in
@@ -187,6 +187,11 @@ class OrcaHand(BaseHand):
         motor_type/baudrate is found by pinging each candidate family from
         :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Resolved values are
         persisted back to ``config.yaml``.
+
+        Args:
+            interactive: When ``False``, skip the terminal port picker that
+                otherwise runs as a last resort, so headless callers (servers,
+                GUIs) get a clean failure instead of a blocking prompt.
 
         Returns:
             A ``(success, message)`` tuple where *success* is ``True`` on a
@@ -227,6 +232,8 @@ class OrcaHand(BaseHand):
                 except Exception:
                     self._motor_client = None
 
+            if not interactive:
+                return False, "Connection failed: No port selected"
             print("Please select a port from available devices:")
             chosen_port = get_and_choose_port()
             if chosen_port is None:
@@ -1021,10 +1028,10 @@ class MockMotorResolutionMixin:
     config.yaml.
     """
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, interactive: bool = True) -> tuple[bool, str]:
         if self.config.port == "auto":
             self.config = dataclasses.replace(self.config, port="mock")
-        return super().connect()
+        return super().connect(interactive)
 
     def _create_motor_client(self) -> MotorClient:
         from .hardware.mock_dynamixel_client import MockDynamixelClient

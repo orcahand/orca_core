@@ -199,3 +199,28 @@ def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
     persisted = read_yaml(str(config_path))
     assert persisted["motor_type"] == "dynamixel"
     assert persisted["baudrate"] == 1_000_000
+
+
+# ----- non-interactive connect ---------------------------------------------
+
+def test_non_interactive_connect_skips_port_picker(mock_hand, monkeypatch):
+    """connect(interactive=False) must fail cleanly instead of opening the
+    terminal port picker when every port attempt fails."""
+    import orca_core.hardware_hand as hardware_hand
+
+    def fail_connect(self, port, base_config=None):
+        raise ConnectionError("no motor responded")
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", fail_connect)
+    monkeypatch.setattr(
+        hardware_hand, "auto_detect_port", lambda *a, **k: None
+    )
+
+    def picker_must_not_run():
+        raise AssertionError("interactive picker invoked")
+
+    monkeypatch.setattr(hardware_hand, "get_and_choose_port", picker_must_not_run)
+
+    success, msg = OrcaHand.connect(mock_hand, interactive=False)
+    assert not success
+    assert "No port selected" in msg
