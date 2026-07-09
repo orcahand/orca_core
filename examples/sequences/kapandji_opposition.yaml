@@ -1,3 +1,29 @@
+# Kapandji thumb-opposition sequence: the thumb tip touches each fingertip
+# in turn (index -> middle -> ring -> pinky). Recorded on an orcahand v1.
+#
+# waypoints are positional: each row is one value per entry of
+# metadata.joint_ids, in that exact order. replay_angles.py refuses to run
+# this on a hand whose joint_ids differ.
+metadata:
+  hand_version: 1
+  joint_ids:
+  - thumb_mcp
+  - thumb_abd
+  - thumb_pip
+  - thumb_dip
+  - index_abd
+  - index_mcp
+  - index_pip
+  - middle_abd
+  - middle_mcp
+  - middle_pip
+  - ring_abd
+  - ring_mcp
+  - ring_pip
+  - pinky_abd
+  - pinky_mcp
+  - pinky_pip
+  - wrist
 waypoints:
 - - -1.3838059871070456
   - 39.50322115940708

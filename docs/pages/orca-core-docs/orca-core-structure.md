@@ -22,8 +22,8 @@ This document outlines the general structure of the `orca_core` repository.
 
 *   **`docs/`**: Contains the generated documentation website (built using MkDocs). Ingore this directory. 
     
-*   **`demo/`**: Contains demonstration files, such as example replay sequences.
-    *   *kapangi_replay_sequence_20250504_002233.yaml*: An example YAML file defining a sequence of hand movements for replay.
+*   **`examples/sequences/`**: Recorded joint-space sequences for replay.
+    *   *kapandji_opposition.yaml*: The Kapandji thumb-opposition test — the thumb tip touches each fingertip in turn. Recorded on an orcahand v1; `metadata.joint_ids` pins the joint order, so `replay_angles.py` refuses to run it on a hand whose ordering differs.
 
 *   **`replay_sequences/`**: Stores YAML files that define sequences of joint positions or motor commands for the hand to replay.
 
