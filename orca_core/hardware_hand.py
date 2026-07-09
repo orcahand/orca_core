@@ -8,11 +8,10 @@
 
 import dataclasses
 import math
-import os
 import threading
 import time
 from threading import RLock
-from typing import Dict, List, TYPE_CHECKING, Union
+from typing import Dict, List, Union
 
 import numpy as np
 
@@ -22,6 +21,7 @@ from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_factory import create_motor_client
 from .hardware.motor_client import MotorClient
+from .hardware.motor_resolution import persist_resolved_driver, trial_probe
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
 from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData, TaxelReading
@@ -37,13 +37,7 @@ from .utils.utils import (
     update_yaml,
 )
 
-if TYPE_CHECKING:
-    from .hardware.dynamixel_client import DynamixelClient
-    from .hardware.feetech_client import FeetechClient
-
 from .constants import (
-    MOTOR_BAUD_RATES,
-    SUPPORTED_MOTOR_TYPES,
     MODE_MAP,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -152,43 +146,8 @@ class OrcaHand(BaseHand):
         )
 
     def _trial_probe(self, port: str) -> "tuple[str | None, int | None]":
-        """Probe ``port`` until a (motor_type, baudrate) combination responds.
-
-        Iterates each motor family x the baudrates listed in
-        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
-        ``baudrate`` is pinned in yaml, that dimension is fixed and the
-        probe only iterates the other.
-        """
-        from .hardware.dynamixel_client import DynamixelClient
-        from .hardware.feetech_client import FeetechClient
-
-        candidates = {
-            "dynamixel": DynamixelClient,
-            "feetech": FeetechClient,
-        }
-        motor_types = (
-            [self.config.motor_type]
-            if self.config.motor_type
-            else list(SUPPORTED_MOTOR_TYPES)
-        )
-        for motor_type in motor_types:
-            client_cls = candidates.get(motor_type)
-            if client_cls is None:
-                continue
-            baudrates = (
-                [self.config.baudrate]
-                if self.config.baudrate is not None
-                else list(MOTOR_BAUD_RATES.get(motor_type, []))
-            )
-            for baudrate in baudrates:
-                print(f"Probing {motor_type} on {port} @ {baudrate} baud...")
-                try:
-                    if client_cls.probe(port, baudrate, self.config.motor_ids):
-                        print(f"  -> {motor_type} responded at {baudrate} baud.")
-                        return motor_type, baudrate
-                except Exception as e:
-                    print(f"  -> probe errored: {e}")
-        return None, None
+        """Probe ``port`` for a responding (motor_type, baudrate) combination."""
+        return trial_probe(self.config, port)
 
     def _resolve_motor_driver(self, port: str) -> bool:
         """Fill in ``motor_type``/``baudrate`` for ``port`` when not pinned in yaml.
@@ -206,27 +165,8 @@ class OrcaHand(BaseHand):
         return True
 
     def _persist_resolved_driver(self, existing: "OrcaHandConfig") -> None:
-        """Persist auto-detected driver fields to config.yaml.
-
-        Each field is only written when it was missing (or, for the port,
-        different) in yaml before this connect. Once written, the next
-        connect short-circuits the probe and uses the yaml values directly.
-        Clear the yaml fields to trigger a fresh probe.
-        """
-        updates = {}
-        if existing.port != self.config.port and existing.port != "auto":
-            updates["port"] = self.config.port
-        if existing.motor_type is None and self.config.motor_type is not None:
-            updates["motor_type"] = self.config.motor_type
-        if existing.baudrate is None and self.config.baudrate is not None:
-            updates["baudrate"] = self.config.baudrate
-        for key, value in updates.items():
-            update_yaml(self.config.config_path, key, value)
-        if updates:
-            print(
-                f"Wrote auto-detected {', '.join(updates.keys())} to "
-                f"{os.path.basename(self.config.config_path)}."
-            )
+        """Write driver fields the connect resolved (vs ``existing``) to config.yaml."""
+        persist_resolved_driver(existing, self.config)
 
     def _connect_on_port(self, port: str, base_config: "OrcaHandConfig" = None) -> None:
         """Resolve the motor driver for ``port`` and open the client on it.
