@@ -1535,14 +1535,10 @@ class OrcaHand(BaseHand):
         ):
             t = time.time() - start_time
             offset = amplitude_rad * math.sin(2 * math.pi * frequency * t)
-            with self._motor_lock:
-                self._motor_client.write_desired_pos(
-                    motor_ids, start_pos_array + offset
-                )
+            self.write_motor_pos(motor_ids, start_pos_array + offset)
             time.sleep(jitter_period_s)
 
-        with self._motor_lock:
-            self._motor_client.write_desired_pos(motor_ids, start_pos_array)
+        self.write_motor_pos(motor_ids, start_pos_array)
 
     def _tension(self, move_motors: bool = True, progress_callback=None):
         # TODO(fracapuano): Move this to a standard stateless function
