@@ -2,7 +2,7 @@ import argparse
 
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
-from demo_presets import run_demo
+from demo_runner import run_demo
 
 
 def main() -> int:

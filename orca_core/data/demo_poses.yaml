@@ -1,0 +1,96 @@
+# Canned demo poses, shared by orca_core's examples and by external
+# front-ends (orca_ui). Values are fractions of each joint's ROM, so one
+# preset works across hand models with different ranges. Joints absent
+# from a hand's config are skipped by BaseHand.pose_from_fractions.
+#
+# Playing a sequence is the caller's job; this file is data only.
+main:
+  sequence:
+  - open_hand
+  - power_grasp
+  - pinch
+  poses:
+    open_hand:
+      thumb_cmc: 0.7
+      thumb_abd: 0.8
+      thumb_mcp: 0.85
+      thumb_dip: 0.75
+      index_abd: 0.1
+      middle_abd: 0.5
+      ring_abd: 0.7
+      pinky_abd: 0.85
+      index_mcp: 0.15
+      middle_mcp: 0.15
+      ring_mcp: 0.15
+      pinky_mcp: 0.15
+      index_pip: 0.1
+      middle_pip: 0.1
+      ring_pip: 0.1
+      pinky_pip: 0.1
+      wrist: 0.3
+    power_grasp:
+      thumb_cmc: 0.35
+      thumb_abd: 0.55
+      thumb_mcp: 0.2
+      thumb_dip: 0.85
+      index_mcp: 0.85
+      middle_mcp: 0.85
+      ring_mcp: 0.85
+      pinky_mcp: 0.85
+      index_pip: 0.9
+      middle_pip: 0.9
+      ring_pip: 0.9
+      pinky_pip: 0.9
+      wrist: 0.55
+    pinch:
+      thumb_cmc: 0.45
+      thumb_abd: 0.65
+      thumb_mcp: 0.4
+      thumb_dip: 0.75
+      index_abd: 0.3
+      index_mcp: 0.7
+      index_pip: 0.75
+      middle_mcp: 0.3
+      middle_pip: 0.2
+      ring_mcp: 0.2
+      ring_pip: 0.15
+      pinky_mcp: 0.2
+      pinky_pip: 0.15
+      wrist: 0.45
+abduction:
+  sequence:
+  - fan_out
+  - fan_in
+  - spread_grasp
+  poses:
+    fan_out:
+      thumb_abd: 0.85
+      index_abd: 0.1
+      middle_abd: 0.5
+      ring_abd: 0.8
+      pinky_abd: 0.9
+      wrist: 0.4
+    fan_in:
+      thumb_abd: 0.25
+      index_abd: 0.85
+      middle_abd: 0.5
+      ring_abd: 0.2
+      pinky_abd: 0.15
+      wrist: 0.55
+    spread_grasp:
+      thumb_cmc: 0.55
+      thumb_abd: 0.7
+      thumb_mcp: 0.45
+      thumb_dip: 0.65
+      index_abd: 0.15
+      middle_abd: 0.5
+      ring_abd: 0.8
+      pinky_abd: 0.9
+      index_mcp: 0.65
+      middle_mcp: 0.65
+      ring_mcp: 0.65
+      pinky_mcp: 0.65
+      index_pip: 0.7
+      middle_pip: 0.7
+      ring_pip: 0.7
+      pinky_pip: 0.7
