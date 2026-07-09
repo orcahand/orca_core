@@ -21,7 +21,7 @@ from orca_core import OrcaHandTouch, frames
 
 DEFAULT_CONFIG = (
     Path(__file__).resolve().parents[1]
-    / "orca_core" / "models" / "v2" / "orcahand-touch" / "config.yaml"
+    / "orca_core" / "models" / "v2" / "orcahand-touch-right" / "config.yaml"
 )
 
 MOCK_POSE = {"wrist": -10.0, "index_mcp": 30.0, "index_pip": 20.0, "thumb_cmc": -15.0}

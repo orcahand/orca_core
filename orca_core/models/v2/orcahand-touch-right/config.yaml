@@ -128,12 +128,12 @@ neutral_position:
   pinky_mcp: -4
   pinky_pip: -2
   wrist: -20
-calib_current: 300
-calib_step_size: 0.15
-calib_step_period: 0.0001
-calib_num_stable: 10
-calib_threshold: 0.01
-calib_sequence:
+calibration_current: 300
+calibration_step_size: 0.15
+calibration_step_period: 0.0001
+calibration_num_stable: 10
+calibration_threshold: 0.01
+calibration_sequence:
 - step: 1
   joints:
     thumb_cmc: flex

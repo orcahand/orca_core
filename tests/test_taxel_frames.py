@@ -15,7 +15,7 @@ from orca_core.hardware.tactile_client import TactileClient
 from tests._tactile_helpers import TactileMockState, feed_taxels_frame, install_tactile_mock
 
 CONFIG_V2_TOUCH = os.path.join(
-    os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-touch", "config.yaml"
+    os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-touch-right", "config.yaml"
 )
 
 BENT_POSE = {"wrist": -20.0, "index_mcp": 40.0, "index_pip": 30.0, "thumb_cmc": -10.0}

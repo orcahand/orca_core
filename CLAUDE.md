@@ -153,7 +153,7 @@ uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/config.yaml
 
 # Sensor health check (config-driven; --port for board bring-up without a config)
-uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch/config.yaml
+uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
 uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
 
 # Live sensor data view (takes a raw serial port, not config_path)
