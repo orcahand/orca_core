@@ -14,6 +14,7 @@ drives a terminal, a GUI, or a web front-end.
 """
 
 from .calibration_routine import run_calibration
+from .tensioning import run_jitter, run_tension
 from .motor_chain import (
     ChainScan,
     MotorChainAborted,
@@ -41,6 +42,8 @@ __all__ = [
     "reset_all_motors",
     "resolve_port",
     "run_calibration",
+    "run_jitter",
+    "run_tension",
     "scan_configured_motors",
     "valid_baudrates",
 ]

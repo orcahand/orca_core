@@ -29,6 +29,7 @@ from .kinematics import HandKinematics, Transform
 from .kinematics import frames as tactile_frames
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .maintenance.calibration_routine import run_calibration
+from .maintenance.tensioning import run_jitter, run_tension
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
@@ -1030,127 +1031,23 @@ class OrcaHand(BaseHand):
         duration: float = 3.0,
         include_wrist: bool = False,
     ):
-        max_amplitude_deg = 10.0
-        if amplitude > max_amplitude_deg:
-            raise ValueError(
-                f"Amplitude must be <= {max_amplitude_deg} degrees for safety. Got {amplitude}."
-            )
-
-        amplitude_rad = np.deg2rad(amplitude)
-
-        if motor_ids is None:
-            wrist_motor_id = self.config.joint_to_motor_map.get("wrist")
-            motor_ids = [
-                mid
-                for mid in self.config.motor_ids
-                if include_wrist or mid != wrist_motor_id
-            ]
-
-        start_positions = self.get_motor_pos(as_dict=True)
-        start_pos_array = np.array([start_positions[mid] for mid in motor_ids])
-
-        # Feetech (and similar) issue one bus transaction per motor per update.
-        # Without a throttle, the inner loop floods the serial link and TxRx
-        # fails ("no status packet" / "incorrect status packet").
-        jitter_period_s = 0.01
-
-        start_time = time.time()
-        while (
-            time.time() - start_time < duration and not self._task_stop_event.is_set()
-        ):
-            t = time.time() - start_time
-            offset = amplitude_rad * math.sin(2 * math.pi * frequency * t)
-            self.write_motor_pos(motor_ids, start_pos_array + offset)
-            time.sleep(jitter_period_s)
-
-        self.write_motor_pos(motor_ids, start_pos_array)
+        run_jitter(
+            self,
+            motor_ids=motor_ids,
+            amplitude=amplitude,
+            frequency=frequency,
+            duration=duration,
+            include_wrist=include_wrist,
+            should_stop=self._task_stop_event.is_set,
+        )
 
     def _tension(self, move_motors: bool = True, progress_callback=None):
-        # TODO(fracapuano): Move this to a standard stateless function
-        def _emit(event: str, **payload) -> None:
-            if progress_callback is None:
-                return
-            try:
-                progress_callback({"event": event, **payload})
-            except Exception as e:
-                print(f"Warning: tension progress callback failed: {e}")
-
-        control_mode = self.config.control_mode
-        self.set_control_mode(CURRENT_BASED_POSITION)
-        if move_motors:
-            _emit("phase", phase="winding")
-            motors_to_move = [
-                motor_id
-                for joint, motor_id in self.config.joint_to_motor_map.items()
-                if WRIST not in joint.lower() and motor_id in self.config.motor_ids
-            ]
-            self.set_max_current(self.config.calibration_current)
-
-            increment_per_step = 0.1
-            motor_increments_right = {
-                motor_id: increment_per_step for motor_id in motors_to_move
-            }
-            motor_increments_left = {
-                motor_id: -increment_per_step for motor_id in motors_to_move
-            }
-
-            # Drive each direction until the commanded motors stall (tendons
-            # taut) for stall_hold seconds, bounded by max_wind_s per direction.
-            stall_threshold = 0.01
-            stall_hold = 1.0
-            max_wind_s = 20.0
-            moved_idx = np.array(
-                [self.config.motor_ids.index(mid) for mid in motors_to_move]
-            )
-
-            for wind_pass, increments in enumerate(
-                (motor_increments_left, motor_increments_right)
-            ):
-                _emit("winding_progress", stage=wind_pass + 1, stages=2)
-                stall_start = None
-                phase_start = time.time()
-                prev_pos = self.get_motor_pos()
-                while (not self._task_stop_event.is_set()
-                       and time.time() - phase_start < max_wind_s):
-                    self._set_motor_pos(increments, rel_to_current=True)
-                    time.sleep(0.1)
-                    cur_pos = self.get_motor_pos()
-                    delta = np.max(np.abs(cur_pos[moved_idx] - prev_pos[moved_idx]))
-                    if delta < stall_threshold:
-                        if stall_start is None:
-                            stall_start = time.time()
-                        elif time.time() - stall_start >= stall_hold:
-                            break
-                    else:
-                        stall_start = None
-                    prev_pos = cur_pos
-
-        max_cur = self.config.max_current
-        if move_motors:
-            # Gradually release torque so tendons don't snap back, then
-            # re-engage at the relaxed position for a stable hold.
-            _emit("phase", phase="ramp")
-            self.set_max_current(max_cur)
-            self.enable_torque()
-            steps = 20
-            for i in range(steps):
-                if self._task_stop_event.is_set():
-                    break
-                self.set_max_current(max_cur * (1 - (i + 1) / steps))
-                time.sleep(1.0 / steps)
-            self.disable_torque()
-            time.sleep(0.05)
-        self.set_max_current(max_cur)
-        self.enable_torque()
-        print("Holding motors. Please tension carefully. Press Ctrl+C to exit.")
-        _emit("phase", phase="holding")
-        try:
-            while not self._task_stop_event.is_set():
-                time.sleep(0.1)
-        finally:
-            _emit("phase", phase="released")
-            self.set_control_mode(control_mode)
-            self.disable_torque()
+        run_tension(
+            self,
+            move_motors=move_motors,
+            progress_callback=progress_callback,
+            should_stop=self._task_stop_event.is_set,
+        )
 
     def _run_task(self, task_fn, *args, **kwargs):
         with self._lock:
