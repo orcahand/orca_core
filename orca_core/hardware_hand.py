@@ -23,12 +23,12 @@ from .calibration import (
     JointEncoderCal,
     joint_encoder_calibration_to_yaml,
 )
-from .calibration_joint_encoder import (
+from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
+from .hardware.hand_serial_link import HandSerialLink
+from .hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     sample_anchor_count_from_client,
 )
-from .hand_config import OrcaHandConfig, OrcaHandTouchConfig
-from .hardware.hand_serial_link import HandSerialLink
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry

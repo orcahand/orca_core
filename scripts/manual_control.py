@@ -1,19 +1,24 @@
-"""Tkinter slider controller for the ORCA Hand.
+"""Drive the ORCA Hand from the PC with on-screen sliders.
 
-The hand class is chosen from the config by :func:`orca_core.load_hand`: a
-hand that declares joint encoders (and leaves feedback enabled) is built as a
-closed-loop ``OrcaHandJointFeedback`` / ``OrcaHandFull``; otherwise it is a
-plain motor-only ``OrcaHand`` / ``OrcaHandTouch``.
+Joint space (default): the hand class is chosen from the config by
+:func:`orca_core.load_hand`. A hand that declares joint encoders (and leaves
+feedback enabled) is built as a closed-loop ``OrcaHandJointFeedback`` /
+``OrcaHandFull`` and gets one slider per encoder-backed joint with live encoder
+readback and a Kp / Ki / correction_max / max_current tuning panel;
+``--fingers`` / ``--joints`` filters that slider set. Otherwise the hand is a
+motor-only ``OrcaHand`` / ``OrcaHandTouch`` and gets one slider per joint plus
+torque enable/disable.
 
-For a feedback hand the UI shows one slider per encoder-backed joint with live
-encoder readback and a Kp / Ki / correction_max / max_current tuning panel.
-``--fingers`` / ``--joints`` filters the slider set. For a motor-only hand it
-shows a slider per joint plus torque enable/disable.
+Motor space (``--motor-space``): one slider per motor, each spanning a narrow
+window around the motor's position at startup. This is a tendon bring-up aid
+for nudging a single motor and watching its tendon respond, not a way to pose
+the hand. It talks to the motor bus only — no encoders, no tactile.
 
 Usage:
-    uv run python scripts/slider_joint.py CONFIG
-    uv run python scripts/slider_joint.py CONFIG --fingers ring
-    uv run python scripts/slider_joint.py CONFIG --joints ring_mcp ring_pip --max-current 600
+    uv run python scripts/manual_control.py CONFIG
+    uv run python scripts/manual_control.py CONFIG --fingers ring
+    uv run python scripts/manual_control.py CONFIG --joints ring_mcp ring_pip --max-current 600
+    uv run python scripts/manual_control.py CONFIG --motor-space
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import List
 
-from orca_core import OrcaHandJointFeedback, load_hand
+from orca_core import OrcaHand, OrcaHandJointFeedback, load_hand
 from orca_core.control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
     DEFAULT_KI,
@@ -45,12 +50,20 @@ FINGER_TO_JOINTS = {
 ALL_JOINTS = [j for joints in FINGER_TO_JOINTS.values() for j in joints]
 REFRESH_MS = 100
 
+# Half-width of each motor-space slider, in motor radians around the position
+# read at startup. Deliberately tight: this mode is for precise nudges.
+MOTOR_SLIDER_SPAN_RAD = 1.0
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument(
         "config_path", nargs="?", default=None,
         help="Path to the hand config.yaml.",
+    )
+    p.add_argument(
+        "--motor-space", action="store_true",
+        help="Slider per motor instead of per joint (tendon bring-up; motor bus only).",
     )
     p.add_argument("--encoder-port", default=None, help="Feedback hands only.")
     p.add_argument("--max-current", type=int, default=None, help="Feedback hands only.")
@@ -178,6 +191,82 @@ class HandControlUI:
     def update_value_label(self, joint, label):
         value = self.joint_values[joint].get()
         label.config(text=f"{value:.1f}")
+
+
+class MotorSliderUI:
+    """Motor-space slider UI: one slider per motor over a narrow window around
+    its startup position, plus torque buttons."""
+
+    def __init__(self, root, hand):
+        self.hand = hand
+        self.motor_values = {motor: tk.DoubleVar() for motor in hand.config.motor_ids}
+        self.create_ui(root)
+
+    def create_ui(self, root):
+        root.title("Orca Hand Motor Control")
+        root.geometry("400x800")
+
+        torque_frame = ttk.Frame(root)
+        torque_frame.pack(pady=10)
+
+        ttk.Button(torque_frame, text="Enable Torque", command=self.enable_torque).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(torque_frame, text="Disable Torque", command=self.disable_torque).pack(
+            side=tk.LEFT, padx=5
+        )
+
+        sliders_frame = ttk.Frame(root)
+        sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        current_motor_pos = self.hand.get_motor_pos(as_dict=True)
+        for motor in self.hand.config.motor_ids:
+            self.motor_values[motor].set(current_motor_pos[motor])
+
+            frame = ttk.Frame(sliders_frame)
+            frame.pack(fill=tk.X, pady=5)
+
+            ttk.Label(frame, text=f"Motor {motor}", width=15).pack(side=tk.LEFT)
+
+            slider = tk.Scale(
+                frame,
+                from_=current_motor_pos[motor] - MOTOR_SLIDER_SPAN_RAD,
+                to=current_motor_pos[motor] + MOTOR_SLIDER_SPAN_RAD,
+                orient=tk.HORIZONTAL,
+                variable=self.motor_values[motor],
+                command=lambda value, m=motor: self.update_motor_position(m, value),
+                length=200,
+                resolution=0.1,
+                showvalue=False,
+            )
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            value_label = ttk.Label(frame, text=f"{current_motor_pos[motor]:.1f}", width=8)
+            value_label.pack(side=tk.RIGHT)
+
+            self.motor_values[motor].trace_add(
+                "write",
+                lambda *args, m=motor, label=value_label: self.update_value_label(m, label),
+            )
+
+    def enable_torque(self):
+        self.hand.enable_torque()
+        print("Torque enabled.")
+
+    def disable_torque(self):
+        self.hand.disable_torque()
+        print("Torque disabled.")
+
+    def update_motor_position(self, motor, value):
+        try:
+            motor_positions = {m: v.get() for m, v in self.motor_values.items()}
+            self.hand._set_motor_pos(motor_positions)
+            print(f"Updated motor {motor} to position: {float(value):.1f}")
+        except Exception as e:
+            print(f"Error updating motor {motor}: {e}")
+
+    def update_value_label(self, motor, label):
+        label.config(text=f"{self.motor_values[motor].get():.1f}")
 
 
 class JointFeedbackSliderUI:
@@ -379,11 +468,35 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
     return 0
 
 
+def _run_motor_space(args: argparse.Namespace) -> int:
+    # OrcaHand directly rather than load_hand(): motor-space nudging wants the
+    # motor bus alone, and the factory would also open the encoder and tactile
+    # links for a sensing hand.
+    hand = OrcaHand(config_path=args.config_path)
+    success, msg = hand.connect()
+    print(msg)
+    if not success:
+        print("Failed to connect to the hand.")
+        return 1
+
+    try:
+        hand.init_joints(force_calibrate=False)
+        root = tk.Tk()
+        MotorSliderUI(root, hand)
+        root.mainloop()
+        return 0
+    finally:
+        hand.disconnect()
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
+
+    if args.motor_space:
+        return _run_motor_space(args)
 
     hand = load_hand(config_path=args.config_path)
     overrides = {}

@@ -6,8 +6,8 @@ hand's forward kinematics; forces are rotated into the same frame. With
 ``--mock`` no hardware is needed (synthetic tactile data, fixed joint pose).
 
 Usage:
-    uv run python scripts/example_taxel_frames.py --mock --frame base
-    uv run python scripts/example_taxel_frames.py path/to/config.yaml --frame palm
+    uv run python examples/taxel_frames.py --mock --frame base
+    uv run python examples/taxel_frames.py path/to/config.yaml --frame palm
 """
 
 import argparse

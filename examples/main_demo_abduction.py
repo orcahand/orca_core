@@ -2,6 +2,8 @@ import argparse
 
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
+from demo_presets import run_demo
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -19,7 +21,8 @@ def main() -> int:
         hand.init_joints(force_calibrate=args.mock)
 
         print("Cycling through fan_out -> fan_in -> spread_grasp -> neutral")
-        hand.run_demo(
+        run_demo(
+            hand,
             "abduction",
             cycles=args.cycles,
             num_steps=args.num_steps,

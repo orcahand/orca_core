@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Interactive live view of the ORCA joint encoders + tactile sensor.
+"""Live view of the ORCA joint-encoder and tactile sensor streams.
 
 Opens a Tkinter window that streams joint encoder angles for all 17 slots and
 tactile forces in a mode you pick with the radio buttons:
@@ -9,9 +9,12 @@ tactile forces in a mode you pick with the radio buttons:
 Switching the radio reconfigures the device live. Each stream shows its
 measured frame rate (Hz).
 
+This is for watching the data. To decide whether the sensors are *healthy*,
+run ``scripts/check_sensors.py`` instead.
+
 Usage:
-    PORT=/dev/cu.usbmodem103 uv run --with pyserial python3 scripts/sensor_feedback.py
-    uv run --with pyserial python3 scripts/sensor_feedback.py --port /dev/cu.usbmodem103
+    PORT=/dev/cu.usbmodem103 uv run --with pyserial python3 scripts/monitor_sensors.py
+    uv run --with pyserial python3 scripts/monitor_sensors.py --port /dev/cu.usbmodem103
 """
 from __future__ import annotations
 

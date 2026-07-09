@@ -73,5 +73,5 @@ contact_world = transforms["index"].apply_to_points(my_sensor_frame_points)
 - Joint angles used for FK are motor-derived estimates unless your hand has
   joint encoders; accuracy of `palm`/`base`/`world` positions follows the
   accuracy of the joint angles.
-- Run `scripts/example_taxel_frames.py --mock --frame base` for a no-hardware
+- Run `examples/taxel_frames.py --mock --frame base` for a no-hardware
   demo.

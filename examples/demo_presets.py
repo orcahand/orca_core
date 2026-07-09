@@ -1,4 +1,12 @@
+"""Canned demo poses and the sequencer that plays them.
+
+Poses are expressed as fractions of each joint's ROM, so one preset works
+across hand models with different ranges.
+"""
+
 from typing import Final
+
+from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
 DEMO_POSE_FRACTIONS: Final[dict[str, dict[str, dict[str, float]]]] = {
@@ -97,3 +105,32 @@ DEMO_SEQUENCES: Final[dict[str, tuple[str, ...]]] = {
     "main": ("open_hand", "power_grasp", "pinch"),
     "abduction": ("fan_out", "fan_in", "spread_grasp"),
 }
+
+
+def run_demo(
+    hand,
+    demo_name: str = "main",
+    cycles: int = 1,
+    num_steps: int = NUM_STEPS,
+    step_size: float = STEP_SIZE,
+    return_to_neutral: bool = True,
+) -> tuple[str, ...]:
+    """Play a named demo sequence on *hand* and return the pose names played."""
+    if demo_name not in DEMO_POSE_FRACTIONS or demo_name not in DEMO_SEQUENCES:
+        available = ", ".join(sorted(DEMO_SEQUENCES))
+        raise ValueError(f"Unknown demo '{demo_name}'. Available demos: {available}.")
+
+    poses = {
+        name: hand.pose_from_fractions(fractions)
+        for name, fractions in DEMO_POSE_FRACTIONS[demo_name].items()
+    }
+    sequence = DEMO_SEQUENCES[demo_name]
+
+    for _ in range(cycles):
+        for name in sequence:
+            hand.set_joint_positions(poses[name], num_steps=num_steps, step_size=step_size)
+
+        if return_to_neutral:
+            hand.set_neutral_position(num_steps=num_steps, step_size=step_size)
+
+    return sequence

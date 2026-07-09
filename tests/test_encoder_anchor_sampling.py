@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pytest
 
-from orca_core.calibration_joint_encoder import (
+from orca_core.hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     average_anchor_count,
     sample_anchor_count_from_client,

@@ -188,34 +188,24 @@ python examples/replay_continuous.py /path/to/orcahand_v1_right/config.yaml --re
 ### UI Control Scripts
 
 <details>
-<summary><strong>slider_joint.py</strong></summary>
+<summary><strong>manual_control.py</strong></summary>
 
-Provides a Tkinter-based GUI with sliders to control each joint of the ORCA Hand individually. It allows enabling/disabling torque and displays current joint values.
+Provides a Tkinter-based GUI with sliders to drive the ORCA Hand from the PC. By default the sliders are in joint space, one per joint, with torque enable/disable. On a hand with joint encoders the sliders cover the encoder-backed joints and gain a live encoder readback plus a Kp / Ki / correction_max / max_current tuning panel.
+
+With <code>--motor-space</code> the sliders are one-per-motor over a narrow window around each motor's startup position, for nudging a single tendon during bring-up. That mode opens the motor bus only.
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>--motor-space</strong>: One slider per motor instead of per joint.</li><br>
+    <li><strong>--fingers</strong> / <strong>--joints</strong>: Restrict the slider set (joint-feedback hands).</li><br>
+    <li><strong>--Kp</strong> / <strong>--Ki</strong> / <strong>--correction-max-deg</strong> / <strong>--max-current</strong>: Initial loop tuning (joint-feedback hands).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/slider_joint.py /path/to/orcahand_v1_right/config.yaml
-```
-</details>
-
-<details>
-<summary><strong>slider_motor.py</strong></summary>
-
-Provides a Tkinter-based GUI with sliders to control each motor of the ORCA Hand individually. This allows for direct motor position control rather than joint-level control. Sliders have a small range for precise adjustments around the current motor position.
-
-<br><strong>Args:</strong><br>
-<ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
-</ul>
-
-<strong>Example:</strong>
-```bash
-python scripts/slider_motor.py /path/to/orcahand_v1_right/config.yaml
+python scripts/manual_control.py /path/to/orcahand_v1_right/config.yaml
+python scripts/manual_control.py /path/to/orcahand_v1_right/config.yaml --motor-space
 ```
 </details>
 
@@ -252,46 +242,47 @@ python scripts/stress_test.py --cycles 100
 
 ### Sensing Diagnostic Scripts
 
-<details>
-<summary><strong>sensor_feedback.py</strong></summary>
+The two sensing scripts split by intent: `monitor_sensors.py` shows you the data, `check_sensors.py` tells you whether the sensors are healthy.
 
-Live diagnostic stream for the hand's sensing link: joint-encoder angles and/or tactile readings, depending on the flags given. Takes the raw serial port of the sensing link.
+<details>
+<summary><strong>monitor_sensors.py</strong></summary>
+
+Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate. Takes the raw serial port of the sensing link.
 
 <strong>Example:</strong>
 ```bash
-python scripts/sensor_feedback.py --port /dev/cu.usbmodemXXXX
+python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
 ```
 </details>
 
 <details>
-<summary><strong>test_sensors.py</strong></summary>
+<summary><strong>check_sensors.py</strong></summary>
 
-Guided check of the hand's sensors (joint encoders and tactile), stepping through per-finger press phases and reporting health.
+Pass/fail health check. Reads the hand's config and runs the checks its declared hardware supports: joint-encoder stream health (frame integrity, rate, per-slot parity / angle-error / stuck-bus detection — non-interactive), and tactile sensor checks (enumeration, stream rate, per-finger press response, zeroing, stream lifecycle — interactive). A hand with both runs both, encoders first. Motors need not be powered.
+
+<code>--port</code> skips the config and runs the encoder checks against a raw serial port, for bringing up a connector board before a hand config exists.
+
+<br><strong>Args:</strong><br>
+<ul>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand model directory or config.yaml.</li><br>
+    <li><strong>--port</strong>: Raw serial port; runs encoder checks only and ignores the config.</li><br>
+    <li><strong>--encoder-duration</strong>: Seconds to sample the encoder stream (default 10).</li>
+</ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/test_sensors.py
+python scripts/check_sensors.py orca_core/models/v2/orcahand-touch
+python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
 ```
 </details>
 
 <details>
-<summary><strong>verify_encoder_stream.py</strong></summary>
-
-Validates the raw joint-encoder auto-stream on a serial port (frame integrity, rates, per-slot status).
-
-<strong>Example:</strong>
-```bash
-python scripts/verify_encoder_stream.py /dev/cu.usbmodemXXXX
-```
-</details>
-
-<details>
-<summary><strong>example_taxel_frames.py</strong></summary>
+<summary><strong>examples/taxel_frames.py</strong></summary>
 
 Streams per-taxel forces with 3D taxel positions in a chosen coordinate frame (sensor, fingertip, palm, base, world). Runs without hardware via <code>--mock</code>.
 
 <strong>Example:</strong>
 ```bash
-python scripts/example_taxel_frames.py --mock --frame base
+python examples/taxel_frames.py --mock --frame base
 ```
 </details>

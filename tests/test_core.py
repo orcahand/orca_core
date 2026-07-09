@@ -25,7 +25,6 @@ def test_orca_hand_exposes_refactored_methods(mock_config_dir):
         "register_position",
         "set_named_position",
         "play_named_positions",
-        "run_demo",
         "get_joint_position",
     ]:
         assert hasattr(hand, method_name), f"Missing hardware method: {method_name}"
@@ -54,11 +53,21 @@ def test_mock_workflow_smoke(initialized_mock_hand):
         assert actual[joint] == pytest.approx(expected, abs=1e-6)
 
 
-def test_builtin_demo_positions_can_run_on_mock_hand(initialized_mock_hand):
+def test_fraction_poses_can_be_sequenced_on_mock_hand(initialized_mock_hand):
     hand = initialized_mock_hand
 
-    sequence = hand.run_demo("main", cycles=1, num_steps=1, step_size=0.0)
-    assert sequence == ("open_hand", "power_grasp", "pinch")
+    for name, fraction in (("open", 0.1), ("closed", 0.9)):
+        hand.register_position(
+            name, hand.pose_from_fractions({j: fraction for j in hand.config.joint_ids})
+        )
+
+    hand.play_named_positions(
+        ["open", "closed"],
+        cycles=1,
+        num_steps=1,
+        step_size=0.0,
+        return_to_neutral=True,
+    )
 
     actual = hand.get_joint_position().as_dict()
     for joint, expected in hand.config.neutral_position.items():

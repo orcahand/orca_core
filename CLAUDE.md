@@ -20,7 +20,7 @@ orca_core/
 │   ├── mock_dynamixel_client.py      # In-memory motor client for tests/dev
 │   ├── hand_serial_link.py           # Framed serial link to the connector board (encoders/tactile)
 │   ├── mock_hand_serial_link.py      # In-memory stand-in for HandSerialLink
-│   ├── joint_encoder_client.py       # Joint-angle encoder stream client
+│   ├── joint_encoder_client.py       # Joint-angle encoder stream client + anchor sampling
 │   ├── tactile_client.py             # Tactile sensor register client
 │   └── sensing/                      # Wire protocol, framing, and port auto-discovery
 ├── utils/                         # Shared utilities
@@ -30,7 +30,7 @@ orca_core/
 ├── hardware_hand_joint_feedback.py # OrcaHandJointFeedback / OrcaHandFull (+ closed-loop joint encoders)
 ├── hand_factory.py                 # load_hand(): picks the right class from config.yaml
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
-├── calibration.py / calibration_joint_encoder.py  # Calibration result types
+├── calibration.py                  # Calibration result types + YAML (de)serialization
 └── constants.py                    # Control modes, protocol constants
 
 scripts/              # CLI tools for calibration, tensioning, diagnostics
@@ -136,13 +136,15 @@ uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
 
-# Manual control
-uv run python scripts/slider_joint.py orca_core/models/v2/orcahand-right/config.yaml
-uv run python scripts/slider_motor.py orca_core/models/v2/orcahand-right/config.yaml
+# Manual control (sliders; --motor-space for per-motor tendon bring-up)
+uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/config.yaml
 
-# Joint-encoder / tactile diagnostics (take a raw serial port, not config_path)
-uv run python scripts/verify_encoder_stream.py /dev/cu.usbmodemXXXX
-uv run python scripts/sensor_feedback.py --port /dev/cu.usbmodemXXXX
+# Sensor health check (config-driven; --port for board bring-up without a config)
+uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch/config.yaml
+uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
+
+# Live sensor data view (takes a raw serial port, not config_path)
+uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
 ```
 
 ### Configuration
