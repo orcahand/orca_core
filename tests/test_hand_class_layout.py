@@ -6,9 +6,6 @@ production connect logic. These tests fail loudly if a refactor reorders
 the bases or moves a seam.
 """
 
-import importlib
-import sys
-
 import pytest
 
 import orca_core
@@ -76,38 +73,18 @@ def test_seam_resolves_to_expected_class(cls, method, expected_owner):
     assert getattr(cls, method) is getattr(expected_owner, method)
 
 
-def test_joint_feedback_module_shim_warns_and_reexports():
-    sys.modules.pop("orca_core.hardware_hand_joint_feedback", None)
-    with pytest.warns(DeprecationWarning):
-        shim = importlib.import_module("orca_core.hardware_hand_joint_feedback")
-    assert shim.OrcaHandFull is OrcaHandFull
-    assert shim.OrcaHandJointFeedback is OrcaHandJointFeedback
-    assert shim.MockOrcaHandFull is MockOrcaHandFull
-    assert shim.MockOrcaHandJointFeedback is MockOrcaHandJointFeedback
-    assert shim.JointFeedbackConnectError is orca_core.JointFeedbackConnectError
-
-
-def test_shim_reachable_as_package_attribute():
-    # Drop both the module cache and the attribute a prior import bound on
-    # the package, so this exercises the bare `import orca_core` case.
-    sys.modules.pop("orca_core.hardware_hand_joint_feedback", None)
-    orca_core.__dict__.pop("hardware_hand_joint_feedback", None)
-    with pytest.warns(DeprecationWarning):
-        shim = orca_core.hardware_hand_joint_feedback
-    # The shim mirrors the old module's full importable namespace.
-    assert shim.OrcaHand is orca_core.OrcaHand
-    assert shim.OrcaHandTouch is orca_core.OrcaHandTouch
-    assert shim.MockOrcaHandTouch is orca_core.MockOrcaHandTouch
-    with pytest.raises(AttributeError):
-        orca_core.no_such_attribute
-
-
-def test_moved_touch_names_warn_and_reexport():
-    import orca_core.hardware_hand as hardware_hand
-
-    with pytest.warns(DeprecationWarning):
-        assert hardware_hand.OrcaHandTouch is OrcaHandTouch
-    with pytest.warns(DeprecationWarning):
-        assert hardware_hand.MockOrcaHandTouch is MockOrcaHandTouch
-    with pytest.raises(AttributeError):
-        hardware_hand.NoSuchName
+def test_all_hand_classes_import_from_package_root():
+    for name in (
+        "OrcaHand",
+        "OrcaHandTouch",
+        "OrcaHandJointFeedback",
+        "OrcaHandFull",
+        "MockOrcaHand",
+        "MockOrcaHandTouch",
+        "MockOrcaHandJointFeedback",
+        "MockOrcaHandFull",
+        "JointFeedbackConnectError",
+        "BaseHand",
+    ):
+        assert name in orca_core.__all__
+        assert getattr(orca_core, name) is not None

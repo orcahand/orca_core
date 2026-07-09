@@ -555,8 +555,7 @@ class OrcaHandJointFeedback(OrcaHand):
         """Pause the joint loop's motor writes for the duration of a round-trip
         motor op. The loop's 100 Hz sync_writes otherwise interleave with the
         op's status-packet reads on the shared motor CDC and intermittently
-        stall them into "no status packet" timeouts (measured: reads spike from
-        14 ms to 300-450 ms with the writer running). Encoder decoding keeps
+        stall them into "no status packet" timeouts. Encoder decoding keeps
         running, so ``get_measured_joints`` stays live throughout."""
         loop = self._loop
         if loop is None:

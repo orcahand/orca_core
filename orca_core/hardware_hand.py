@@ -1060,23 +1060,3 @@ class MockOrcaHand(MockMotorResolutionMixin, OrcaHand):
     All methods behave identically to :class:`OrcaHand` but no serial
     port is opened and motor state is simulated in memory.
     """
-
-
-_MOVED_TO_SENSING = ("OrcaHandTouch", "MockOrcaHandTouch")
-
-
-def __getattr__(name):
-    if name in _MOVED_TO_SENSING:
-        import warnings
-
-        warnings.warn(
-            f"importing {name} from orca_core.hardware_hand is deprecated; "
-            "import it from orca_core (package root) or "
-            "orca_core.hardware_hand_sensing instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from . import hardware_hand_sensing
-
-        return getattr(hardware_hand_sensing, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
