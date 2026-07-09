@@ -142,13 +142,46 @@ class TestPackagedKinematics:
         )
         assert index_abd["sign"] == -1
 
-    def test_no_audit_mismatches(self):
-        for kin in (RIGHT, LEFT):
-            entries = list(kin._chains["base_chain"]) + [
-                e for chain in kin._chains["fingers"].values() for e in chain
-            ]
-            for entry in entries:
-                assert "MISMATCH" not in entry.get("audit", ""), entry
+    @pytest.mark.parametrize("kin", [RIGHT, LEFT], ids=["right", "left"])
+    def test_abduction_axes_are_mutually_parallel(self, kin):
+        """The four finger abduction joints all rotate about the palm normal, so
+        their sign-applied axes must be parallel once expressed in the palm frame.
+        A single flipped ``sign`` shows up here as an anti-parallel axis."""
+        signed_axes = {}
+        for finger in ("index", "middle", "ring", "pinky"):
+            pose = Transform.identity()
+            for entry in kin._chains["fingers"][finger]:
+                pose = pose @ Transform.from_xyz_rpy(entry["xyz"], entry["rpy"])
+                if entry.get("joint", "").endswith("_abd"):
+                    axis = pose.rotation @ np.array(entry["axis"])
+                    signed_axes[finger] = entry["sign"] * axis / np.linalg.norm(axis)
+                    break
+
+        reference = signed_axes["index"]
+        for finger, axis in signed_axes.items():
+            assert np.dot(reference, axis) > 0.9, (
+                f"{finger}_abd rotates opposite to index_abd "
+                f"(dot={np.dot(reference, axis):.3f}); its sign is likely flipped"
+            )
+
+    @pytest.mark.parametrize("kin", [RIGHT, LEFT], ids=["right", "left"])
+    def test_positive_abduction_moves_every_fingertip_toward_the_pinky(self, kin):
+        """Sign convention, anchored on ``index_abd`` whose sign is forced by the
+        asymmetric URDF/ROM limit pair. Catches a global as well as a per-joint flip."""
+        fingers = ("index", "middle", "ring", "pinky")
+        rest = kin.fingertip_poses({}, in_frame=frames.PALM, fingers=fingers)
+        lateral = rest["pinky"].translation - rest["index"].translation
+        lateral /= np.linalg.norm(lateral)
+
+        for finger in fingers:
+            tip = kin.fingertip_poses(
+                {f"{finger}_abd": 20.0}, in_frame=frames.PALM, fingers=(finger,)
+            )[finger]
+            displacement = np.dot(tip.translation - rest[finger].translation, lateral)
+            assert displacement > 0.005, (
+                f"+20 deg of {finger}_abd moved the fingertip {displacement * 1000:+.1f} mm "
+                f"along the index->pinky axis; positive abduction must move it toward the pinky"
+            )
 
 
 class TestSensorMounts:
