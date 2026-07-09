@@ -12,7 +12,8 @@ orca_core/
 ├── maintenance/                  # Interaction-free hardware routines (callback-driven)
 │   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
 │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
-│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
+│   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
+│   └── provisioning.py              # provision_hand(): store side/hw version on the OH board
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
@@ -34,7 +35,7 @@ orca_core/
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
 ├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)
 ├── hardware_hand_sensing.py        # Sensing variants: OrcaHandTouch / OrcaHandJointFeedback / OrcaHandFull (+ mocks)
-├── hand_factory.py                 # load_hand(): picks the right class from config.yaml
+├── hand_factory.py                 # load_hand()/detect_hand(): autodetect the hand, pick class + model
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
 ├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
