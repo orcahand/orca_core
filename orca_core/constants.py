@@ -42,10 +42,17 @@ KNOWN_VIDS: dict[str, list[int]] = {
 }
 
 # OH board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY lets the host
-# distinguish motor vs sensor.
+# distinguish motor vs sensor. ORCA_INFO_QUERY additionally returns the hand
+# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<hex>"); boards that
+# predate it stay silent. ORCA_SET_QUERY provisions side/hardware version.
 ORCA_ID_QUERY = b"ORCA_ID?\n"
 ORCA_ID_RESP_MOTOR = b"ORCA:MOTOR\n"
 ORCA_ID_RESP_SENSOR = b"ORCA:SENSOR\n"
+ORCA_INFO_QUERY = b"ORCA_INFO?\n"
+ORCA_INFO_MARKER_MOTOR = b"ORCA:MOTOR;"
+ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
+ORCA_SET_RESP_OK = b"ORCA:OK\n"
+ORCA_SET_RESP_ERR = b"ORCA:ERR\n"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 

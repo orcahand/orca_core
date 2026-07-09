@@ -21,7 +21,7 @@ from .hardware_hand_sensing import (
     OrcaHandJointFeedback,
     OrcaHandTouch,
 )
-from .hand_factory import load_hand
+from .hand_factory import HandDetection, detect_hand, load_hand
 from .hardware.sensing.types import TaxelData
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform, frames
@@ -43,6 +43,8 @@ __all__ = [
     "MockOrcaHandFull",
     "JointFeedbackConnectError",
     "load_hand",
+    "detect_hand",
+    "HandDetection",
     "OrcaJointPositions",
     "HandKinematics",
     "TaxelData",
