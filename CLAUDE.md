@@ -9,6 +9,9 @@ Control package for the ORCA Hand - a dexterous open-source robotic hand. Provid
 ```
 orca_core/
 ├── api/                          # FastAPI app exposing OrcaHand over HTTP (early/incomplete)
+├── maintenance/                  # Interaction-free hardware ops (motor-chain setup)
+│   └── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
+├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
 │   ├── joint_controller.py          # Per-joint PI controller
@@ -31,13 +34,20 @@ orca_core/
 ├── hand_factory.py                 # load_hand(): picks the right class from config.yaml
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
+├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
 └── constants.py                    # Control modes, protocol constants
 
-scripts/              # CLI tools for calibration, tensioning, diagnostics
+scripts/              # Thin CLI front-ends. argparse + print + input(); no logic.
 examples/             # Demo and record/replay scripts built on the public API
+tools/                # Maintainer-only tools (regenerate packaged data)
 tests/                # Unit tests
 docs/                 # MkDocs site sources (docs/pages/) - partially stale, verify against code
 ```
+
+Only `orca_core/` ships in the wheel. Anything both a script and an external
+front-end (e.g. orca_ui) needs must live in the package: operations report
+progress via `progress_callback` and request human action via `prompt_callback`,
+so a terminal and a GUI drive the identical routine.
 
 ### Key Files
 

@@ -14,8 +14,10 @@ JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"
 MOTOR_TO_JOINT_DICT = "motor_to_joint"
 MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
-MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
-SUPPORTED_MOTOR_TYPES = ["dynamixel", "feetech"]
+
+DYNAMIXEL = "dynamixel"
+FEETECH = "feetech"
+SUPPORTED_MOTOR_TYPES = [DYNAMIXEL, FEETECH]
 
 DEFAULT_MOTOR_BAUDRATE = 1_000_000
 JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
@@ -23,11 +25,11 @@ JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
 KNOWN_VIDS: dict[str, list[int]] = {
-    "dynamixel": [
+    DYNAMIXEL: [
         0x0403,  # FTDI (U2D2, most common)
         0x16D0,  # MCS Electronics (some Robotis boards)
     ],
-    "feetech": [
+    FEETECH: [
         0x1A86,  # QinHeng Electronics CH340 (most Feetech USB adapters)
         0x10C4,  # Silicon Labs CP210x (some Feetech boards)
     ],
@@ -77,10 +79,16 @@ MODE_MAP = {
 WRIST_MODE_VALUE = 4
 
 WRIST = "wrist"
+FINGER = "finger"
 FLEX = "flex"
 EXTEND = "extend"
 JOINTS = "joints"
 STEP = "step"
+
+MOTOR_MODELS: dict[str, dict[str, str]] = {
+    DYNAMIXEL: {WRIST: "XC430", FINGER: "XC330"},
+    FEETECH: {WRIST: "HLS3930", FINGER: "HLS3915"},
+}
 
 TINY_SLEEP = 5e-2
 
@@ -96,6 +104,6 @@ STEP_SIZE = 0.01
 # Baudrates the connect-time probe tries per motor family, in priority order,
 # when ``baudrate`` is not pinned in config.yaml.
 MOTOR_BAUD_RATES: dict[str, list[int]] = {
-    "dynamixel": [1_000_000, 3_000_000],
-    "feetech": [1_000_000],
+    DYNAMIXEL: [1_000_000, 3_000_000],
+    FEETECH: [1_000_000],
 }

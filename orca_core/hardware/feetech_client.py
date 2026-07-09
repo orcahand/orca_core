@@ -14,6 +14,7 @@ import time
 from typing import Optional, Sequence, Tuple
 import numpy as np
 
+from ..constants import FEETECH
 from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 from .feetech import (
     PortHandler,
@@ -89,6 +90,14 @@ class FeetechClient(MotorClient):
     """
 
     waits_for_motion = True
+
+    motor_type = FEETECH
+    factory_default_id = 1
+    factory_default_baudrate = 1_000_000
+    baud_rate_map = FEETECH_BAUD_RATE_MAP
+    # Feetech motors latch their ID at power-up, so the bus must be de-powered
+    # before a motor is plugged in.
+    requires_unpowered_hotplug = True
 
     OPEN_CLIENTS = set()
 

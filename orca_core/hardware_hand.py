@@ -29,6 +29,7 @@ from .hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     sample_anchor_count_from_client,
 )
+from .hardware.motor_factory import create_motor_client
 from .hardware.motor_client import MotorClient
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
@@ -151,22 +152,11 @@ class OrcaHand(BaseHand):
         return self.calibration.wrist_calibrated
 
     def _create_motor_client(self) -> MotorClient:
-        if self.config.motor_type == "dynamixel":
-            from .hardware.dynamixel_client import DynamixelClient
-
-            return DynamixelClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
-
-        if self.config.motor_type == "feetech":
-            from .hardware.feetech_client import FeetechClient
-
-            return FeetechClient(
-                self.config.motor_ids, self.config.port, self.config.baudrate
-            )
-
-        raise ValueError(
-            f"Unknown motor_type: {self.config.motor_type}. Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
+        return create_motor_client(
+            self.config.motor_type,
+            self.config.motor_ids,
+            self.config.port,
+            self.config.baudrate,
         )
 
     def _trial_probe(self, port: str) -> "tuple[str | None, int | None]":

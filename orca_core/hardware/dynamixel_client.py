@@ -21,6 +21,7 @@ import time
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
+from ..constants import DYNAMIXEL
 from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -136,6 +137,11 @@ class DynamixelClient(MotorClient):
         is flushed before the lock is released, so a late status reply can
         never be consumed as the response to a later transaction.
     """
+
+    motor_type = DYNAMIXEL
+    factory_default_id = 1
+    factory_default_baudrate = 57600
+    baud_rate_map = BAUD_RATE_MAP
 
     # The currently open clients.
     OPEN_CLIENTS = set()

@@ -9,7 +9,7 @@
 """Abstract base class for motor communication clients."""
 
 from abc import ABC, abstractmethod
-from typing import NamedTuple, Sequence
+from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
 
 
@@ -38,11 +38,63 @@ class MotorClient(ABC):
 
     This defines the interface that all motor clients (Dynamixel, Feetech, etc.)
     must implement to work with OrcaHand.
+
+    Subclasses describe their motor family through the class attributes below,
+    so callers can stay family-agnostic: adding a new family means adding a
+    client, not branching on ``motor_type`` at every call site.
     """
 
     # Subclasses set this to True when ``wait_for_motion_complete`` actually
     # blocks; callers can use it to skip locking around no-op waits.
     waits_for_motion: bool = False
+
+    # ----- Motor-family description ----------------------------------------
+
+    motor_type: ClassVar[str] = ""
+    """The family name this client drives, e.g. ``"dynamixel"``."""
+
+    factory_default_id: ClassVar[int] = 1
+    """Motor ID a factory-fresh motor of this family answers on."""
+
+    factory_default_baudrate: ClassVar[int] = 0
+    """Baud rate a factory-fresh motor of this family answers at."""
+
+    baud_rate_map: ClassVar[dict] = {}
+    """Baud rate in bps → the register value this family encodes it as."""
+
+    requires_unpowered_hotplug: ClassVar[bool] = False
+    """Whether the bus must be de-powered before a motor is plugged in.
+
+    Families that latch their ID on power-up cannot be hot-plugged onto a live
+    bus; chain assembly power-cycles the adapter between motors when this is set.
+    """
+
+    @classmethod
+    def supported_baudrates(cls) -> list[int]:
+        """Baud rates this family accepts, highest first."""
+        return sorted(cls.baud_rate_map, reverse=True)
+
+    # ----- Provisioning (assigning IDs and baud rates) ----------------------
+    #
+    # Optional: only clients that can re-program motors implement these. They
+    # are what orca_core.maintenance.motor_chain drives during hand assembly.
+
+    def scan_for_motors(self, port: str, id_range: tuple, baud_rates: "list | None" = None) -> list:
+        """Ping ``id_range`` at each of ``baud_rates``.
+
+        Returns:
+            One dict per motor found, with ``id``, ``baud_rate``,
+            ``model_number`` and ``model_name``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot scan for motors")
+
+    def change_motor_id(self, current_id: int, new_id: int) -> bool:
+        """Re-program a motor's ID. Returns True on success."""
+        raise NotImplementedError(f"{type(self).__name__} cannot change motor IDs")
+
+    def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
+        """Re-program a motor's baud rate. Returns True on success."""
+        raise NotImplementedError(f"{type(self).__name__} cannot change motor baud rates")
 
     @property
     @abstractmethod

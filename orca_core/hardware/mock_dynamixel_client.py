@@ -15,6 +15,7 @@ import random
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
+from ..constants import DYNAMIXEL
 from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -83,6 +84,8 @@ class MockDynamixelClient(MotorClient):
 
     NOTE: This only supports Protocol 2.
     """
+
+    motor_type = DYNAMIXEL
 
     # The currently open clients.
     OPEN_CLIENTS = set()
