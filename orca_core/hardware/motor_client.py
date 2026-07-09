@@ -155,6 +155,17 @@ class MotorClient(ABC):
         """
         ...
 
+    @property
+    def last_read_ok(self) -> bool:
+        """Whether the most recent :meth:`read_position_velocity_current`
+        returned fresh data for every motor.
+
+        A failed bus read keeps returning the stale cache, so callers must
+        discard or retry samples taken while this is ``False``. Clients with
+        no failure signal report ``True``; their reads are authoritative.
+        """
+        return True
+
     @abstractmethod
     def read_temperature(self) -> np.ndarray:
         """Reads the current temperature for all motors.

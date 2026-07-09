@@ -230,6 +230,12 @@ class MockDynamixelClient(MotorClient):
 
         return MotorRead(position=pos_array, velocity=vel_array, current=cur_array)
 
+    @property
+    def last_read_ok(self) -> bool:
+        # Delegates to the (never-failing) reader so tests can force a
+        # stale-read condition by flipping the reader's flag.
+        return self._pos_vel_cur_reader.last_read_ok
+
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
         return True
@@ -366,6 +372,8 @@ class DynamixelReader:
         self.motor_ids = motor_ids
         self.address = address
         self.size = size
+        # The mock never fails a read; tests flip this to simulate one.
+        self.last_read_ok = True
         self._initialize_data()
 
         self.operation = self.client.dxl.GroupBulkRead(client.port_handler,

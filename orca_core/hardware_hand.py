@@ -964,8 +964,7 @@ class OrcaHand(BaseHand):
                 # A failed bulk read returns the stale cache; feeding it into
                 # the stability buffers would fake a "motor stopped moving"
                 # hardstop detection. Skip this sample and try again.
-                reader = getattr(self._motor_client, "_pos_vel_cur_reader", None)
-                if reader is not None and not getattr(reader, "last_read_ok", True):
+                if not self._motor_client.last_read_ok:
                     continue
 
                 for motor_id in desired_increment.keys():
@@ -1216,12 +1215,9 @@ class OrcaHand(BaseHand):
         session. Retry while the reader reports the read failed; raise loudly
         rather than proceed on stale cache.
         """
-        reader = getattr(self._motor_client, "_pos_vel_cur_reader", None)
         for _ in range(retries):
             motor_pos = self.get_motor_pos()
-            # Mocks and clients without an SDK reader have no failure signal;
-            # treat their reads as authoritative.
-            if reader is None or getattr(reader, "last_read_ok", True):
+            if self._motor_client.last_read_ok:
                 return motor_pos
             time.sleep(retry_interval)
         raise RuntimeError(
@@ -1282,8 +1278,7 @@ class OrcaHand(BaseHand):
                 current_positions = self.get_motor_pos()
                 # A stale cache read here would command a violent jump toward
                 # its (possibly zero) values; refuse a relative move on it.
-                reader = getattr(self._motor_client, "_pos_vel_cur_reader", None)
-                if reader is not None and not getattr(reader, "last_read_ok", True):
+                if not self._motor_client.last_read_ok:
                     print(
                         "\033[93mWarning: motor position read failed; skipping "
                         "relative position command (stale base).\033[0m"

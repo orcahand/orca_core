@@ -379,6 +379,10 @@ class DynamixelClient(MotorClient):
         pos, vel, cur = self._pos_vel_cur_reader.read()
         return MotorRead(position=pos, velocity=vel, current=cur)
 
+    @property
+    def last_read_ok(self) -> bool:
+        return self._pos_vel_cur_reader.last_read_ok
+
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
         moving_status = self._moving_status_reader.read().astype(np.int8)
