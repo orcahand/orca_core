@@ -10,19 +10,23 @@ from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo, parse_orc
 # ----- identity-line parsing ------------------------------------------------
 
 def test_parse_full_identity_line():
-    info = parse_orca_info(b"ORCA:SENSOR;SIDE=L;HW=2;FW=1;SN=0123456789ABCDEF")
+    info = parse_orca_info(
+        b"ORCA:SENSOR;SIDE=L;HW=2;FW=1;SN=OH2-L-2628-0047;BID=0123456789ABCDEF"
+    )
     assert info == OrcaBoardInfo(
         role="sensor", side="left", hw_version=2, fw_version=1,
-        serial="0123456789ABCDEF",
+        serial="OH2-L-2628-0047", board_id="0123456789ABCDEF",
     )
+    assert info.hand_id == "OH2-L-2628-0047"
 
 
 def test_parse_unprovisioned_line_has_no_side():
-    info = parse_orca_info(b"ORCA:MOTOR;FW=1;SN=AABBCCDD00112233")
+    info = parse_orca_info(b"ORCA:MOTOR;FW=1;BID=AABBCCDD00112233")
     assert info.role == "motor"
     assert info.side is None
     assert info.hw_version is None
-    assert info.serial == "AABBCCDD00112233"
+    assert info.serial is None
+    assert info.hand_id == "AABBCCDD00112233"
 
 
 def test_parse_ignores_unknown_fields_and_junk_values():

@@ -42,9 +42,11 @@ logger = logging.getLogger(__name__)
 class OrcaBoardInfo:
     """Identity an OH board reports for its hand via ``ORCA_INFO?``.
 
-    Boards that answer only the legacy ``ORCA_ID?`` yield a role with every
-    identity field ``None``; hands that report no side are treated as
-    right-handed by the callers that need one.
+    ``serial`` is the hand's assigned serial number and ``board_id`` the
+    board's immutable MCU-derived identifier; :attr:`hand_id` prefers the
+    former. Boards that answer only the legacy ``ORCA_ID?`` yield a role
+    with every identity field ``None``; hands that report no side are
+    treated as right-handed by the callers that need one.
     """
 
     role: str  # "motor" | "sensor"
@@ -52,6 +54,13 @@ class OrcaBoardInfo:
     hw_version: Optional[int] = None
     fw_version: Optional[int] = None
     serial: Optional[str] = None
+    board_id: Optional[str] = None
+
+    @property
+    def hand_id(self) -> Optional[str]:
+        """The hand's unique identifier: its assigned serial when provisioned,
+        else the board ID (which changes if the board is ever replaced)."""
+        return self.serial or self.board_id
 
 
 def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
@@ -84,6 +93,7 @@ def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
         hw_version=_int_or_none("HW"),
         fw_version=_int_or_none("FW"),
         serial=fields.get("SN") or None,
+        board_id=fields.get("BID") or None,
     )
 
 
