@@ -443,6 +443,7 @@ class OrcaHandJointFeedback(OrcaHand):
         self._encoder_client: Optional[JointEncoderClient] = None
         self._controller: Optional[JointController] = None
         self._loop: Optional[JointLoopThread] = None
+        self._loop_skipped_joints: List[str] = []
         self._estop_fallback_logged = False
 
     # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
@@ -466,17 +467,30 @@ class OrcaHandJointFeedback(OrcaHand):
         self._encoder_client.connect()
         self._encoder_client.start_stream()
 
-        if not self.is_calibrated(use_joint_feedback=True):
-            raise JointFeedbackConnectError(
-                "Hand is missing joint-encoder calibration; "
-                "run calibration with use_joint_feedback enabled."
-            )
-
-        motor_ids = self._encoder_motor_ids()
-        if not motor_ids:
+        backed = self._encoder_backed_joints()
+        if not backed:
             raise JointFeedbackConnectError(
                 "No encoder-backed joints configured "
                 "(set joint_encoder_joints in config.yaml)."
+            )
+
+        # Close the loop on the joints whose calibration is complete; the
+        # rest stay on open-loop motor control instead of blocking the whole
+        # feedback tier on one uncalibrated joint.
+        ready = self._loop_ready_joints()
+        if not ready:
+            raise JointFeedbackConnectError(
+                "No encoder-backed joint is fully calibrated (each needs "
+                "motor limits, a joint-to-motor ratio, and a joint-encoder "
+                "calibration anchor); run calibration with "
+                "use_joint_feedback enabled."
+            )
+        self._loop_skipped_joints = [j for j in backed if j not in ready]
+        if self._loop_skipped_joints:
+            print(
+                f"\033[93mWarning: joint(s) {', '.join(self._loop_skipped_joints)} "
+                "are missing motor or encoder calibration — running them "
+                "open-loop (motor control only) until recalibrated.\033[0m"
             )
 
         # Wrap offsets feed the joint→motor mapping the loop runs every
@@ -484,14 +498,16 @@ class OrcaHandJointFeedback(OrcaHand):
         # deterministic.
         self._compute_wrap_offsets_dict()
 
-        self._controller = JointController(num_joints=len(motor_ids))
+        self._controller = JointController(num_joints=len(ready))
         self._controller.set_gains(
             Kp=DEFAULT_KP,
             Ki=DEFAULT_KI,
             correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
             i_clamp_deg=DEFAULT_I_CLAMP_DEG,
         )
-        self._loop = JointLoopThread(self, self._encoder_client, self._controller)
+        self._loop = JointLoopThread(
+            self, self._encoder_client, self._controller, joints=ready
+        )
         self._estop_fallback_logged = False
         self._loop.start()
 
@@ -500,6 +516,37 @@ class OrcaHandJointFeedback(OrcaHand):
     def _encoder_motor_ids(self) -> List[int]:
         joint_to_motor = self.config.joint_to_motor_map
         return [joint_to_motor[j] for j in self._encoder_backed_joints()]
+
+    def _loop_ready_joints(self) -> List[str]:
+        """Encoder-backed joints calibrated well enough to close the loop on:
+        motor limits + nonzero joint-to-motor ratio + an encoder anchor."""
+        encoder_cal = self.calibration.joint_encoder_calibration_dict
+        ratios = self.calibration.joint_to_motor_ratios_dict
+        ready: List[str] = []
+        for joint in self._encoder_backed_joints():
+            if joint not in encoder_cal:
+                continue
+            motor_id = self.config.joint_to_motor_map.get(joint)
+            limits = self.motor_limits_dict.get(motor_id)
+            if not limits or any(limit is None for limit in limits):
+                continue
+            if not ratios.get(motor_id):
+                continue
+            ready.append(joint)
+        return ready
+
+    @property
+    def loop_joint_names(self) -> Optional[List[str]]:
+        """Joints the running loop closes on, or ``None`` when no loop runs.
+        Encoder-backed joints absent from this list are on open-loop motor
+        control (see ``loop_skipped_joints``)."""
+        return list(self._loop.joint_names) if self._loop is not None else None
+
+    @property
+    def loop_skipped_joints(self) -> List[str]:
+        """Encoder-backed joints excluded from the loop at connect because
+        their motor or encoder calibration is incomplete."""
+        return list(self._loop_skipped_joints)
 
     # ----- Lifecycle -------------------------------------------------------
 
@@ -534,7 +581,10 @@ class OrcaHandJointFeedback(OrcaHand):
                 logger.exception("super().disconnect() failed during connect rollback")
             raise
 
-        return True, f"{msg} | Joint feedback loop running on {ports.encoder}"
+        return True, f"{msg} | Joint feedback loop running on {ports.encoder}" + (
+            f" (motor-only: {', '.join(self._loop_skipped_joints)})"
+            if self._loop_skipped_joints else ""
+        )
 
     def disconnect(self) -> tuple[bool, str]:
         self._teardown_joint_feedback()
@@ -636,7 +686,10 @@ class OrcaHandJointFeedback(OrcaHand):
         if not self._loop_engaged():
             return super()._set_joint_positions(joint_pos)
 
-        encoder_joints = set(self._encoder_backed_joints())
+        # Route by the loop's actual joint set, not every encoder-backed
+        # joint: joints skipped at connect (incomplete calibration) must take
+        # the open-loop motor path.
+        encoder_joints = set(self._loop.joint_names)
         loop_targets: Dict[str, float] = {}
         rest: Dict[str, float] = {}
         for joint, value in joint_pos.as_dict().items():
@@ -812,8 +865,12 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
                 logger.exception("motor disconnect failed during connect rollback")
             raise
 
+        loop_note = (
+            f" (motor-only: {', '.join(self._loop_skipped_joints)})"
+            if self._loop_skipped_joints else ""
+        )
         return True, (
-            f"{msg} | Joint feedback loop running on {ports.encoder} "
+            f"{msg} | Joint feedback loop running on {ports.encoder}{loop_note} "
             f"| Tactile on {tactile_where}"
         )
 

@@ -71,12 +71,16 @@ class JointLoopThread:
         joint_encoder_client: Any,
         controller: JointController,
         target_hz: int = DEFAULT_LOOP_HZ,
+        joints: Optional[List[str]] = None,
     ):
         self._hand = orca_hand
         self._encoder_client = joint_encoder_client
         self._controller = controller
         self._target_hz = int(target_hz)
         self._target_period = 1.0 / float(self._target_hz)
+        # Explicit joint set to close the loop on (e.g. only fully-calibrated
+        # joints); None = every encoder-backed joint with an anchor.
+        self._configured_joints = list(joints) if joints is not None else None
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -119,6 +123,12 @@ class JointLoopThread:
         self._last_exception_log_time: float = 0.0
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
+
+    @property
+    def joint_names(self) -> List[str]:
+        """The joints this loop closes on (snapshot order)."""
+        with self._lock:
+            return list(self._joint_names)
 
     def prime_for_step(self) -> None:
         """Snapshot calibration, latch the target to the measured pose for
@@ -341,6 +351,14 @@ class JointLoopThread:
             j for j in JOINT_TO_ENCODER_SLOT
             if j != WRIST and j in joint_to_motor and j in encoder_dict
         ]
+        if self._configured_joints is not None:
+            missing = [j for j in self._configured_joints if j not in joints]
+            if missing:
+                raise RuntimeError(
+                    f"configured loop joints {missing} lack a motor mapping "
+                    "or an encoder anchor"
+                )
+            joints = [j for j in joints if j in self._configured_joints]
         if not joints:
             raise RuntimeError("no encoder-backed joints to control")
         if self._controller.num_joints != len(joints):

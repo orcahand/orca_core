@@ -88,6 +88,45 @@ def test_connect_raises_when_encoder_calibration_missing(joint_feedback_config):
         hand.disconnect()
 
 
+def test_connect_skips_uncalibrated_joints_and_keeps_loop(joint_feedback_config):
+    """One joint with incomplete motor calibration must not block the
+    feedback tier: the loop closes on the calibrated rest, the victim is
+    reported as skipped, and its targets take the open-loop motor path."""
+    import dataclasses as dc
+
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    victim = hand._encoder_backed_joints()[0]
+    victim_motor = hand.config.joint_to_motor_map[victim]
+    hand.calibration = dc.replace(
+        hand.calibration,
+        joint_to_motor_ratios_dict={
+            **hand.calibration.joint_to_motor_ratios_dict, victim_motor: 0.0,
+        },
+        calibrated=False,
+    )
+
+    ok, msg = hand.connect()
+    try:
+        assert ok
+        assert f"motor-only: {victim}" in msg
+        assert hand.loop_skipped_joints == [victim]
+        assert victim not in hand.loop_joint_names
+        assert set(hand.loop_joint_names) == (
+            set(hand._encoder_backed_joints()) - {victim}
+        )
+
+        # The skipped joint routes open-loop; a loop joint still hits the loop.
+        loop_joint = hand.loop_joint_names[0]
+        hand.set_joint_positions(
+            OrcaJointPositions.from_dict({victim: 10.0, loop_joint: 30.0}),
+        )
+        assert victim not in hand._loop._joint_names
+        loop_idx = hand._loop._joint_names.index(loop_joint)
+        assert hand._loop._target_deg[loop_idx] == pytest.approx(30.0)
+    finally:
+        hand.disconnect()
+
+
 def test_set_joint_positions_routes_wrist_and_encoder_joints(joint_feedback_config):
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
