@@ -1,9 +1,12 @@
 [project]
 name = "orca_core"
-version = "0.2.1"
+version = "0.3.1"
 description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
 authors = [
-    {name = "clemens-chr", email = "cchristoph@student.ethz.ch"}
+    {name = "clemens-chr", email = "cchristoph@student.ethz.ch"},
+    {name = "fabricenoelbourquin", email = "fabrice.bourquin@protonmail.ch"},
+    {name = "maximilianeberlein", email = "meberlein@ethz.ch"},
+    {name = "fracapuano", email = "capuano@robots.ox.ac.uk"},
 ]
 license = {text = "MIT"}
 readme = "README.md"
@@ -20,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.3.5,<9.0.0",
+    "httpx>=0.27,<1.0",
 ]
 docs = [
     "mkdocs==1.6.1",
