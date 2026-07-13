@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 
 import numpy as np
 import pytest
@@ -172,8 +173,10 @@ def test_rebase_is_bumpless_after_motors_moved(calibrated_hand):
 
 
 def test_step_once_with_no_reading_writes_nothing(calibrated_hand):
-    loop = _make_loop(calibrated_hand, StaticEncoderSource(reading=None))
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
     loop.prime_for_step()
+    encoder.set_reading(None)
     pos_before = dict(calibrated_hand._motor_client._pos)
     loop.step_once(dt=0.01)
 
@@ -181,6 +184,12 @@ def test_step_once_with_no_reading_writes_nothing(calibrated_hand):
     assert stats["cycles_no_reading"] == 1
     assert stats["cycles_ok"] == 0
     assert calibrated_hand._motor_client._pos == pos_before
+
+
+def test_prime_rejects_missing_encoder_reading(calibrated_hand):
+    loop = _make_loop(calibrated_hand, StaticEncoderSource(reading=None))
+    with pytest.raises(RuntimeError, match="no valid encoder reading"):
+        loop.prime_for_step()
 
 
 def test_tier1_warns_with_rate_limit_but_continues_normal_control(calibrated_hand, caplog):
@@ -329,6 +338,73 @@ def test_pause_writes_holds_motors_but_keeps_measurements_live(calibrated_hand):
     loop.resume_writes()
     loop.step_once(dt=0.01)
     assert motor_snapshot() != before  # commands flow again
+
+
+def test_prime_rejects_failed_motor_read(calibrated_hand):
+    """A motor read the bus never answered must not be anchored into the
+    feed-forward bias — that would command the affected motors toward
+    absolute zero every cycle. The anchor raises instead."""
+    reader = getattr(calibrated_hand._motor_client, "_pos_vel_cur_reader", None)
+    if reader is None:
+        pytest.skip("mock has no SDK reader to simulate a failed read")
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    reader.last_read_ok = False
+    try:
+        with pytest.raises(RuntimeError, match="anchoring the joint loop"):
+            loop.prime_for_step()
+    finally:
+        reader.last_read_ok = True
+
+
+def test_chip_flagged_joint_holds_previous_measurement(calibrated_hand):
+    """A sample the encoder chip flags as invalid (parity fail or angle-error
+    bit) must not feed the PI a phantom angle: the joint holds its previous
+    measured value for the cycle and the occurrence is counted in stats."""
+    joints = calibrated_hand._encoder_backed_joints()
+    encoder = StaticEncoderSource(
+        encoder_reading_from_joint_angles(calibrated_hand, {j: 3.0 for j in joints})
+    )
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0)
+    loop.prime_for_step()
+
+    parity_joint, error_joint = loop._joint_names[0], loop._joint_names[1]
+    new_reading = encoder_reading_from_joint_angles(
+        calibrated_hand, {j: 8.0 for j in joints}
+    )
+    new_reading.parity_ok[loop._slots[0]] = False
+    new_reading.angle_error[loop._slots[1]] = True
+    encoder.set_reading(new_reading)
+    loop.step_once(dt=0.01)
+
+    measured = loop.get_measured_joints()
+    assert measured[parity_joint] == pytest.approx(3.0, abs=0.05)
+    assert measured[error_joint] == pytest.approx(3.0, abs=0.05)
+    for joint in loop._joint_names[2:]:
+        assert measured[joint] == pytest.approx(8.0, abs=0.05)
+    assert loop.get_stats()["joints_flagged_invalid"] == 2
+
+
+def test_start_after_estop_clears_fallback_and_runs(calibrated_hand):
+    """A deliberate ``start()`` after an e-stop must clear ``fallback_active``
+    so the restarted loop actually reads encoders and writes motors."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    loop.prime_for_step()
+    encoder.freshness_ms = WATCHDOG_STOP_LOOP_MS + 100
+    loop.step_once(dt=0.005)
+    assert loop.get_stats()["fallback_active"] is True
+
+    encoder.freshness_ms = 0.0
+    loop.start()
+    try:
+        assert loop.get_stats()["fallback_active"] is False
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and loop.get_stats()["cycles_ok"] == 0:
+            time.sleep(0.01)
+        assert loop.get_stats()["cycles_ok"] > 0
+    finally:
+        loop.stop()
 
 
 def test_offset_read_rejects_failed_bus_read(calibrated_hand):

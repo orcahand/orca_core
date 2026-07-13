@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -113,3 +115,38 @@ def test_step_rejects_wrong_shape():
         controller.step(np.zeros(3), np.zeros(4), dt=0.01)
     with pytest.raises(ValueError, match="measured"):
         controller.step(np.zeros(4), np.zeros(3), dt=0.01)
+
+
+def test_reset_and_set_gains_are_safe_during_concurrent_steps():
+    """``reset()``/``set_gains()`` run from another thread while the loop
+    thread is inside ``step()``; the integrator must stay within its clamp
+    and no cycle may observe half-installed gains."""
+    i_clamp = 0.5
+    controller = _make(Kp=1.0, Ki=10.0, i_clamp_deg=i_clamp)
+    stop = threading.Event()
+    errors: list[Exception] = []
+
+    def stepper():
+        target = np.full(4, 5.0)
+        zeros = np.zeros(4)
+        try:
+            while not stop.is_set():
+                controller.step(target, zeros, dt=0.01)
+        except Exception as exc:  # surfaced in the main thread below
+            errors.append(exc)
+
+    thread = threading.Thread(target=stepper)
+    thread.start()
+    try:
+        for _ in range(300):
+            controller.reset()
+            controller.set_gains(
+                Kp=1.0, Ki=10.0, correction_max_deg=20.0, i_clamp_deg=i_clamp
+            )
+    finally:
+        stop.set()
+        thread.join(timeout=5.0)
+
+    assert not errors
+    assert not thread.is_alive()
+    assert np.all(np.abs(controller.get_state()["ierr_deg"]) <= i_clamp + 1e-9)
