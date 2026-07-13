@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import dataclasses as dc
 import os
-from typing import List
 
 import numpy as np
 import pytest
@@ -23,7 +22,6 @@ from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
 from orca_core import MockOrcaHandFull
 
 from tests._encoder_helpers import make_encoder_frame
-from tests._hand_feedback_helpers import _LinkFramePump
 from tests.conftest import wait_until
 
 
@@ -51,44 +49,20 @@ def full_config(tmp_path):
     return str(path)
 
 
-class _PumpedMockOrcaHandFull(MockOrcaHandFull):
-    """``MockOrcaHandFull`` that feeds AA A9 frames to the encoder link so
-    ``start_stream`` sees a fresh frame within its first-frame timeout."""
-
-    _frame_for_pump: bytes = b""
-
-    def _create_encoder_link(self, port: str):
-        link = super()._create_encoder_link(port)
-        pump = _LinkFramePump(link, type(self)._frame_for_pump)
-        self._pumps.append(pump)
-        pump.start()
-        return link
-
-    def disconnect(self):
-        for pump in self._pumps:
-            pump.stop()
-        self._pumps.clear()
-        return super().disconnect()
-
-
 def make_full_hand(config_path: str) -> MockOrcaHandFull:
-    """Mock full hand wired for a successful shared-link connect: tactile and
-    encoder ports point at the same mock device, so ``resolve_sensing_ports``
-    reports ``shared`` and both clients attach to one link."""
+    """Mock full hand wired for a successful shared-link connect: the mock
+    pins both 'auto' ports to the same in-memory port, so
+    ``resolve_sensing_ports`` reports ``shared`` and both clients attach to
+    one link (fed by the built-in encoder frame pump)."""
     frame = make_encoder_frame(
         raw_counts=np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
     )
 
-    class _Bound(_PumpedMockOrcaHandFull):
-        _frame_for_pump = frame
+    class _Bound(MockOrcaHandFull):
+        def _mock_encoder_frame(self) -> bytes:
+            return frame
 
     hand = _Bound(config_path=config_path)
-    hand._pumps: List[_LinkFramePump] = []
-    hand.config = dc.replace(
-        hand.config,
-        encoder_serial_port="/dev/ttyMOCK",
-        sensor_port="/dev/ttyMOCK",
-    )
 
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
     ratios = {mid: 0.01 for mid in hand.config.motor_ids}

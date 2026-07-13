@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 import numpy as np
 
+from .calibration import JointEncoderCal
 from .control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
     DEFAULT_I_CLAMP_DEG,
@@ -156,12 +158,19 @@ class OrcaHandTouch(OrcaHand):
                 baud = baud_for_port(port)
             try:
                 self._open_tactile_on_port(port, baud)
-                if port != configured:
-                    self.config = dataclasses.replace(self.config, sensor_port=port)
-                return True, f"Sensor connected on {port} @ {baud}"
             except Exception as e:
                 print(f"Sensor connection failed on {port}: {e}")
                 self._teardown_tactile()
+                continue
+            # Opening proves nothing on its own — any serial device accepts a
+            # connection. Require the configuration read to have answered.
+            if self._tactile_client.get_tactile_configuration() is None:
+                print(f"Port {port} opened but the sensor did not respond; trying next candidate")
+                self._teardown_tactile()
+                continue
+            if port != configured:
+                self.config = dataclasses.replace(self.config, sensor_port=port)
+            return True, f"Sensor connected on {port} @ {baud}"
 
         return False, (
             "Sensor connection failed: no usable port (set sensors.port in config.yaml "
@@ -175,6 +184,12 @@ class OrcaHandTouch(OrcaHand):
 
         sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
         if not sensor_ok:
+            # Roll the motor bus back so the caller doesn't inherit a
+            # half-connected hand.
+            try:
+                super().disconnect()
+            except Exception:
+                logger.exception("motor disconnect failed during connect rollback")
             return False, f"{msg} | {sensor_msg}"
         return True, f"{msg} | {sensor_msg}"
 
@@ -187,11 +202,12 @@ class OrcaHandTouch(OrcaHand):
         """
         return self._connect_sensor_with_fallback()
 
-    def disconnect(self) -> None:
+    def disconnect(self) -> tuple[bool, str]:
         # Tear motors down before sensors: motor disable_torque needs the bus
         # responsive, while the tactile teardown only blocks on its own port.
-        super().disconnect()
+        result = super().disconnect()
         self._teardown_tactile()
+        return result
 
     def _require_tactile_client(self) -> TactileClient:
         if self._tactile_client is None:
@@ -427,6 +443,7 @@ class OrcaHandJointFeedback(OrcaHand):
         self._encoder_client: Optional[JointEncoderClient] = None
         self._controller: Optional[JointController] = None
         self._loop: Optional[JointLoopThread] = None
+        self._estop_fallback_logged = False
 
     # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
 
@@ -475,6 +492,7 @@ class OrcaHandJointFeedback(OrcaHand):
             i_clamp_deg=DEFAULT_I_CLAMP_DEG,
         )
         self._loop = JointLoopThread(self, self._encoder_client, self._controller)
+        self._estop_fallback_logged = False
         self._loop.start()
 
     # ----- Internal helpers ------------------------------------------------
@@ -528,7 +546,11 @@ class OrcaHandJointFeedback(OrcaHand):
         are logged (not swallowed) so a stuck teardown still surfaces."""
         if self._loop is not None:
             try:
-                self._loop.stop()
+                if not self._loop.stop():
+                    logger.warning(
+                        "joint loop thread did not stop within its join timeout; "
+                        "it may still be issuing motor writes"
+                    )
             except Exception:
                 logger.exception("failed to stop joint loop thread")
             self._loop = None
@@ -594,8 +616,24 @@ class OrcaHandJointFeedback(OrcaHand):
 
     # ----- Joint position routing ------------------------------------------
 
-    def _set_joint_positions(self, joint_pos) -> bool:
+    def _loop_engaged(self) -> bool:
+        """True while the joint loop is live. After the watchdog e-stop the
+        loop thread no longer writes motors or refreshes measurements, so
+        joint I/O falls back to the inherited open-loop path (logged once)."""
         if self._loop is None:
+            return False
+        if not self._loop.get_stats()["fallback_active"]:
+            return True
+        if not self._estop_fallback_logged:
+            logger.error(
+                "joint loop e-stopped; joint commands and reads fall back to "
+                "the open-loop motor path"
+            )
+            self._estop_fallback_logged = True
+        return False
+
+    def _set_joint_positions(self, joint_pos) -> bool:
+        if not self._loop_engaged():
             return super()._set_joint_positions(joint_pos)
 
         encoder_joints = set(self._encoder_backed_joints())
@@ -614,7 +652,7 @@ class OrcaHandJointFeedback(OrcaHand):
         return True
 
     def _get_joint_positions(self):
-        if self._loop is None:
+        if not self._loop_engaged():
             return super()._get_joint_positions()
 
         # Start from the loop's encoder-measured angles, then patch in the
@@ -790,25 +828,145 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
         return OrcaHand.disconnect(self)
 
 
+class _MockEncoderFramePump:
+    """Daemon thread feeding a fixed AA A9 frame to a mock link so the
+    encoder stream starts and its freshness watchdog stays satisfied."""
+
+    _PERIOD_S = 0.005
+
+    def __init__(self, link, frame: bytes):
+        self._link = link
+        self._frame = frame
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="MockEncoderFramePump", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._PERIOD_S):
+            try:
+                self._link.feed_bytes(self._frame)
+            except Exception:
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+
 class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
-    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor clients (no serial I/O)."""
+    """Drop-in :class:`OrcaHandTouch` with in-memory mock motor + sensor
+    clients: no serial I/O, no port discovery, and register reads served
+    from an in-memory sensor state (all fingers connected).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Mock sensors don't sit on a real bus: 'auto' must not enumerate
+        # or probe real serial ports.
+        replacements = {}
+        if self.config.sensor_port == "auto":
+            replacements["sensor_port"] = "mock"
+        if self.config.sensor_baudrate == "auto":
+            from .hardware.sensing.constants import DEFAULT_SENSOR_BAUDRATE
+
+            replacements["sensor_baudrate"] = DEFAULT_SENSOR_BAUDRATE
+        if replacements:
+            self.config = dataclasses.replace(self.config, **replacements)
 
     def _create_tactile_link(self, port: str, baudrate: int) -> HandSerialLink:
         from .hardware.mock_hand_serial_link import MockHandSerialLink
 
         return MockHandSerialLink(port=port, baudrate=baudrate)
 
+    def _attach_tactile_client(self, link: HandSerialLink) -> None:
+        from .hardware.mock_hand_serial_link import MockHandSerialLink
+        from .hardware.sensing.tactile_mock import TactileMockState, install_tactile_mock
+
+        # Serve register reads from an in-memory sensor state so the client's
+        # configuration read succeeds; a provider a test installed is kept.
+        if isinstance(link, MockHandSerialLink) and link.response_provider is None:
+            install_tactile_mock(
+                link,
+                TactileMockState(
+                    finger_to_sensor_id=dict(self.config.finger_to_sensor_id)
+                ),
+            )
+        super()._attach_tactile_client(link)
+
+    def _connect_sensor_with_fallback(self) -> tuple[bool, str]:
+        # Nothing to discover or fall back to on a mock: open the in-memory
+        # link on the configured (pinned) port directly.
+        port = self.config.sensor_port
+        baudrate = self.config.sensor_baudrate
+        try:
+            self._open_tactile_on_port(port, int(baudrate))
+        except Exception as e:
+            self._teardown_tactile()
+            return False, f"Sensor connection failed on {port}: {e}"
+        return True, f"Sensor connected on {port} @ {baudrate}"
+
 
 class MockOrcaHandJointFeedback(MockMotorResolutionMixin, OrcaHandJointFeedback):
     """Drop-in :class:`OrcaHandJointFeedback` with in-memory mock motor +
-    encoder-link clients (no serial I/O). The encoder client itself is real
-    so the demuxer + AA A9 handler path is exercised in tests.
+    encoder-link clients: no serial I/O and no port discovery. The encoder
+    client itself is real so the demuxer + AA A9 handler path is exercised;
+    a built-in pump keeps the mock link fed with encoder frames (override
+    :meth:`_mock_encoder_frame` to shape the readings).
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._encoder_pump: Optional[_MockEncoderFramePump] = None
+        if self.config.encoder_serial_port == "auto":
+            self.config = dataclasses.replace(
+                self.config, encoder_serial_port="mock"
+            )
+        # Mock encoders have no physical anchor poses: fill in missing
+        # calibration entries so bundled models connect out of the box.
+        encoder_cal = dict(self.calibration.joint_encoder_calibration_dict)
+        missing = [j for j in self._encoder_backed_joints() if j not in encoder_cal]
+        if missing:
+            encoder_cal.update(
+                {j: JointEncoderCal(enc_at_anchor_count=0) for j in missing}
+            )
+            self.calibration = dataclasses.replace(
+                self.calibration, joint_encoder_calibration_dict=encoder_cal
+            )
+
+    def _mock_encoder_frame(self) -> bytes:
+        """One well-formed AA A9 frame (all counts zero) for the pump."""
+        from .hardware.sensing.constants import (
+            AUTO_ENC_NUM_JOINTS,
+            PROTOCOL_HEADER_AUTO_ENC,
+            PROTOCOL_RESERVED,
+        )
+        from .hardware.sensing.framing import calculate_checksum
+
+        payload = bytes(1 + 2 * AUTO_ENC_NUM_JOINTS)
+        body = (
+            PROTOCOL_HEADER_AUTO_ENC
+            + bytes([PROTOCOL_RESERVED])
+            + len(payload).to_bytes(2, "little")
+            + payload
+        )
+        return body + bytes([calculate_checksum(body)])
 
     def _create_encoder_link(self, port: str) -> HandSerialLink:
         from .hardware.mock_hand_serial_link import MockHandSerialLink
 
-        return MockHandSerialLink(port=port, baudrate=self.config.encoder_baudrate)
+        link = MockHandSerialLink(port=port, baudrate=self.config.encoder_baudrate)
+        if self._encoder_pump is not None:
+            self._encoder_pump.stop()
+        self._encoder_pump = _MockEncoderFramePump(link, self._mock_encoder_frame())
+        return link
+
+    def _teardown_joint_feedback(self) -> None:
+        if self._encoder_pump is not None:
+            self._encoder_pump.stop()
+            self._encoder_pump = None
+        super()._teardown_joint_feedback()
 
 
 class MockOrcaHandFull(MockOrcaHandTouch, MockOrcaHandJointFeedback, OrcaHandFull):

@@ -7,6 +7,7 @@ and the wrist through the inherited motor-position path.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 
@@ -132,3 +133,47 @@ def test_get_joint_positions_wrist_comes_from_motor_position(joint_feedback_conf
         assert positions[WRIST] == pytest.approx(expected_wrist, abs=1e-9)
     finally:
         hand.disconnect()
+
+
+def test_estop_falls_back_to_open_loop_joint_io(joint_feedback_config):
+    """After the watchdog e-stop the dead loop must not swallow commands or
+    serve frozen angles: joint I/O reroutes through the inherited open-loop
+    motor path."""
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    hand.connect()
+    try:
+        encoder_joint = hand._encoder_backed_joints()[0]
+        motor_id = hand.config.joint_to_motor_map[encoder_joint]
+
+        hand._loop._trigger_estop("test")
+        wait_until(lambda: not hand._loop._thread.is_alive())
+
+        # Commands reach the motors directly instead of the dead loop.
+        pos_before = hand._motor_client._pos[motor_id]
+        target_before = hand._loop._target_deg.copy()
+        rom_lower = hand.config.joint_roms_dict[encoder_joint][0]
+        hand.set_joint_positions(
+            OrcaJointPositions.from_dict({encoder_joint: rom_lower})
+        )
+        assert hand._motor_client._pos[motor_id] != pos_before
+        assert hand._loop._target_deg == pytest.approx(target_before)
+
+        # Reads come from the motors, not the loop's frozen measurement.
+        hand._motor_client._pos[motor_id] = 0.3
+        expected = hand._motor_to_joint_pos(hand.get_motor_pos())[encoder_joint]
+        got = hand._get_joint_positions().as_dict()[encoder_joint]
+        assert got == pytest.approx(expected, abs=1e-9)
+    finally:
+        hand.disconnect()
+
+
+def test_teardown_warns_when_loop_join_times_out(joint_feedback_config, caplog):
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    hand.connect()
+    orig_stop = hand._loop.stop
+    hand._loop.stop = lambda timeout=1.0: orig_stop(timeout) and False
+
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand_sensing"):
+        hand.disconnect()
+
+    assert any("did not stop" in record.message for record in caplog.records)

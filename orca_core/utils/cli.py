@@ -48,10 +48,8 @@ def shutdown_hand(hand) -> None:
     except Exception:
         pass
     try:
-        result = hand.disconnect()
-        if result is not None:
-            success, message = result
-            print(f"disconnect() -> success={success}, message={message}")
+        success, message = hand.disconnect()
+        print(f"disconnect() -> success={success}, message={message}")
     except Exception as exc:
         print(f"disconnect() failed: {exc}")
 
