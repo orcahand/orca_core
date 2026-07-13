@@ -251,11 +251,11 @@ class DynamixelClient(MotorClient):
                 except Exception:
                     pass  # Not critical if it fails
 
-            # Clear any pre-existing hardware errors before enabling torque.
+            # Clear any pre-existing hardware errors.
             self.check_overload_and_reboot(self.motor_ids)
 
-            # Start with all motors enabled.
-            self.set_torque_enabled(self.motor_ids, True)
+            # Torque is left as-is: connecting must never make the hand
+            # stiffen or move. Callers opt in via enable_torque()/init_joints().
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -655,10 +655,11 @@ class DynamixelClient(MotorClient):
             logging.error(f"Failed to change baud rate: {e}")
             return False
     
-    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252), 
+    def scan_for_motors(self, port: str, id_range: tuple,
                              baud_rates: Optional[list] = None) -> list:
-        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_number', 'model_name'}."""
-        baud_rates = baud_rates or list(BAUD_RATE_MAP.keys())
+        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_name'}."""
+        if baud_rates is None:
+            baud_rates = list(BAUD_RATE_MAP.keys())
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = self.dxl.PortHandler(port)

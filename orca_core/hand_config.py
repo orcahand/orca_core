@@ -19,6 +19,7 @@ from .constants import (
     JOINT_ROM_DICT,
     JOINT_TO_MOTOR_MAP,
     MOTOR_IDS,
+    SUPPORTED_MOTOR_TYPES,
 )
 from .hardware.sensing.constants import (
     VALID_SENSOR_IDS,
@@ -340,6 +341,12 @@ class OrcaHandConfig(BaseHandConfig):
 
         if self.control_mode not in CONTROL_MODES:
             raise HandConfigValidationError("Invalid control mode.")
+
+        if self.motor_type is not None and self.motor_type not in SUPPORTED_MOTOR_TYPES:
+            raise HandConfigValidationError(
+                f"Unknown motor_type: {self.motor_type!r}. "
+                f"Expected one of {SUPPORTED_MOTOR_TYPES} or omit for auto-detection."
+            )
 
         if self.max_current < self.calibration_current:
             raise HandConfigValidationError(

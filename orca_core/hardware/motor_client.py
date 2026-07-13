@@ -83,8 +83,8 @@ class MotorClient(ABC):
         """Ping ``id_range`` at each of ``baud_rates``.
 
         Returns:
-            One dict per motor found, with ``id``, ``baud_rate``,
-            ``model_number`` and ``model_name``.
+            One dict per motor found, with ``id``, ``baud_rate`` and
+            ``model_name``.
         """
         raise NotImplementedError(f"{type(self).__name__} cannot scan for motors")
 

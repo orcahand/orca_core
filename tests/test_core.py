@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from orca_core import OrcaHand, OrcaJointPositions
 from orca_core import MockOrcaHand
+from orca_core.utils import get_model_path
 import pytest
 
 
@@ -72,3 +75,18 @@ def test_fraction_poses_can_be_sequenced_on_mock_hand(initialized_mock_hand):
     actual = hand.get_joint_position().as_dict()
     for joint, expected in hand.config.neutral_position.items():
         assert actual[joint] == pytest.approx(expected)
+
+
+def test_get_model_path_falls_back_across_versions_for_bare_model_name(tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    for version, name in [
+        ("v1", "orcahand-right"),
+        ("v1", "orcahand-left"),
+        ("v2", "orcahand-right"),
+    ]:
+        model_dir = models_dir / version / name
+        model_dir.mkdir(parents=True)
+        (model_dir / "config.yaml").write_text("joint_ids: []\n", encoding="utf-8")
+    monkeypatch.setattr("orca_core.utils.utils._get_models_dir", lambda: str(models_dir))
+
+    assert Path(get_model_path("orcahand-left")) == models_dir / "v1" / "orcahand-left"
