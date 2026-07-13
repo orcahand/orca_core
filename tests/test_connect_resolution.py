@@ -159,6 +159,29 @@ def test_trial_probe_honours_pinned_baudrate(mock_hand, monkeypatch):
     assert set(seen) == {3_000_000}
 
 
+def test_resolve_motor_driver_verifies_pinned_combination(mock_hand, monkeypatch):
+    """Pinned motor_type+baudrate still probe the bus, so a dead bus fails."""
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    mock_hand.config = dataclasses.replace(
+        mock_hand.config, motor_type="dynamixel", baudrate=1_000_000
+    )
+    seen = []
+
+    def fake_probe(port, baudrate, motor_ids, **k):
+        seen.append(baudrate)
+        return False
+
+    monkeypatch.setattr(
+        dynamixel_client.DynamixelClient, "probe", staticmethod(fake_probe)
+    )
+    monkeypatch.setattr(
+        feetech_client.FeetechClient, "probe", staticmethod(fake_probe)
+    )
+    assert not OrcaHand._resolve_motor_driver(mock_hand, "/dev/cu.x")
+    assert seen == [1_000_000]
+
+
 # ----- persistence ---------------------------------------------------------
 
 def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
@@ -223,4 +246,31 @@ def test_non_interactive_connect_skips_port_picker(mock_hand, monkeypatch):
 
     success, msg = OrcaHand.connect(mock_hand, interactive=False)
     assert not success
-    assert "No port selected" in msg
+    assert "no motor responded" in msg
+
+
+def test_failed_connect_restores_config(mock_hand, monkeypatch):
+    """A failed connect() must not leave probed driver values in the config,
+    so the next connect() re-probes and can still persist to yaml."""
+    import orca_core.hardware_hand as hardware_hand
+
+    _clear_driver(mock_hand)
+    original_port = mock_hand.config.port
+
+    def probe_then_fail(self, port, base_config=None):
+        self.config = dataclasses.replace(
+            base_config or self.config,
+            port=port,
+            motor_type="dynamixel",
+            baudrate=1_000_000,
+        )
+        raise ConnectionError("could not open port")
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", probe_then_fail)
+    monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: None)
+
+    success, _ = OrcaHand.connect(mock_hand, interactive=False)
+    assert not success
+    assert mock_hand.config.motor_type is None
+    assert mock_hand.config.baudrate is None
+    assert mock_hand.config.port == original_port

@@ -36,9 +36,9 @@ from .constants import (
     CURRENT_BASED_POSITION,
     CURRENT,
     WRIST,
-    STEPS_TO_NEUTRAL,
+    NUM_STEPS,
     POSITION,
-    STEP_SIZE_NEUTRAL,
+    STEP_SIZE,
 )
 
 from .joint_position import OrcaJointPositions
@@ -143,12 +143,12 @@ class OrcaHand(BaseHand):
         return trial_probe(self.config, port)
 
     def _resolve_motor_driver(self, port: str) -> bool:
-        """Fill in ``motor_type``/``baudrate`` for ``port`` when not pinned in yaml.
+        """Resolve and verify ``motor_type``/``baudrate`` for ``port``.
 
-        Returns False when a probe was needed but no motor family responded.
+        Values pinned in yaml fix that probe axis; with both pinned the probe
+        still verifies the single combination against the bus. Returns False
+        when no motor family responded.
         """
-        if self.config.motor_type is not None and self.config.baudrate is not None:
-            return True
         motor_type, baudrate = self._trial_probe(port)
         if motor_type is None or baudrate is None:
             return False
@@ -217,6 +217,7 @@ class OrcaHand(BaseHand):
 
         except Exception as e:
             self._motor_client = None
+            self.config = existing_config
             print(f"Connection failed on {first_port}: {str(e)}")
 
             chosen_port = auto_detect_port(self.config.motor_type)
@@ -231,9 +232,10 @@ class OrcaHand(BaseHand):
 
                 except Exception:
                     self._motor_client = None
+                    self.config = existing_config
 
             if not interactive:
-                return False, "Connection failed: No port selected"
+                return False, f"Connection failed on {first_port}: {str(e)}"
             print("Please select a port from available devices:")
             chosen_port = get_and_choose_port()
             if chosen_port is None:
@@ -245,6 +247,7 @@ class OrcaHand(BaseHand):
                 return True, f"Connection successful with port {chosen_port}"
             except Exception as e2:
                 self._motor_client = None
+                self.config = existing_config
                 return False, f"Connection failed with selected port: {str(e2)}"
 
     def disconnect(self) -> tuple[bool, str]:
@@ -412,6 +415,23 @@ class OrcaHand(BaseHand):
 
             return motor_current
 
+    def wait_for_motion(self, timeout: float = 5.0) -> None:
+        """Block until all motors have settled at their commanded position.
+
+        No-op for motor types fast enough that callers don't need to wait
+        (e.g., Dynamixel). Feetech polls a per-motor moving flag.
+
+        Args:
+            timeout: Max seconds to wait.
+
+        Raises:
+            MotionTimeoutError: If motors fail to settle within ``timeout``.
+        """
+        if not self._motor_client.waits_for_motion:
+            return
+        with self._motor_lock:
+            self._motor_client.wait_for_motion_complete(timeout=timeout)
+
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
 
@@ -452,16 +472,19 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, positions)
 
-    def init_joints(self, force_calibrate: bool = False):
+    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
         Enables torque, sets the configured control mode and current limit,
-        runs calibration if needed, computes wrap offsets, and moves to the
-        neutral position.
+        runs calibration if needed, computes wrap offsets, and optionally
+        moves to the neutral position.
 
         Args:
-            calibrate: Force a fresh calibration even if the hand is already
-                calibrated (default ``False``).
+            force_calibrate: Force a fresh calibration even if the hand is
+                already calibrated (default ``False``).
+            move_to_neutral: Move to the configured neutral pose at the end
+                of initialization (default ``True``). Set to ``False`` when
+                the caller will immediately command a different pose.
         """
         self.enable_torque()
         self.set_control_mode(self.config.control_mode)
@@ -471,13 +494,15 @@ class OrcaHand(BaseHand):
             self.calibrate()
 
         self._compute_wrap_offsets_dict()
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
-        self.set_joint_positions(
-            OrcaJointPositions.from_dict(self.config.neutral_position),
-            num_steps=STEPS_TO_NEUTRAL
-        )
-        self.set_control_mode(control_mode)
+
+        if move_to_neutral:
+            control_mode = self.config.control_mode
+            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
+            self.set_joint_positions(
+                OrcaJointPositions.from_dict(self.config.neutral_position),
+                num_steps=NUM_STEPS
+            )
+            self.set_control_mode(control_mode)
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -660,7 +685,7 @@ class OrcaHand(BaseHand):
         if result is not None:
             self.calibration = result
 
-    def set_neutral_position(self, num_steps: int = STEPS_TO_NEUTRAL, step_size: float = STEP_SIZE_NEUTRAL):
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
@@ -943,8 +968,8 @@ class OrcaHand(BaseHand):
         Args:
             motor_ids: Motors to jitter. Defaults to all non-wrist motors (or
                 all motors when *include_wrist* is ``True``).
-            amplitude: Peak-to-peak amplitude in degrees (default ``5.0``,
-                max ``10.0``).
+            amplitude: Peak amplitude in degrees; motors swing ±amplitude
+                around their start position (default ``5.0``, max ``10.0``).
             frequency: Oscillation frequency in Hz (default ``10.0``).
             duration: Total jitter duration in seconds (default ``3.0``).
             include_wrist: Include the wrist motor when *motor_ids* is

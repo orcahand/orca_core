@@ -48,8 +48,9 @@ from ..constants import (
     JOINT_TO_MOTOR_RATIOS,
     JOINTS,
     MOTOR_LIMITS_DICT,
+    NUM_STEPS,
     STEP,
-    STEPS_TO_NEUTRAL,
+    STEP_SIZE,
     TINY_SLEEP,
     WRIST,
     WRIST_CALIBRATED,
@@ -500,7 +501,7 @@ def _drive_calibration(
 
         if calibrated_joints:
             hand.set_joint_positions(
-                calibrated_joints, num_steps=25, step_size=0.001
+                calibrated_joints, num_steps=NUM_STEPS, step_size=STEP_SIZE
             )
 
         _emit("step_done", index=step_index, total=len(calibration_sequence))
@@ -524,7 +525,7 @@ def _drive_calibration(
 
     if calibrated_joints:
         hand.set_joint_positions(
-            calibrated_joints, num_steps=STEPS_TO_NEUTRAL, step_size=TINY_SLEEP
+            calibrated_joints, num_steps=NUM_STEPS, step_size=TINY_SLEEP
         )
 
     hand.set_max_current(hand.config.max_current)

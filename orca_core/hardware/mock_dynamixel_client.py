@@ -170,9 +170,9 @@ class MockDynamixelClient(MotorClient):
             logging.info('Succeeded to set baudrate to %d', self.baudrate)
             
         self._connected = True
-        
-        # Start with all motors enabled.
-        self.set_torque_enabled(self.motor_ids, True)
+
+        # Torque is left as-is, mirroring the real clients: connecting must
+        # never make the hand stiffen or move.
 
     def disconnect(self):
         """Disconnects from the Dynamixel device."""

@@ -19,7 +19,6 @@ DYNAMIXEL = "dynamixel"
 FEETECH = "feetech"
 SUPPORTED_MOTOR_TYPES = [DYNAMIXEL, FEETECH]
 
-DEFAULT_MOTOR_BAUDRATE = 1_000_000
 JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 DEFAULT_MODEL_NAME = "orcahand-right"
@@ -43,16 +42,14 @@ KNOWN_VIDS: dict[str, list[int]] = {
 
 # OH board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY lets the host
 # distinguish motor vs sensor. ORCA_INFO_QUERY additionally returns the hand
-# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<hex>"); boards that
-# predate it stay silent. ORCA_SET_QUERY provisions side/hardware version.
+# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<serial>;BID=<hex>");
+# boards that predate it stay silent.
 ORCA_ID_QUERY = b"ORCA_ID?\n"
 ORCA_ID_RESP_MOTOR = b"ORCA:MOTOR\n"
 ORCA_ID_RESP_SENSOR = b"ORCA:SENSOR\n"
 ORCA_INFO_QUERY = b"ORCA_INFO?\n"
 ORCA_INFO_MARKER_MOTOR = b"ORCA:MOTOR;"
 ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
-ORCA_SET_RESP_OK = b"ORCA:OK\n"
-ORCA_SET_RESP_ERR = b"ORCA:ERR\n"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 
@@ -101,10 +98,9 @@ TINY_SLEEP = 5e-2
 
 WRIST_CALIBRATED = "wrist_calibrated"
 CALIBRATED = "calibrated"
-STEPS_TO_NEUTRAL = 25
-STEP_SIZE_NEUTRAL = 0.001
 
-# Defaults for interpolated multi-step motions (BaseHand.set_joint_positions).
+# Defaults for interpolated multi-step motions (set_neutral_position,
+# set_zero_position, and scripts).
 NUM_STEPS = 50
 STEP_SIZE = 0.01
 
