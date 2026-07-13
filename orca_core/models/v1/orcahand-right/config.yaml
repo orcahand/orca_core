@@ -166,12 +166,3 @@ calibration_sequence:
   - step: 28
     joints:
       wrist: extend
-
-# calib_sequence:
-#   - step: 1
-#     joints:
-#       pinky_pip: flex
-#   - step: 2
-#     joints:
-#       pinky_pip: extend
-    
