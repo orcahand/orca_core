@@ -12,8 +12,7 @@ orca_core/
 ├── maintenance/                  # Interaction-free hardware routines (callback-driven)
 │   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
 │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
-│   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
-│   └── provisioning.py              # provision_hand(): store side/hw version on the OH board
+│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
@@ -30,6 +29,7 @@ orca_core/
 │   ├── joint_encoder_client.py       # Joint-angle encoder stream client + anchor sampling
 │   ├── tactile_client.py             # Tactile sensor register client
 │   └── sensing/                      # Wire protocol, framing, and port auto-discovery
+├── kinematics/                    # Rigid transforms, frames, forward kinematics
 ├── utils/                         # Shared utilities
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
@@ -38,7 +38,9 @@ orca_core/
 ├── hand_factory.py                 # load_hand()/detect_hand(): autodetect the hand, pick class + model
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
+├── joint_position.py               # OrcaJointPositions: typed joint-position container
 ├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
+├── version.py                      # LATEST_VERSION: default hand model version
 └── constants.py                    # Control modes, protocol constants
 
 scripts/              # Thin CLI front-ends. argparse + print + input(); no logic.
@@ -157,8 +159,8 @@ uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/confi
 uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
 uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
 
-# Live sensor data view (takes a raw serial port, not config_path)
-uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
+# Live sensor data view (autodetects the port; --port to override, no config_path)
+uv run python scripts/monitor_sensors.py
 ```
 
 ### Configuration

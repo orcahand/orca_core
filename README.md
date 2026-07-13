@@ -42,13 +42,13 @@ To get started with Orca Core, follow these steps:
 
 3. **Check the configuration file**:
 
-    - Review the config file (e.g., `orca_core/models/v2/orcahand_right/config.yaml`) and make sure it matches your hardware setup.
+    - Review the config file (e.g., `orca_core/models/v2/orcahand-right/config.yaml`) and make sure it matches your hardware setup.
 
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml
-    uv run python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
+    uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
+    uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
     ```
 
     Replace the path with your specific hand model folder if needed.
@@ -56,7 +56,7 @@ To get started with Orca Core, follow these steps:
 5. **Move the hand to the neutral position**:
 
     ```sh
-    uv run python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
+    uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
     ```
 
 ---
@@ -91,8 +91,8 @@ However, you can declare them explicitly in `config.yaml`. Useful when:
 
 ```yaml
 # Optional overrides:   auto-detected if omitted
-port: /dev/ttyACM0      # or /'dev/cu.usbmodemXXXX' on macOS
-baudrate: 1000000       # 1M for v2; 3M for v1 
+port: /dev/ttyACM0      # or /dev/cu.usbmodemXXXX on macOS
+baudrate: 1000000       # 1M for v2; 3M for v1
 motor_type: dynamixel   # or 'feetech'
 ```
 
