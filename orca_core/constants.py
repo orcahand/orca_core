@@ -42,7 +42,7 @@ KNOWN_VIDS: dict[str, list[int]] = {
 
 # OH board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY lets the host
 # distinguish motor vs sensor. ORCA_INFO_QUERY additionally returns the hand
-# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<serial>;BID=<hex>");
+# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;CFG=<n>;SN=<serial>;BID=<hex>");
 # boards that predate it stay silent.
 ORCA_ID_QUERY = b"ORCA_ID?\n"
 ORCA_ID_RESP_MOTOR = b"ORCA:MOTOR\n"
@@ -52,6 +52,9 @@ ORCA_INFO_MARKER_MOTOR = b"ORCA:MOTOR;"
 ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
+# ORCA_INFO? is re-sent up to this many times per probe before falling back to
+# the legacy ORCA_ID? query, in case a reply is lost amid the live auto-stream.
+ORCA_INFO_PROBE_ATTEMPTS = 3
 
 """
 Dynamixel specific! TODO(fracapuano): Add feetech control modes too.

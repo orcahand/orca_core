@@ -82,6 +82,15 @@ _MODEL_BY_CAPS = {
     (True, True): "orcahand-full-{side}",
 }
 
+# sensing config -> (tactile, encoders). When a board reports its config it
+# names the capabilities directly, so detection can skip the bus probes.
+_CAPS_BY_CONFIG = {
+    1000: (False, False),
+    1500: (False, True),
+    2000: (True, False),
+    2500: (True, True),
+}
+
 _OH_PROBE_PASSES = 3
 """Passes over the OH-board CDCs (the probe is racy on macOS composite CDC
 devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
@@ -110,12 +119,14 @@ class HandDetection:
 def detect_hand() -> HandDetection:
     """Probe the connected hardware and name the bundled model that matches.
 
-    The hand's side comes from the OH board's identity reply; joint encoders
-    are confirmed by a live encoder stream on the sensing CDC and tactile by
-    a sensor register reply (on the shared CDC or a dedicated adapter). Any
-    question the hardware doesn't answer falls back conservatively: no side
-    means right, no reply means the capability is absent — so with nothing
-    plugged in this returns the plain right-hand model with all ports unset.
+    The hand's side comes from the OH board's identity reply. When that reply
+    also carries a sensing config the capabilities are read straight from it;
+    otherwise joint encoders are confirmed by a live encoder stream on the
+    sensing CDC and tactile by a sensor register reply (on the shared CDC or a
+    dedicated adapter). Any question the hardware doesn't answer falls back
+    conservatively: no side means right, no reply means the capability is
+    absent — so with nothing plugged in this returns the plain right-hand
+    model with all ports unset.
     """
     motor_port: Optional[str] = None
     sensing_port: Optional[str] = None
@@ -138,12 +149,16 @@ def detect_hand() -> HandDetection:
         if motor_port is not None and sensing_port is not None:
             break
 
-    has_encoders = sensing_port is not None and detect_encoder_stream(sensing_port)
-
-    tactile_port = find_tactile_port()
-    has_tactile = tactile_port is not None
-    if not has_tactile and sensing_port is not None:
-        has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
+    config_caps = _CAPS_BY_CONFIG.get(identity.config) if identity is not None else None
+    if config_caps is not None:
+        has_tactile, has_encoders = config_caps
+        tactile_port = find_tactile_port() if has_tactile else None
+    else:
+        has_encoders = sensing_port is not None and detect_encoder_stream(sensing_port)
+        tactile_port = find_tactile_port()
+        has_tactile = tactile_port is not None
+        if not has_tactile and sensing_port is not None:
+            has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
 
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)

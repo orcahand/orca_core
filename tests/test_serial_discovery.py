@@ -25,6 +25,7 @@ from orca_core.hardware.sensing.serial_discovery import (
     discover_sensing_ports,
     find_motor_port,
     find_tactile_port,
+    probe_orca_info,
     resolve_sensing_ports,
 )
 from orca_core.utils.utils import auto_detect_port
@@ -220,6 +221,12 @@ class FakeSerial:
         self._pos += len(chunk)
         return chunk
 
+    def write(self, data: bytes) -> int:
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
     def reset_input_buffer(self) -> None:
         pass
 
@@ -270,6 +277,36 @@ def test_detect_encoder_stream_busy_port_is_false():
     with patch("serial.Serial",
                side_effect=pyserial.SerialException("Could not exclusively lock port")):
         assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+# ----- ORCA_INFO? identity probe (interleaved with the auto-stream) ----------
+
+_INFO_REPLY = (
+    b"ORCA:SENSOR;SIDE=R;HW=2;FW=2;CFG=2500;SN=ser-0929;BID=0123456789ABCDEF\n"
+)
+
+
+def test_probe_orca_info_parses_reply_amid_auto_stream():
+    # The ASCII reply arrives sandwiched between binary encoder frames.
+    stream = _encoder_frame() + _INFO_REPLY + _encoder_frame()
+    with patch("serial.Serial", return_value=FakeSerial(stream)) as ser:
+        info = probe_orca_info(OH_SENSOR_PORT, timeout=0.2)
+    assert info is not None
+    assert (info.role, info.side, info.config) == ("sensor", "right", 2500)
+    assert info.serial == "ser-0929"
+    assert info.board_id == "0123456789ABCDEF"
+    assert ser.call_args.kwargs["exclusive"] is True
+
+
+def test_probe_orca_info_skips_truncated_marker():
+    # A coincidental/garbled marker (a stray '\n' before the BID) must be
+    # skipped in favour of the real, complete reply that follows.
+    stream = b"ORCA:SENSOR;SIDE=R\ngarbage" + _INFO_REPLY
+    with patch("serial.Serial", return_value=FakeSerial(stream)):
+        info = probe_orca_info(OH_SENSOR_PORT, timeout=0.2)
+    assert info is not None
+    assert info.board_id == "0123456789ABCDEF"
+    assert info.config == 2500
 
 
 # ----- FTDI encoder-stream fallback ------------------------------------------

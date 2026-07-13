@@ -23,6 +23,7 @@ from ...constants import (
     ORCA_ID_RESP_SENSOR,
     ORCA_INFO_MARKER_MOTOR,
     ORCA_INFO_MARKER_SENSOR,
+    ORCA_INFO_PROBE_ATTEMPTS,
     ORCA_INFO_QUERY,
 )
 from .constants import (
@@ -53,6 +54,7 @@ class OrcaBoardInfo:
     side: Optional[str] = None  # "left" | "right"
     hw_version: Optional[int] = None
     fw_version: Optional[int] = None
+    config: Optional[int] = None  # sensing config: 1000 | 1500 | 2000 | 2500
     serial: Optional[str] = None
     board_id: Optional[str] = None
 
@@ -92,6 +94,7 @@ def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
         side=side,
         hw_version=_int_or_none("HW"),
         fw_version=_int_or_none("FW"),
+        config=_int_or_none("CFG"),
         serial=fields.get("SN") or None,
         board_id=fields.get("BID") or None,
     )
@@ -107,31 +110,22 @@ def probe_orca_info(
     Sends ``ORCA_INFO?`` and parses the identity line; a board that stays
     silent (pre-identity firmware) is retried with the legacy ``ORCA_ID?``,
     yielding a role-only result. Returns ``None`` when neither answers.
-    Robust against an active auto-stream the same way as the ID probe: the
-    read accumulates until a complete marker...newline span appears.
+    Robust against an active auto-stream: the read accumulates until a
+    complete, valid ``ORCA:<role>;...;BID=...`` line appears, skipping any
+    truncated or coincidental marker, and the query is re-sent a few times
+    before giving up.
     """
     import serial
 
     try:
         with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
-            link.reset_input_buffer()
-            link.write(ORCA_INFO_QUERY)
-            link.flush()
-            deadline = time.monotonic() + timeout
-            buf = bytearray()
-            while time.monotonic() < deadline:
-                chunk = link.read(256)
-                if not chunk:
-                    continue
-                buf.extend(chunk)
-                for marker in (ORCA_INFO_MARKER_MOTOR, ORCA_INFO_MARKER_SENSOR):
-                    start = buf.find(marker)
-                    if start < 0:
-                        continue
-                    end = buf.find(b"\n", start)
-                    if end < 0:
-                        break  # line still incomplete; keep reading
-                    return parse_orca_info(bytes(buf[start:end]))
+            for _ in range(ORCA_INFO_PROBE_ATTEMPTS):
+                link.reset_input_buffer()
+                link.write(ORCA_INFO_QUERY)
+                link.flush()
+                info = _read_orca_info(link, timeout)
+                if info is not None:
+                    return info
     except (OSError, serial.SerialException) as exc:
         logger.debug("ORCA_INFO? probe on %s failed: %s", port, exc)
         return None
@@ -141,6 +135,36 @@ def probe_orca_info(
         return OrcaBoardInfo(role="motor")
     if resp == ORCA_ID_RESP_SENSOR:
         return OrcaBoardInfo(role="sensor")
+    return None
+
+
+def _read_orca_info(link, timeout: float) -> Optional[OrcaBoardInfo]:
+    """Read one complete, valid ``ORCA_INFO?`` reply from ``link`` within
+    ``timeout``. Tolerates interleaved auto-stream bytes by scanning the
+    accumulated buffer for a marker...newline span, and rejects a truncated or
+    coincidental marker (one whose line parses without a board ID), reading on
+    until a valid line arrives or the deadline passes.
+    """
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = link.read(256)
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        for marker in (ORCA_INFO_MARKER_MOTOR, ORCA_INFO_MARKER_SENSOR):
+            search = 0
+            while True:
+                start = buf.find(marker, search)
+                if start < 0:
+                    break
+                end = buf.find(b"\n", start)
+                if end < 0:
+                    break  # line still incomplete; read more
+                info = parse_orca_info(bytes(buf[start:end]))
+                if info is not None and info.board_id is not None:
+                    return info
+                search = end + 1  # truncated/coincidental marker; look past it
     return None
 
 

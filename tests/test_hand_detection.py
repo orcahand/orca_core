@@ -36,6 +36,17 @@ def test_parse_ignores_unknown_fields_and_junk_values():
     assert info.fw_version == 3
 
 
+def test_parse_reads_sensing_config():
+    info = parse_orca_info(
+        b"ORCA:SENSOR;SIDE=R;HW=2;FW=2;CFG=2500;SN=ser-0929;BID=0123456789ABCDEF"
+    )
+    assert info.config == 2500
+    assert info.side == "right"
+    assert info.serial == "ser-0929"
+    # A board that predates the config field leaves it None.
+    assert parse_orca_info(b"ORCA:MOTOR;FW=1;BID=AABBCCDD00112233").config is None
+
+
 @pytest.mark.parametrize("line", [b"", b"garbage", b"ORCA:OTHER;SIDE=L", b"\xaa\xa9\x01"])
 def test_parse_rejects_non_identity_lines(line):
     assert parse_orca_info(line) is None
@@ -97,6 +108,34 @@ def test_sideless_board_defaults_right(monkeypatch):
     d = detect_hand()
     assert d.model_name == "orcahand-joint-right"
     assert d.side == "right"
+
+
+@pytest.mark.parametrize(
+    "config,model,caps",
+    [
+        (1000, "orcahand-right", (False, False)),
+        (1500, "orcahand-joint-right", (False, True)),
+        (2000, "orcahand-touch-right", (True, False)),
+        (2500, "orcahand-full-right", (True, True)),
+    ],
+)
+def test_config_names_the_model_without_bus_probes(monkeypatch, config, model, caps):
+    def _must_not_probe(*a, **k):
+        raise AssertionError("bus probe ran despite a reported config")
+
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={
+            "/dev/cu.m": OrcaBoardInfo(role="motor", side="right", config=config),
+            "/dev/cu.s": OrcaBoardInfo(role="sensor", side="right", config=config),
+        },
+    )
+    monkeypatch.setattr(hand_factory, "detect_encoder_stream", _must_not_probe)
+    monkeypatch.setattr(hand_factory, "_tactile_responds_at", _must_not_probe)
+    d = detect_hand()
+    assert d.model_name == model
+    assert (d.has_tactile, d.has_encoders) == caps
 
 
 def test_detects_legacy_touch_adapter(monkeypatch):
