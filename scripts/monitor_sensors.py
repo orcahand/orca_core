@@ -13,8 +13,8 @@ This is for watching the data. To decide whether the sensors are *healthy*,
 run ``scripts/check_sensors.py`` instead.
 
 Usage:
-    PORT=/dev/cu.usbmodem103 uv run --with pyserial python3 scripts/monitor_sensors.py
-    uv run --with pyserial python3 scripts/monitor_sensors.py --port /dev/cu.usbmodem103
+    uv run python scripts/monitor_sensors.py                # autodetect the port
+    uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
 """
 from __future__ import annotations
 
@@ -32,7 +32,10 @@ from orca_core.hardware.joint_encoder_client import (
     JointEncoderClient,
     EncodersNotAvailableError,
 )
-from orca_core.hardware.sensing.serial_discovery import baud_for_port
+from orca_core.hardware.sensing.serial_discovery import (
+    baud_for_port,
+    discover_sensing_ports,
+)
 from orca_core.hardware.sensing.constants import (
     ENCODER_SLOT_TO_JOINT,
     ENCODER_LSB_DEG,
@@ -54,8 +57,8 @@ MODES = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    p.add_argument("--port", default=os.environ.get("PORT", "/dev/cu.usbmodem103"),
-                   help="Sensor serial port.")
+    p.add_argument("--port", default=os.environ.get("PORT"),
+                   help="Sensor serial port. Default: autodetect the connector board.")
     p.add_argument("--baud", type=int, default=None,
                    help="Link baud. Default: auto-detect from the connected sensor.")
     p.add_argument("--start-mode", choices=list(MODES), default="Resultant",
@@ -223,9 +226,19 @@ class SensorFeedbackUI:
 def main() -> int:
     args = parse_args()
 
-    baud = args.baud if args.baud is not None else baud_for_port(args.port)
-    link = HandSerialLink(port=args.port, baudrate=baud)
-    print(f"connecting: {args.port} @ {baud}")
+    port, baud = args.port, args.baud
+    if port is None:
+        discovered = discover_sensing_ports()
+        port = discovered.encoder or discovered.tactile
+        if port is None:
+            sys.exit("No sensor port found; pass --port.")
+        print(f"autodetected port: {port}")
+        if baud is None and discovered.shared:
+            baud = discovered.tactile_baudrate
+    if baud is None:
+        baud = baud_for_port(port)
+    link = HandSerialLink(port=port, baudrate=baud)
+    print(f"connecting: {port} @ {baud}")
     link.connect()
 
     tactile = TactileClient(link)
