@@ -105,6 +105,8 @@ def on_progress(event: dict) -> None:
         print(f"\n🔍 Scanning for default {color}{event['expected_model']}{RESET} motor...")
     elif name == "motor_found":
         print(f"{GREEN}✓ Found default motor{RESET}")
+    elif name == "wrong_motor_detected":
+        print(f"{RED}❌ {event['error']} — swap it for the correct motor.{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")
@@ -165,12 +167,18 @@ def _loop_until_interrupt(label: str, once) -> int:
     """Repeat a single-pass operation until the operator interrupts.
 
     Each pass power-cycles the bus first for motor families that need it.
+    Polls quietly: the no-motors warning is printed on state change, not
+    once per pass.
     """
     print(f"\n🔍 {label} — press {BOLD}Ctrl+C{RESET} to stop.")
+    warned_empty = False
     try:
         while True:
-            if not once():
+            if once():
+                warned_empty = False
+            elif not warned_empty:
                 print(f"{YELLOW}   No motors found. Check connections.{RESET}")
+                warned_empty = True
             time.sleep(1)
     except KeyboardInterrupt:
         print(f"\n\n{GREEN}Stopped.{RESET}\n")

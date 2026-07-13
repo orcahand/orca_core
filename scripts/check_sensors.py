@@ -21,15 +21,16 @@ For a live visualization of the data rather than a pass/fail verdict, use
 orca_ui: https://github.com/orcahand/orca_ui
 
 Usage:
-    uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch
+    uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
     uv run python scripts/check_sensors.py CONFIG --encoder-duration 20
-    uv run python scripts/check_sensors.py --port /dev/cu.usbmodem103
+    uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+import threading
 import time
 
 import numpy as np
@@ -47,6 +48,7 @@ from orca_core.hardware.sensing.constants import (
     EXPECTED_ENCODER_SLOTS,
     JOINT_TO_ENCODER_SLOT,
     LINK_DEFAULT_BAUDRATE,
+    PROTOCOL_BYTE_AUTO,
     PROTOCOL_BYTE_AUTO_ENC,
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
@@ -144,6 +146,13 @@ def pause(msg):
     input(f">>> {msg} (press Enter) ")
 
 
+def _enter_event():
+    """Return a threading.Event that is set when the user presses Enter."""
+    event = threading.Event()
+    threading.Thread(target=lambda: (input(), event.set()), daemon=True).start()
+    return event
+
+
 def wait_for_frame(getter, timeout=2.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -165,16 +174,22 @@ def _redraw_in_place(prev_lines: int, lines: list[str]) -> int:
     return len(lines)
 
 
-def live_press_resultant(hand, target, fingers, duration_s=1.5, fps=20):
+def live_press_resultant(hand, target, fingers, stop_event=None, duration_s=1.5, fps=20):
     """Live in-place display of resultant |fz| during press of `target`.
     Polls at ~200 Hz for accurate peak tracking; redraws at `fps`.
+    If stop_event is given, runs until the event is set (Enter pressed);
+    otherwise falls back to duration_s.
     Returns dict {finger: peak |fz|} across the full window."""
     peaks = {f: 0.0 for f in fingers}
-    end = time.time() + duration_s
+    if stop_event is None:
+        end = time.time() + duration_s
+        running = lambda: time.time() < end
+    else:
+        running = lambda: not stop_event.is_set()
     interval = 1.0 / fps
     next_render = time.time()
     prev_lines = 0
-    while time.time() < end:
+    while running():
         reading = hand.get_tactile_forces()
         if reading is not None:
             for f in fingers:
@@ -191,18 +206,24 @@ def live_press_resultant(hand, target, fingers, duration_s=1.5, fps=20):
     return peaks
 
 
-def live_press_taxels(hand, target, role, n_taxels, fingers, duration_s=1.5, fps=12):
+def live_press_taxels(hand, target, role, n_taxels, fingers, stop_event=None, duration_s=1.5, fps=12):
     """Live in-place display of taxel ASCII grid + peak during press of
-    `target`. Polls at ~200 Hz, redraws at `fps`. Returns dict
-    {finger: peak |fz| at hottest taxel} across the full window."""
+    `target`. Polls at ~200 Hz, redraws at `fps`.
+    If stop_event is given, runs until the event is set (Enter pressed);
+    otherwise falls back to duration_s.
+    Returns dict {finger: peak |fz| at hottest taxel} across the full window."""
     peaks = {f: 0.0 for f in fingers}
-    end = time.time() + duration_s
+    if stop_event is None:
+        end = time.time() + duration_s
+        running = lambda: time.time() < end
+    else:
+        running = lambda: not stop_event.is_set()
     interval = 1.0 / fps
     next_render = time.time()
     prev_lines = 0
     no_layout = (f"    (no ASCII layout for {role}-{n_taxels}; "
                  f"standard models are thumb-51, finger-87, pinky-51)")
-    while time.time() < end:
+    while running():
         reading = hand.get_tactile_taxels()
         if reading is not None:
             for f in fingers:
@@ -252,6 +273,13 @@ def detect_wiring_mismatch(target_finger, peaks, wiring, threshold=PRESS_THRESHO
     )
 
 
+def tactile_link_stats(hand):
+    """Framing counters from the hand's tactile serial link, or None when the
+    link is not exposed (e.g. a mock without one)."""
+    link = getattr(hand, "_tactile_link", None)
+    return link.get_link_stats() if link is not None else None
+
+
 def phase_enumerate(hand):
     banner("tactile: connect & enumerate")
     cfg = hand.get_tactile_configuration()
@@ -298,21 +326,26 @@ def phase_resultant_press(hand):
         time.sleep(5.0)
         s1 = hand.get_tactile_stats()
         rate = (s1.frames_ok - s0.frames_ok) / 5.0
+        link_stats = tactile_link_stats(hand)
+        bad_lrc = link_stats.frames_bad_lrc[PROTOCOL_BYTE_AUTO] if link_stats else 0
+        resyncs = link_stats.bad_header_resyncs if link_stats else 0
         print(f"  Frame rate: {rate:.0f} fps")
-        print(f"  Stats: ok={s1.frames_ok} bad_lrc={s1.frames_bad_checksum} "
-              f"parse_err={s1.parse_errors} resyncs={s1.resyncs}")
+        print(f"  Stats: ok={s1.frames_ok} bad_lrc={bad_lrc} "
+              f"bad_payload={s1.frames_bad_payload} "
+              f"bad_size={s1.frames_bad_payload_size} resyncs={resyncs}")
 
         if rate < 50:
             return False, f"frame rate {rate:.0f} fps < 50 (stream stalled?)"
-        if s1.frames_bad_checksum or s1.parse_errors or s1.resyncs:
+        if bad_lrc or s1.frames_bad_payload or s1.frames_bad_payload_size:
             return False, "non-zero error counters during idle stream"
 
         wiring = hand.config.finger_to_sensor_id
         peaks_per_press = {}
         warnings = []
         for f in FINGERS:
-            pause(f"press {f.upper()} (vary pressure to watch the live readout)")
-            all_peaks = live_press_resultant(hand, f, FINGERS, duration_s=1.5)
+            print(f"\n  >>> Press {f.upper()} now (vary pressure). Press Enter when done.")
+            stop = _enter_event()
+            all_peaks = live_press_resultant(hand, f, FINGERS, stop_event=stop)
             peaks_per_press[f] = all_peaks[f]
             mismatch = detect_wiring_mismatch(f, all_peaks, wiring)
             if mismatch:
@@ -350,9 +383,10 @@ def phase_taxels_press(hand):
         peaks_per_press = {}
         warnings = []
         for finger in FINGERS:
-            pause(f"press {finger.upper()} (move your finger around to light up different taxels)")
+            print(f"\n  >>> Press {finger.upper()} now (move around to light up taxels). Press Enter when done.")
             num_expected_taxels = hand.get_tactile_configuration().num_taxels[finger]
-            all_peaks = live_press_taxels(hand, finger, FINGER_TO_ROLE[finger], num_expected_taxels, FINGERS, duration_s=2.5)
+            stop = _enter_event()
+            all_peaks = live_press_taxels(hand, finger, FINGER_TO_ROLE[finger], num_expected_taxels, FINGERS, stop_event=stop)
             peaks_per_press[finger] = all_peaks[finger]
             mismatch = detect_wiring_mismatch(finger, all_peaks, wiring)
             if mismatch:
@@ -407,10 +441,12 @@ def phase_zeroing(hand):
 
         time.sleep(0.2)
         forces = hand.get_tactile_forces()
-        max_resting = max(abs(forces[f][2]) for f in FINGERS) if forces else None
+        if forces is None:
+            return False, "no forces frame after zeroing"
+        max_resting = max(abs(forces[f][2]) for f in FINGERS)
         print(f"  Max resting |fz| after zero: {max_resting:.3f} N")
-        if max_resting is None or max_resting > ZERO_TOLERANCE_N:
-            return False, f"resting fz not near zero (max={max_resting})"
+        if max_resting > ZERO_TOLERANCE_N:
+            return False, f"resting fz not near zero (max={max_resting:.3f})"
 
         hand.clear_tactile_zero()
         time.sleep(0.2)

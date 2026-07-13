@@ -159,7 +159,8 @@ def run_jitter(
         hand: A connected :class:`~orca_core.OrcaHand`.
         motor_ids: Motors to jitter. Defaults to all non-wrist motors (or
             all motors when ``include_wrist`` is ``True``).
-        amplitude: Peak-to-peak amplitude in degrees (max ``10.0``).
+        amplitude: Peak amplitude in degrees; motors swing ±amplitude
+            around their start position (max ``10.0``).
         frequency: Oscillation frequency in Hz.
         duration: Total jitter duration in seconds.
         include_wrist: Include the wrist motor when ``motor_ids`` is ``None``.

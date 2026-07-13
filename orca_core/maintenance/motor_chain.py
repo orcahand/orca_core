@@ -33,10 +33,9 @@ from ..utils.utils import auto_detect_port
 
 logger = logging.getLogger(__name__)
 
-# Timings local to chain assembly: how long to wait for a USB device node to
-# come and go, how often to re-scan for a freshly plugged motor, and how long a
-# motor takes to settle after its ID is rewritten.
-DEFAULT_PORT_TIMEOUT_S = 30.0
+# Timings local to chain assembly: how often to poll for a USB device node,
+# how often to re-scan for a freshly plugged motor, and how long a motor takes
+# to settle after its ID is rewritten.
 PORT_POLL_INTERVAL_S = 0.3
 PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
@@ -235,20 +234,21 @@ def wait_for_port(
     port: str,
     *,
     present: bool,
-    timeout: float = DEFAULT_PORT_TIMEOUT_S,
+    timeout: Optional[float] = None,
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
 ) -> None:
     """Block until ``port`` appears (``present=True``) or disappears.
 
-    Raises :class:`MotorChainError` on timeout rather than looping forever, so
-    a front-end can surface a stuck power-cycle instead of hanging.
+    Waits indefinitely by default — the operator may be mid-assembly — and can
+    always be cancelled via ``should_stop``. Pass ``timeout`` to raise
+    :class:`MotorChainError` instead of waiting forever.
     """
     _emit(progress_callback, "waiting_for_port", port=port, present=present)
-    deadline = time.monotonic() + timeout
+    deadline = None if timeout is None else time.monotonic() + timeout
     while os.path.exists(port) != present:
         _check_stop(should_stop)
-        if time.monotonic() > deadline:
+        if deadline is not None and time.monotonic() > deadline:
             raise MotorChainError(
                 f"timed out after {timeout:.0f}s waiting for {port} to "
                 f"{'appear' if present else 'disappear'}"
@@ -386,13 +386,17 @@ def verify_chain(plan: MotorChainPlan, configured_ids: list[int]) -> None:
 
 
 def change_motor_baudrate_only(plan: MotorChainPlan, motor_id: int, current_baud: int,
-                               new_baud: int) -> None:
-    """Change one motor's baud rate, leaving its ID alone."""
+                               new_baud: int) -> bool:
+    """Change one motor's baud rate, leaving its ID alone.
+
+    Returns ``False`` when the motor is already at ``new_baud``.
+    """
     if current_baud == new_baud:
-        return
+        return False
     with _config_session(plan.motor_type, [motor_id], plan.port, current_baud) as client:
         if not client.change_motor_baudrate(motor_id, new_baud):
             raise MotorChainError(f"failed to change baud rate for motor {motor_id}")
+    return True
 
 
 def reset_motor_to_factory(plan: MotorChainPlan, motor_id: int, current_baud: int) -> None:
@@ -462,11 +466,24 @@ def configure_motor_chain(
 
         _emit(progress_callback, "awaiting_motor", target_id=target_id,
               expected_model=expected_model)
+        # A wrong-model motor is an operator mistake, not a fatal state: report
+        # it once and keep polling so they can swap it without losing the run.
+        wrong_model_reported = False
         while True:
             _check_stop(should_stop)
-            motor = find_default_motor(plan, expected_model)
+            try:
+                motor = find_default_motor(plan, expected_model)
+            except MotorChainError as exc:
+                if not wrong_model_reported:
+                    _emit(progress_callback, "wrong_motor_detected",
+                          target_id=target_id, expected_model=expected_model,
+                          error=str(exc))
+                    wrong_model_reported = True
+                time.sleep(poll_interval)
+                continue
             if motor is not None:
                 break
+            wrong_model_reported = False
             time.sleep(poll_interval)
 
         _emit(progress_callback, "motor_found", target_id=target_id, motor=motor)
@@ -494,8 +511,9 @@ def _each_motor_on_bus(
 
     Families needing an unpowered bus are power-cycled first, so this pass acts
     on whatever the operator just plugged in. Motors are scanned at the chain's
-    target baud; each successful action moves the motor off that baud, so a
-    repeated pass naturally picks up only the ones still to do.
+    target baud. An action returning ``False`` had nothing to do; such motors
+    still count as acted on but are not re-announced, so a repeated pass stays
+    quiet about motors already in the requested state.
     """
     _await_motor_connection(plan, connect_message, prompt_callback,
                             progress_callback, should_stop)
@@ -505,9 +523,10 @@ def _each_motor_on_bus(
     for motor in motors:
         _check_stop(should_stop)
         try:
-            action(motor)
+            changed = action(motor)
             acted.append(motor)
-            _emit(progress_callback, "motor_updated", motor=motor)
+            if changed is not False:
+                _emit(progress_callback, "motor_updated", motor=motor)
         except MotorChainError as exc:
             _emit(progress_callback, "motor_update_failed", motor=motor, error=str(exc))
     return acted
