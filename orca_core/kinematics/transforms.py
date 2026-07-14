@@ -57,8 +57,16 @@ class Transform:
         object.__setattr__(self, "matrix", matrix)
 
     @classmethod
+    def _from_trusted(cls, matrix: np.ndarray) -> Transform:
+        """Wrap a freshly built, correctly shaped matrix without re-validating it."""
+        obj = object.__new__(cls)
+        matrix.flags.writeable = False
+        object.__setattr__(obj, "matrix", matrix)
+        return obj
+
+    @classmethod
     def identity(cls) -> Transform:
-        return cls()
+        return cls._from_trusted(np.eye(4))
 
     @classmethod
     def from_xyz_rpy(cls, xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0)) -> Transform:
@@ -66,14 +74,14 @@ class Transform:
         matrix = np.eye(4)
         matrix[:3, :3] = _rotation_from_rpy(*rpy)
         matrix[:3, 3] = xyz
-        return cls(matrix)
+        return cls._from_trusted(matrix)
 
     @classmethod
     def from_rotation_translation(cls, rotation: np.ndarray, translation) -> Transform:
         matrix = np.eye(4)
         matrix[:3, :3] = rotation
         matrix[:3, 3] = translation
-        return cls(matrix)
+        return cls._from_trusted(matrix)
 
     @property
     def rotation(self) -> np.ndarray:
@@ -86,14 +94,14 @@ class Transform:
         return self.matrix[:3, 3]
 
     def __matmul__(self, other: Transform) -> Transform:
-        return Transform(self.matrix @ other.matrix)
+        return Transform._from_trusted(self.matrix @ other.matrix)
 
     def inverse(self) -> Transform:
         rotation_t = self.rotation.T
         matrix = np.eye(4)
         matrix[:3, :3] = rotation_t
         matrix[:3, 3] = -rotation_t @ self.translation
-        return Transform(matrix)
+        return Transform._from_trusted(matrix)
 
     def apply_to_points(self, points: np.ndarray) -> np.ndarray:
         """Transform ``(n, 3)`` (or ``(3,)``) points: rotation + translation."""

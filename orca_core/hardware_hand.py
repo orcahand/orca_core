@@ -1496,6 +1496,11 @@ class OrcaHandTouch(OrcaHand):
 
     def _resolve_joint_pos(self, joint_pos) -> dict:
         if joint_pos is None:
+            if self._motor_client is None:
+                raise RuntimeError(
+                    "joint angles unavailable (motor bus not connected); "
+                    "pass joint_pos explicitly"
+                )
             return dict(self.get_joint_position().data)
         if isinstance(joint_pos, OrcaJointPositions):
             return dict(joint_pos.data)
@@ -1515,9 +1520,11 @@ class OrcaHandTouch(OrcaHand):
         (degrees): pass ``joint_pos`` or the current motor-derived joint
         positions are read from the hand.
         """
-        kin = self.kinematics
         if frame == tactile_frames.SENSOR:
-            return {finger: Transform.identity() for finger in kin.sensor_mounts}
+            from .kinematics import FINGERS
+
+            return {finger: Transform.identity() for finger in FINGERS}
+        kin = self.kinematics
         if frame == tactile_frames.FINGERTIP:
             return kin.sensor_mounts
         if frame in (tactile_frames.PALM, tactile_frames.BASE):
@@ -1545,26 +1552,38 @@ class OrcaHandTouch(OrcaHand):
         yet; fingers whose geometry does not match the streamed taxel count
         are skipped.
         """
+        if frame not in tactile_frames.FRAMES:
+            raise ValueError(
+                f"unknown frame {frame!r}; expected one of {tactile_frames.FRAMES}"
+            )
         reading = self.get_tactile_taxels()
         if reading is None:
             return None
         geometry = self.get_taxel_geometry()
-        transforms = self.get_sensor_transforms(frame, joint_pos)
+        is_sensor_frame = frame == tactile_frames.SENSOR
+        transforms = None if is_sensor_frame else self.get_sensor_transforms(frame, joint_pos)
 
         data: Dict[str, TaxelData] = {}
         for finger in reading.fingers:
-            if finger not in geometry or finger not in transforms:
+            if finger not in geometry:
+                continue
+            if transforms is not None and finger not in transforms:
                 continue
             positions = geometry[finger].positions
             forces = reading.as_array(finger)
             if len(positions) != len(forces):
                 continue
-            transform = transforms[finger]
+            if is_sensor_frame:
+                transformed_positions, transformed_forces = positions, forces
+            else:
+                transform = transforms[finger]
+                transformed_positions = transform.apply_to_points(positions)
+                transformed_forces = transform.apply_to_vectors(forces)
             data[finger] = TaxelData(
                 finger=finger,
                 frame=frame,
-                positions=transform.apply_to_points(positions),
-                forces=transform.apply_to_vectors(forces),
+                positions=transformed_positions,
+                forces=transformed_forces,
                 timestamp=reading.timestamp,
             )
         return data
