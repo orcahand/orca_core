@@ -8,22 +8,22 @@ from orca_core.kinematics import FINGERS, HandKinematics, Transform, frames, rot
 RIGHT = HandKinematics.load("right")
 LEFT = HandKinematics.load("left")
 
-# Golden fingertip positions (base frame, zero pose) computed from the raw v2
-# URDFs with an independent FK implementation (max deviation ~1e-9).
+# Golden fingertip positions (base frame, zero pose): the right chain with the
+# wrist-origin roll removed, and its exact sagittal-plane mirror for the left.
 ZERO_POSE_TIPS_BASE = {
     "right": {
-        "thumb": [-0.045445, 0.09231, -0.091682],
-        "index": [-0.047527, 0.195899, -0.069292],
-        "middle": [-0.015863, 0.208526, -0.07525],
-        "ring": [0.014056, 0.201213, -0.072041],
-        "pinky": [0.042716, 0.177709, -0.065517],
+        "thumb": [-0.045445, 0.144895, -0.075095],
+        "index": [-0.047527, 0.216908, 0.002661],
+        "middle": [-0.015863, 0.230669, 0.005023],
+        "ring": [0.014056, 0.222837, 0.003457],
+        "pinky": [0.042716, 0.199842, -0.004680],
     },
     "left": {
-        "thumb": [0.025475, 0.144874, -0.075099],
-        "index": [0.027517, 0.21691, 0.002662],
-        "middle": [-0.004133, 0.230669, 0.005023],
-        "ring": [-0.034053, 0.222838, 0.003457],
-        "pinky": [-0.062714, 0.199842, -0.004679],
+        "thumb": [0.045445, 0.144895, -0.075095],
+        "index": [0.047527, 0.216908, 0.002661],
+        "middle": [0.015863, 0.230669, 0.005023],
+        "ring": [-0.014056, 0.222837, 0.003457],
+        "pinky": [-0.042716, 0.199842, -0.004680],
     },
 }
 
@@ -38,8 +38,8 @@ BENT_POSE = {
     "thumb_dip": 40.0,
 }
 BENT_POSE_GOLDENS_RIGHT = {
-    ("base", "thumb"): [-0.068198, 0.155653, -0.058498],
-    ("base", "index"): [-0.035444, 0.206012, -0.033167],
+    ("base", "thumb"): [-0.068198, 0.177748, -0.011581],
+    ("base", "index"): [-0.035444, 0.204471, 0.038054],
     ("palm", "thumb"): [-0.058198, 0.052754, 0.06821],
     ("palm", "index"): [-0.025444, 0.02313, 0.11617],
 }
@@ -205,11 +205,37 @@ class TestSensorMounts:
                 sensors[finger].matrix, (tips[finger] @ mounts[finger]).matrix, atol=1e-12
             )
 
-    def test_left_mounts_equal_right(self):
-        # The left fingertip meshes are the same geometry as the right (hand
-        # mirroring happens upstream in the kinematic tree), so the sensor
-        # sits at the identical pose in the distal link frame.
+    def test_left_mounts_mirror_right(self):
+        # The left hand is the exact sagittal (x=0) reflection of the right, so
+        # each sensor mount is the right mount reflected across that plane.
+        reflect = np.diag([-1.0, 1.0, 1.0, 1.0])
         right, left = RIGHT.sensor_mounts, LEFT.sensor_mounts
         assert set(left) == set(right)
         for finger in right:
-            np.testing.assert_allclose(left[finger].matrix, right[finger].matrix)
+            np.testing.assert_allclose(
+                left[finger].matrix, reflect @ right[finger].matrix @ reflect, atol=1e-9
+            )
+
+
+class TestLeftRightMirror:
+    """The left hand is generated as the exact sagittal reflection of the right,
+    so every fingertip and sensor pose must mirror across the x=0 plane."""
+
+    REFLECT = np.diag([-1.0, 1.0, 1.0, 1.0])
+    POSES = [
+        {},
+        {"wrist": -25.0, "index_mcp": 40.0, "thumb_cmc": -15.0, "pinky_abd": 20.0},
+        {"index_abd": -20.0, "ring_abd": 15.0, "middle_mcp": 30.0, "thumb_abd": 25.0},
+    ]
+
+    @pytest.mark.parametrize("pose", POSES)
+    @pytest.mark.parametrize("frame", [frames.PALM, frames.BASE])
+    def test_fingertips_and_sensors_mirror(self, pose, frame):
+        for getter in ("fingertip_poses", "sensor_poses"):
+            right = getattr(RIGHT, getter)(pose, in_frame=frame)
+            left = getattr(LEFT, getter)(pose, in_frame=frame)
+            for finger in right:
+                np.testing.assert_allclose(
+                    left[finger].matrix, self.REFLECT @ right[finger].matrix @ self.REFLECT,
+                    atol=1e-7,
+                )
