@@ -41,10 +41,15 @@ import yaml
 
 from orca_core.kinematics.transforms import Transform
 
-FINGER_AP_PREFIXES = {"I-AP": "index", "P-AP": "pinky"}
 THUMB_CHAIN_JOINTS = ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"]
 FINGER_CHAIN_JOINTS = ["abd", "mcp", "pip"]
 ABD_FINGERS = ("index", "middle", "ring", "pinky")
+
+# orca joint ids per finger, in chain order (root to tip).
+CHAIN_JOINTS = {"thumb": THUMB_CHAIN_JOINTS}
+CHAIN_JOINTS.update(
+    {f: [f"{f}_{j}" for j in FINGER_CHAIN_JOINTS] for f in ABD_FINGERS}
+)
 
 # Minimum |cos| between two finger abduction axes in the palm frame before we
 # trust them to be the same physical axis and resolve a sign from coherence.
@@ -115,52 +120,48 @@ class UrdfModel:
             link = joint["parent"]
         return list(reversed(chain))
 
-    def revolute_children(self, parent: str) -> list[dict]:
-        return [j for j in self.joints.values() if j["parent"] == parent and j["type"] == "revolute"]
-
 
 def identify_chains(model: UrdfModel) -> tuple[dict, str, dict[str, list[dict]]]:
-    """Return (wrist joint, carpals link, {finger: [joint, ...]})."""
-    revolute = [j for j in model.joints.values() if j["type"] == "revolute"]
-    wrist_candidates = [j for j in revolute if "Carpals" in j["child"]]
-    if len(wrist_candidates) != 1:
-        raise ValueError("could not identify the wrist joint")
-    wrist = wrist_candidates[0]
+    """Return (wrist joint, carpals link, {finger: [joint, ...]}).
+
+    v2 URDF joints are named ``{side}_{orca_joint_id}`` (e.g. right_index_mcp),
+    so identification is a name lookup; the chain connectivity is still
+    verified structurally.
+    """
+    by_orca: dict[str, dict] = {}
+    for joint in model.joints.values():
+        if joint["type"] != "revolute":
+            continue
+        side, _, orca_id = joint["name"].partition("_")
+        if side not in ("right", "left") or not orca_id:
+            raise ValueError(
+                f"revolute joint {joint['name']!r} is not named "
+                "{side}_{orca_joint_id}"
+            )
+        if orca_id in by_orca:
+            raise ValueError(f"duplicate joint id {orca_id!r}")
+        by_orca[orca_id] = joint
+
+    expected = {"wrist"} | {jid for chain in CHAIN_JOINTS.values() for jid in chain}
+    if set(by_orca) != expected:
+        raise ValueError(
+            f"unexpected joint set: missing {sorted(expected - set(by_orca))}, "
+            f"extra {sorted(set(by_orca) - expected)}"
+        )
+
+    wrist = by_orca["wrist"]
     carpals = wrist["child"]
-
-    ap_joints = model.revolute_children(carpals)
     fingers: dict[str, list[dict]] = {}
-    middles = []
-    for joint in ap_joints:
-        child = joint["child"]
-        prefix = child.split("_")[0]
-        if prefix.startswith("T-TP"):
-            fingers["thumb"] = [joint]
-        elif prefix.startswith("M-AP"):
-            middles.append(joint)
-        else:
-            for known, finger in FINGER_AP_PREFIXES.items():
-                if prefix.startswith(known):
-                    fingers[finger] = [joint]
-    if len(middles) != 2 or {"index", "pinky", "thumb"} - set(fingers):
-        raise ValueError(f"unexpected finger layout: {sorted(fingers)} + {len(middles)} M-AP chains")
-
-    # Ring sits between middle and pinky: of the two M-AP chains, ring's
-    # abduction origin is the one closer to the pinky's.
-    pinky_origin = np.array(fingers["pinky"][0]["xyz"])
-    distances = [np.linalg.norm(np.array(j["xyz"]) - pinky_origin) for j in middles]
-    ring_joint = middles[int(np.argmin(distances))]
-    middle_joint = middles[1 - int(np.argmin(distances))]
-    fingers["ring"] = [ring_joint]
-    fingers["middle"] = [middle_joint]
-
-    for finger, chain in fingers.items():
-        expected = 4 if finger == "thumb" else 3
-        while len(chain) < expected:
-            nxt = model.revolute_children(chain[-1]["child"])
-            if len(nxt) != 1:
-                raise ValueError(f"{finger}: expected a single child joint after {chain[-1]['name']}")
-            chain.append(nxt[0])
+    for finger, names in CHAIN_JOINTS.items():
+        chain = [by_orca[n] for n in names]
+        if chain[0]["parent"] != carpals:
+            raise ValueError(f"{finger}: {chain[0]['name']} is not rooted at {carpals}")
+        for above, below in zip(chain, chain[1:]):
+            if below["parent"] != above["child"]:
+                raise ValueError(
+                    f"{finger}: chain is not connected at {below['name']}"
+                )
+        fingers[finger] = chain
     return wrist, carpals, fingers
 
 
@@ -299,9 +300,7 @@ def main() -> int:
 
     chains: dict = {"base_chain": base_chain, "fingers": {}}
     for finger in ["thumb", "index", "middle", "ring", "pinky"]:
-        names = (
-            THUMB_CHAIN_JOINTS if finger == "thumb" else [f"{finger}_{j}" for j in FINGER_CHAIN_JOINTS]
-        )
+        names = CHAIN_JOINTS[finger]
         chain = []
         for joint, orca_id in zip(fingers[finger], names, strict=True):
             entry, audits[orca_id] = joint_entry(joint, orca_id, roms.get(orca_id))
