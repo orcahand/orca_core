@@ -58,6 +58,9 @@ from .kinematics import frames as tactile_frames
 
 logger = logging.getLogger(__name__)
 
+# Motor-rad per joint-deg used to synthesise mock motor calibration.
+MOCK_JOINT_TO_MOTOR_RATIO = 0.01
+
 
 class OrcaHandTouch(OrcaHand):
     """ORCA hand with integrated tactile sensing.
@@ -998,16 +1001,49 @@ class MockOrcaHandJointFeedback(MockMotorResolutionMixin, OrcaHandJointFeedback)
             self.config = dataclasses.replace(
                 self.config, encoder_serial_port="mock"
             )
-        # Mock encoders have no physical anchor poses: fill in missing
-        # calibration entries so bundled models connect out of the box.
+        self._install_mock_calibration()
+
+    def _install_mock_calibration(self) -> None:
+        """Fill in whatever calibration the loop needs but a mock can't measure.
+
+        ``calibration.yaml`` is a per-hand artifact that a fresh checkout or a
+        wheel install doesn't carry, and mock motors have no hardstops to sweep
+        or anchor poses to sample. Synthesising the missing entries lets the
+        bundled models connect out of the box; anything already calibrated is
+        left untouched.
+        """
         encoder_cal = dict(self.calibration.joint_encoder_calibration_dict)
-        missing = [j for j in self._encoder_backed_joints() if j not in encoder_cal]
-        if missing:
-            encoder_cal.update(
-                {j: JointEncoderCal(enc_at_anchor_count=0) for j in missing}
-            )
+        motor_limits = dict(self.calibration.motor_limits_dict)
+        ratios = dict(self.calibration.joint_to_motor_ratios_dict)
+        roms = self.config.joint_roms_dict
+        changed = False
+
+        for joint in self._encoder_backed_joints():
+            if joint not in encoder_cal:
+                encoder_cal[joint] = JointEncoderCal(enc_at_anchor_count=0)
+                changed = True
+
+        for joint, motor_id in self.config.joint_to_motor_map.items():
+            rom = roms.get(joint)
+            if rom is None:
+                continue
+            limits = motor_limits.get(motor_id)
+            if not limits or any(limit is None for limit in limits):
+                # Lower limit of 0 matches the mock motors' rest position, so
+                # wrap-offset detection doesn't read them as below-limit.
+                span = abs(float(rom[1]) - float(rom[0])) * MOCK_JOINT_TO_MOTOR_RATIO
+                motor_limits[motor_id] = [0.0, span]
+                changed = True
+            if not ratios.get(motor_id):
+                ratios[motor_id] = MOCK_JOINT_TO_MOTOR_RATIO
+                changed = True
+
+        if changed:
             self.calibration = dataclasses.replace(
-                self.calibration, joint_encoder_calibration_dict=encoder_cal
+                self.calibration,
+                joint_encoder_calibration_dict=encoder_cal,
+                motor_limits_dict=motor_limits,
+                joint_to_motor_ratios_dict=ratios,
             )
 
     def _mock_encoder_frame(self) -> bytes:
