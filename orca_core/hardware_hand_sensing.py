@@ -498,7 +498,7 @@ class OrcaHandJointFeedback(OrcaHand):
         # deterministic.
         self._compute_wrap_offsets_dict()
 
-        self._controller = JointController(num_joints=len(ready))
+        self._controller = JointController(num_joints=len(ready), joint_names=ready)
         self._controller.set_gains(
             Kp=DEFAULT_KP,
             Ki=DEFAULT_KI,
@@ -792,10 +792,10 @@ class OrcaHandJointFeedback(OrcaHand):
         return self._loop.get_correction()
 
     def get_adaptive_bias(self) -> Dict[str, float]:
-        """Per-joint adaptive feed-forward bias in degrees — the persistent
-        trim (slack buildup, calibration offset) the loop has migrated out of
-        the PI integrator. A joint pinned at the clamp (±3° by default) means
-        the joint→motor map is off by more than the adapter can absorb."""
+        """Per-joint slow feed-forward bias in degrees — the persistent trim
+        (slack buildup, calibration offset) the controller has accumulated out
+        of its PI integrator. A joint pinned at the clamp (±3° by default)
+        means the joint→motor map is off by more than the bias can absorb."""
         if self._loop is None:
             raise RuntimeError("joint loop not running; call connect() first")
         return self._loop.get_adaptive_bias()

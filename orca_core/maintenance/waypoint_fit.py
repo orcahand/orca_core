@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Dict, Optional, Protocol, Sequence, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, Protocol, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 
@@ -36,6 +36,8 @@ from ..hardware.sensing.types import EncoderReading
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
+
+ShouldStop = Callable[[], bool]
 
 
 # Fractions are of the joint ROM; the sweep visits them moving away from the
@@ -199,15 +201,16 @@ def run_waypoint_fit_for_step(
     hand: "OrcaHand",
     *,
     step,
-    calibrated_joints: Dict[str, float],
+    completed_joints: Sequence[str],
     motor_limits: Dict[int, list],
     joint_to_motor_ratios: Dict[int, float],
     joint_encoder_calibration: Dict[str, JointEncoderCal],
     joint_encoder_client,
-    should_stop: Optional[callable] = None,
+    should_stop: ShouldStop,
 ) -> None:
-    """Refine the joint→motor map of the joints completed in ``step`` from
-    settled interior waypoints measured by the joint encoders.
+    """Refine the joint→motor map of ``completed_joints`` — the joints whose
+    endpoint calibration landed in ``step`` — from settled interior waypoints
+    measured by the joint encoders.
 
     Commands each completed joint through interior waypoints on its way back
     to neutral, waits for the encoder to settle at each (see
@@ -225,10 +228,11 @@ def run_waypoint_fit_for_step(
     )
 
     encoder_backed = set(hand._encoder_backed_joints())
+    completed = set(completed_joints)
     joints = [
         j
         for j in step[JOINTS]
-        if j in calibrated_joints
+        if j in completed
         and j in encoder_backed
         and j in joint_encoder_calibration
     ]
@@ -256,7 +260,7 @@ def run_waypoint_fit_for_step(
 
     samples: Dict[str, list] = {j: [] for j in joints}
     for pose_idx in range(num_poses):
-        if should_stop is not None and should_stop():
+        if should_stop():
             print(
                 "Calibration stop requested; keeping endpoint calibration "
                 "for this step (waypoint fit skipped)."

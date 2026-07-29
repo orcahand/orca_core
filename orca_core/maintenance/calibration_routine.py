@@ -442,6 +442,11 @@ def _drive_calibration(
 
             hand.enable_torque([motor_id])
 
+        # Joints whose endpoint map became complete in this step, i.e. exactly
+        # the ones the waypoint fit may refine (a joint already folded in an
+        # earlier step must not be folded a second time).
+        completed_this_step: list[str] = []
+
         for joint in step[JOINTS].keys():
             motor_id = hand.config.joint_to_motor_map[joint]
             if (
@@ -464,6 +469,7 @@ def _drive_calibration(
                 ratio=joint_to_motor_ratios[motor_id],
             )
             calibrated_joints[joint] = 0.0
+            completed_this_step.append(joint)
 
         # With the endpoint map for this step's joints fresh, refine it from
         # settled interior waypoints before persisting — the fold happens here
@@ -471,12 +477,12 @@ def _drive_calibration(
         if (
             encoder_pass_active
             and hand.config.calibration_waypoint_fit
-            and calibrated_joints
+            and completed_this_step
         ):
             run_waypoint_fit_for_step(
                 hand,
                 step=step,
-                calibrated_joints=calibrated_joints,
+                completed_joints=completed_this_step,
                 motor_limits=motor_limits,
                 joint_to_motor_ratios=joint_to_motor_ratios,
                 joint_encoder_calibration=joint_encoder_calibration,

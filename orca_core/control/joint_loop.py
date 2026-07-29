@@ -2,16 +2,16 @@
 
 Each cycle reads joint angles from a ``JointEncoderClient``, asks the
 ``JointController`` for a per-joint correction (degrees), maps
-``target + correction`` to motor positions, and writes via
+``target + correction + bias`` to motor positions, and writes via
 ``write_desired_pos``. The motor's internal position PID tracks the motor
 target on the motor encoder; this thread trims the residual offset
 between motor angle and joint angle.
 
-A :class:`BiasAdapter` slowly migrates persistent PI trim into a
-per-joint feed-forward bias (see its module docstring for the gating),
-so slack buildup and calibration offsets stop consuming integrator
-headroom. The learned bias survives ``rebase()`` and is applied even in
-the tier-3 open-loop fallback; a fresh calibration snapshot resets it.
+The controller's slow feed-forward bias (see :class:`JointController`)
+is part of every command, including the open-loop fallback tier where it
+is the only trim that still works, and part of the anchor so a
+``rebase()`` does not lurch by the learned offset. A fresh calibration
+snapshot resets it.
 
 Encoder-freshness watchdog (the motor PID keeps holding the last
 commanded position even without host updates, so the higher tiers do not
@@ -41,7 +41,6 @@ from ..hardware.sensing.constants import (
     JOINT_TO_ENCODER_SLOT,
 )
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
-from .bias_adapter import BiasAdapter
 from .joint_controller import JointController
 from .constants import (
     DEFAULT_LOOP_HZ,
@@ -79,13 +78,10 @@ class JointLoopThread:
         controller: JointController,
         target_hz: int = DEFAULT_LOOP_HZ,
         joints: Optional[List[str]] = None,
-        enable_bias_adaptation: bool = True,
     ):
         self._hand = orca_hand
         self._encoder_client = joint_encoder_client
         self._controller = controller
-        self._enable_bias_adaptation = bool(enable_bias_adaptation)
-        self._bias_adapter: Optional[BiasAdapter] = None
         self._target_hz = int(target_hz)
         self._target_period = 1.0 / float(self._target_hz)
         # Explicit joint set to close the loop on (e.g. only fully-calibrated
@@ -142,8 +138,10 @@ class JointLoopThread:
 
     def prime_for_step(self) -> None:
         """Snapshot calibration, latch the target to the measured pose for
-        bumpless entry, and reset the controller."""
+        bumpless entry, and reset the controller. The learned bias describes
+        the previous calibration, so a fresh snapshot discards it."""
         self._snapshot_calibration()
+        self._controller.reset_bias()
         self._anchor_to_current_pose()
 
     def rebase(self) -> None:
@@ -162,11 +160,10 @@ class JointLoopThread:
             self._latest_measured = measured.copy()
             # Bumpless feed-forward: hold the constant motor↔encoder mapping
             # offset so the loop starts where the motors are, not lurching.
-            # The adaptive bias is part of every command, so it must be part
-            # of the anchor too — otherwise a rebase would lurch by the
-            # learned offset.
+            # The learned bias is part of every command, so it is part of the
+            # anchor too.
             self._motor_bias = motor_now - self._joint_to_motor_pos(
-                measured + self._adaptive_bias_deg()
+                measured + self._controller.bias_deg
             )
         self._controller.reset()
 
@@ -241,10 +238,10 @@ class JointLoopThread:
             motor_bias = self._motor_bias.copy()
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
-            # Open-loop fallback keeps the learned feed-forward bias — that
-            # is precisely the part of the trim that works without feedback.
+            # The learned bias is precisely the part of the trim that works
+            # without feedback, so the open-loop fallback keeps it.
             motor_targets = (
-                self._joint_to_motor_pos(target + self._adaptive_bias_deg())
+                self._joint_to_motor_pos(target + self._controller.bias_deg)
                 + motor_bias
             )
             self._hand.write_motor_pos(self._motor_ids, motor_targets)
@@ -264,22 +261,8 @@ class JointLoopThread:
         measured = self._decode_measured(reading)
 
         correction = self._controller.step(target, measured, dt)
-
-        if self._bias_adapter is not None and freshness_ms <= WATCHDOG_WARN_MS:
-            saturated = (
-                np.abs(correction) >= self._controller.correction_max_deg
-            ) | (
-                np.abs(self._controller.get_state()["ierr_deg"])
-                >= self._controller.i_clamp_deg
-            )
-            transferred = self._bias_adapter.step(
-                target, measured, self._controller.integral_output, saturated, dt
-            )
-            if np.any(transferred != 0.0):
-                self._controller.drain_integral(transferred)
-
         motor_targets = (
-            self._joint_to_motor_pos(target + correction + self._adaptive_bias_deg())
+            self._joint_to_motor_pos(target + correction + self._controller.bias_deg)
             + motor_bias
         )
         self._hand.write_motor_pos(self._motor_ids, motor_targets)
@@ -328,20 +311,11 @@ class JointLoopThread:
         return {name: float(correction[i]) for i, name in enumerate(self._joint_names)}
 
     def get_adaptive_bias(self) -> Dict[str, float]:
-        """Per-joint adaptive feed-forward bias in degrees (zeros when
-        adaptation is disabled)."""
-        bias = self._adaptive_bias_deg()
+        bias = self._controller.bias_deg
         return {name: float(bias[i]) for i, name in enumerate(self._joint_names)}
 
     def reset_adaptive_bias(self) -> None:
-        """Zero the learned feed-forward bias and its gate state."""
-        if self._bias_adapter is not None:
-            self._bias_adapter.reset()
-
-    def _adaptive_bias_deg(self) -> np.ndarray:
-        if self._bias_adapter is None:
-            return np.zeros(len(self._joint_names), dtype=np.float64)
-        return self._bias_adapter.bias_deg
+        self._controller.reset_bias()
 
     def get_stats(self) -> Dict[str, float]:
         return dict(self._stats)
@@ -460,13 +434,6 @@ class JointLoopThread:
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
         self._last_correction = np.zeros(len(joints), dtype=np.float64)
         self._motor_bias = np.zeros(len(joints), dtype=np.float64)
-        # A fresh snapshot may change the joint set, so the learned bias
-        # starts from zero; rebase() does not pass through here and keeps it.
-        self._bias_adapter = (
-            BiasAdapter(len(joints), joint_names=joints)
-            if self._enable_bias_adaptation
-            else None
-        )
 
     def _joint_to_motor_pos(self, joint_command_deg: np.ndarray) -> np.ndarray:
         """Vectorised joint→motor mapping for the snapshotted joint set.
