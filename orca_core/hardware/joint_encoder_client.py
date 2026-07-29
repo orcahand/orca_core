@@ -15,16 +15,19 @@ visible via ``get_latest()``.
 
 All public methods are thread-safe.
 """
-import contextlib
 import dataclasses
 import logging
 import math
 import threading
 import time
 from dataclasses import dataclass
+from typing import Protocol
+
+import numpy as np
 
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.sensing.constants import (
+    ENCODER_COUNTS_PER_REV,
     ENCODER_FIRST_FRAME_TIMEOUT_S,
     PROTOCOL_BYTE_AUTO_ENC,
 )
@@ -36,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 class EncodersNotAvailableError(RuntimeError):
     """Raised when no valid encoder frame arrives within the start-stream timeout."""
+
+
+class JointEncoderCalibrationError(RuntimeError):
+    """Raised when the joint-encoder calibration sweep cannot complete a step."""
+
+
+class _ReadsLatestEncoderFrame(Protocol):
+    def get_latest(self) -> EncoderReading | None: ...
 
 
 @dataclass
@@ -132,27 +143,6 @@ class JointEncoderClient:
             self._latest = None
             self._first_frame_event.clear()
 
-    # ----- Link read pause / resume passthroughs ----------------------------
-
-    def pause_link_reads(self) -> None:
-        """Pause demuxer reads on the underlying link. Use around host
-        operations whose USB CDC traffic is starved by sustained sibling-CDC
-        reads (e.g. per-motor Dynamixel ``write_byte`` ack waits).
-        """
-        self._link.pause_reads()
-
-    def resume_link_reads(self) -> None:
-        """Flush stale link bytes and resume demuxer reads."""
-        self._link.resume_reads()
-
-    @contextlib.contextmanager
-    def paused_link_reads(self):
-        self.pause_link_reads()
-        try:
-            yield
-        finally:
-            self.resume_link_reads()
-
     # ----- Reads ------------------------------------------------------------
 
     def get_latest(self) -> EncoderReading | None:
@@ -190,3 +180,51 @@ class JointEncoderClient:
                 return
             self._latest = reading
             self._first_frame_event.set()
+
+
+# ----- Anchor sampling for the joint-encoder calibration sweep --------------
+
+
+def average_anchor_count(samples: np.ndarray) -> int:
+    """Cosine-mean of 14-bit encoder counts; correct across the 16383→0 wrap."""
+    if samples.size == 0:
+        raise JointEncoderCalibrationError("cannot average empty sample buffer")
+    angles = samples.astype(np.float64) * (2.0 * math.pi / ENCODER_COUNTS_PER_REV)
+    mean_angle = math.atan2(float(np.mean(np.sin(angles))), float(np.mean(np.cos(angles))))
+    if mean_angle < 0:
+        mean_angle += 2.0 * math.pi
+    count = int(round(mean_angle * ENCODER_COUNTS_PER_REV / (2.0 * math.pi)))
+    return count % ENCODER_COUNTS_PER_REV
+
+
+def sample_anchor_count_from_client(
+    client: _ReadsLatestEncoderFrame,
+    slot: int,
+    num_samples: int = 200,
+    sample_period_s: float = 0.002,
+    timeout_s: float = 5.0,
+) -> int:
+    """Cosine-average ``num_samples`` distinct frames for ``slot`` at the
+    current pose.
+    """
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+
+    counts = np.empty(num_samples, dtype=np.uint16)
+    last_ts: float | None = None
+    deadline = time.monotonic() + timeout_s
+    collected = 0
+    while collected < num_samples:
+        reading = client.get_latest()
+        if reading is not None and reading.timestamp != last_ts:
+            counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
+            last_ts = reading.timestamp
+            collected += 1
+            continue
+        if time.monotonic() > deadline:
+            raise JointEncoderCalibrationError(
+                f"timed out waiting for encoder samples on slot {slot} "
+                f"(got {collected}/{num_samples} in {timeout_s}s)"
+            )
+        time.sleep(sample_period_s)
+    return average_anchor_count(counts)

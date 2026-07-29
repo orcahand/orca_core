@@ -44,6 +44,10 @@ class MockHandSerialLink(HandSerialLink):
         round-trip ``send_register_request`` without a real serial peer."""
         self._response_provider = provider
 
+    @property
+    def response_provider(self) -> ResponseProvider | None:
+        return self._response_provider
+
     def serial_writes(self) -> list[bytes]:
         """Snapshot of every payload passed to ``_serial_write``."""
         with self._injected_cv:
@@ -101,7 +105,3 @@ class MockHandSerialLink(HandSerialLink):
             chunk = bytes(self._injected_buffer[:n])
             del self._injected_buffer[:n]
             return chunk
-
-    def _flush_input_buffer(self) -> None:
-        with self._injected_cv:
-            self._injected_buffer.clear()

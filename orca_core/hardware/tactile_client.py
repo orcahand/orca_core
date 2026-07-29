@@ -34,7 +34,10 @@ from orca_core.hardware.sensing.constants import (
     OFFSET_CAPTURE_POLL_S,
     OFFSET_CLEAR_SETTLE_S,
     TACTILE_FIRST_FRAME_TIMEOUT_S,
+    TACTILE_STREAM_REARM_MIN_INTERVAL_S,
+    TACTILE_STREAM_STALE_REARM_S,
 )
+from orca_core.hardware.sensing.taxel_geometry import TaxelGeometry, load_taxel_geometry
 from orca_core.hardware.sensing.types import (
     ResultantForces,
     ResultantReading,
@@ -73,6 +76,7 @@ class TactileStreamStats:
     frames_bad_payload_size: int = 0
     frames_bad_payload: int = 0
     last_error_code: int = 0  # most recent sensor-reported error code (0 = no error)
+    stream_rearms: int = 0  # re-arm attempts after mid-stream silence (device reset)
 
 
 @dataclass
@@ -87,6 +91,7 @@ class TactileSensorConfiguration:
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
     module_indices: dict[str, int] = field(default_factory=dict)  # {finger: module_idx}
     finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
+    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions}
 
     @property
     def active_sensors(self) -> list[str]:
@@ -146,8 +151,13 @@ class TactileClient:
         self._auto_latest = None
         self._auto_latest_taxels = None
         self._auto_latest_ts = None
+        self._auto_started_ts: float | None = None
         self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
+
+        # Stream re-arm state (see _maybe_rearm_stream).
+        self._last_rearm_ts = 0.0
+        self._rearm_thread: threading.Thread | None = None
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
@@ -261,22 +271,54 @@ class TactileClient:
         """Return the cached sensor configuration, or ``None`` if never read."""
         return self._tactile_config
 
+    def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
+        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+
+        Positions are fixed sensor geometry in the sensor frame (meters), read
+        once at connect. Row ``i`` of ``geometry[finger].positions`` aligns
+        with taxel ``i`` in the force stream. Empty until the configuration is
+        read.
+        """
+        if self._tactile_config is None:
+            return {}
+        return dict(self._tactile_config.taxel_geometry)
+
+    @staticmethod
+    def _load_finger_geometry(finger: str, reported_taxels: int | None) -> TaxelGeometry:
+        """Load a finger's static geometry, warning if it disagrees with the sensor."""
+        geometry = load_taxel_geometry(finger)
+        if reported_taxels is not None and geometry.num_taxels != reported_taxels:
+            logger.warning(
+                f"Taxel geometry for {finger} has {geometry.num_taxels} positions but "
+                f"sensor reports {reported_taxels} taxels; positions may be misaligned "
+                f"(wrong sensor model in FINGER_MODELS?)"
+            )
+        return geometry
+
     def _get_configuration(self) -> TactileSensorConfiguration:
         try:
             connected = self.read_connected_sensors()
             num_taxels = self.read_num_taxels()
 
             module_indices = {}
+            taxel_geometry = {}
             for finger in FINGER_NAMES:
                 if connected.get(finger, False):
                     sensor_id = self._finger_to_sensor_id[finger]
                     module_indices[finger] = compute_distal_module_index(sensor_id)
+                    try:
+                        taxel_geometry[finger] = self._load_finger_geometry(
+                            finger, num_taxels.get(finger))
+                    except Exception as e:
+                        logger.warning(
+                            f"Taxel geometry unavailable for {finger}: {e}")
 
             config = TactileSensorConfiguration(
                 connected=connected,
                 num_taxels=num_taxels,
                 module_indices=module_indices,
                 finger_to_sensor_id=dict(self._finger_to_sensor_id),
+                taxel_geometry=taxel_geometry,
             )
 
             logger.info(f"Configuration captured: {config}")
@@ -341,8 +383,10 @@ class TactileClient:
             self._auto_latest = None
             self._auto_latest_taxels = None
             self._auto_latest_ts = None
+            self._auto_started_ts = time.time()
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
+            self._last_rearm_ts = 0.0
 
     def stop_stream(self) -> None:
         """Disable the AA 56 stream on the device and clear the latest cache."""
@@ -369,8 +413,47 @@ class TactileClient:
         if not self._first_frame_event.wait(timeout):
             raise TimeoutError(f"No tactile frame within {timeout}s")
 
+    def _maybe_rearm_stream(self) -> None:
+        """Re-enable the stream if it went silent mid-run (a device reset
+        clears its volatile enable register)."""
+        now = time.time()
+        with self._auto_lock:
+            if not self._auto_running:
+                return
+            last = self._auto_latest_ts or self._auto_started_ts
+            if last is None or now - last < TACTILE_STREAM_STALE_REARM_S:
+                return
+            if now - self._last_rearm_ts < TACTILE_STREAM_REARM_MIN_INTERVAL_S:
+                return
+            if self._rearm_thread is not None and self._rearm_thread.is_alive():
+                return
+            self._last_rearm_ts = now
+            self._auto_stats.stream_rearms += 1
+            stale_s = now - last
+            self._rearm_thread = threading.Thread(
+                target=self._rearm_stream,
+                args=(stale_s, self._auto_mode_resultant, self._auto_mode_taxels),
+                name="TactileStreamRearm",
+                daemon=True,
+            )
+        self._rearm_thread.start()
+
+    def _rearm_stream(self, stale_s: float, resultant: bool, taxels: bool) -> None:
+        """Best-effort; on failure the next stale read past the rate limit retries."""
+        logger.warning(
+            "tactile stream silent for %.1f s while running — re-arming "
+            "(a device reset clears its volatile enable register)",
+            stale_s,
+        )
+        try:
+            self.set_auto_data_type(resultant=resultant, taxels=taxels)
+            self.enable_auto_data_transmission()
+        except Exception as e:
+            logger.warning("tactile stream re-arm failed: %s", e)
+
     def get_latest_forces(self) -> ResultantReading | None:
         """Return the most recent resultant reading, or ``None`` if none yet."""
+        self._maybe_rearm_stream()
         with self._auto_lock:
             if self._auto_latest is None:
                 return None
@@ -378,6 +461,7 @@ class TactileClient:
 
     def get_latest_taxels(self) -> TaxelReading | None:
         """Return the most recent per-taxel reading, or ``None`` if none yet."""
+        self._maybe_rearm_stream()
         with self._auto_lock:
             if self._auto_latest_taxels is None:
                 return None

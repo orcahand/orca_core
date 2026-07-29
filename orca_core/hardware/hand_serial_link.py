@@ -33,8 +33,6 @@ from orca_core.hardware.sensing.constants import (
     LINK_DEMUX_JOIN_TIMEOUT_S,
     LINK_DEMUX_READ_TIMEOUT_S,
     LINK_HANDLER_ERROR_LOG_INTERVAL_S,
-    LINK_PAUSE_SETTLE_S,
-    LINK_PAUSED_POLL_S,
     LINK_RESPONSE_QUEUE_MAXSIZE,
     MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     PROTOCOL_BYTE_RESPONSE,
@@ -82,7 +80,7 @@ class HandSerialLink:
     """Serial-port owner and demultiplexer for AA-XX framed traffic.
 
     Frame layout: ``AA`` header, ``XX`` type byte, payload, LRC checksum
-    (longitudinal redundancy check) on the last byte.
+    on the last byte.
 
     Lifecycle: ``connect()`` opens the port and starts the demuxer thread;
     ``disconnect()`` stops it and closes the port. Handlers may be
@@ -90,9 +88,17 @@ class HandSerialLink:
     registration raises ``RuntimeError``.
     """
 
-    def __init__(self, port: str, baudrate: int = LINK_DEFAULT_BAUDRATE):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = LINK_DEFAULT_BAUDRATE,
+        exclusive: bool = True,
+    ):
         self._port = port
         self._baudrate = baudrate
+        # Exclusive by default: two links reading one serial device steal bytes
+        # from each other and corrupt every frame either of them sees.
+        self._exclusive = exclusive
 
         self._serial: serial.Serial | None = None
         self._connected = False
@@ -110,7 +116,6 @@ class HandSerialLink:
 
         self._stats = LinkStats()
         self._last_handler_error_log: dict[int, float] = {}
-        self._reads_paused = False
 
     # ----- Lifecycle --------------------------------------------------------
 
@@ -224,44 +229,6 @@ class HandSerialLink:
                     pass
                 raise IOError("hand serial link closed")
 
-    # ----- Read pause / resume ---------------------------------------------
-
-    def pause_reads(self) -> None:
-        """Stop demuxer polling so a sibling USB-CDC endpoint (e.g. the
-        Dynamixel bus) isn't starved during ack-blocking writes. Sleeps briefly
-        so the demuxer observes the flag before the caller proceeds."""
-        if self._reads_paused:
-            return
-        self._reads_paused = True
-        time.sleep(LINK_PAUSE_SETTLE_S)
-
-    def resume_reads(self) -> None:
-        """Discard stale buffered bytes, then re-enable demuxer reads.
-
-        The kernel CDC ring buffer can hold several hundred ms of frames
-        while paused; flushing before resuming prevents downstream
-        consumers from churning through stale frames.
-        """
-        if not self._reads_paused:
-            return
-        self._flush_input_buffer()
-        self._reads_paused = False
-
-    def _flush_input_buffer(self) -> None:
-        if self._serial is not None:
-            try:
-                self._serial.reset_input_buffer()
-            except (serial.SerialException, OSError):
-                pass
-
-    @contextlib.contextmanager
-    def paused_reads(self):
-        self.pause_reads()
-        try:
-            yield
-        finally:
-            self.resume_reads()
-
     # ----- Stats ------------------------------------------------------------
 
     def get_link_stats(self) -> LinkStats:
@@ -279,6 +246,7 @@ class HandSerialLink:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=LINK_DEMUX_READ_TIMEOUT_S,
+                exclusive=self._exclusive,
             )
         except (serial.SerialException, OSError) as e:
             raise ConnectionError(f"Failed to open serial port {self._port}: {e}") from e
@@ -311,9 +279,6 @@ class HandSerialLink:
     def _demux_loop(self) -> None:
         try:
             while self._demux_running:
-                if self._reads_paused:
-                    time.sleep(LINK_PAUSED_POLL_S)
-                    continue
                 # Resync: slide one byte at a time until we land on 0xAA.
                 first = self._serial_read(1)
                 if not first:

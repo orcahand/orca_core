@@ -12,9 +12,9 @@ import time
 import numpy as np
 import pytest
 
-from orca_core import calibration_joint_encoder as jec
-from orca_core.calibration_joint_encoder import (
-    JointEncoderCalibrationError,
+from orca_core.maintenance import waypoint_fit as jec
+from orca_core.hardware.joint_encoder_client import JointEncoderCalibrationError
+from orca_core.maintenance.waypoint_fit import (
     fit_linear_joint_map,
     fold_linear_correction,
     wait_for_settled_angles,

@@ -1,6 +1,6 @@
 # Setting Up Config
 
-Learn how to configure your ORCA Hand system settings. The primary configuration for the ORCA Hand is managed through the `config.yaml` file located in the model-specific directory (e.g., `orca_core/models/orcahand_v1_right/config.yaml`).
+Learn how to configure your ORCA Hand system settings. The primary configuration for the ORCA Hand is managed through the `config.yaml` file located in the model-specific directory (e.g., `orca_core/models/v2/orcahand-right/config.yaml`).
 
 This file defines parameters crucial for the hand's operation, including communication settings, motor and joint mappings, movement ranges, and calibration procedures.
 
@@ -14,17 +14,35 @@ This file defines parameters crucial for the hand's operation, including communi
 ### 1. General Settings
 
 ```yaml
-version: 0.2.0
-baudrate: 3000000
-port: /dev/ttyUSB0
-max_current: 400
+port: auto
+version: 0.2.1
+baudrate: 1000000
+max_current: 300
 type: right
 control_mode: current_based_position
 ```
 
 **What should be changed?**
 
-You should change the `port` to match your system (Linux or macOS). Change `type` to right or left depending on the hand assembly you have. `max_current` is set to a value found to be sufficient; you can adjust it depending on the needs of your tasks. The `baudrate` or `control_mode` should not be changed based on the current implementation in the repo. If you decide to change them you have to adapt the code accordingly. 
+Change `type` to right or left depending on the hand assembly. `max_current` is set to a sane default; adjust if your tasks need more or less. `control_mode` should generally stay at `current_based_position`.
+
+#### Driver settings: `port`, `baudrate`, `motor_type`
+
+The bundled configs ship with `port: auto` and a `baudrate` pinned for the hand version (1M for v2, 3M for v1). Anything not pinned is auto-detected at connect time and persisted back to `config.yaml`:
+
+- `port: auto` finds the serial adapter by USB VID, falling back to "the only adapter present" or an interactive picker.
+- A missing `motor_type` is identified by pinging each motor family (Dynamixel vs Feetech) on the bus.
+- A missing `baudrate` is probed from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
+
+Override any of them explicitly if you need to:
+
+```yaml
+port: /dev/cu.usbmodemXXXX  # when multiple adapters are connected
+baudrate: 1000000           # when motors are configured for a non-default rate
+motor_type: feetech         # when probing might misidentify the bus
+```
+
+You won't normally need to — the script will tell you on the command line if a probe failed and asking for an override would help.
 
 ---
 
@@ -120,11 +138,11 @@ You can adjust this section if you want the hand to return to a different defaul
 ### 6. Calibration Parameters
 
 ```yaml
-calib_current: 350
-calib_step_size: 0.1
-calib_step_period: 0.001
-calib_num_stable: 10
-calib_threshold: 0.01
+calibration_current: 350
+calibration_step_size: 0.1
+calibration_step_period: 0.001
+calibration_num_stable: 10
+calibration_threshold: 0.01
 ```
 
 **What should be changed?**
@@ -136,7 +154,7 @@ These parameters should generally not be changed unless you have experience tuni
 ### 7. Calibration Sequence
 
 ```yaml
-calib_sequence:
+calibration_sequence:
     - step: 1
       joints:
         thumb_mcp: flex

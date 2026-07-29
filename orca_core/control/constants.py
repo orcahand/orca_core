@@ -14,7 +14,7 @@ MAX_LOOP_DT_S = 0.050
 # Tier-1: rate-limited warn. Tier-2: freeze the integrator. Tier-3: drop the
 # PI trim and write only the base motor target (open-loop joint control via
 # the motor's internal position PID). Tier-4: stop the loop entirely.
-WATCHDOG_WARN_MS = 10
+WATCHDOG_WARN_MS = 15
 WATCHDOG_HOLD_MS = 50
 WATCHDOG_HOLD_BASE_MS = 200
 WATCHDOG_STOP_LOOP_MS = 1000

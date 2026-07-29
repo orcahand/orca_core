@@ -3,7 +3,7 @@ import shutil
 
 import numpy as np
 import pytest
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -59,6 +59,17 @@ def test_set_max_current_supports_scalar_and_list(mock_hand):
 def test_disconnect_disables_torque(mock_hand):
     mock_hand.disconnect()
     assert all(not enabled for enabled in mock_hand._motor_client._torque_enabled.values())
+
+
+def test_wait_for_motion_is_noop_for_non_waiting_clients(mock_hand):
+    assert not mock_hand._motor_client.waits_for_motion
+    mock_hand.wait_for_motion(timeout=0.1)
+
+
+def test_init_joints_can_skip_neutral_move(calibrated_hand):
+    before = np.copy(calibrated_hand.get_motor_pos())
+    calibrated_hand.init_joints(move_to_neutral=False)
+    np.testing.assert_allclose(calibrated_hand.get_motor_pos(), before)
 
 
 def test_calibrated_joint_command_round_trips_through_motor_mapping(calibrated_hand):

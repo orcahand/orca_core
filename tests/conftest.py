@@ -98,3 +98,65 @@ def encoder_link_and_client():
             client.disconnect()
         finally:
             link.disconnect()
+
+
+# ----- Serial-port and driver-resolution fixtures ---------------------------
+
+@pytest.fixture
+def patch_comports(monkeypatch):
+    """Replace serial.tools.list_ports.comports() with a fixed port list."""
+    def _set(ports):
+        import serial.tools.list_ports as ltp
+        monkeypatch.setattr(ltp, "comports", lambda: ports)
+    return _set
+
+
+@pytest.fixture
+def mock_config_dir(tmp_path):
+    """Writable copy of the packaged v2 config so connect() can persist to it."""
+    import os
+    import shutil
+
+    import orca_core
+
+    model_config = os.path.join(
+        os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
+    )
+    shutil.copy(model_config, tmp_path / "config.yaml")
+    (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
+    return tmp_path
+
+
+@pytest.fixture
+def mock_hand(mock_config_dir):
+    """Bare MockOrcaHand (not connected) for unit-testing helper methods."""
+    from orca_core import MockOrcaHand
+
+    return MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
+
+
+def fake_serial_port(device: str, vid: int):
+    """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(device=device, vid=vid, description="fake")
+
+
+@pytest.fixture
+def connected_mock_hand(mock_config_dir):
+    from orca_core import MockOrcaHand
+
+    hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
+    success, msg = hand.connect()
+    assert success, f"Failed to connect mock hand: {msg}"
+    try:
+        yield hand
+    finally:
+        hand.stop_task()
+        hand.disconnect()
+
+
+@pytest.fixture
+def initialized_mock_hand(connected_mock_hand):
+    connected_mock_hand.init_joints(force_calibrate=True)
+    return connected_mock_hand

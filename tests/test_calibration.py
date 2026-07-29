@@ -15,7 +15,7 @@ from orca_core.hardware.sensing.constants import (
     ENCODER_LSB_DEG,
     JOINT_TO_ENCODER_SLOT,
 )
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml, update_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +36,7 @@ def calib_dir(tmp_path):
 def fast_waypoint_settle(monkeypatch):
     """The default-enabled waypoint-fit pass settles on real-time windows;
     shrink them so mock calibrations (instant motors) stay fast."""
-    from orca_core import calibration_joint_encoder as jec
+    from orca_core.maintenance import waypoint_fit as jec
 
     monkeypatch.setattr(jec, "WAYPOINT_SETTLE_WINDOW_S", 0.02)
     monkeypatch.setattr(jec, "WAYPOINT_SETTLE_POLL_S", 0.0005)
@@ -434,3 +434,66 @@ def test_validator_rejects_wrist_in_joint_encoder_joints(tmp_path):
         MockOrcaHand(config_path=str(config_path))
 
 
+
+
+# ---------------------------------------------------------------------------
+# Progress callback + stop safety
+# ---------------------------------------------------------------------------
+
+
+def test_calibrate_emits_progress_events(calib_dir):
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+
+    events = []
+    hand.calibrate(progress_callback=events.append)
+
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "calibration_started"
+    assert kinds[-1] == "calibration_done"
+    assert kinds.count("step_done") == events[0]["steps"]
+    ratios = {
+        e["joint"]: e["ratio"] for e in events if e["event"] == "joint_calibrated"
+    }
+    assert ratios and all(r != 0.0 for r in ratios.values())
+
+
+def test_calibrate_broken_progress_callback_does_not_abort(calib_dir):
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+
+    def boom(_event):
+        raise RuntimeError("bad callback")
+
+    hand.calibrate(progress_callback=boom)
+    assert hand.calibrated
+
+
+def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
+    """A stop landing inside the hardstop-drive loop must abort BEFORE the
+    encoder pass / limit capture samples — and persists — values taken at an
+    arbitrary pose (the joints are not at their hardstops)."""
+    calib_path = calib_dir / "calibration.yaml"
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+
+    events = []
+    orig_set_motor_pos = hand._set_motor_pos
+
+    def set_and_stop(*args, **kwargs):
+        # First drive-loop write: request a stop mid-drive.
+        hand._task_stop_event.set()
+        return orig_set_motor_pos(*args, **kwargs)
+
+    hand._set_motor_pos = set_and_stop
+    hand.calibrate(progress_callback=events.append)
+
+    kinds = [e["event"] for e in events]
+    assert kinds[-1] == "calibration_aborted"
+    assert "joint_calibrated" not in kinds
+    assert "step_done" not in kinds
+    assert not hand.calibrated
+    if calib_path.exists():
+        calib = read_yaml(str(calib_path)) or {}
+        assert not (calib.get("joint_to_motor_ratios") or {})
+        assert not calib.get("joint_encoder_calibration")

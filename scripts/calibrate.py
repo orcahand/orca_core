@@ -2,7 +2,7 @@ import argparse
 import dataclasses
 import sys
 
-from orca_core import load_hand
+from orca_core import MockOrcaHand, OrcaHand, detect_hand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -61,7 +61,7 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        help="Path to the hand config.yaml file (e.g., /path/to/orcahand_v1/config.yaml)",
+        help="Path to the hand config.yaml file (e.g., orca_core/models/v2/orcahand-right/config.yaml)",
     )
     parser.add_argument(
         "--force-wrist",
@@ -89,6 +89,11 @@ def main():
              '"auto" runs discovery; an explicit path bypasses; "disabled" '
              'forces the open-loop motor-limits pass only.',
     )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use MockOrcaHand instead of a physical hand (dry run, no detection).",
+    )
     args = parser.parse_args()
 
     if args.fingers and args.joints:
@@ -105,11 +110,17 @@ def main():
         joints = args.joints
         print(f"Calibrating joints: {joints}")
 
-    # Calibration drives the motors before the joint encoders are calibrated,
-    # so connect motor-only (engage_feedback=False) even when the config
-    # enables feedback; the encoder stream for the calibration pass is opened
-    # explicitly below.
-    hand = load_hand(config_path=args.config_path, engage_feedback=False)
+    # With no config given, pick the bundled model matching the connected hand.
+    model_name = None
+    if args.config_path is None and not args.mock:
+        detection = detect_hand()
+        model_name = detection.model_name
+        print(f"Detected hand: {detection.model_name}")
+
+    # Connect motor-only, regardless of config: calibration doesn't need
+    # tactile, and a second reader on the encoder port would corrupt the stream.
+    hand_cls = MockOrcaHand if args.mock else OrcaHand
+    hand = hand_cls(config_path=args.config_path, model_name=model_name)
     if args.encoder_port is not None:
         hand.config = dataclasses.replace(
             hand.config, encoder_serial_port=args.encoder_port,
@@ -124,7 +135,7 @@ def main():
 
     link = None
     client = None
-    if hand.config.joint_feedback_enabled:
+    if hand.config.joint_feedback_enabled and not args.mock:
         try:
             link, client = _open_encoder_client(
                 hand.config.encoder_serial_port, hand.config.encoder_baudrate

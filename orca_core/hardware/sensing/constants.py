@@ -19,6 +19,14 @@ DEFAULT_SENSOR_BAUDRATE = 921600
 DEFAULT_ENCODER_BAUDRATE = 2_000_000
 
 # ---------------------------------------------------------------------------
+# Serial discovery
+# ---------------------------------------------------------------------------
+
+FTDI_VID = 0x0403
+"""USB vendor ID for FTDI USB-serial adapters, used as a discovery fallback
+(see serial_discovery.detect_encoder_stream)."""
+
+# ---------------------------------------------------------------------------
 # Client configuration defaults
 # ---------------------------------------------------------------------------
 
@@ -31,6 +39,15 @@ DEFAULT_FINGER_TO_SENSOR_ID = {
 # Default taxel counts per finger (must match sensor model configs)
 DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
+}
+
+# Sensor model (taxel-geometry YAML under sensing/models/) per finger.
+FINGER_MODELS = {
+    "thumb": "touch-sensor-thumb",
+    "index": "touch-sensor-finger",
+    "middle": "touch-sensor-finger",
+    "ring": "touch-sensor-finger",
+    "pinky": "touch-sensor-pinky",
 }
 
 # ---------------------------------------------------------------------------
@@ -180,10 +197,9 @@ JOINT_ENCODER_POLARITY = {
     "wrist": 1,
 }
 
-# Slots the production hand currently ships with sensors wired. The wrist
-# (slot 16) is reserved in the wire format but not yet physically present;
-# remove it from this set once wrist hardware lands.
-EXPECTED_ENCODER_SLOTS = frozenset(range(16))
+# Slots the production hand ships with encoders wired (all 17, wrist included).
+# Diagnostics treat a stuck slot outside this set as reserved rather than faulty.
+EXPECTED_ENCODER_SLOTS = frozenset(range(17))
 
 # ---------------------------------------------------------------------------
 # Hand serial link
@@ -211,12 +227,6 @@ pure and the register writes are idempotent, so re-sending is safe."""
 LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 """How long ``disconnect`` waits for the demuxer thread to exit."""
 
-LINK_PAUSE_SETTLE_S = 0.05
-"""Pause grace period that lets the demuxer observe the paused flag and stop reading."""
-
-LINK_PAUSED_POLL_S = 0.01
-"""Idle poll interval the demuxer loops on while reads are paused."""
-
 ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
 """How long ``JointEncoderClient.start_stream`` waits for the first valid
 AA A9 frame before raising ``EncodersNotAvailableError``."""
@@ -234,3 +244,11 @@ OFFSET_CAPTURE_POLL_S = 0.002
 
 TACTILE_FIRST_FRAME_TIMEOUT_S = 2.0
 """Default wait for the first stored tactile frame in ``wait_for_first_frame``."""
+
+TACTILE_STREAM_STALE_REARM_S = 2.0
+"""Mid-stream silence (seconds) after which a read triggers a stream re-arm.
+"""
+
+TACTILE_STREAM_REARM_MIN_INTERVAL_S = 5.0
+"""Minimum spacing between re-arm attempts, so a genuinely dead device can't
+cause a register-write retry storm from a fast reader loop."""
