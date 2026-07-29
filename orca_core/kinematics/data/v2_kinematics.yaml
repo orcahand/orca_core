@@ -1,0 +1,250 @@
+# Kinematic constants for the v2 ORCA hand, used by orca_core.kinematics.
+#
+# right: extracted from the orcahand_description v2 right URDF with
+#   tools/extract_urdf_kinematics.py; the wrist origin carries no roll, matching
+#   the MuJoCo model.
+# left: the exact sagittal-plane (x=0) reflection of the right, so the two hands
+#   are mirror-identical by construction rather than modelled separately.
+#
+# chains: per-joint origins and axes (xyz meters, extrinsic-XYZ rpy radians).
+#   sign relates an orca_core joint angle to the rotation direction about axis.
+#   Positive abduction rotates every finger toward the pinky.
+# sensor_mounts: fixed pose of each tactile-sensor frame in its distal link
+#   frame, reflected between hands along with the chain.
+version: 2
+right:
+  chains:
+    base_chain:
+    - fixed: true
+      xyz: [-0.01, 0.0523, 0.0]
+      rpy: [-1.570796327, 1.570796327, 0.0]
+    - joint: wrist
+      xyz: [0.0, 0.0, 0.04]
+      rpy: [0.0, 0.0, -1.570796327]
+      axis: [-1.0, 0.0, 0.0]
+      sign: 1
+    fingers:
+      thumb:
+      - joint: thumb_cmc
+        xyz: [-0.028398719, 0.010997181, 0.030589533]
+        rpy: [0.66149514, 0.386056856, -1.432867705]
+        axis: [0.0, 0.0, -1.0]
+        sign: 1
+      - joint: thumb_abd
+        xyz: [-0.008, 0.0, -0.00385]
+        rpy: [-1.221730476, 0.0, 0.0]
+        axis: [0.0, 0.342020143, 0.939692621]
+        sign: 1
+      - joint: thumb_mcp
+        xyz: [-0.028, 0.0, 0.0]
+        rpy: [-3.141592654, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      - joint: thumb_dip
+        xyz: [0.001, 0.0, 0.032]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      index:
+      - joint: index_abd
+        xyz: [-0.027240979, -0.002206967, 0.069406803]
+        rpy: [1.653856814, 1.387349649, -0.004274219]
+        axis: [0.0, 0.0, 1.0]
+        sign: -1
+      - joint: index_mcp
+        xyz: [-0.019150968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      - joint: index_pip
+        xyz: [0.0015, 0.0, 0.037]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      middle:
+      - joint: middle_abd
+        xyz: [-0.005706334, -0.004023404, 0.078501893]
+        rpy: [1.570796327, 1.568178333, 0.0]
+        axis: [0.0, 0.0, 1.0]
+        sign: -1
+      - joint: middle_mcp
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      - joint: middle_pip
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      ring:
+      - joint: ring_abd
+        xyz: [0.015307722, -0.003218365, 0.071304797]
+        rpy: [-1.570796327, 1.425061334, -3.054326191]
+        axis: [0.0, 0.0, 1.0]
+        sign: -1
+      - joint: ring_mcp
+        xyz: [-0.019866968, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      - joint: ring_pip
+        xyz: [0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      pinky:
+      - joint: pinky_abd
+        xyz: [0.035641716, 0.000689159, 0.062054242]
+        rpy: [-1.529473574, 1.202862211, -2.911989536]
+        axis: [0.0, 0.0, 1.0]
+        sign: -1
+      - joint: pinky_mcp
+        xyz: [-0.01775, 0.0, -0.001]
+        rpy: [0.0, -1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+      - joint: pinky_pip
+        xyz: [0.001, 0.0, 0.031]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: 1
+  sensor_mounts:
+    thumb:
+      xyz: [0.001872786, 0.0, 0.012437839]
+      rpy: [1.658019819, 0.0, -1.570796327]
+      fit: thumb
+    index:
+      xyz: [0.005230764, 0.0, 0.017874796]
+      rpy: [1.920376767, 0.0, -1.570796327]
+      fit: index
+    middle:
+      xyz: [0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, -1.570796327]
+      fit: middle
+    ring:
+      xyz: [0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, -1.570796327]
+      fit: middle
+    pinky:
+      xyz: [-0.000216892, 0.0, 0.021992313]
+      rpy: [2.190846631, 0.0, -1.570796327]
+      fit: pinky
+left:
+  chains:
+    base_chain:
+    - fixed: true
+      xyz: [0.01, 0.0523, 0.0]
+      rpy: [0.0, -1.570796327, -1.570796327]
+    - joint: wrist
+      xyz: [0.0, 0.0, 0.04]
+      rpy: [0.0, 0.0, 1.570796327]
+      axis: [1.0, 0.0, 0.0]
+      sign: -1
+    fingers:
+      thumb:
+      - joint: thumb_cmc
+        xyz: [0.028398719, 0.010997181, 0.030589533]
+        rpy: [0.66149514, -0.386056856, 1.432867705]
+        axis: [0.0, 0.0, -1.0]
+        sign: -1
+      - joint: thumb_abd
+        xyz: [0.008, 0.0, -0.00385]
+        rpy: [-1.221730476, 0.0, 0.0]
+        axis: [0.0, 0.342020143, 0.939692621]
+        sign: -1
+      - joint: thumb_mcp
+        xyz: [0.028, 0.0, 0.0]
+        rpy: [0.0, -1.570796327, 3.141592653]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      - joint: thumb_dip
+        xyz: [-0.001, 0.0, 0.032]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      index:
+      - joint: index_abd
+        xyz: [0.027240979, -0.002206967, 0.069406803]
+        rpy: [1.653856814, -1.387349649, 0.004274219]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+      - joint: index_mcp
+        xyz: [0.019150968, 0.0, -0.001]
+        rpy: [0.0, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      - joint: index_pip
+        xyz: [-0.0015, 0.0, 0.037]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      middle:
+      - joint: middle_abd
+        xyz: [0.005706334, -0.004023404, 0.078501893]
+        rpy: [1.570796327, -1.568178333, 0.0]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+      - joint: middle_mcp
+        xyz: [0.019866968, 0.0, -0.001]
+        rpy: [0.0, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      - joint: middle_pip
+        xyz: [-0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      ring:
+      - joint: ring_abd
+        xyz: [-0.015307722, -0.003218365, 0.071304797]
+        rpy: [-1.570796327, -1.425061334, 3.054326191]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+      - joint: ring_mcp
+        xyz: [0.019866968, 0.0, -0.001]
+        rpy: [0.0, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      - joint: ring_pip
+        xyz: [-0.002, 0.0, 0.04]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      pinky:
+      - joint: pinky_abd
+        xyz: [-0.035641716, 0.000689159, 0.062054242]
+        rpy: [-1.529473574, -1.202862211, 2.911989536]
+        axis: [0.0, 0.0, 1.0]
+        sign: 1
+      - joint: pinky_mcp
+        xyz: [0.01775, 0.0, -0.001]
+        rpy: [0.0, 1.570796327, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+      - joint: pinky_pip
+        xyz: [-0.001, 0.0, 0.031]
+        rpy: [0.0, 0.0, 0.0]
+        axis: [0.0, -1.0, 0.0]
+        sign: -1
+  sensor_mounts:
+    thumb:
+      xyz: [-0.001872786, 0.0, 0.012437839]
+      rpy: [1.658019819, 0.0, 1.570796327]
+      fit: thumb
+    index:
+      xyz: [-0.005230764, 0.0, 0.017874796]
+      rpy: [1.920376767, 0.0, 1.570796327]
+      fit: index
+    middle:
+      xyz: [-0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, 1.570796327]
+      fit: middle
+    ring:
+      xyz: [-0.005230242, 0.0, 0.017871894]
+      rpy: [1.920326073, 0.0, 1.570796327]
+      fit: middle
+    pinky:
+      xyz: [0.000216892, 0.0, 0.021992313]
+      rpy: [2.190846631, 0.0, 1.570796327]
+      fit: pinky

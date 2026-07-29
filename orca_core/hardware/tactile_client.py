@@ -37,6 +37,7 @@ from orca_core.hardware.sensing.constants import (
     TACTILE_STREAM_REARM_MIN_INTERVAL_S,
     TACTILE_STREAM_STALE_REARM_S,
 )
+from orca_core.hardware.sensing.taxel_geometry import TaxelGeometry, load_taxel_geometry
 from orca_core.hardware.sensing.types import (
     ResultantForces,
     ResultantReading,
@@ -90,6 +91,7 @@ class TactileSensorConfiguration:
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
     module_indices: dict[str, int] = field(default_factory=dict)  # {finger: module_idx}
     finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
+    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions}
 
     @property
     def active_sensors(self) -> list[str]:
@@ -269,22 +271,54 @@ class TactileClient:
         """Return the cached sensor configuration, or ``None`` if never read."""
         return self._tactile_config
 
+    def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
+        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+
+        Positions are fixed sensor geometry in the sensor frame (meters), read
+        once at connect. Row ``i`` of ``geometry[finger].positions`` aligns
+        with taxel ``i`` in the force stream. Empty until the configuration is
+        read.
+        """
+        if self._tactile_config is None:
+            return {}
+        return dict(self._tactile_config.taxel_geometry)
+
+    @staticmethod
+    def _load_finger_geometry(finger: str, reported_taxels: int | None) -> TaxelGeometry:
+        """Load a finger's static geometry, warning if it disagrees with the sensor."""
+        geometry = load_taxel_geometry(finger)
+        if reported_taxels is not None and geometry.num_taxels != reported_taxels:
+            logger.warning(
+                f"Taxel geometry for {finger} has {geometry.num_taxels} positions but "
+                f"sensor reports {reported_taxels} taxels; positions may be misaligned "
+                f"(wrong sensor model in FINGER_MODELS?)"
+            )
+        return geometry
+
     def _get_configuration(self) -> TactileSensorConfiguration:
         try:
             connected = self.read_connected_sensors()
             num_taxels = self.read_num_taxels()
 
             module_indices = {}
+            taxel_geometry = {}
             for finger in FINGER_NAMES:
                 if connected.get(finger, False):
                     sensor_id = self._finger_to_sensor_id[finger]
                     module_indices[finger] = compute_distal_module_index(sensor_id)
+                    try:
+                        taxel_geometry[finger] = self._load_finger_geometry(
+                            finger, num_taxels.get(finger))
+                    except Exception as e:
+                        logger.warning(
+                            f"Taxel geometry unavailable for {finger}: {e}")
 
             config = TactileSensorConfiguration(
                 connected=connected,
                 num_taxels=num_taxels,
                 module_indices=module_indices,
                 finger_to_sensor_id=dict(self._finger_to_sensor_id),
+                taxel_geometry=taxel_geometry,
             )
 
             logger.info(f"Configuration captured: {config}")

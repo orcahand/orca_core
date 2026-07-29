@@ -13,8 +13,8 @@ import pytest
 
 from orca_core import load_hand
 from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
-from orca_core.hardware_hand import MockOrcaHand, MockOrcaHandTouch
-from orca_core.hardware_hand_joint_feedback import (
+from orca_core import MockOrcaHand, MockOrcaHandTouch
+from orca_core.hardware_hand_sensing import (
     MockOrcaHandFull,
     MockOrcaHandJointFeedback,
 )
@@ -35,7 +35,7 @@ def _config(name: str) -> str:
     ("model", "expected"),
     [
         ("orcahand-right", MockOrcaHand),
-        ("orcahand-touch", MockOrcaHandTouch),
+        ("orcahand-touch-right", MockOrcaHandTouch),
         ("orcahand-joint-right", MockOrcaHandJointFeedback),
         ("orcahand-full-right", MockOrcaHandFull),
     ],
@@ -51,7 +51,7 @@ def test_load_hand_selects_class_from_config(model, expected):
         ("orcahand-joint-right", MockOrcaHand),
         ("orcahand-full-right", MockOrcaHandTouch),
         ("orcahand-right", MockOrcaHand),
-        ("orcahand-touch", MockOrcaHandTouch),
+        ("orcahand-touch-right", MockOrcaHandTouch),
     ],
 )
 def test_load_hand_engage_feedback_false_returns_motor_only(model, expected):

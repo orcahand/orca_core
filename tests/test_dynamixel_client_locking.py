@@ -41,6 +41,8 @@ class FakeBus:
         self.bulk_tx_results = []  # queue of comm results for bulk txPacket
         self.write1_hook = None    # callable(motor_id) -> (comm, err)
         self.read1_hook = None     # callable(motor_id) -> (value, comm, err)
+        self.read2_hook = None     # callable(motor_id, address) -> (value, comm, err)
+        self.read4_hook = None     # callable(motor_id, address) -> (value, comm, err)
 
     def _check_owner(self):
         me = threading.get_ident()
@@ -119,6 +121,18 @@ def make_fake_sdk(bus):
             bus.instant('read1')
             if bus.read1_hook is not None:
                 return bus.read1_hook(motor_id)
+            return 0, COMM_SUCCESS, 0
+
+        def read2ByteTxRx(self, port, motor_id, address):
+            bus.instant('read2')
+            if bus.read2_hook is not None:
+                return bus.read2_hook(motor_id, address)
+            return 0, COMM_SUCCESS, 0
+
+        def read4ByteTxRx(self, port, motor_id, address):
+            bus.instant('read4')
+            if bus.read4_hook is not None:
+                return bus.read4_hook(motor_id, address)
             return 0, COMM_SUCCESS, 0
 
         def reboot(self, port, motor_id):
@@ -227,7 +241,7 @@ def _run_read_write_race(client, read_iterations):
     def reader():
         try:
             for _ in range(read_iterations):
-                client.read_pos_vel_cur()
+                client.read_position_velocity_current()
         except Exception as exc:  # pragma: no cover - failure reporting
             errors.append(exc)
         finally:
@@ -276,11 +290,40 @@ def test_failed_read_flushes_rx_before_retry(client, bus):
 
 def test_read_flushes_rx_after_final_failure(client, bus):
     bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    # Per-motor fallback also fails, so the cache stays stale.
+    bus.read4_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
+    bus.read2_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     assert reader.last_read_ok is False
     assert bus.events('bulk_tx', 'flush') == [
         'bulk_tx', 'flush', 'bulk_tx', 'flush']
+
+
+def test_bulk_failure_recovers_via_per_motor_fallback(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
+    bus.read2_hook = lambda motor_id, address: (100, COMM_SUCCESS, 0)
+    reader = client._pos_vel_cur_reader
+    positions, velocities, currents = reader.read(retries=1)
+    assert reader.last_read_ok is True
+    assert np.all(positions > 0)
+    assert np.all(currents > 0)
+    # One 4-byte read for pos and vel each, per motor.
+    assert len(bus.events('read4')) == 2 * len(reader.motor_ids)
+
+
+def test_partial_fallback_failure_marks_read_not_ok(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    # Motor 1 answers individually; motor 2 stays silent.
+    bus.read4_hook = lambda motor_id, address: (
+        (2048, COMM_SUCCESS, 0) if motor_id == 1 else (0, COMM_RX_FAIL, 0))
+    bus.read2_hook = lambda motor_id, address: (
+        (100, COMM_SUCCESS, 0) if motor_id == 1 else (0, COMM_RX_FAIL, 0))
+    reader = client._pos_vel_cur_reader
+    positions, _, _ = reader.read(retries=1)
+    assert reader.last_read_ok is False
+    assert positions[0] > 0  # motor 1 refreshed even though the read is flagged
 
 
 def test_set_torque_enabled_does_not_sleep_on_immediate_success(
@@ -402,3 +445,26 @@ def test_check_overload_retries_once_then_skips_on_no_reply(
     assert any('skipping overload check' in record.getMessage()
                for record in caplog.records)
     assert not bus.events('reboot')
+
+
+def test_full_fallback_is_rate_limited(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL] * 4  # two reads x two attempts
+    bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
+    bus.read2_hook = lambda motor_id, address: (100, COMM_SUCCESS, 0)
+    reader = client._pos_vel_cur_reader
+    reader.read(retries=1)
+    first_sweep_reads = len(bus.events('read4'))
+    assert first_sweep_reads > 0
+    # Immediately after, another total bulk failure must NOT sweep again.
+    reader.read(retries=1)
+    assert len(bus.events('read4')) == first_sweep_reads
+    assert reader.last_read_ok is False
+
+
+def test_failed_motor_enters_cooldown(client, bus):
+    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.read4_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
+    bus.read2_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
+    reader = client._pos_vel_cur_reader
+    reader.read(retries=1)
+    assert set(reader._fallback_skip_until) == set(reader.motor_ids)

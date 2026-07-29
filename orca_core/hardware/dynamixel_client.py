@@ -21,9 +21,15 @@ import time
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
-from .motor_client import MotorClient
+from ..constants import DYNAMIXEL
+from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
+
+# Per-motor fallback bounds: skip a motor whose individual read failed for
+# this long, and allow at most one full-bus fallback sweep per interval.
+FALLBACK_MOTOR_COOLDOWN_S = 2.0
+FALLBACK_FULL_SWEEP_MIN_INTERVAL_S = 1.0
 
 # The following addresses assume XC motors.
 # see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ for control table
@@ -131,6 +137,11 @@ class DynamixelClient(MotorClient):
         is flushed before the lock is released, so a late status reply can
         never be consumed as the response to a later transaction.
     """
+
+    motor_type = DYNAMIXEL
+    factory_default_id = 1
+    factory_default_baudrate = 57600
+    baud_rate_map = BAUD_RATE_MAP
 
     # The currently open clients.
     OPEN_CLIENTS = set()
@@ -240,11 +251,44 @@ class DynamixelClient(MotorClient):
                 except Exception:
                     pass  # Not critical if it fails
 
-            # Clear any pre-existing hardware errors before enabling torque.
+            # Clear any pre-existing hardware errors.
             self.check_overload_and_reboot(self.motor_ids)
 
-            # Start with all motors enabled.
-            self.set_torque_enabled(self.motor_ids, True)
+            # Torque is left as-is: connecting must never make the hand
+            # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+    @staticmethod
+    def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
+        """Open ``port`` at ``baudrate`` and ping the first and last motor IDs.
+
+        Returns True if either motor responds — i.e. the bus is speaking the
+        Dynamixel Protocol 2.0 at this baudrate. Used at connect time to
+        auto-detect the driver family without enabling torque.
+        """
+        import dynamixel_sdk
+
+        ids = list(motor_ids)
+        if not ids:
+            return False
+        sample = [ids[0]] if len(ids) == 1 else [ids[0], ids[-1]]
+
+        handler = dynamixel_sdk.PortHandler(port)
+        try:
+            if not handler.openPort():
+                return False
+            if not handler.setBaudRate(baudrate):
+                return False
+            packet = dynamixel_sdk.PacketHandler(PROTOCOL_VERSION)
+            for motor_id in sample:
+                _, comm, _ = packet.ping(handler, motor_id)
+                if comm == dynamixel_sdk.COMM_SUCCESS:
+                    return True
+            return False
+        finally:
+            try:
+                handler.closePort()
+            except Exception:
+                pass
 
     def disconnect(self):
         """Disconnects from the Dynamixel device."""
@@ -326,13 +370,18 @@ class DynamixelClient(MotorClient):
             for mid in motor_ids:
                 self._operating_modes[mid] = mode_value
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the positions, velocities, and currents.
+    def read_position_velocity_current(self) -> MotorRead:
+        """Return positions, velocities, and currents as a ``MotorRead`` snapshot.
 
         Overload detection is handled reactively via the Alert bit in
         handle_packet_result, so no extra bulk read is needed here.
         """
-        return self._pos_vel_cur_reader.read()
+        pos, vel, cur = self._pos_vel_cur_reader.read()
+        return MotorRead(position=pos, velocity=vel, current=cur)
+
+    @property
+    def last_read_ok(self) -> bool:
+        return self._pos_vel_cur_reader.last_read_ok
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
@@ -606,10 +655,11 @@ class DynamixelClient(MotorClient):
             logging.error(f"Failed to change baud rate: {e}")
             return False
     
-    def scan_for_motors(self, port: str = '/dev/ttyUSB0', id_range: tuple = (0, 252), 
+    def scan_for_motors(self, port: str, id_range: tuple,
                              baud_rates: Optional[list] = None) -> list:
-        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_number', 'model_name'}."""
-        baud_rates = baud_rates or list(BAUD_RATE_MAP.keys())
+        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_name'}."""
+        if baud_rates is None:
+            baud_rates = list(BAUD_RATE_MAP.keys())
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = self.dxl.PortHandler(port)
@@ -707,6 +757,11 @@ class DynamixelReader:
         self.address = address
         self.size = size
         self.last_read_ok = True
+        # Fallback bounds: a motor whose individual read failed is skipped for
+        # a cooldown, and full-bus sweeps are rate limited, so a dead motor
+        # cannot stall every read cycle while the bus lock is held.
+        self._fallback_skip_until: Dict[int, float] = {}
+        self._last_full_fallback = 0.0
         self._initialize_data()
 
         self.operation = _AlertCaptureBulkRead(client.port_handler,
@@ -733,12 +788,19 @@ class DynamixelReader:
                     self.client._flush_input_buffer()
                 retries -= 1
 
-            # Expose whether the bus actually answered, so callers can tell a real
-            # reading apart from the stale cache returned on a dropped status packet.
-            self.last_read_ok = success
-
-            # If we failed, send a copy of the previous data.
             if not success:
+                # Bulk transaction failed entirely: try each motor individually
+                # (still under the bus lock), at most once per rate-limit window.
+                now = time.monotonic()
+                if now - self._last_full_fallback < FALLBACK_FULL_SWEEP_MIN_INTERVAL_S:
+                    self.last_read_ok = False
+                    return self._get_data()
+                self._last_full_fallback = now
+                logging.warning(
+                    'Bulk read failed; falling back to per-motor reads for %d motor(s)',
+                    len(self.motor_ids))
+                still_failed = self._run_bounded_fallback(list(self.motor_ids))
+                self.last_read_ok = not still_failed
                 return self._get_data()
 
             # Check for Alert bits in the status packets we already received.
@@ -763,10 +825,38 @@ class DynamixelReader:
                     continue
 
             if errored_ids:
-                logging.error('Bulk read data is unavailable for: %s',
-                              str(errored_ids))
+                logging.warning('Bulk read missing data for %s; per-motor fallback',
+                                str(errored_ids))
+                errored_ids = self._run_bounded_fallback(errored_ids)
+
+            # Expose whether every motor produced fresh data, so callers can tell
+            # a real reading apart from the stale cache kept on failed reads.
+            self.last_read_ok = not errored_ids
 
             return self._get_data()
+
+    def _run_bounded_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Run the per-motor fallback, skipping motors in their failure cooldown.
+
+        Returns the IDs still lacking fresh data (failed now or cooling down).
+        """
+        now = time.monotonic()
+        eligible = [m for m in motor_ids
+                    if self._fallback_skip_until.get(m, 0.0) <= now]
+        cooling = [m for m in motor_ids if m not in eligible]
+        still_failed = self._read_per_motor_fallback(eligible) if eligible else []
+        for motor_id in still_failed:
+            self._fallback_skip_until[motor_id] = now + FALLBACK_MOTOR_COOLDOWN_S
+        return still_failed + cooling
+
+    def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Read each motor individually after a failed bulk read.
+
+        Returns the IDs whose data could still not be refreshed (their cached
+        values are kept). Base implementation cannot read individual motors,
+        so everything stays stale.
+        """
+        return list(motor_ids)
 
     def _initialize_data(self):
         """Initializes the cached data."""
@@ -822,6 +912,53 @@ class DynamixelPosVelCurReader(DynamixelReader):
         self._vel_data[index] = float(vel) * self.vel_scale
         self._cur_data[index] = float(cur) * self.cur_scale
 
+    def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Per-motor reads for position / velocity / current.
+
+        Cached values are kept for motors whose individual read also fails;
+        those IDs are returned.
+        """
+        port = self.client.port_handler
+        packet = self.client.packet_handler
+        comm_success = self.client.dxl.COMM_SUCCESS
+        still_failed = []
+        for motor_id in motor_ids:
+            try:
+                idx = self.motor_ids.index(motor_id)
+            except ValueError:
+                continue
+            motor_ok = True
+            try:
+                pos_raw, comm, _ = packet.read4ByteTxRx(
+                    port, motor_id, ADDR_PRESENT_POSITION)
+                if comm == comm_success:
+                    self._pos_data[idx] = (
+                        float(unsigned_to_signed(pos_raw, size=4)) * self.pos_scale)
+                else:
+                    motor_ok = False
+                vel_raw, comm, _ = packet.read4ByteTxRx(
+                    port, motor_id, ADDR_PRESENT_VELOCITY)
+                if comm == comm_success:
+                    self._vel_data[idx] = (
+                        float(unsigned_to_signed(vel_raw, size=4)) * self.vel_scale)
+                else:
+                    motor_ok = False
+                cur_raw, comm, _ = packet.read2ByteTxRx(
+                    port, motor_id, ADDR_PRESENT_CURRENT)
+                if comm == comm_success:
+                    self._cur_data[idx] = (
+                        float(unsigned_to_signed(cur_raw, size=2)) * self.cur_scale)
+                else:
+                    motor_ok = False
+            except Exception as e:
+                logging.warning(
+                    'Per-motor pos/vel/cur read failed for motor %d: %s',
+                    motor_id, e)
+                motor_ok = False
+            if not motor_ok:
+                still_failed.append(motor_id)
+        return still_failed
+
     def _get_data(self):
         """Returns a copy of the data."""
         return (self._pos_data.copy(), self._vel_data.copy(),
@@ -838,6 +975,30 @@ class DynamixelTempReader(DynamixelReader):
         # The raw value from the control table is 1 byte = 1 degree Celsius.
         raw_val = self.operation.getData(motor_id, self.address, self.size)
         self._temp_data[index] = float(raw_val)
+
+    def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Per-motor temperature reads; returns IDs that still failed."""
+        port = self.client.port_handler
+        packet = self.client.packet_handler
+        comm_success = self.client.dxl.COMM_SUCCESS
+        still_failed = []
+        for motor_id in motor_ids:
+            try:
+                idx = self.motor_ids.index(motor_id)
+            except ValueError:
+                continue
+            try:
+                raw, comm, _ = packet.read1ByteTxRx(
+                    port, motor_id, ADDR_PRESENT_TEMPERATURE)
+                if comm == comm_success:
+                    self._temp_data[idx] = float(raw)
+                else:
+                    still_failed.append(motor_id)
+            except Exception as e:
+                logging.warning('Per-motor temperature read failed for motor %d: %s',
+                                motor_id, e)
+                still_failed.append(motor_id)
+        return still_failed
 
     def _get_data(self):
         return self._temp_data.copy()
@@ -875,7 +1036,7 @@ if __name__ == '__main__':
                 print('Writing: {}'.format(way_point.tolist()))
                 dxl_client.write_desired_pos(motors, way_point)
             read_start = time.time()
-            pos_now, vel_now, cur_now = dxl_client.read_pos_vel_cur()
+            pos_now, vel_now, cur_now = dxl_client.read_position_velocity_current()
             if step % 5 == 0:
                 print('[{}] Frequency: {:.2f} Hz'.format(
                     step, 1.0 / (time.time() - read_start)))

@@ -11,6 +11,7 @@ derivative term — the inner motor loop is already damped, and a D term on
 a quantised joint encoder at 100 Hz is mostly noise.
 """
 
+import threading
 from typing import Dict, Union
 
 import numpy as np
@@ -22,12 +23,17 @@ ScalarOrArray = Union[float, np.ndarray]
 
 
 class JointController:
-    """Per-channel PI with shared scalar or per-joint vector gains."""
+    """Per-channel PI with shared scalar or per-joint vector gains.
+
+    State mutation is lock-guarded so ``reset()`` / ``set_gains()`` called
+    from other threads cannot interleave with the loop thread's ``step()``.
+    """
 
     def __init__(self, num_joints: int):
         if num_joints <= 0:
             raise ValueError("num_joints must be positive")
         self._num_joints = int(num_joints)
+        self._lock = threading.Lock()
         self._Kp = np.zeros(self._num_joints)
         self._Ki = np.zeros(self._num_joints)
         self._correction_max_deg = np.zeros(self._num_joints)
@@ -56,10 +62,11 @@ class JointController:
         ki = self._broadcast(Ki, "Ki")
         corr_max = self._broadcast(correction_max_deg, "correction_max_deg")
         i_clamp = self._broadcast(i_clamp_deg, "i_clamp_deg")
-        self._Kp = kp
-        self._Ki = ki
-        self._correction_max_deg = corr_max
-        self._i_clamp_deg = i_clamp
+        with self._lock:
+            self._Kp = kp
+            self._Ki = ki
+            self._correction_max_deg = corr_max
+            self._i_clamp_deg = i_clamp
 
     def step(
         self,
@@ -79,48 +86,53 @@ class JointController:
                 f"measured must have shape ({self._num_joints},), got {measured.shape}"
             )
         dt_clamped = float(np.clip(dt, MIN_LOOP_DT_S, MAX_LOOP_DT_S))
-
         err = target - measured
-        u_unsat = self._Kp * err + self._Ki * self._ierr
 
-        if not self._integral_frozen:
-            saturated = np.abs(u_unsat) >= self._correction_max_deg
-            pushing_into_sat = np.sign(err) == np.sign(u_unsat)
-            allow_integrate = ~(saturated & pushing_into_sat)
-            new_ierr = np.where(
-                allow_integrate, self._ierr + err * dt_clamped, self._ierr
+        with self._lock:
+            u_unsat = self._Kp * err + self._Ki * self._ierr
+
+            if not self._integral_frozen:
+                saturated = np.abs(u_unsat) >= self._correction_max_deg
+                pushing_into_sat = np.sign(err) == np.sign(u_unsat)
+                allow_integrate = ~(saturated & pushing_into_sat)
+                new_ierr = np.where(
+                    allow_integrate, self._ierr + err * dt_clamped, self._ierr
+                )
+                self._ierr = np.clip(new_ierr, -self._i_clamp_deg, self._i_clamp_deg)
+
+            u = np.clip(
+                self._Kp * err + self._Ki * self._ierr,
+                -self._correction_max_deg,
+                self._correction_max_deg,
             )
-            self._ierr = np.clip(new_ierr, -self._i_clamp_deg, self._i_clamp_deg)
-
-        u = np.clip(
-            self._Kp * err + self._Ki * self._ierr,
-            -self._correction_max_deg,
-            self._correction_max_deg,
-        )
-        self._last_correction = u
+            self._last_correction = u
         return u.copy()
 
     def reset(self) -> None:
         """Zero the integrator and the last-correction snapshot."""
-        self._ierr.fill(0.0)
-        self._last_correction.fill(0.0)
-        self._integral_frozen = False
+        with self._lock:
+            self._ierr = np.zeros(self._num_joints)
+            self._last_correction = np.zeros(self._num_joints)
+            self._integral_frozen = False
 
     def freeze_integral(self) -> None:
-        self._integral_frozen = True
+        with self._lock:
+            self._integral_frozen = True
 
     def unfreeze_integral(self) -> None:
-        self._integral_frozen = False
+        with self._lock:
+            self._integral_frozen = False
 
     @property
     def integral_frozen(self) -> bool:
         return self._integral_frozen
 
     def get_state(self) -> Dict[str, np.ndarray]:
-        return {
-            "ierr_deg": self._ierr.copy(),
-            "last_correction_deg": self._last_correction.copy(),
-        }
+        with self._lock:
+            return {
+                "ierr_deg": self._ierr.copy(),
+                "last_correction_deg": self._last_correction.copy(),
+            }
 
     def _broadcast(self, value: ScalarOrArray, name: str) -> np.ndarray:
         array = np.asarray(value, dtype=np.float64)

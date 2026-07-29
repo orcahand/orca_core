@@ -9,39 +9,56 @@ Control package for the ORCA Hand - a dexterous open-source robotic hand. Provid
 ```
 orca_core/
 ├── api/                          # FastAPI app exposing OrcaHand over HTTP (early/incomplete)
+├── maintenance/                  # Interaction-free hardware routines (callback-driven)
+│   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
+│   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
+│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
+├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
 │   ├── joint_controller.py          # Per-joint PI controller
 │   └── constants.py                 # Loop rate, watchdog tiers, PI defaults
 ├── hardware/                      # Hardware interfaces
 │   ├── motor_client.py               # MotorClient base interface
+│   ├── motor_resolution.py           # Connect-time driver probing + yaml persistence
 │   ├── dynamixel_client.py           # Dynamixel motor control (bus-locked, thread-safe)
 │   ├── feetech_client.py             # Feetech motor control
 │   ├── mock_dynamixel_client.py      # In-memory motor client for tests/dev
 │   ├── hand_serial_link.py           # Framed serial link to the connector board (encoders/tactile)
 │   ├── mock_hand_serial_link.py      # In-memory stand-in for HandSerialLink
-│   ├── joint_encoder_client.py       # Joint-angle encoder stream client
+│   ├── joint_encoder_client.py       # Joint-angle encoder stream client + anchor sampling
 │   ├── tactile_client.py             # Tactile sensor register client
 │   └── sensing/                      # Wire protocol, framing, and port auto-discovery
+├── kinematics/                    # Rigid transforms, frames, forward kinematics
 ├── utils/                         # Shared utilities
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
-├── hardware_hand.py                # OrcaHand / OrcaHandTouch (motor [+ tactile], open-loop)
-├── hardware_hand_joint_feedback.py # OrcaHandJointFeedback / OrcaHandFull (+ closed-loop joint encoders)
-├── hand_factory.py                 # load_hand(): picks the right class from config.yaml
+├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)
+├── hardware_hand_sensing.py        # Sensing variants: OrcaHandTouch / OrcaHandJointFeedback / OrcaHandFull (+ mocks)
+├── hand_factory.py                 # load_hand()/detect_hand(): autodetect the hand, pick class + model
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
-├── calibration.py / calibration_joint_encoder.py  # Calibration result types
+├── calibration.py                  # Calibration result types + YAML (de)serialization
+├── joint_position.py               # OrcaJointPositions: typed joint-position container
+├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
+├── version.py                      # LATEST_VERSION: default hand model version
 └── constants.py                    # Control modes, protocol constants
 
-scripts/              # CLI tools for calibration, tensioning, demos, diagnostics
+scripts/              # Thin CLI front-ends. argparse + print + input(); no logic.
+examples/             # Demo and record/replay scripts built on the public API
+tools/                # Maintainer-only tools (regenerate packaged data)
 tests/                # Unit tests
 docs/                 # MkDocs site sources (docs/pages/) - partially stale, verify against code
 ```
 
+Only `orca_core/` ships in the wheel. Anything both a script and an external
+front-end (e.g. orca_ui) needs must live in the package: operations report
+progress via `progress_callback` and request human action via `prompt_callback`,
+so a terminal and a GUI drive the identical routine.
+
 ### Key Files
 
-- [orca_core/hardware_hand.py](orca_core/hardware_hand.py) - `OrcaHand` / `OrcaHandTouch`: the main motor-only (or motor+tactile) API
-- [orca_core/hardware_hand_joint_feedback.py](orca_core/hardware_hand_joint_feedback.py) - `OrcaHandJointFeedback` / `OrcaHandFull`: adds the closed-loop joint-encoder control loop
+- [orca_core/hardware_hand.py](orca_core/hardware_hand.py) - `OrcaHand`: the main motor-only hand API
+- [orca_core/hardware_hand_sensing.py](orca_core/hardware_hand_sensing.py) - `OrcaHandTouch` / `OrcaHandJointFeedback` / `OrcaHandFull`: the sensing-equipped variants
 - [orca_core/hand_factory.py](orca_core/hand_factory.py) - `load_hand()`, the recommended entry point (picks the right class from `config.yaml`)
 - [orca_core/base_hand.py](orca_core/base_hand.py) - Shared joint-space interface all hand backends implement
 - [orca_core/hardware/dynamixel_client.py](orca_core/hardware/dynamixel_client.py) - Dynamixel motor control interface
@@ -135,13 +152,15 @@ uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
 
-# Manual control
-uv run python scripts/slider_joint.py orca_core/models/v2/orcahand-right/config.yaml
-uv run python scripts/slider_motor.py orca_core/models/v2/orcahand-right/config.yaml
+# Manual control (sliders; --motor-space for per-motor tendon bring-up)
+uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/config.yaml
 
-# Joint-encoder / tactile diagnostics (take a raw serial port, not config_path)
-uv run python scripts/verify_encoder_stream.py /dev/cu.usbmodemXXXX
-uv run python scripts/sensor_feedback.py --port /dev/cu.usbmodemXXXX
+# Sensor health check (config-driven; --port for board bring-up without a config)
+uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
+uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
+
+# Live sensor data view (autodetects the port; --port to override, no config_path)
+uv run python scripts/monitor_sensors.py
 ```
 
 ### Configuration

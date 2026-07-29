@@ -21,6 +21,9 @@ from ...constants import (
     ORCA_ID_QUERY,
     ORCA_ID_RESP_MOTOR,
     ORCA_ID_RESP_SENSOR,
+    ORCA_INFO_MARKER_MOTOR,
+    ORCA_INFO_MARKER_SENSOR,
+    ORCA_INFO_QUERY,
 )
 from .constants import (
     AUTO_FRAME_META_SIZE,
@@ -33,6 +36,112 @@ from .constants import (
 from .framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OrcaBoardInfo:
+    """Identity an OH board reports for its hand via ``ORCA_INFO?``.
+
+    ``serial`` is the hand's assigned serial number and ``board_id`` the
+    board's immutable MCU-derived identifier; :attr:`hand_id` prefers the
+    former. Boards that answer only the legacy ``ORCA_ID?`` yield a role
+    with every identity field ``None``; hands that report no side are
+    treated as right-handed by the callers that need one.
+    """
+
+    role: str  # "motor" | "sensor"
+    side: Optional[str] = None  # "left" | "right"
+    hw_version: Optional[int] = None
+    fw_version: Optional[int] = None
+    serial: Optional[str] = None
+    board_id: Optional[str] = None
+
+    @property
+    def hand_id(self) -> Optional[str]:
+        """The hand's unique identifier: its assigned serial when provisioned,
+        else the board ID (which changes if the board is ever replaced)."""
+        return self.serial or self.board_id
+
+
+def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
+    """Parse one ``ORCA:<role>;K=V;...`` identity line. Unknown keys are
+    ignored; malformed values yield ``None`` fields rather than an error."""
+    try:
+        text = line.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    tokens = text.split(";")
+    role = {"ORCA:MOTOR": "motor", "ORCA:SENSOR": "sensor"}.get(tokens[0])
+    if role is None:
+        return None
+    fields = {}
+    for token in tokens[1:]:
+        key, sep, value = token.partition("=")
+        if sep:
+            fields[key] = value
+    side = {"L": "left", "R": "right"}.get(fields.get("SIDE"))
+
+    def _int_or_none(key: str) -> Optional[int]:
+        try:
+            return int(fields[key])
+        except (KeyError, ValueError):
+            return None
+
+    return OrcaBoardInfo(
+        role=role,
+        side=side,
+        hw_version=_int_or_none("HW"),
+        fw_version=_int_or_none("FW"),
+        serial=fields.get("SN") or None,
+        board_id=fields.get("BID") or None,
+    )
+
+
+def probe_orca_info(
+    port: str,
+    baudrate: int = ORCA_ID_PROBE_BAUDRATE,
+    timeout: float = ORCA_ID_PROBE_TIMEOUT_S,
+) -> Optional[OrcaBoardInfo]:
+    """Query ``port`` for its role and hand identity.
+
+    Sends ``ORCA_INFO?`` and parses the identity line; a board that stays
+    silent (pre-identity firmware) is retried with the legacy ``ORCA_ID?``,
+    yielding a role-only result. Returns ``None`` when neither answers.
+    Robust against an active auto-stream the same way as the ID probe: the
+    read accumulates until a complete marker...newline span appears.
+    """
+    import serial
+
+    try:
+        with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
+            link.reset_input_buffer()
+            link.write(ORCA_INFO_QUERY)
+            link.flush()
+            deadline = time.monotonic() + timeout
+            buf = bytearray()
+            while time.monotonic() < deadline:
+                chunk = link.read(256)
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                for marker in (ORCA_INFO_MARKER_MOTOR, ORCA_INFO_MARKER_SENSOR):
+                    start = buf.find(marker)
+                    if start < 0:
+                        continue
+                    end = buf.find(b"\n", start)
+                    if end < 0:
+                        break  # line still incomplete; keep reading
+                    return parse_orca_info(bytes(buf[start:end]))
+    except (OSError, serial.SerialException) as exc:
+        logger.debug("ORCA_INFO? probe on %s failed: %s", port, exc)
+        return None
+
+    resp = _probe_orca_id(port, baudrate=baudrate, timeout=timeout)
+    if resp == ORCA_ID_RESP_MOTOR:
+        return OrcaBoardInfo(role="motor")
+    if resp == ORCA_ID_RESP_SENSOR:
+        return OrcaBoardInfo(role="sensor")
+    return None
 
 
 @dataclass(frozen=True)
@@ -87,6 +196,16 @@ def _probe_orca_id(
     except (OSError, serial.SerialException) as exc:
         logger.debug("ORCA_ID? probe on %s failed: %s", port, exc)
         return None
+
+
+def oh_board_ports() -> "list[str]":
+    """Device paths of every CDC presented by an OH board, in enumeration order."""
+    import serial.tools.list_ports
+
+    return [
+        p.device for p in serial.tools.list_ports.comports()
+        if p.vid in KNOWN_VIDS["oh_board"]
+    ]
 
 
 def find_tactile_port() -> Optional[str]:

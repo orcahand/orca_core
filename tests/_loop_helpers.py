@@ -20,7 +20,7 @@ from orca_core.hardware.sensing.constants import (
     JOINT_TO_ENCODER_SLOT,
 )
 from orca_core.hardware.sensing.types import EncoderReading
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 
 
 def make_calibrated_hand(config_path: str) -> MockOrcaHand:

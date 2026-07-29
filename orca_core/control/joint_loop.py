@@ -71,12 +71,16 @@ class JointLoopThread:
         joint_encoder_client: Any,
         controller: JointController,
         target_hz: int = DEFAULT_LOOP_HZ,
+        joints: Optional[List[str]] = None,
     ):
         self._hand = orca_hand
         self._encoder_client = joint_encoder_client
         self._controller = controller
         self._target_hz = int(target_hz)
         self._target_period = 1.0 / float(self._target_hz)
+        # Explicit joint set to close the loop on (e.g. only fully-calibrated
+        # joints); None = every encoder-backed joint with an anchor.
+        self._configured_joints = list(joints) if joints is not None else None
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -112,6 +116,7 @@ class JointLoopThread:
             "cycles_exception": 0,
             "commands_sent": 0,
             "e_stops": 0,
+            "joints_flagged_invalid": 0,
             "last_dt_s": float("nan"),
             "fallback_active": False,
         }
@@ -119,6 +124,12 @@ class JointLoopThread:
         self._last_exception_log_time: float = 0.0
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
+
+    @property
+    def joint_names(self) -> List[str]:
+        """The joints this loop closes on (snapshot order)."""
+        with self._lock:
+            return list(self._joint_names)
 
     def prime_for_step(self) -> None:
         """Snapshot calibration, latch the target to the measured pose for
@@ -135,29 +146,39 @@ class JointLoopThread:
         self._anchor_to_current_pose()
 
     def _anchor_to_current_pose(self) -> None:
-        measured = self._measure_joint_angles_now()
-        if measured is None:
-            measured = np.zeros(len(self._joint_names), dtype=np.float64)
+        measured = self._measure_joint_angles_for_anchor()
         motor_now = self._read_motor_pos_now()
         with self._lock:
             self._target_deg = measured.copy()
             self._latest_measured = measured.copy()
             # Bumpless feed-forward: hold the constant motor↔encoder mapping
             # offset so the loop starts where the motors are, not lurching.
-            if motor_now is not None:
-                self._motor_bias = motor_now - self._joint_to_motor_pos(measured)
-            else:
-                self._motor_bias = np.zeros(len(self._joint_names), dtype=np.float64)
+            self._motor_bias = motor_now - self._joint_to_motor_pos(measured)
         self._controller.reset()
 
-    def _read_motor_pos_now(self) -> Optional[np.ndarray]:
-        """Current motor positions (rad) for the snapshotted joints, or None
-        if the read fails — the caller falls back to a zero bias."""
-        try:
+    def _read_motor_pos_now(
+        self, retries: int = 5, retry_interval: float = 0.05
+    ) -> np.ndarray:
+        """Current motor positions (rad) for the snapshotted joints, rejecting
+        reads the bus never actually answered.
+
+        A partial or stale read here would bake a bogus feed-forward bias that
+        commands the affected motors toward absolute zero on every cycle, so
+        retry while the motor client reports the read failed and raise on
+        persistent failure rather than anchor to garbage.
+        """
+        for _ in range(retries):
             pos = self._hand.get_motor_pos(as_dict=True)
-            return np.array([pos[mid] for mid in self._motor_ids], dtype=np.float64)
-        except Exception:
-            return None
+            if self._hand._motor_client.last_read_ok:
+                return np.array(
+                    [pos[mid] for mid in self._motor_ids], dtype=np.float64
+                )
+            time.sleep(retry_interval)
+        raise RuntimeError(
+            "motor position read failed while anchoring the joint loop: the "
+            "motor bus returned no fresh data. Retry; if it persists, "
+            "power-cycle the board."
+        )
 
     def step_once(self, dt: float) -> None:
         """One cycle: encoder read → watchdog → PI → motor-pos write."""
@@ -199,11 +220,14 @@ class JointLoopThread:
             )
             return
 
+        # Target and bias are read in one locked section so a concurrent
+        # rebase can't pair an old target with a new bias for one cycle.
         with self._lock:
             target = self._target_deg.copy()
+            motor_bias = self._motor_bias.copy()
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
-            motor_targets = self._joint_to_motor_pos(target) + self._motor_bias
+            motor_targets = self._joint_to_motor_pos(target) + motor_bias
             self._hand.write_motor_pos(self._motor_ids, motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
@@ -221,7 +245,7 @@ class JointLoopThread:
         measured = self._decode_measured(reading)
 
         correction = self._controller.step(target, measured, dt)
-        motor_targets = self._joint_to_motor_pos(target + correction) + self._motor_bias
+        motor_targets = self._joint_to_motor_pos(target + correction) + motor_bias
         self._hand.write_motor_pos(self._motor_ids, motor_targets)
 
         with self._lock:
@@ -274,6 +298,12 @@ class JointLoopThread:
         if self._thread is not None and self._thread.is_alive():
             return
         self.prime_for_step()
+        # A deliberate restart recovers from a prior e-stop. Cleared only
+        # after priming succeeds so a failed restart keeps the e-stop state.
+        self._stats["fallback_active"] = False
+        self._pathological_cycle_streak = 0
+        self._slow_cycle_streak = 0
+        self._last_freshness_warn_time = 0.0
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run_loop, name="JointLoopThread", daemon=True
@@ -322,6 +352,14 @@ class JointLoopThread:
             j for j in JOINT_TO_ENCODER_SLOT
             if j != WRIST and j in joint_to_motor and j in encoder_dict
         ]
+        if self._configured_joints is not None:
+            missing = [j for j in self._configured_joints if j not in joints]
+            if missing:
+                raise RuntimeError(
+                    f"configured loop joints {missing} lack a motor mapping "
+                    "or an encoder anchor"
+                )
+            joints = [j for j in joints if j in self._configured_joints]
         if not joints:
             raise RuntimeError("no encoder-backed joints to control")
         if self._controller.num_joints != len(joints):
@@ -393,28 +431,56 @@ class JointLoopThread:
         motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
         return motor_pos + self._wrap_offsets
 
-    def _measure_joint_angles_now(self) -> Optional[np.ndarray]:
-        reading = self._encoder_client.get_latest()
-        if reading is None:
-            return None
-        return self._decode_measured(reading)
+    def _measure_joint_angles_for_anchor(
+        self, retries: int = 5, retry_interval: float = 0.05
+    ) -> np.ndarray:
+        """Joint angles for anchoring, requiring a chip-valid sample for every
+        controlled joint. Anchoring to a missing or flagged reading would
+        latch a bogus target the PI then drives toward, so retry and raise on
+        persistent failure rather than anchor to garbage."""
+        for _ in range(retries):
+            reading = self._encoder_client.get_latest()
+            if reading is not None:
+                invalid = (
+                    ~np.asarray(reading.parity_ok)[self._slots]
+                    | np.asarray(reading.angle_error)[self._slots]
+                )
+                if not np.any(invalid):
+                    return self._decode_measured(reading)
+            time.sleep(retry_interval)
+        raise RuntimeError(
+            "no valid encoder reading while anchoring the joint loop: the "
+            "encoder stream is missing or chip-flagged. Check the encoder "
+            "connection; retry once readings are healthy."
+        )
 
     def _decode_measured(self, reading) -> np.ndarray:
         """Decode an :class:`EncoderReading` into per-joint angles in
-        degrees, sliced and aligned to the snapshotted joint set."""
+        degrees, sliced and aligned to the snapshotted joint set. Joints the
+        encoder chip flags as invalid (parity fail or angle-error bit) hold
+        their previous measured value for this cycle."""
         raw_counts = np.asarray(reading.raw_counts)
         if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
             raise RuntimeError(
                 f"encoder reading has shape {raw_counts.shape}, "
                 f"expected ({AUTO_ENC_NUM_JOINTS},)"
             )
-        return encoder_to_joint_angle(
+        angles = encoder_to_joint_angle(
             raw_counts[self._slots],
             self._enc_zero_counts,
             self._enc_polarities,
             self._enc_zero_angles,
             self._enc_scales,
         )
+        invalid = (
+            ~np.asarray(reading.parity_ok)[self._slots]
+            | np.asarray(reading.angle_error)[self._slots]
+        )
+        if np.any(invalid):
+            self._stats["joints_flagged_invalid"] += int(np.count_nonzero(invalid))
+            with self._lock:
+                angles = np.where(invalid, self._latest_measured, angles)
+        return angles
 
     def _trigger_estop(self, reason: str) -> None:
         """Set ``fallback_active`` and signal the thread to stop. The motor
@@ -497,4 +563,6 @@ class JointLoopThread:
                 self._maybe_log_step_exception()
             self._record_loop_period(dt)
             prev_time = now
-            next_deadline += period
+            # Clamp the schedule to now so a long stall doesn't flood the bus
+            # with back-to-back writes to catch up on missed deadlines.
+            next_deadline = max(next_deadline + period, now)

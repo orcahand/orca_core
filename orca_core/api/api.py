@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Union, Tuple
 import numpy as np
 import uvicorn
-from orca_core.utils.yaml_utils import read_yaml, update_yaml
 
 from orca_core import OrcaHand
 
@@ -68,7 +67,7 @@ def set_hand_config(config_path: str = Body(..., example="/path/to/config")):
             hand.disconnect()
 
         current_config_path = config_path
-        hand = OrcaHand(model_path=current_config_path)
+        hand = OrcaHand(config_path=current_config_path)
         return {"message": f"Hand configuration updated to: {config_path}"}
     except Exception as e:
         handle_hand_exception(e)
@@ -84,7 +83,8 @@ def connect_hand():
     if hand.is_connected():
         return {"message": "Hand already connected."}
     try:
-        success, msg = hand.connect()
+        # Headless server: fail cleanly instead of opening the terminal picker.
+        success, msg = hand.connect(interactive=False)
         if success:
              return {"message": msg}
         else:
@@ -249,12 +249,10 @@ def get_joint_position():
     Returns:
         dict: A dictionary mapping joint names to their positions:
               {"positions": {"joint1": pos1, "joint2": pos2, ...}}.
-              Returns null for positions if not connected or not calibrated.
-              Individual joint values might be null if that specific joint isn't calibrated yet.
+              Joints without a calibrated mapping are omitted.
     """
     try:
-        j_pos = hand.get_joint_pos()
-        return {"positions": j_pos}
+        return {"positions": hand.get_joint_position().as_dict()}
     except Exception as e:
         handle_hand_exception(e)
 
@@ -272,7 +270,7 @@ def set_joint_position(joint_positions: JointPositions):
         dict: Success message.
     """
     try:
-        hand.set_joint_pos(joint_pos=joint_positions.positions)
+        hand.set_joint_positions(joint_positions.positions)
         return {"message": "Joint positions command sent successfully."}
     except Exception as e:
         handle_hand_exception(e)
@@ -308,58 +306,6 @@ def calibrate_auto():
         return {"message": msg, "calibrated": calib_status}
     except Exception as e:
         handle_hand_exception(e)
-        
-# @app.get("/config/settings", summary="Get Current Configuration Settings", tags=["Configuration"])
-# def get_config_settings():
-#     """
-#     Retrieves the current configuration settings from the file.
-
-#     Returns:
-#         dict: Current configuration settings.
-#     """
-#     global current_config_path
-#     try:
-#         if not current_config_path:
-#             raise HTTPException(status_code=400, detail="No configuration file is currently loaded.")
-#         config_data = read_yaml(current_config_path)
-#         return {"config": config_data}
-#     except Exception as e:
-#         handle_hand_exception(e)
-
-
-# @app.put("/config/settings", summary="Update Configuration Settings", tags=["Configuration"])
-# def update_config_settings(updated_settings: dict = Body(...)):
-#     """
-#     Updates specific settings in the configuration file and reloads the OrcaHand object.
-
-#     Args:
-#         updated_settings (dict): A dictionary containing the settings to update.
-
-#     Returns:
-#         dict: Success message.
-#     """
-#     global hand, current_config_path
-#     try:
-#         if not current_config_path:
-#             raise HTTPException(status_code=400, detail="No configuration file is currently loaded.")
-        
-#         # Read the current configuration
-#         config_data = read_yaml(current_config_path)
-        
-#         # Update the configuration with the new settings
-#         config_data.update(updated_settings)
-        
-#         # Write the updated configuration back to the file
-#         write_config_file(current_config_path, config_data)
-        
-#         # Reinitialize the OrcaHand object with the updated configuration
-#         if hand.is_connected():
-#             hand.disconnect()
-#         hand = OrcaHand(model_path=current_config_path)
-        
-#         return {"message": "Configuration updated successfully.", "updated_config": config_data}
-#     except Exception as e:
-#         handle_hand_exception(e)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

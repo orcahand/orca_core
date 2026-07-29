@@ -15,7 +15,8 @@ import random
 from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
-from .motor_client import MotorClient
+from ..constants import DYNAMIXEL
+from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
 
@@ -83,6 +84,8 @@ class MockDynamixelClient(MotorClient):
 
     NOTE: This only supports Protocol 2.
     """
+
+    motor_type = DYNAMIXEL
 
     # The currently open clients.
     OPEN_CLIENTS = set()
@@ -167,9 +170,9 @@ class MockDynamixelClient(MotorClient):
             logging.info('Succeeded to set baudrate to %d', self.baudrate)
             
         self._connected = True
-        
-        # Start with all motors enabled.
-        self.set_torque_enabled(self.motor_ids, True)
+
+        # Torque is left as-is, mirroring the real clients: connecting must
+        # never make the hand stiffen or move.
 
     def disconnect(self):
         """Disconnects from the Dynamixel device."""
@@ -218,14 +221,20 @@ class MockDynamixelClient(MotorClient):
             logging.info('Set operating mode for motor %d to %d', mid, mode_value)
         
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def read_position_velocity_current(self) -> MotorRead:
         """Returns the simulated positions, velocities, and currents."""
-        
+
         pos_array = np.array([self._pos[mid] for mid in self.motor_ids])
         vel_array = np.array([self._vel[mid] for mid in self.motor_ids])
         cur_array = np.array([self._cur[mid] for mid in self.motor_ids])
-        
-        return pos_array, vel_array, cur_array
+
+        return MotorRead(position=pos_array, velocity=vel_array, current=cur_array)
+
+    @property
+    def last_read_ok(self) -> bool:
+        # Delegates to the (never-failing) reader so tests can force a
+        # stale-read condition by flipping the reader's flag.
+        return self._pos_vel_cur_reader.last_read_ok
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
@@ -363,6 +372,8 @@ class DynamixelReader:
         self.motor_ids = motor_ids
         self.address = address
         self.size = size
+        # The mock never fails a read; tests flip this to simulate one.
+        self.last_read_ok = True
         self._initialize_data()
 
         self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
@@ -513,7 +524,7 @@ if __name__ == '__main__':
                 print('Writing: {}'.format(way_point.tolist()))
                 dxl_client.write_desired_pos(motors, way_point)
             read_start = time.time()
-            pos_now, vel_now, cur_now = dxl_client.read_pos_vel_cur()
+            pos_now, vel_now, cur_now = dxl_client.read_position_velocity_current()
             if step % 5 == 0:
                 print('[{}] Frequency: {:.2f} Hz'.format(
                     step, 1.0 / (time.time() - read_start)))
