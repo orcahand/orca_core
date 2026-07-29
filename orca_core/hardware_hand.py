@@ -43,6 +43,9 @@ from .constants import (
 
 from .joint_position import OrcaJointPositions
 
+# Motor-rad per joint-deg used to synthesise mock motor calibration.
+MOCK_JOINT_TO_MOTOR_RATIO = 0.01
+
 
 class OrcaHand(BaseHand):
     """ORCA hand class.
@@ -1055,7 +1058,52 @@ class MockMotorResolutionMixin:
     there is nothing to detect or probe (``port: auto`` must not handshake
     real USB devices) and no auto-detected values worth writing back to
     config.yaml.
+
+    It also synthesises the motor calibration a mock can't measure, so the
+    bundled models are usable out of the box (see
+    :meth:`_install_mock_calibration`).
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._install_mock_calibration()
+
+    def _install_mock_calibration(self) -> None:
+        """Fill in motor calibration that a mock has no way to measure.
+
+        ``calibration.yaml`` is a per-hand artifact that a fresh checkout or a
+        wheel install doesn't carry, and mock motors have no hardstops to
+        sweep. Limits and ratios are derived from the config ROMs so
+        joint-motor conversion round-trips exactly. Entries that are already
+        calibrated are left untouched, and ``calibrated`` stays as loaded —
+        nothing here stands in for an actual calibration run.
+        """
+        motor_limits = dict(self.calibration.motor_limits_dict)
+        ratios = dict(self.calibration.joint_to_motor_ratios_dict)
+        roms = self.config.joint_roms_dict
+        changed = False
+
+        for joint, motor_id in self.config.joint_to_motor_map.items():
+            rom = roms.get(joint)
+            if rom is None:
+                continue
+            limits = motor_limits.get(motor_id)
+            if not limits or any(limit is None for limit in limits):
+                # Lower limit of 0 matches the mock motors' rest position, so
+                # wrap-offset detection doesn't read them as below-limit.
+                span = abs(float(rom[1]) - float(rom[0])) * MOCK_JOINT_TO_MOTOR_RATIO
+                motor_limits[motor_id] = [0.0, span]
+                changed = True
+            if not ratios.get(motor_id):
+                ratios[motor_id] = MOCK_JOINT_TO_MOTOR_RATIO
+                changed = True
+
+        if changed:
+            self.calibration = dataclasses.replace(
+                self.calibration,
+                motor_limits_dict=motor_limits,
+                joint_to_motor_ratios_dict=ratios,
+            )
 
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
         if self.config.port == "auto":
