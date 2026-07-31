@@ -1,4 +1,4 @@
-version: 0.2.1
+motor_type: dynamixel
 baudrate: 3000000
 port: auto
 max_current: 400
@@ -52,7 +52,7 @@ joint_roms:
 
 neutral_position:
   thumb_mcp: -13
-  thumb_abd: 43
+  thumb_abd: 42
   thumb_pip: 33
   thumb_dip: 19
   index_abd: 25
@@ -64,7 +64,7 @@ neutral_position:
   ring_abd: -20
   ring_mcp: -1
   ring_pip: 0
-  pinky_abd: -55
+  pinky_abd: -37
   pinky_mcp: 1
   pinky_pip: 0
   wrist: 0
