@@ -344,8 +344,8 @@ def configure_default_motor(
     (default ID, target baud), which the resume prescan reports as invalid and
     ``reset_all_motors`` can revert. ID-first would strand it at a combination
     no scan visits. Afterwards the default ID is probed again: a motor still
-    answering there means two default motors received the same writes, so the
-    step is refused rather than silently duplicating ``target_id``.
+    answering there means a second default motor joined the bus mid-step, so
+    the step is refused rather than risking a duplicate ``target_id``.
     """
     if plan.target_baud != plan.default_baud:
         with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.default_baud) as client:
@@ -384,9 +384,9 @@ def _refuse_leftover_default_motor(
                   baudrate=baud)
             raise MotorChainError(
                 f"a factory-default motor still answers after programming motor "
-                f"{target_id}: more than one default motor was on the bus, and ID "
-                f"{target_id} may now be assigned twice. Disconnect the extra motor, "
-                f"reset the affected motors to factory defaults, and rerun"
+                f"{target_id}: a second motor joined the bus during this step "
+                f"(likely the next one plugged in early). Leave it connected and "
+                f"rerun — the run resumes and configures it as the next motor"
             )
 
 
@@ -473,7 +473,9 @@ def configure_motor_chain(
     """Program every motor in ``plan``, resuming from whatever is already done.
 
     Emits ``chain_started``, ``prescan_done``, ``step_started``,
-    ``awaiting_motor``, ``motor_configured``, ``chain_done``. Asks the operator
+    ``awaiting_motor``, ``wrong_motor_detected``, ``motor_found``,
+    ``duplicate_default_motor``, ``motor_configured``, ``chain_verified``,
+    ``chain_done``. Asks the operator
     to connect each motor via ``prompt_callback`` (required for Feetech, whose
     bus must be unpowered while plugging).
 

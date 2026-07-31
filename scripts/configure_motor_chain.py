@@ -107,6 +107,9 @@ def on_progress(event: dict) -> None:
         print(f"{GREEN}✓ Found default motor{RESET}")
     elif name == "wrong_motor_detected":
         print(f"{RED}❌ {event['error']} — swap it for the correct motor.{RESET}")
+    elif name == "duplicate_default_motor":
+        print(f"{RED}❌ A factory-default motor still answers (at {event['baudrate']:,} bps) "
+              f"after programming ID {event['target_id']}.{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")
@@ -203,7 +206,11 @@ def main() -> int:
     config = _load_config(args.config_path)
     port = _resolve_port(config.get('port', '/dev/ttyUSB0'), args.motor_type)
     motor_type = _resolve_motor_type(args.motor_type, port)
-    plan = plan_motor_chain(config, port, motor_type)
+    try:
+        plan = plan_motor_chain(config, port, motor_type)
+    except MotorChainError as exc:
+        print(f"{RED}❌ {exc}{RESET}")
+        return 1
     label = motor_type.capitalize()
 
     if args.reset:

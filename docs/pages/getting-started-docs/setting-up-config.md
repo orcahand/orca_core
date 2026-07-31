@@ -15,7 +15,6 @@ This file defines parameters crucial for the hand's operation, including communi
 
 ```yaml
 port: auto
-version: 0.2.1
 baudrate: 1000000
 max_current: 300
 type: right

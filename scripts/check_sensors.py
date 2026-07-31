@@ -33,8 +33,6 @@ import sys
 import threading
 import time
 
-import numpy as np
-
 from orca_core import OrcaHandTouch, load_hand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
@@ -42,7 +40,6 @@ from orca_core.hardware.joint_encoder_client import (
     JointEncoderClient,
 )
 from orca_core.hardware.sensing.constants import (
-    AUTO_ENC_ANGLE_MASK,
     AUTO_ENC_NUM_JOINTS,
     ENCODER_SLOT_TO_JOINT,
     EXPECTED_ENCODER_SLOTS,
@@ -50,6 +47,12 @@ from orca_core.hardware.sensing.constants import (
     LINK_DEFAULT_BAUDRATE,
     PROTOCOL_BYTE_AUTO,
     PROTOCOL_BYTE_AUTO_ENC,
+)
+from orca_core.hardware.sensing.health import (
+    EncoderStreamHealth,
+    WiringMismatch,
+    detect_wiring_mismatch,
+    diagnose_encoder_link,
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 
@@ -64,12 +67,6 @@ TAXEL_ACTIVE_N = 0.1  # |fz| above this counts as "pressed" in the ASCII grid
 
 ENCODER_DURATION_S = 10.0
 ENCODER_MIN_RATE_HZ = 50.0
-
-# A slot whose 14-bit angle sits within EDGE_LSB of either rail for more than
-# EDGE_FRACTION of the run reads as a stuck/floating bus rather than a chip.
-# Catches all-0x0000, all-0x3FFF, and the alternating floating case.
-EDGE_LSB = 64
-EDGE_FRACTION = 0.5
 
 # (rows, cols, positions) per (role, taxel_count). role ∈ {"thumb","finger","pinky"}.
 # positions[i] = (row, col) of taxel i in the auto-stream sequence; row=0 is the
@@ -251,33 +248,22 @@ def live_press_taxels(hand, target, role, n_taxels, fingers, stop_event=None, du
     return peaks
 
 
-def detect_wiring_mismatch(target_finger, peaks, wiring, threshold=PRESS_THRESHOLD_N):
-    """If user pressed `target_finger` but the largest signal showed up
-    under a different finger name, return a helpful suggestion string.
-    Otherwise return None."""
-    target_peak = peaks.get(target_finger, 0.0)
-    if target_peak >= threshold:
-        return None
-    others = {f: p for f, p in peaks.items() if f != target_finger and p >= threshold}
-    if not others:
-        return None
-    other_finger = max(others, key=others.get)
-    target_slot = wiring.get(target_finger)
-    other_slot = wiring.get(other_finger)
+def format_wiring_mismatch(m: WiringMismatch) -> str:
+    """Render a detected wiring mismatch as the operator-facing warning."""
     return (
-        f"  WIRING MISMATCH: pressed {target_finger.upper()} but force showed under "
-        f"{other_finger.upper()} ({others[other_finger]:.2f} N vs {target_peak:.2f} N on {target_finger}).\n"
+        f"  WIRING MISMATCH: pressed {m.pressed_finger.upper()} but force showed under "
+        f"{m.sensed_finger.upper()} ({m.sensed_peak_n:.2f} N vs {m.pressed_peak_n:.2f} N on {m.pressed_finger}).\n"
         f"    → Likely fix: in config.yaml's finger_to_sensor_id (or "
-        f"hardware/sensing/constants.py), set '{target_finger}' to {other_slot} "
-        f"(currently {target_slot}). You'll then need to reassign '{other_finger}' too."
+        f"hardware/sensing/constants.py), set '{m.pressed_finger}' to {m.sensed_slot} "
+        f"(currently {m.pressed_slot}). You'll then need to reassign '{m.sensed_finger}' too."
     )
 
 
 def tactile_link_stats(hand):
-    """Framing counters from the hand's tactile serial link, or None when the
-    link is not exposed (e.g. a mock without one)."""
-    link = getattr(hand, "_tactile_link", None)
-    return link.get_link_stats() if link is not None else None
+    """Framing counters from the hand's tactile serial link, or None when no
+    link is open (e.g. a mock without one)."""
+    health = hand.get_tactile_link_health()
+    return health.stats if health is not None else None
 
 
 def phase_enumerate(hand):
@@ -347,9 +333,10 @@ def phase_resultant_press(hand):
             stop = _enter_event()
             all_peaks = live_press_resultant(hand, f, FINGERS, stop_event=stop)
             peaks_per_press[f] = all_peaks[f]
-            mismatch = detect_wiring_mismatch(f, all_peaks, wiring)
+            mismatch = detect_wiring_mismatch(f, all_peaks, wiring,
+                                              threshold_n=PRESS_THRESHOLD_N)
             if mismatch:
-                print(mismatch)
+                print(format_wiring_mismatch(mismatch))
                 warnings.append(f)
 
         weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
@@ -388,9 +375,10 @@ def phase_taxels_press(hand):
             stop = _enter_event()
             all_peaks = live_press_taxels(hand, finger, FINGER_TO_ROLE[finger], num_expected_taxels, FINGERS, stop_event=stop)
             peaks_per_press[finger] = all_peaks[finger]
-            mismatch = detect_wiring_mismatch(finger, all_peaks, wiring)
+            mismatch = detect_wiring_mismatch(finger, all_peaks, wiring,
+                                              threshold_n=PRESS_THRESHOLD_N)
             if mismatch:
-                print(mismatch)
+                print(format_wiring_mismatch(mismatch))
                 warnings.append(finger)
 
         weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
@@ -496,68 +484,32 @@ def phase_lifecycle(hand):
 # ---------------------------------------------------------------------------
 
 
-class SlotHealth:
-    """Per-slot accumulators over an encoder run: how often the angle sat at a
-    rail, and how many frames reported a parity or chip angle-error flag."""
-
-    def __init__(self) -> None:
-        self.frames = 0
-        self.extreme = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint64)
-        self.parity_bad = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint64)
-        self.angle_err = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint64)
-        self.angle_min = np.full(AUTO_ENC_NUM_JOINTS, AUTO_ENC_ANGLE_MASK, dtype=np.int64)
-        self.angle_max = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.int64)
-
-    def update(self, reading) -> None:
-        angle = reading.raw_counts.astype(np.uint16) & AUTO_ENC_ANGLE_MASK
-        self.frames += 1
-        self.extreme += (
-            (angle <= EDGE_LSB) | (angle >= AUTO_ENC_ANGLE_MASK - EDGE_LSB)
-        ).astype(np.uint64)
-        self.parity_bad += (~np.asarray(reading.parity_ok, dtype=bool)).astype(np.uint64)
-        self.angle_err += np.asarray(reading.angle_error, dtype=bool).astype(np.uint64)
-        self.angle_min = np.minimum(self.angle_min, angle.astype(np.int64))
-        self.angle_max = np.maximum(self.angle_max, angle.astype(np.int64))
-
-    def verdict(self, slot: int) -> tuple[bool, str]:
-        """Pass/fail plus a human-readable reason for one expected slot."""
-        frac = self.extreme[slot] / self.frames
-        if self.parity_bad[slot]:
-            return False, f"{int(self.parity_bad[slot])} parity errors"
-        if self.angle_err[slot]:
-            return False, f"{int(self.angle_err[slot])} chip angle-error flags"
-        if frac > EDGE_FRACTION:
-            return False, f"stuck/floating bus ({frac * 100:.0f}% at a rail)"
-        return True, "ok"
-
-    def print_table(self, expected_slots) -> None:
-        if not self.frames:
-            print("  no frames captured.")
-            return
-        print(f"  Per-slot health over {self.frames} frames:")
-        print("    slot  joint           span   rail%   parity  angErr  verdict")
-        for slot in range(AUTO_ENC_NUM_JOINTS):
-            joint = ENCODER_SLOT_TO_JOINT.get(slot, "?")
-            frac = self.extreme[slot] / self.frames
-            span = int(self.angle_max[slot] - self.angle_min[slot])
-            if slot not in expected_slots:
-                verdict = "not configured"
-            else:
-                _, verdict = self.verdict(slot)
-            print(
-                f"    {slot:>4}  {joint:<14} {span:>5}  {frac * 100:>5.1f}%  "
-                f"{int(self.parity_bad[slot]):>6}  {int(self.angle_err[slot]):>6}  {verdict}"
-            )
+def print_slot_table(health: EncoderStreamHealth, expected_slots) -> None:
+    """Render the per-slot health table from `health`'s slot reports."""
+    if not health.frames:
+        print("  no frames captured.")
+        return
+    print(f"  Per-slot health over {health.frames} frames:")
+    print("    slot  joint           span   rail%   parity  angErr  verdict")
+    for slot in range(AUTO_ENC_NUM_JOINTS):
+        joint = ENCODER_SLOT_TO_JOINT.get(slot, "?")
+        report = health.report(slot)
+        verdict = report.reason if slot in expected_slots else "not configured"
+        print(
+            f"    {slot:>4}  {joint:<14} {report.span:>5}  {report.rail_fraction * 100:>5.1f}%  "
+            f"{report.parity_errors:>6}  {report.angle_error_flags:>6}  {verdict}"
+        )
 
 
 def print_link_diagnostics(client: JointEncoderClient, link: HandSerialLink) -> None:
-    """Surface link + client counters and suggest the likely cause."""
+    """Surface link + client counters and render the likely-cause diagnosis."""
     link_stats = link.get_link_stats()
     client_stats = client.get_stats()
 
     print("  Link diagnostics:")
     print(f"    bad_header_resyncs        = {link_stats.bad_header_resyncs}")
     print(f"    responses_received        = {link_stats.responses_received}")
+    print(f"    responses_implausible_len = {link_stats.responses_implausible_length}")
     print(f"    frames_routed             = {dict(link_stats.frames_routed)}")
     print(f"    frames_dropped_no_handler = {dict(link_stats.frames_dropped_no_handler)}")
     print(f"    frames_bad_lrc            = {dict(link_stats.frames_bad_lrc)}")
@@ -565,24 +517,11 @@ def print_link_diagnostics(client: JointEncoderClient, link: HandSerialLink) -> 
     print(f"    frames_ok                 = {client_stats.frames_ok}")
     print(f"    frames_bad_eff_length     = {client_stats.frames_bad_effective_length}")
     print("  Likely causes:")
-    if client_stats.frames_bad_effective_length > 0:
-        print("    → Firmware/host wire-format mismatch: the firmware emits a")
-        print("      different joint count than the host expects. Re-flash it.")
-    if link_stats.frames_dropped_no_handler:
-        unhandled = ", ".join(f"0x{b:02X}" for b in link_stats.frames_dropped_no_handler)
-        print(f"    → Frames arriving on un-routed second-byte(s): {unhandled}.")
-        print("      Firmware may predate the current encoder header byte.")
-    if (link_stats.bad_header_resyncs > 0
-            and not link_stats.frames_routed
-            and not link_stats.frames_dropped_no_handler):
-        print("    → Bytes arrive but never align to an AA-XX header. Wrong")
-        print("      baudrate, or you are reading the motor port by mistake.")
-    if (link_stats.bad_header_resyncs == 0
-            and not link_stats.frames_routed
-            and not link_stats.frames_dropped_no_handler
-            and link_stats.responses_received == 0):
-        print("    → Zero bytes received. Board unpowered, cable unplugged, or")
-        print("      wrong serial port — try `ls /dev/cu.usbmodem*`.")
+    for cause in diagnose_encoder_link(link_stats, client_stats):
+        first, *rest = cause.description.split("\n")
+        print(f"    → {first}")
+        for line in rest:
+            print(f"      {line}")
 
 
 def phase_encoder_stream(client, link, expected_slots, duration_s):
@@ -597,7 +536,7 @@ def phase_encoder_stream(client, link, expected_slots, duration_s):
         return False, "encoder stream never started"
 
     print(f"  Streaming for {duration_s:.0f}s (Ctrl-C to stop early)...")
-    health = SlotHealth()
+    health = EncoderStreamHealth()
     started = time.monotonic()
     last_ts = None
     try:
@@ -621,7 +560,7 @@ def phase_encoder_stream(client, link, expected_slots, duration_s):
     print(f"  Stats: ok={stats.frames_ok} bad_lrc={bad_lrc} "
           f"bad_eff_length={stats.frames_bad_effective_length} "
           f"handler_errs={handler_errs} error_byte=0x{stats.last_error_byte:02X}")
-    health.print_table(expected_slots)
+    print_slot_table(health, expected_slots)
 
     if not health.frames:
         print_link_diagnostics(client, link)
@@ -633,8 +572,9 @@ def phase_encoder_stream(client, link, expected_slots, duration_s):
     if rate < ENCODER_MIN_RATE_HZ:
         return False, f"frame rate {rate:.0f} Hz < {ENCODER_MIN_RATE_HZ:.0f} (stream stalled?)"
 
-    bad = {ENCODER_SLOT_TO_JOINT.get(s, str(s)): health.verdict(s)[1]
-           for s in sorted(expected_slots) if not health.verdict(s)[0]}
+    reports = [health.report(s) for s in sorted(expected_slots)]
+    bad = {ENCODER_SLOT_TO_JOINT.get(r.slot, str(r.slot)): r.reason
+           for r in reports if not r.healthy}
     if bad:
         return False, f"unhealthy slots: {bad}"
     return True, f"~{rate:.0f} Hz clean, {len(expected_slots)} slot(s) healthy"
@@ -662,7 +602,7 @@ def run_encoder_checks(port, baudrate, expected_slots, duration_s):
 
 def encoder_slots_for(hand) -> set[int]:
     """Slots the config actually declares, so an unwired slot isn't judged."""
-    return {JOINT_TO_ENCODER_SLOT[j] for j in hand._encoder_backed_joints()}
+    return {JOINT_TO_ENCODER_SLOT[j] for j in hand.encoder_backed_joints}
 
 
 # ---------------------------------------------------------------------------
