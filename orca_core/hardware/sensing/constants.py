@@ -89,9 +89,8 @@ RESOLUTION_N_PER_LSB = 0.1
 # Decimal places to round returned force values to (matches RESOLUTION_N_PER_LSB granularity).
 FORCE_ROUND_DECIMALS = 1
 
-# Decimal places kept when averaging zeroing offsets. Finer than the sensor's
-# 0.1 N resolution so the averaged baseline isn't biased before it is
-# subtracted; the subtracted force still rounds to FORCE_ROUND_DECIMALS.
+# Decimal places for averaged zeroing offsets: finer than the sensor's 0.1 N
+# resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
 # Byte sizes per data element
@@ -174,9 +173,8 @@ JOINT_TO_ENCODER_SLOT = {
 }
 ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 
-# Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry
-# selects every slotted, motor-driven joint (the default for sensing hands),
-# while an explicit joint list narrows to that subset for bring-up/debugging.
+# Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry selects every
+# slotted, motor-driven joint (the sensing-hand default); an explicit list narrows it.
 ENCODER_JOINTS_ALL = "all"
 
 # Per-joint encoder polarity, fixed by encoder mounting + magnet orientation.

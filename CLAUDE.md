@@ -20,17 +20,21 @@ orca_core/
 │   └── constants.py                 # Loop rate, watchdog tiers, PI defaults
 ├── hardware/                      # Hardware interfaces
 │   ├── motor_client.py               # MotorClient base interface
+│   ├── motor_factory.py              # motor_type → MotorClient class (lazy per-family imports)
 │   ├── motor_resolution.py           # Connect-time driver probing + yaml persistence
 │   ├── dynamixel_client.py           # Dynamixel motor control (bus-locked, thread-safe)
 │   ├── feetech_client.py             # Feetech motor control
+│   ├── feetech/                      # Vendored Feetech servo SDK (used by feetech_client)
 │   ├── mock_dynamixel_client.py      # In-memory motor client for tests/dev
 │   ├── hand_serial_link.py           # Framed serial link to the connector board (encoders/tactile)
 │   ├── mock_hand_serial_link.py      # In-memory stand-in for HandSerialLink
 │   ├── joint_encoder_client.py       # Joint-angle encoder stream client + anchor sampling
 │   ├── tactile_client.py             # Tactile sensor register client
-│   └── sensing/                      # Wire protocol, framing, and port auto-discovery
+│   └── sensing/                      # Wire protocol, framing, port auto-discovery, sensor health checks
 ├── kinematics/                    # Rigid transforms, frames, forward kinematics
 ├── utils/                         # Shared utilities
+│   ├── utils.py                      # Model-path resolution, YAML I/O (atomic writes), interpolation
+│   └── cli.py                        # Shared argparse/lifecycle helpers for scripts and examples
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
 ├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)

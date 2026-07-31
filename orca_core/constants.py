@@ -36,28 +36,26 @@ KNOWN_VIDS: dict[str, list[int]] = {
         0x28E9,  # Paxini tactile sensor USB adapter
     ],
     "oh_board": [
-        0x2F5D,  # ORCA Dexterity OH board (dual-CDC; PID 0x2202)
+        0x2F5D,  # ORCA Dexterity hand controller board (dual-CDC; PID 0x2202)
     ],
 }
 
-# OH board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY lets the host
-# distinguish motor vs sensor. ORCA_INFO_QUERY additionally returns the hand
-# identity ("ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<serial>;BID=<hex>");
-# boards that predate it stay silent.
+# The hand's controller board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY
+# lets the host distinguish motor vs sensor.
 ORCA_ID_QUERY = b"ORCA_ID?\n"
 ORCA_ID_RESP_MOTOR = b"ORCA:MOTOR\n"
 ORCA_ID_RESP_SENSOR = b"ORCA:SENSOR\n"
 ORCA_INFO_QUERY = b"ORCA_INFO?\n"
+"""Identity query; the reply is
+``ORCA:<role>;SIDE=<L|R>;HW=<n>;FW=<n>;SN=<serial>;BID=<hex>``.
+Boards that predate it stay silent."""
 ORCA_INFO_MARKER_MOTOR = b"ORCA:MOTOR;"
 ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 
-"""
-Dynamixel specific! TODO(fracapuano): Add feetech control modes too.
-PWM (id: 2) control modeis omitted becayse it bypasses PID controllers entirely.
-"""
-
+# Dynamixel-specific; TODO(fracapuano): add Feetech control modes too.
+# PWM control mode (id 2) is omitted because it bypasses PID controllers entirely.
 CONTROL_MODES: list[str] = [
     "current_based_position",
     "position",

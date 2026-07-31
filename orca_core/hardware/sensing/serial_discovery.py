@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class OrcaBoardInfo:
-    """Identity an OH board reports for its hand via ``ORCA_INFO?``.
+    """Identity a hand's controller board reports via ``ORCA_INFO?``.
 
     ``serial`` is the hand's assigned serial number and ``board_id`` the
     board's immutable MCU-derived identifier; :attr:`hand_id` prefers the
@@ -199,7 +199,8 @@ def _probe_orca_id(
 
 
 def oh_board_ports() -> "list[str]":
-    """Device paths of every CDC presented by an OH board, in enumeration order."""
+    """Device paths of every CDC presented by a hand's controller board, in
+    enumeration order."""
     import serial.tools.list_ports
 
     return [
@@ -277,13 +278,15 @@ def _tactile_responds_at(port: str, baud: int) -> bool:
 
 
 ORCA_ID_PROBE_ATTEMPTS = 3
-"""Passes over the OH-board CDCs when probing ORCA_ID?. The probe is racy on
-macOS composite CDC devices (an occasional empty read), so a few passes make
-detection reliable without masking a genuinely absent/silent board."""
+"""Passes over the controller-board CDCs when probing ORCA_ID?. The probe is
+racy on macOS composite CDC devices (an occasional empty read), so a few
+passes make detection reliable without masking a genuinely absent or
+silent board."""
 
 
 def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
-    """Return the OH-board CDC whose ``ORCA_ID?`` reply matches ``expected_resp``."""
+    """Return the controller-board CDC whose ``ORCA_ID?`` reply matches
+    ``expected_resp``."""
     import serial.tools.list_ports
 
     oh_candidates = [
@@ -298,7 +301,8 @@ def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
 
 
 def find_motor_port() -> Optional[str]:
-    """Return the OH-board CDC that identifies as the motor bus via ``ORCA_ID?``.
+    """Return the controller-board CDC that identifies as the motor bus via
+    ``ORCA_ID?``.
 
     Returns None for classic motor adapters that don't speak
     ORCA_ID?, so the caller can fall back to USB-VID matching.

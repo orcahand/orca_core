@@ -515,9 +515,8 @@ class OrcaHandJointFeedback(OrcaHand):
                 "(set joint_encoder_joints in config.yaml)."
             )
 
-        # Close the loop on the joints whose calibration is complete; the
-        # rest stay on open-loop motor control instead of blocking the whole
-        # feedback tier on one uncalibrated joint.
+        # Close the loop only on fully calibrated joints; the rest stay on
+        # open-loop motor control rather than blocking the whole feedback tier.
         ready = self._loop_ready_joints()
         if not ready:
             raise JointFeedbackConnectError(
@@ -534,9 +533,8 @@ class OrcaHandJointFeedback(OrcaHand):
                 "recalibrated", ", ".join(self._loop_skipped_joints),
             )
 
-        # Wrap offsets feed the joint→motor mapping the loop runs every
-        # cycle; populate them once here so the loop's snapshot is
-        # deterministic.
+        # Wrap offsets feed the loop's per-cycle joint→motor mapping; populate
+        # them once here so the loop's snapshot is deterministic.
         self._compute_wrap_offsets_dict()
 
         self._controller = JointController(num_joints=len(ready))
@@ -629,9 +627,8 @@ class OrcaHandJointFeedback(OrcaHand):
             self._attach_encoders(self._encoder_link)
         except Exception:
             self._teardown_joint_feedback()
-            # The motor bus opened by super().connect() is part of the
-            # session this connect attempt was supposed to set up; roll it
-            # back so the caller doesn't inherit a half-connected hand.
+            # Roll back the motor bus super().connect() opened so the caller
+            # doesn't inherit a half-connected hand.
             try:
                 super().disconnect()
             except Exception:
@@ -771,7 +768,7 @@ class OrcaHandJointFeedback(OrcaHand):
 
     def _loop_engaged(self) -> bool:
         """True while the joint loop is live. After the watchdog e-stop the
-        loop thread no longer writes motors or refreshes measurements, so
+        loop thread stops writing motors and refreshing measurements, so
         joint I/O falls back to the inherited open-loop path (logged once)."""
         if self._loop is None:
             return False
@@ -789,9 +786,8 @@ class OrcaHandJointFeedback(OrcaHand):
         if not self._loop_engaged():
             return super()._set_joint_positions(joint_pos)
 
-        # Route by the loop's actual joint set, not every encoder-backed
-        # joint: joints skipped at connect (incomplete calibration) must take
-        # the open-loop motor path.
+        # Route by the loop's actual joint set: joints skipped at connect
+        # (incomplete calibration) must take the open-loop motor path.
         encoder_joints = set(self._loop.joint_names)
         loop_targets: Dict[str, float] = {}
         rest: Dict[str, float] = {}
@@ -949,9 +945,8 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
             self._attach_encoders(self._encoder_link)
 
             if ports.shared:
-                # One link carries both streams; attach the tactile client onto
-                # the encoder link (leaves _tactile_link None, so its teardown
-                # won't double-close the shared link).
+                # One link carries both streams: attach tactile onto the encoder
+                # link, leaving _tactile_link None so teardown closes it once.
                 self._attach_tactile_client(self._encoder_link)
                 tactile_where = f"shared link {ports.encoder}"
             else:

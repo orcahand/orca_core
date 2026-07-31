@@ -23,7 +23,7 @@ callers (and scripts) don't have to hand-pick hand classes.
 
 Called with no config at all, :func:`load_hand` first runs
 :func:`detect_hand`, which probes the connected hardware — the hand's side
-from the OH board's identity reply, joint encoders from a live encoder
+from the controller board's identity reply, joint encoders from a live encoder
 stream, tactile from a sensor register reply — and picks the bundled model
 that matches, so ``load_hand()`` on a plugged-in hand just works. Hands
 that report no side are treated as right-handed; a config selects the
@@ -83,8 +83,8 @@ _MODEL_BY_CAPS = {
 }
 
 _OH_PROBE_PASSES = 3
-"""Passes over the OH-board CDCs (the probe is racy on macOS composite CDC
-devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
+"""Passes over the controller board's CDCs (the probe is racy on macOS
+composite CDC devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
 
 
 @dataclass(frozen=True)
@@ -110,12 +110,13 @@ class HandDetection:
 def detect_hand() -> HandDetection:
     """Probe the connected hardware and name the bundled model that matches.
 
-    The hand's side comes from the OH board's identity reply; joint encoders
-    are confirmed by a live encoder stream on the sensing CDC and tactile by
-    a sensor register reply (on the shared CDC or a dedicated adapter). Any
-    question the hardware doesn't answer falls back conservatively: no side
-    means right, no reply means the capability is absent — so with nothing
-    plugged in this returns the plain right-hand model with all ports unset.
+    The hand's side comes from the controller board's identity reply; joint
+    encoders are confirmed by a live encoder stream on the sensing CDC and
+    tactile by a sensor register reply (on the shared CDC or a dedicated
+    adapter). Any question the hardware doesn't answer falls back
+    conservatively: no side means right, no reply means the capability is
+    absent — so with nothing plugged in this returns the plain right-hand
+    model with all ports unset.
     """
     motor_port: Optional[str] = None
     sensing_port: Optional[str] = None
