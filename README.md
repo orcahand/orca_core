@@ -10,6 +10,8 @@
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space.
 
+Orca Core sends minimal usage telemetry by default; opt out with `python -m orca_core.telemetry disable`.
+
 ## Get Started
 
 To get started with Orca Core, follow these steps:
@@ -95,4 +97,3 @@ port: /dev/ttyACM0      # or /'dev/cu.usbmodemXXXX' on macOS
 baudrate: 1000000       # 1M for v2; 3M for v1 
 motor_type: dynamixel   # or 'feetech'
 ```
-
