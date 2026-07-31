@@ -5,6 +5,9 @@ fixture-built wire frames. Pure protocol codec tests live in
 ``test_tactile_protocol.py``.
 """
 
+import threading
+import time
+
 import pytest
 
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
@@ -17,6 +20,7 @@ from tests._tactile_helpers import (
     feed_resultant_frame,
     feed_taxels_frame,
 )
+from tests.conftest import wait_until
 
 ALL_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 
@@ -210,6 +214,99 @@ def test_taxel_offsets_applied_in_stream(tactile_mock_factory):
     client.stop_stream()
 
     assert reading["thumb"] == [[1.5, 0.5, 4.0], [2.0, 1.0, 6.0]]
+
+
+# ---------------------------------------------------------------------------
+# Offset capture — deadline behaviour
+# ---------------------------------------------------------------------------
+
+def _start_taxel_pump(link, taxels, active_sensors, period_s=0.005):
+    """Background thread feeding taxel frames at a steady rate."""
+    stop = threading.Event()
+
+    def _run():
+        while not stop.is_set():
+            feed_taxels_frame(link, taxels, active_sensors)
+            time.sleep(period_s)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def test_capture_taxel_offsets_averages_and_applies(tactile_mock_factory):
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+    stop, thread = _start_taxel_pump(
+        link, {"thumb": [[1.0, 2.0, 4.0]]}, state.active_sensors
+    )
+    try:
+        offsets = client.capture_taxel_offsets(num_samples=3)
+        assert offsets == {"thumb": [[1.0, 2.0, 4.0]]}
+
+        # Offsets are live: frames decoded after the capture come back zeroed.
+        wait_until(
+            lambda: client.get_latest_taxels()["thumb"] == [[0.0, 0.0, 0.0]]
+        )
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        client.stop_stream()
+
+
+def test_capture_taxel_offsets_times_out_when_stream_stalls(tactile_mock_factory):
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+    feed_taxels_frame(link, {"thumb": [[1.0, 1.0, 1.0]]}, state.active_sensors)
+    client.wait_for_first_frame()
+
+    with pytest.raises(TimeoutError, match="stalled during offset capture"):
+        client.capture_taxel_offsets(num_samples=5, timeout_s=0.2)
+    client.stop_stream()
+
+
+def test_capture_taxel_offsets_times_out_when_stream_dead_at_entry(
+    tactile_mock_factory,
+):
+    _, client, _ = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+
+    with pytest.raises(TimeoutError, match="0/1"):
+        client.capture_taxel_offsets(num_samples=1, timeout_s=0.2)
+    client.stop_stream()
+
+
+def test_failed_capture_restores_prior_offsets(tactile_mock_factory):
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.set_taxel_offsets({"thumb": [[0.5, 0.5, 0.5]]})
+    client.start_stream(resultant=False, taxels=True)
+
+    with pytest.raises(TimeoutError):
+        client.capture_taxel_offsets(num_samples=2, timeout_s=0.2)
+
+    # The pre-capture offsets still apply to frames after the failure.
+    feed_taxels_frame(link, {"thumb": [[1.0, 1.0, 1.0]]}, state.active_sensors)
+    client.wait_for_first_frame()
+    reading = client.get_latest_taxels()
+    client.stop_stream()
+    assert reading["thumb"] == [[0.5, 0.5, 0.5]]
+
+
+# ---------------------------------------------------------------------------
+# Timestamps
+# ---------------------------------------------------------------------------
+
+def test_reading_timestamps_use_monotonic_clock(tactile_mock):
+    """Tactile timestamps share EncoderReading's time.monotonic() base so
+    staleness logic and cross-stream correlation survive wall-clock steps."""
+    link, client, state = tactile_mock
+    client.start_stream(resultant=True, taxels=False)
+    feed_resultant_frame(link, FORCE_VECTORS, state.active_sensors)
+    client.wait_for_first_frame()
+    reading = client.get_latest_forces()
+    client.stop_stream()
+
+    assert reading.timestamp == pytest.approx(time.monotonic(), abs=5.0)
 
 
 # ---------------------------------------------------------------------------

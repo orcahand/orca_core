@@ -128,8 +128,12 @@ class JointEncoderClient:
             self._publish_active = True
 
         if not self._first_frame_event.wait(timeout):
+            # Mirror stop_stream: a frame landing between the wait timing out
+            # and this cleanup must not stay visible after a failed start.
             with self._lock:
                 self._publish_active = False
+                self._latest = None
+                self._first_frame_event.clear()
             raise EncodersNotAvailableError(
                 f"No encoder frame within {timeout}s"
             )
@@ -206,6 +210,12 @@ def sample_anchor_count_from_client(
 ) -> int:
     """Cosine-average ``num_samples`` distinct frames for ``slot`` at the
     current pose.
+
+    Chip-flagged samples (parity failure or angle-error bit) are rejected and
+    do not count toward ``num_samples``; if the deadline expires — including
+    when flagged samples starve the collection — a
+    :class:`JointEncoderCalibrationError` is raised rather than folding
+    corrupted counts into the anchor.
     """
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
@@ -214,17 +224,21 @@ def sample_anchor_count_from_client(
     last_ts: float | None = None
     deadline = time.monotonic() + timeout_s
     collected = 0
+    rejected = 0
     while collected < num_samples:
         reading = client.get_latest()
         if reading is not None and reading.timestamp != last_ts:
-            counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
             last_ts = reading.timestamp
-            collected += 1
-            continue
+            if bool(reading.parity_ok[slot]) and not bool(reading.angle_error[slot]):
+                counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
+                collected += 1
+                continue
+            rejected += 1
         if time.monotonic() > deadline:
             raise JointEncoderCalibrationError(
                 f"timed out waiting for encoder samples on slot {slot} "
-                f"(got {collected}/{num_samples} in {timeout_s}s)"
+                f"(got {collected}/{num_samples} in {timeout_s}s, "
+                f"{rejected} chip-flagged samples rejected)"
             )
         time.sleep(sample_period_s)
     return average_anchor_count(counts)

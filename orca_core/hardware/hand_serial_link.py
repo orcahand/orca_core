@@ -35,6 +35,7 @@ from orca_core.hardware.sensing.constants import (
     LINK_HANDLER_ERROR_LOG_INTERVAL_S,
     LINK_RESPONSE_QUEUE_MAXSIZE,
     MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
+    MAX_RESPONSE_DATA_LEN,
     PROTOCOL_BYTE_RESPONSE,
     PROTOCOL_HEADER_RESPONSE,
     RESPONSE_META_SIZE,
@@ -61,6 +62,7 @@ class LinkStats:
     bad_header_resyncs: int = 0
     response_queue_dropped: int = 0
     responses_received: int = 0
+    responses_implausible_length: int = 0
 
     def snapshot(self) -> "LinkStats":
         """Copy with independent Counters, so a reader sees a stable view while
@@ -73,6 +75,7 @@ class LinkStats:
             bad_header_resyncs=self.bad_header_resyncs,
             response_queue_dropped=self.response_queue_dropped,
             responses_received=self.responses_received,
+            responses_implausible_length=self.responses_implausible_length,
         )
 
 
@@ -103,6 +106,8 @@ class HandSerialLink:
         self._serial: serial.Serial | None = None
         self._connected = False
         self._disconnected = False  # latches True once disconnect() runs
+        self._port_dead = False  # latches True on a hard port failure (e.g. USB unplug)
+        self._port_error: str | None = None
         self._demux_running = False
         self._demux_thread: threading.Thread | None = None
 
@@ -121,7 +126,23 @@ class HandSerialLink:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        """``True`` while the link is open and its port is healthy."""
+        return self._connected and not self._port_dead
+
+    @property
+    def is_port_dead(self) -> bool:
+        """``True`` once the serial port has failed hard (e.g. USB unplug).
+
+        A dead link cannot recover: register requests fail fast and the
+        demuxer has exited. Call ``disconnect()`` and build a new link to
+        reconnect.
+        """
+        return self._port_dead
+
+    @property
+    def port_error(self) -> str | None:
+        """Description of the port failure, or ``None`` while the port is healthy."""
+        return self._port_error
 
     def connect(self) -> None:
         if self._connected:
@@ -192,6 +213,8 @@ class HandSerialLink:
         late response from a previously-timed-out caller can't be handed
         to the next caller.
         """
+        if self._port_dead:
+            raise IOError(f"hand serial link port failed: {self._port_error}")
         if not self._demux_running:
             raise RuntimeError(
                 "hand serial link not running (not connected or demuxer crashed)"
@@ -212,6 +235,10 @@ class HandSerialLink:
                     self._response_queue.put_nowait(None)
                 except queue.Full:
                     pass
+                if self._port_dead:
+                    raise IOError(
+                        f"hand serial link port failed: {self._port_error}"
+                    )
                 raise IOError("hand serial link closed")
             return response
 
@@ -266,13 +293,26 @@ class HandSerialLink:
 
     def _serial_read(self, n: int) -> bytes:
         """Read up to ``n`` bytes. Returns ``b""`` on read timeout. Returns at least one
-        byte when bytes are available."""
+        byte when bytes are available. A hard port failure (the read raises rather
+        than timing out, e.g. after USB unplug) latches the port-dead state."""
         if self._serial is None:
             return b""
         try:
             return self._serial.read(n)
-        except (serial.SerialException, OSError):
+        except (serial.SerialException, OSError) as e:
+            self._mark_port_dead(e)
             return b""
+
+    def _mark_port_dead(self, error: Exception) -> None:
+        """Latch the port-dead state so the demuxer exits and callers fail fast."""
+        if self._port_dead:
+            return
+        self._port_error = str(error) or type(error).__name__
+        self._port_dead = True
+        logger.error(
+            f"Serial port {self._port} failed; hand serial link is dead: "
+            f"{self._port_error}"
+        )
 
     # ----- Demuxer thread ---------------------------------------------------
 
@@ -281,6 +321,8 @@ class HandSerialLink:
             while self._demux_running:
                 # Resync: slide one byte at a time until we land on 0xAA.
                 first = self._serial_read(1)
+                if self._port_dead:
+                    break
                 if not first:
                     continue
                 if first[0] != 0xAA:
@@ -306,10 +348,10 @@ class HandSerialLink:
 
     def _read_exact(self, n: int) -> bytes | None:
         """Read exactly ``n`` bytes. Returns ``None`` if the demuxer is
-        asked to stop mid-read (e.g. during shutdown)."""
+        asked to stop mid-read (shutdown or port death)."""
         out = bytearray()
         while len(out) < n:
-            if not self._demux_running:
+            if not self._demux_running or self._port_dead:
                 return None
             chunk = self._serial_read(n - len(out))
             if not chunk:
@@ -322,9 +364,9 @@ class HandSerialLink:
         if meta is None:
             return
         count = int.from_bytes(meta[4:6], "little")
-        if count > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
+        if count > MAX_RESPONSE_DATA_LEN:
             # Implausible payload size — treat as garbage rather than read it.
-            self._stats.frames_bad_lrc[PROTOCOL_BYTE_RESPONSE] += 1
+            self._stats.responses_implausible_length += 1
             return
         body = self._read_exact(count + 1)  # data + LRC
         if body is None:

@@ -27,6 +27,7 @@ class MockHandSerialLink(HandSerialLink):
         self._injected_buffer = bytearray()
         self._injected_cv = threading.Condition()
         self._mock_serial_open = False
+        self._mock_port_error: Exception | None = None
         self._serial_writes: list[bytes] = []
         self._response_provider: ResponseProvider | None = None
 
@@ -36,6 +37,13 @@ class MockHandSerialLink(HandSerialLink):
         """Inject raw bytes into the demuxer's read stream."""
         with self._injected_cv:
             self._injected_buffer.extend(data)
+            self._injected_cv.notify_all()
+
+    def simulate_port_death(self, error: Exception | None = None) -> None:
+        """Make the port fail hard, as a USB unplug would: reads latch the
+        link's port-dead state and writes raise."""
+        with self._injected_cv:
+            self._mock_port_error = error or IOError("mock device disconnected")
             self._injected_cv.notify_all()
 
     def set_response_provider(self, provider: ResponseProvider | None) -> None:
@@ -84,6 +92,8 @@ class MockHandSerialLink(HandSerialLink):
 
     def _serial_write(self, data: bytes) -> None:
         with self._injected_cv:
+            if self._mock_port_error is not None:
+                raise IOError(f"mock serial port failed: {self._mock_port_error}")
             self._serial_writes.append(bytes(data))
             self._injected_cv.notify_all()
         provider = self._response_provider
@@ -93,15 +103,20 @@ class MockHandSerialLink(HandSerialLink):
                 self.feed_bytes(response)
 
     def _serial_read(self, n: int) -> bytes:
-        """Block briefly for bytes (matches the real ``serial.Serial.read``
-        timeout semantics so the demuxer can re-check its run flag)."""
+        """Block briefly for bytes (matching ``serial.Serial.read`` timeout
+        semantics); latch the port-dead state on a simulated port death,
+        as the real override does when the read raises."""
         with self._injected_cv:
-            if not self._injected_buffer:
+            if self._mock_port_error is None and not self._injected_buffer:
                 if not self._mock_serial_open or not self._demux_running:
                     return b""
                 self._injected_cv.wait(timeout=0.05)
+            error = self._mock_port_error
+            if error is None:
                 if not self._injected_buffer:
                     return b""
-            chunk = bytes(self._injected_buffer[:n])
-            del self._injected_buffer[:n]
-            return chunk
+                chunk = bytes(self._injected_buffer[:n])
+                del self._injected_buffer[:n]
+                return chunk
+        self._mark_port_dead(error)
+        return b""

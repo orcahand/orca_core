@@ -31,6 +31,7 @@ from orca_core.hardware.sensing.constants import (
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
     TACTILE_REGISTER_ATTEMPTS,
     OFFSET_CAPTURE_DECIMALS,
+    OFFSET_CAPTURE_FRAME_BUDGET_S,
     OFFSET_CAPTURE_POLL_S,
     OFFSET_CLEAR_SETTLE_S,
     TACTILE_FIRST_FRAME_TIMEOUT_S,
@@ -155,9 +156,12 @@ class TactileClient:
         self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
 
-        # Stream re-arm state (see _maybe_rearm_stream).
+        # Re-arm state: the control lock orders re-arm writes against
+        # stop_stream's disable; the generation voids stale re-arm threads.
         self._last_rearm_ts = 0.0
         self._rearm_thread: threading.Thread | None = None
+        self._stream_ctrl_lock = threading.Lock()
+        self._stream_generation = 0
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
@@ -208,7 +212,9 @@ class TactileClient:
         """Send a register request, retrying on timeout.
 
         A single round-trip is occasionally lost on a busy link; the retries
-        recover it. A closed link raises ``RuntimeError`` and is not retried.
+        recover it. A link that is not running raises ``RuntimeError``, which
+        is not retried; a link that closes or fails mid-wait raises ``IOError``,
+        and its retries fail fast on the closed link.
         """
         last_err: IOError | None = None
         for _ in range(TACTILE_REGISTER_ATTEMPTS):
@@ -225,14 +231,14 @@ class TactileClient:
             raise OSError("Must call connect() first.")
         request = build_read_request(address, count)
         response = self._send_register_request(request, response_timeout_s)
-        return parse_read_response(response)
+        return parse_read_response(response, expected_address=address)
 
     def _write_register(self, address: int, data: bytes, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> None:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_write_request(address, data)
         response = self._send_register_request(request, response_timeout_s)
-        parse_write_response(response)
+        parse_write_response(response, expected_address=address)
 
     def read_connected_sensors(self) -> dict[str, bool]:
         """Return ``{finger: is_connected}`` from the connected-sensors register."""
@@ -353,6 +359,7 @@ class TactileClient:
 
         with self._auto_lock:
             self._auto_running = False
+            self._stream_generation += 1
             self._auto_mode_resultant = resultant
             self._auto_mode_taxels = taxels
             self._first_frame_event.clear()
@@ -383,7 +390,7 @@ class TactileClient:
             self._auto_latest = None
             self._auto_latest_taxels = None
             self._auto_latest_ts = None
-            self._auto_started_ts = time.time()
+            self._auto_started_ts = time.monotonic()
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
             self._last_rearm_ts = 0.0
@@ -393,14 +400,16 @@ class TactileClient:
         with self._auto_lock:
             was_running = self._auto_running
             self._auto_running = False
+            self._stream_generation += 1
 
         if self._connected and was_running:
-            # Best-effort: if the device is unreachable we still tear down
-            # local state.
-            try:
-                self.disable_auto_data_transmission()
-            except (OSError, RuntimeError) as e:
-                logger.debug(f"Disabling stream during stop failed, continuing: {e}")
+            # Best-effort disable; the control lock orders it after any
+            # in-flight re-arm writes, so the device ends up disabled.
+            with self._stream_ctrl_lock:
+                try:
+                    self.disable_auto_data_transmission()
+                except (OSError, RuntimeError) as e:
+                    logger.debug(f"Disabling stream during stop failed, continuing: {e}")
 
         with self._auto_lock:
             self._auto_latest = None
@@ -416,7 +425,7 @@ class TactileClient:
     def _maybe_rearm_stream(self) -> None:
         """Re-enable the stream if it went silent mid-run (a device reset
         clears its volatile enable register)."""
-        now = time.time()
+        now = time.monotonic()
         with self._auto_lock:
             if not self._auto_running:
                 return
@@ -432,24 +441,37 @@ class TactileClient:
             stale_s = now - last
             self._rearm_thread = threading.Thread(
                 target=self._rearm_stream,
-                args=(stale_s, self._auto_mode_resultant, self._auto_mode_taxels),
+                args=(
+                    stale_s,
+                    self._auto_mode_resultant,
+                    self._auto_mode_taxels,
+                    self._stream_generation,
+                ),
                 name="TactileStreamRearm",
                 daemon=True,
             )
         self._rearm_thread.start()
 
-    def _rearm_stream(self, stale_s: float, resultant: bool, taxels: bool) -> None:
+    def _rearm_stream(
+        self, stale_s: float, resultant: bool, taxels: bool, generation: int
+    ) -> None:
         """Best-effort; on failure the next stale read past the rate limit retries."""
-        logger.warning(
-            "tactile stream silent for %.1f s while running — re-arming "
-            "(a device reset clears its volatile enable register)",
-            stale_s,
-        )
-        try:
-            self.set_auto_data_type(resultant=resultant, taxels=taxels)
-            self.enable_auto_data_transmission()
-        except Exception as e:
-            logger.warning("tactile stream re-arm failed: %s", e)
+        with self._stream_ctrl_lock:
+            with self._auto_lock:
+                # A stream stopped or restarted since this thread was spawned
+                # must not be re-enabled behind the caller's back.
+                if not self._auto_running or generation != self._stream_generation:
+                    return
+            logger.warning(
+                "tactile stream silent for %.1f s while running — re-arming "
+                "(a device reset clears its volatile enable register)",
+                stale_s,
+            )
+            try:
+                self.set_auto_data_type(resultant=resultant, taxels=taxels)
+                self.enable_auto_data_transmission()
+            except Exception as e:
+                logger.warning("tactile stream re-arm failed: %s", e)
 
     def get_latest_forces(self) -> ResultantReading | None:
         """Return the most recent resultant reading, or ``None`` if none yet."""
@@ -506,14 +528,25 @@ class TactileClient:
         self._taxel_offsets = None
         self._resultant_offsets = None
 
-    def capture_taxel_offsets(self, num_samples: int = 100) -> dict:
+    def capture_taxel_offsets(
+        self, num_samples: int = 100, timeout_s: float | None = None
+    ) -> dict:
         """Average ``num_samples`` taxel frames and apply the result as zeroing offsets.
 
         Requires an active auto-stream with taxels enabled. Existing offsets
-        are temporarily cleared so the average reflects raw readings.
+        are temporarily cleared so the average reflects raw readings, and are
+        restored if the capture fails. ``timeout_s`` bounds the wait for
+        frames (derived from ``num_samples`` when ``None``); a stream that is
+        dead at entry or stalls mid-capture raises ``TimeoutError`` instead
+        of blocking forever.
         """
         if not self._auto_running or not self._auto_mode_taxels:
             raise RuntimeError("Auto-stream with taxels must be active to capture offsets")
+        if timeout_s is None:
+            timeout_s = (
+                TACTILE_STREAM_STALE_REARM_S
+                + num_samples * OFFSET_CAPTURE_FRAME_BUDGET_S
+            )
 
         prev_taxel = self._taxel_offsets
         prev_resultant = self._resultant_offsets
@@ -526,11 +559,18 @@ class TactileClient:
         try:
             frames = []
             last_ts = None
+            deadline = time.monotonic() + timeout_s
             while len(frames) < num_samples:
                 reading = self.get_latest_taxels()
                 if reading is not None and reading.timestamp != last_ts:
                     frames.append(reading.taxels)
                     last_ts = reading.timestamp
+                    continue
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"tactile stream stalled during offset capture: got "
+                        f"{len(frames)}/{num_samples} frames in {timeout_s:.1f}s"
+                    )
                 time.sleep(OFFSET_CAPTURE_POLL_S)
 
             fingers = list(frames[0].keys())
@@ -650,6 +690,8 @@ class TactileClient:
                 self._auto_latest = parsed_resultant
             if mode_taxels and parsed_taxels is not None:
                 self._auto_latest_taxels = parsed_taxels
-            self._auto_latest_ts = time.time()
+            # Monotonic, matching EncoderReading.timestamp, so staleness
+            # logic and cross-stream correlation survive wall-clock steps.
+            self._auto_latest_ts = time.monotonic()
             self._auto_stats.frames_ok += 1
             self._first_frame_event.set()

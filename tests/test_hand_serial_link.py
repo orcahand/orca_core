@@ -17,6 +17,7 @@ from orca_core.hardware.sensing.constants import (
     FUNC_CODE_READ,
     PROTOCOL_BYTE_AUTO,
     PROTOCOL_BYTE_AUTO_ENC,
+    PROTOCOL_BYTE_RESPONSE,
     PROTOCOL_HEADER_AUTO,
     PROTOCOL_HEADER_AUTO_ENC,
     PROTOCOL_HEADER_RESPONSE,
@@ -24,6 +25,7 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.tactile_protocol import build_read_request
+from tests.conftest import wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +227,81 @@ def test_link_has_no_pause_api():
     assert not hasattr(link, "pause_reads")
     assert not hasattr(link, "resume_reads")
     assert not hasattr(link, "paused_reads")
+
+
+# ---------------------------------------------------------------------------
+# Port death (USB unplug)
+# ---------------------------------------------------------------------------
+
+def test_port_death_stops_demuxer_and_flags_link(link):
+    demux_thread = link._demux_thread
+    link.simulate_port_death()
+
+    wait_until(lambda: link.is_port_dead)
+    demux_thread.join(timeout=1.0)
+    assert not demux_thread.is_alive()
+    assert not link.is_connected
+    assert link.port_error is not None
+
+
+def test_port_death_unblocks_pending_register_request():
+    link = MockHandSerialLink()
+    link.connect()
+    errors: list[BaseException] = []
+    done = threading.Event()
+
+    def call() -> None:
+        try:
+            link.send_register_request(
+                build_read_request(0x0010, 4), response_timeout_s=5.0,
+            )
+        except IOError as e:
+            errors.append(e)
+        finally:
+            done.set()
+
+    threading.Thread(target=call, daemon=True).start()
+    link.wait_for_write()
+    link.simulate_port_death()
+
+    assert done.wait(timeout=1.0)
+    assert len(errors) == 1 and "port failed" in str(errors[0])
+    link.disconnect()
+
+
+def test_register_request_after_port_death_fails_fast(link):
+    link.simulate_port_death()
+    wait_until(lambda: link.is_port_dead)
+
+    with pytest.raises(IOError, match="port failed"):
+        link.send_register_request(
+            build_read_request(0x0010, 4), response_timeout_s=5.0,
+        )
+
+
+def test_disconnect_after_port_death_is_clean():
+    link = MockHandSerialLink()
+    link.connect()
+    link.simulate_port_death()
+    wait_until(lambda: link.is_port_dead)
+
+    link.disconnect()
+    assert not link.is_connected
+
+
+def test_implausible_response_length_has_own_counter(link):
+    marker = _Capture()
+    link.register_frame_handler(PROTOCOL_BYTE_AUTO, marker)
+
+    bogus = (
+        PROTOCOL_HEADER_RESPONSE
+        + bytes([PROTOCOL_RESERVED, FUNC_CODE_READ])
+        + (0x0010).to_bytes(2, "little")
+        + (0xFFFF).to_bytes(2, "little")  # implausible data count
+    )
+    link.feed_bytes(bogus + _tactile_frame())
+    marker.wait_for(1)
+
+    stats = link.get_link_stats()
+    assert stats.responses_implausible_length == 1
+    assert stats.frames_bad_lrc[PROTOCOL_BYTE_RESPONSE] == 0

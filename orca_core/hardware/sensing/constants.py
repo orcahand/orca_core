@@ -1,22 +1,15 @@
 """Constants for ORCA tactile sensing and joint encoders."""
 
 # ---------------------------------------------------------------------------
-# Baud-rate defaults
-#
-# One default per sensing link (the motor-bus default lives in
-# orca_core/constants.py with the other motor settings).
-#
-#   DEFAULT_SENSOR_BAUDRATE   tactile link on its own adapter  (config: sensors.baudrate)
-#   DEFAULT_ENCODER_BAUDRATE  joint-encoder / shared link      (config: encoder_baudrate)
-#
-# When tactile and encoders share one port, the tactile stream rides that link
-# at DEFAULT_ENCODER_BAUDRATE; DEFAULT_SENSOR_BAUDRATE applies only when the
-# tactile sensor is on its own adapter. Both are defaults — set the matching
-# config key to override.
+# Baud-rate defaults (the motor-bus default lives in orca_core/constants.py)
 # ---------------------------------------------------------------------------
 
 DEFAULT_SENSOR_BAUDRATE = 921600
+"""Tactile link on its own adapter; the ``sensors.baudrate`` config key overrides."""
+
 DEFAULT_ENCODER_BAUDRATE = 2_000_000
+"""Joint-encoder link, also carrying tactile when both share one port; the
+``encoder_baudrate`` config key overrides."""
 
 # ---------------------------------------------------------------------------
 # Serial discovery
@@ -124,8 +117,7 @@ MIN_WRITE_RESPONSE_SIZE = 9
 MAX_AUTO_FRAME_EFFECTIVE_LENGTH = 8192
 
 # Same bound applied to the ``count`` field in AA 55 register responses — a
-# higher value is treated as a corrupted header and resync rather than the
-# start of a multi-megabyte read.
+# higher value is treated as corruption rather than a multi-megabyte read.
 MAX_RESPONSE_DATA_LEN = MAX_AUTO_FRAME_EFFECTIVE_LENGTH
 
 # Register block structure
@@ -241,6 +233,10 @@ OFFSET_CLEAR_SETTLE_S = 0.01
 
 OFFSET_CAPTURE_POLL_S = 0.002
 """Poll interval while collecting frames to average into zeroing offsets."""
+
+OFFSET_CAPTURE_FRAME_BUDGET_S = 0.05
+"""Slowest per-frame budget assumed when deriving the default offset-capture
+deadline; well above any real stream period so healthy captures never trip it."""
 
 TACTILE_FIRST_FRAME_TIMEOUT_S = 2.0
 """Default wait for the first stored tactile frame in ``wait_for_first_frame``."""
