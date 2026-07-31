@@ -1,8 +1,12 @@
 """Tests for OrcaHand.connect() driver auto-detection and port helpers."""
 
 import dataclasses
+import logging
+import os
 
 from types import SimpleNamespace
+
+import pytest
 
 from orca_core.constants import KNOWN_VIDS
 from orca_core import OrcaHand
@@ -222,6 +226,111 @@ def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
     persisted = read_yaml(str(config_path))
     assert persisted["motor_type"] == "dynamixel"
     assert persisted["baudrate"] == 1_000_000
+
+
+def test_persist_write_failure_does_not_fail_connect(
+        mock_config_dir, monkeypatch, caplog):
+    """A read-only config.yaml must degrade to a logged warning, not a
+    failed connect: the probe simply runs again next time."""
+    import yaml
+
+    from orca_core import MockOrcaHand
+    from orca_core.utils.utils import read_yaml
+
+    class ProbedMockOrcaHand(MockOrcaHand):
+        _resolve_motor_driver = OrcaHand._resolve_motor_driver
+        _persist_resolved_driver = OrcaHand._persist_resolved_driver
+
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    monkeypatch.setattr(
+        dynamixel_client.DynamixelClient,
+        "probe",
+        staticmethod(lambda port, baudrate, motor_ids: baudrate == 1_000_000),
+    )
+    monkeypatch.setattr(
+        feetech_client.FeetechClient, "probe", staticmethod(lambda *a, **k: False)
+    )
+
+    config_path = mock_config_dir / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text())
+    raw.pop("motor_type", None)
+    raw.pop("baudrate", None)
+    raw["port"] = "/dev/cu.fake"
+    config_path.write_text(yaml.safe_dump(raw))
+
+    hand = ProbedMockOrcaHand(config_path=str(config_path))
+    config_path.chmod(0o444)
+    if os.access(config_path, os.W_OK):
+        pytest.skip("cannot make the config read-only on this platform")
+    try:
+        with caplog.at_level(logging.WARNING):
+            success, msg = hand.connect()
+        assert success, msg
+        hand.disconnect()
+        persisted = read_yaml(str(config_path))
+        assert "motor_type" not in persisted
+        assert any(
+            "Could not persist" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        config_path.chmod(0o644)
+
+
+def test_persist_writes_all_keys_in_one_atomic_update(tmp_path, monkeypatch):
+    """All resolved keys land in a single os.replace and unrelated keys
+    survive the rewrite."""
+    import yaml
+
+    from orca_core.hardware import motor_resolution
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"custom_key": "keep-me", "port": "auto"})
+    )
+
+    replaced = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        replaced.append(dst)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(motor_resolution.os, "replace", spy_replace)
+
+    existing = SimpleNamespace(port="auto", motor_type=None, baudrate=None)
+    resolved = SimpleNamespace(
+        port="/dev/cu.x",
+        motor_type="feetech",
+        baudrate=1_000_000,
+        config_path=str(config_path),
+    )
+    motor_resolution.persist_resolved_driver(existing, resolved)
+
+    data = yaml.safe_load(config_path.read_text())
+    assert data["custom_key"] == "keep-me"
+    assert data["port"] == "auto"  # 'auto' is never overwritten
+    assert data["motor_type"] == "feetech"
+    assert data["baudrate"] == 1_000_000
+    assert replaced == [str(config_path)]
+
+
+def test_trial_probe_reports_via_logging_not_stdout(
+        mock_hand, monkeypatch, capsys, caplog):
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    _clear_driver(mock_hand)
+    monkeypatch.setattr(
+        dynamixel_client.DynamixelClient, "probe", staticmethod(lambda *a, **k: False)
+    )
+    monkeypatch.setattr(
+        feetech_client.FeetechClient, "probe", staticmethod(lambda *a, **k: False)
+    )
+    with caplog.at_level(logging.INFO, logger="orca_core.hardware.motor_resolution"):
+        OrcaHand._trial_probe(mock_hand, "/dev/cu.x")
+    assert capsys.readouterr().out == ""
+    assert any("Probing" in record.getMessage() for record in caplog.records)
 
 
 # ----- non-interactive connect ---------------------------------------------

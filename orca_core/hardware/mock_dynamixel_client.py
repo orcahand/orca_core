@@ -189,21 +189,32 @@ class MockDynamixelClient(MotorClient):
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
-                           retries: int = -1,
-                           retry_interval: float = 0.25):
+                           retries: int = 3,
+                           retry_interval: float = 0.25) -> "list[int]":
         """Sets whether torque is enabled for the motors.
 
         Args:
             motor_ids: The motor IDs to configure.
             enabled: Whether to engage or disengage the motors.
-            retries: The number of times to retry. If this is <0, will retry
-                forever.
+            retries: The number of times to retry after the first attempt.
+                0 means a single attempt; <0 retries forever.
             retry_interval: The number of seconds to wait between retries.
+
+        Returns:
+            A list of motor IDs that could not be set (unknown IDs, matching
+            a real client's silent motors).
         """
+        self.check_connected()
+        failed_ids = []
         for mid in motor_ids:
             if mid not in self._torque_enabled:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
+                failed_ids.append(mid)
+                continue
             self._torque_enabled[mid] = enabled
+        if failed_ids:
+            logging.error('Could not set torque %s for IDs: %s',
+                          'enabled' if enabled else 'disabled', str(failed_ids))
+        return failed_ids
 
     def set_operating_mode(self, motor_ids: Sequence[int], mode_value: int):
         """
@@ -214,15 +225,17 @@ class MockDynamixelClient(MotorClient):
         4: multi-turn position control mode
         5: current-based position control mode
         """
+        self.check_connected()
         for mid in motor_ids:
             if mid not in self._operating_mode:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
+                logging.error('Failed to set operating mode for motor %d: unknown ID', mid)
+                continue
             self._operating_mode[mid] = mode_value
             logging.info('Set operating mode for motor %d to %d', mid, mode_value)
-        
 
     def read_position_velocity_current(self) -> MotorRead:
         """Returns the simulated positions, velocities, and currents."""
+        self.check_connected()
 
         pos_array = np.array([self._pos[mid] for mid in self.motor_ids])
         vel_array = np.array([self._vel[mid] for mid in self.motor_ids])
@@ -238,10 +251,12 @@ class MockDynamixelClient(MotorClient):
 
     def read_status_is_done_moving(self) -> bool:
         """Returns the last bit of moving status"""
+        self.check_connected()
         return True
 
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the simulated temperatures."""
+        self.check_connected()
         temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
         return temp_array
 
@@ -254,18 +269,20 @@ class MockDynamixelClient(MotorClient):
             positions: The joint angles in radians to write.
         """
         assert len(motor_ids) == len(positions)
-                
+        self.check_connected()
+
         for mid in motor_ids:
             if mid not in self._pos:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
-            
+                logging.error('Write ignored for unknown motor ID %d', mid)
+                continue
+
             if positions[motor_ids.index(mid)] > self._max_motor_pos:
                 self._pos[mid] = self._max_motor_pos
             elif positions[motor_ids.index(mid)] < self._min_pos:
                 self._pos[mid] = self._min_pos
             else:
                 self._pos[mid] = positions[motor_ids.index(mid)]
-        
+
         times = [0.0]
         for _ in range(4):
             times.append(times[-1] + random.uniform(0.01, 0.05))
@@ -273,18 +290,22 @@ class MockDynamixelClient(MotorClient):
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
         assert len(motor_ids) == len(current)
+        self.check_connected()
 
         for mid in motor_ids:
             if mid not in self._cur:
-                raise ValueError('Motor ID {} not found in client.'.format(mid))
+                logging.error('Write ignored for unknown motor ID %d', mid)
+                continue
             self._cur[mid] = current[motor_ids.index(mid)]
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)
-            
+            self.check_connected()
+
             for mid in motor_ids:
                 if mid not in self._profile_velocity:
-                    raise ValueError('Motor ID {} not found in client.'.format(mid))
+                    logging.error('Write ignored for unknown motor ID %d', mid)
+                    continue
                 self._profile_velocity[mid] = profile_velocity[motor_ids.index(mid)]
 
     def write_byte(
@@ -317,6 +338,7 @@ class MockDynamixelClient(MotorClient):
             address: The control table address to write to.
             size: The size of the control table value being written to.
         """
+        self.check_connected()
         times = [0.0]
         for _ in range(4):
             times.append(times[-1] + random.uniform(0.01, 0.05))

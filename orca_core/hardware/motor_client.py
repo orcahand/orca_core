@@ -27,6 +27,10 @@ class MotorRead(NamedTuple):
     Each field is a 1-D numpy array indexed by the motor order configured
     on the client. NamedTuple so callers can also unpack as
     ``position, velocity, current = client.read_position_velocity_current()``.
+
+    A snapshot does not carry its own freshness; that is reported
+    out-of-band via :attr:`MotorClient.last_read_ok`, whose coupling rules
+    are documented there.
     """
     position: np.ndarray
     velocity: np.ndarray
@@ -117,16 +121,20 @@ class MotorClient(ABC):
         self,
         motor_ids: Sequence[int],
         enabled: bool,
-        retries: int = -1,
+        retries: int = 3,
         retry_interval: float = 0.25
-    ) -> None:
+    ) -> "list[int]":
         """Sets whether torque is enabled for the specified motors.
 
         Args:
             motor_ids: The motor IDs to configure.
             enabled: Whether to engage or disengage the motors.
-            retries: The number of times to retry. If <0, will retry forever.
+            retries: The number of times to retry after the first attempt.
+                0 means a single attempt; <0 retries forever.
             retry_interval: The number of seconds to wait between retries.
+
+        Returns:
+            The motor IDs that could not be set.
         """
         ...
 
@@ -161,8 +169,18 @@ class MotorClient(ABC):
         returned fresh data for every motor.
 
         A failed bus read keeps returning the stale cache, so callers must
-        discard or retry samples taken while this is ``False``. Clients with
-        no failure signal report ``True``; their reads are authoritative.
+        discard or retry samples taken while this is ``False``.
+
+        The flag is client-global mutable state, overwritten by every read
+        from any thread: it qualifies only the single most recent read on
+        this client, never a specific :class:`MotorRead` snapshot. Check it
+        immediately after the read it describes, before any other read can
+        run — i.e. under the same lock that serialized that read. Any
+        interleaved read (another thread, or a second read of your own)
+        rebinds the flag to different data.
+
+        Clients with no failure signal report ``True``; their reads are
+        authoritative.
         """
         return True
 
@@ -229,7 +247,9 @@ class MotorClient(ABC):
             upper: If True, set to upper bound. If False, set to lower bound.
 
         Returns:
-            True on success, False otherwise.
+            True if the motor acknowledged the offset command. ``False``
+            means the position frame was NOT shifted; callers must check
+            and must not persist limits derived from an unshifted frame.
         """
         # Base implementation: no-op for motors that don't need this
         return True
