@@ -37,7 +37,7 @@ def _make_mock_feeder(hand):
 
     # Slot-id order matches the wire-frame order the parser expects.
     active = sorted(FINGER_NAMES, key=lambda f: hand.config.finger_to_sensor_id[f])
-    link = hand._tactile_link  # no public seam for feeding mock frames yet
+    link = hand.tactile_mock_link
 
     def feed(t: float) -> None:
         taxels = {}

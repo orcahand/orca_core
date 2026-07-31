@@ -234,11 +234,10 @@ def test_tier3_drops_trim_writes_base_motor_target_only(calibrated_hand):
     """At >200 ms freshness the PI trim is dropped: each cycle writes the
     base motor target for the (uncorrected) joint target so the motor's
     internal PID continues to hold the requested pose."""
-    encoder = _static_at_zero(
-        calibrated_hand, freshness_ms=WATCHDOG_HOLD_BASE_MS + 50
-    )
+    encoder = _static_at_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder, Kp=10.0)
     loop.prime_for_step()
+    encoder.freshness_ms = WATCHDOG_HOLD_BASE_MS + 50
     target_deg = 4.0
     loop.set_target({j: target_deg for j in calibrated_hand._encoder_backed_joints()})
     loop.step_once(dt=0.005)
@@ -405,6 +404,67 @@ def test_start_after_estop_clears_fallback_and_runs(calibrated_hand):
         assert loop.get_stats()["cycles_ok"] > 0
     finally:
         loop.stop()
+
+
+def test_anchor_rejects_stale_encoder_reading(calibrated_hand):
+    """A cached reading older than the watchdog hold tier must not be
+    anchored: the pose it describes may be long gone (e.g. hand-posed with
+    the stream stalled), so the anchor raises instead of latching it."""
+    encoder = _static_at_zero(calibrated_hand, freshness_ms=WATCHDOG_HOLD_MS + 10)
+    loop = _make_loop(calibrated_hand, encoder)
+    with pytest.raises(RuntimeError, match="stale"):
+        loop.prime_for_step()
+
+
+def test_snapshot_rejects_selected_joint_without_motor_calibration(calibrated_hand):
+    """With the default joints=None a joint carrying an encoder anchor but a
+    zero joint-to-motor ratio must fail the snapshot loudly instead of
+    becoming a silent no-op (or NaN targets for None limits)."""
+    victim = calibrated_hand._encoder_backed_joints()[0]
+    victim_motor = calibrated_hand.config.joint_to_motor_map[victim]
+    calibrated_hand.calibration.joint_to_motor_ratios_dict[victim_motor] = 0.0
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    with pytest.raises(RuntimeError, match="joint-to-motor ratio"):
+        loop.prime_for_step()
+
+
+def test_anchor_reads_motor_flag_under_motor_lock(calibrated_hand):
+    """The anchor's read-ok flag must be captured while the motor lock is
+    still held, so a concurrent reader can't overwrite it in between."""
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    real_client = calibrated_hand._motor_client
+    lock_owned_at_flag_read = []
+
+    class _FlagProbe:
+        def __getattr__(self, name):
+            if name == "last_read_ok":
+                lock_owned_at_flag_read.append(
+                    calibrated_hand._motor_lock._is_owned()
+                )
+            return getattr(real_client, name)
+
+    calibrated_hand._motor_client = _FlagProbe()
+    try:
+        loop.prime_for_step()
+    finally:
+        calibrated_hand._motor_client = real_client
+    assert lock_owned_at_flag_read and all(lock_owned_at_flag_read)
+
+
+def test_snapshot_rejects_unvalidated_hand_side(calibrated_hand, monkeypatch):
+    """A hand side without a validated encoder polarity table must fail the
+    snapshot instead of silently decoding with right-hand signs."""
+    import dataclasses as dc
+
+    monkeypatch.setattr(
+        calibrated_hand, "config", dc.replace(calibrated_hand.config, type="left")
+    )
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder)
+    with pytest.raises(KeyError, match="polarity"):
+        loop.prime_for_step()
 
 
 def test_offset_read_rejects_failed_bus_read(calibrated_hand):

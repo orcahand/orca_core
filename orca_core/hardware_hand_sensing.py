@@ -30,7 +30,10 @@ import dataclasses
 import logging
 import threading
 from contextlib import contextmanager
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .hardware.mock_hand_serial_link import MockHandSerialLink
 
 import numpy as np
 
@@ -45,10 +48,17 @@ from .control.joint_controller import JointController
 from .control.joint_loop import JointLoopThread
 from .hand_config import OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
-from .hardware.joint_encoder_client import JointEncoderClient
+from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
+from .hardware.sensing.constants import JOINT_ENCODER_POLARITY_BY_SIDE
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
-from .hardware.sensing.types import ResultantReading, TactileReading, TaxelData, TaxelReading
+from .hardware.sensing.types import (
+    LinkHealth,
+    ResultantReading,
+    TactileReading,
+    TaxelData,
+    TaxelReading,
+)
 from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .hardware_hand import MockMotorResolutionMixin, OrcaHand
 from .joint_position import OrcaJointPositions
@@ -57,6 +67,18 @@ from .kinematics import frames as tactile_frames
 
 
 logger = logging.getLogger(__name__)
+
+
+def _link_health(link: Optional[HandSerialLink]) -> Optional[LinkHealth]:
+    """Snapshot ``link``'s health, or ``None`` when there is no link."""
+    if link is None:
+        return None
+    return LinkHealth(
+        connected=link.is_connected,
+        port_dead=link.is_port_dead,
+        port_error=link.port_error,
+        stats=link.get_link_stats(),
+    )
 
 
 class OrcaHandTouch(OrcaHand):
@@ -159,13 +181,16 @@ class OrcaHandTouch(OrcaHand):
             try:
                 self._open_tactile_on_port(port, baud)
             except Exception as e:
-                print(f"Sensor connection failed on {port}: {e}")
+                logger.warning("Sensor connection failed on %s: %s", port, e)
                 self._teardown_tactile()
                 continue
             # Opening proves nothing on its own — any serial device accepts a
             # connection. Require the configuration read to have answered.
             if self._tactile_client.get_tactile_configuration() is None:
-                print(f"Port {port} opened but the sensor did not respond; trying next candidate")
+                logger.warning(
+                    "Port %s opened but the sensor did not respond; "
+                    "trying next candidate", port,
+                )
                 self._teardown_tactile()
                 continue
             if port != configured:
@@ -178,9 +203,15 @@ class OrcaHandTouch(OrcaHand):
         )
 
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
+        # Idempotent like the motor-only connect: never re-attach over (and
+        # orphan) a live tactile link.
+        if self.is_connected() and self._tactile_client is not None:
+            return True, "Already connected"
         success, msg = super().connect(interactive)
         if not success:
             return success, msg
+        if self._tactile_client is not None:
+            return True, f"{msg} | Sensor already connected"
 
         sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
         if not sensor_ok:
@@ -248,9 +279,17 @@ class OrcaHandTouch(OrcaHand):
     def stop_tactile_stream(self) -> None:
         self._require_tactile_client().stop_stream()
 
-    def zero_tactile_sensors(self, num_samples: int = 100) -> dict:
-        """Capture current readings as zero baseline and return offsets."""
-        return self._require_tactile_client().capture_taxel_offsets(num_samples=num_samples)
+    def zero_tactile_sensors(
+        self, num_samples: int = 100, timeout_s: float | None = None
+    ) -> dict:
+        """Capture current readings as zero baseline and return offsets.
+
+        ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
+        deadline from ``num_samples``.
+        """
+        return self._require_tactile_client().capture_taxel_offsets(
+            num_samples=num_samples, timeout_s=timeout_s
+        )
 
     def clear_tactile_zero(self) -> None:
         self._require_tactile_client().clear_taxel_offsets()
@@ -263,6 +302,12 @@ class OrcaHandTouch(OrcaHand):
     def get_tactile_stats(self) -> TactileStreamStats:
         """Return ``TactileStreamStats`` for the running auto-stream."""
         return self._require_tactile_client().get_stats()
+
+    def get_tactile_link_health(self) -> LinkHealth | None:
+        """Health snapshot of the serial link carrying the tactile stream, or
+        ``None`` when no tactile link is open. ``port_dead`` reports a hard
+        port failure (e.g. USB unplug) the stream cannot recover from."""
+        return _link_health(self._tactile_link)
 
     def get_taxel_geometry(self) -> Dict[str, TaxelGeometry]:
         """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
@@ -398,12 +443,6 @@ class OrcaHandTouch(OrcaHand):
         return data
 
 
-class JointFeedbackConnectError(RuntimeError):
-    """Raised when a joint-feedback connect precondition fails (no encoder
-    port resolved, no encoder-backed joints, missing encoder calibration).
-    """
-
-
 class OrcaHandJointFeedback(OrcaHand):
     """ORCA hand with closed-loop joint feedback on the encoder-backed joints.
 
@@ -416,12 +455,13 @@ class OrcaHandJointFeedback(OrcaHand):
     is not part of the loop and is driven through the inherited synchronous
     path.
 
-    Connect-time preconditions raise: a missing encoder port, an absent
-    ``joint_encoder_calibration`` block, or an encoder-stream timeout each
-    surface as a :class:`JointFeedbackConnectError`. The motor bus opened
-    by ``super().connect()`` is rolled back before the exception escapes,
-    so a caller that catches the error sees the hand in the same state it
-    started in.
+    Connect-time preconditions raise: an unsupported hand side (closed-loop
+    control is validated on right-hand assemblies only), a missing encoder
+    port, an absent ``joint_encoder_calibration`` block, or an encoder-stream
+    timeout each surface as a :class:`JointFeedbackConnectError`. The motor
+    bus opened by ``super().connect()`` is rolled back before the exception
+    escapes, so a caller that catches the error sees the hand in the same
+    state it started in.
     """
 
     def __init__(
@@ -445,6 +485,7 @@ class OrcaHandJointFeedback(OrcaHand):
         self._loop: Optional[JointLoopThread] = None
         self._loop_skipped_joints: List[str] = []
         self._estop_fallback_logged = False
+        self._init_skip_calibrate = False
 
     # ----- Construction seams (overridden by MockOrcaHandJointFeedback) ----
 
@@ -487,10 +528,10 @@ class OrcaHandJointFeedback(OrcaHand):
             )
         self._loop_skipped_joints = [j for j in backed if j not in ready]
         if self._loop_skipped_joints:
-            print(
-                f"\033[93mWarning: joint(s) {', '.join(self._loop_skipped_joints)} "
-                "are missing motor or encoder calibration — running them "
-                "open-loop (motor control only) until recalibrated.\033[0m"
+            logger.warning(
+                "joint(s) %s are missing motor or encoder calibration — "
+                "running them open-loop (motor control only) until "
+                "recalibrated", ", ".join(self._loop_skipped_joints),
             )
 
         # Wrap offsets feed the joint→motor mapping the loop runs every
@@ -516,6 +557,17 @@ class OrcaHandJointFeedback(OrcaHand):
     def _encoder_motor_ids(self) -> List[int]:
         joint_to_motor = self.config.joint_to_motor_map
         return [joint_to_motor[j] for j in self._encoder_backed_joints()]
+
+    def _require_validated_feedback_side(self) -> None:
+        """Closed-loop control needs the per-side encoder polarity table;
+        refuse sides (e.g. left-hand assemblies) without a validated one."""
+        if self.config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
+            raise JointFeedbackConnectError(
+                f"Closed-loop joint feedback is unvalidated for "
+                f"{self.config.type!r} hand assemblies: no encoder polarity "
+                "table exists for that side. Use the motor-only classes "
+                "(OrcaHand / MockOrcaHand) instead."
+            )
 
     def _loop_ready_joints(self) -> List[str]:
         """Encoder-backed joints calibrated well enough to close the loop on:
@@ -551,6 +603,11 @@ class OrcaHandJointFeedback(OrcaHand):
     # ----- Lifecycle -------------------------------------------------------
 
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
+        # Idempotent like the motor-only connect: never orphan a running
+        # loop and encoder link by re-attaching over them.
+        if self.is_connected() and self._loop is not None:
+            return True, "Already connected"
+        self._require_validated_feedback_side()
         success, msg = super().connect(interactive)
         if not success:
             return success, msg
@@ -653,16 +710,62 @@ class OrcaHandJointFeedback(OrcaHand):
         with self._loop_writes_paused():
             super().set_control_mode(mode, motor_ids)
 
-    def calibrate(self, *args, **kwargs):
-        """Refuse to calibrate while the joint loop is running (it would fight for the same motors)."""
+    def _refuse_routine_while_loop_runs(self, routine: str) -> None:
         if self._loop is not None:
             raise RuntimeError(
-                "calibrate() while the joint-feedback loop is running is not "
-                "supported: the 100 Hz loop and the calibration routine would "
+                f"{routine}() while the joint-feedback loop is running is not "
+                f"supported: the 100 Hz loop and the {routine} routine would "
                 "command the same motors. Connect without engaging feedback "
-                "(e.g. scripts/calibrate.py) and retry."
+                "(e.g. via the maintenance scripts) and retry."
             )
+
+    def calibrate(self, *args, **kwargs):
+        """Refuse to calibrate while the joint loop is running (it would
+        fight for the same motors); :meth:`init_joints` instead skips the
+        calibrate step, keeping connect-admitted joints open-loop."""
+        if self._loop is not None and self._init_skip_calibrate:
+            logger.warning(
+                "skipping calibration while the joint-feedback loop runs; "
+                "joint(s) %s stay open-loop until recalibrated",
+                ", ".join(self._loop_skipped_joints) or "none",
+            )
+            return None
+        self._refuse_routine_while_loop_runs("calibrate")
         return super().calibrate(*args, **kwargs)
+
+    def tension(self, *args, **kwargs):
+        """Refuse to run tendon tensioning while the joint loop is running
+        (it would fight for the same motors)."""
+        self._refuse_routine_while_loop_runs("tension")
+        return super().tension(*args, **kwargs)
+
+    def jitter(self, *args, **kwargs):
+        """Refuse to run tendon-seating jitter while the joint loop is
+        running (it would fight for the same motors)."""
+        self._refuse_routine_while_loop_runs("jitter")
+        return super().jitter(*args, **kwargs)
+
+    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
+        """Prepare the hand for operation (see :meth:`OrcaHand.init_joints`).
+
+        With the joint loop running, calibration cannot run: joints
+        ``connect()`` admitted as skipped stay open-loop instead of failing
+        mid-sequence, and ``force_calibrate=True`` is refused up front
+        (before torque or mode changes).
+        """
+        if self._loop is not None and force_calibrate:
+            raise RuntimeError(
+                "force_calibrate requires connecting without the "
+                "joint-feedback loop: calibration cannot run while the "
+                "100 Hz loop commands the motors."
+            )
+        self._init_skip_calibrate = self._loop is not None
+        try:
+            return super().init_joints(
+                force_calibrate=force_calibrate, move_to_neutral=move_to_neutral
+            )
+        finally:
+            self._init_skip_calibrate = False
 
     # ----- Joint position routing ------------------------------------------
 
@@ -708,42 +811,11 @@ class OrcaHandJointFeedback(OrcaHand):
         if not self._loop_engaged():
             return super()._get_joint_positions()
 
-        # Start from the loop's encoder-measured angles, then patch in the
-        # wrist via its own motor read — avoids the full _motor_to_joint_pos
-        # pass that would (a) recompute the 16 encoder joints we're about
-        # to overwrite and (b) spam calibration-warning prints every cycle.
-        joint_dict: Dict[str, float] = dict(self._loop.get_measured_joints())
-        wrist_joint = self._wrist_joint_name()
-        if wrist_joint is not None:
-            wrist_angle = self._wrist_joint_angle()
-            if wrist_angle is not None:
-                joint_dict[wrist_joint] = wrist_angle
+        # Motor-path angles cover the wrist and joints the loop doesn't
+        # measure (e.g. skipped at connect); encoder angles win where present.
+        joint_dict: Dict[str, float] = super()._get_joint_positions().as_dict()
+        joint_dict.update(self._loop.get_measured_joints())
         return OrcaJointPositions.from_dict(joint_dict)
-
-    def _wrist_joint_name(self) -> Optional[str]:
-        from .constants import WRIST
-
-        if WRIST in self.config.joint_to_motor_map:
-            return WRIST
-        return None
-
-    def _wrist_joint_angle(self) -> Optional[float]:
-        """Read the wrist motor only and convert via the inherited motor→joint
-        mapping. Returns ``None`` if the wrist isn't fully calibrated."""
-        wrist_joint = self._wrist_joint_name()
-        if wrist_joint is None:
-            return None
-        wrist_motor_id = self.config.joint_to_motor_map[wrist_joint]
-        limits = self.motor_limits_dict.get(wrist_motor_id)
-        ratio = self.calibration.joint_to_motor_ratios_dict.get(wrist_motor_id, 0.0)
-        if limits is None or any(v is None for v in limits) or ratio == 0:
-            return None
-        motor_pos = self.get_motor_pos()
-        idx = self.config.motor_id_to_idx_dict[wrist_motor_id]
-        wrapped = motor_pos[idx] - (self._wrap_offsets_dict or {}).get(wrist_motor_id, 0.0)
-        if self.config.joint_inversion_dict.get(wrist_joint, False):
-            return self.config.joint_roms_dict[wrist_joint][1] - (wrapped - limits[0]) / ratio
-        return self.config.joint_roms_dict[wrist_joint][0] + (wrapped - limits[0]) / ratio
 
     # ----- Public facade onto the loop + controller ------------------------
 
@@ -756,8 +828,8 @@ class OrcaHandJointFeedback(OrcaHand):
     ) -> None:
         """Retune the outer-loop PI gains while the loop is running.
 
-        ``i_clamp_deg`` defaults to ``correction_max_deg`` (the convention
-        established during bring-up: anti-windup matches output clamp).
+        ``i_clamp_deg`` defaults to ``correction_max_deg`` (the anti-windup
+        clamp matches the output clamp).
         Raises :class:`RuntimeError` when the joint loop isn't active.
         """
         if self._controller is None:
@@ -779,17 +851,39 @@ class OrcaHandJointFeedback(OrcaHand):
             raise RuntimeError("joint loop not running; call connect() first")
         self._loop.rebase()
 
-    def get_measured_joints(self) -> Dict[str, float]:
-        """Encoder-measured joint angles in degrees, per encoder-backed joint."""
+    def _require_live_loop(self) -> None:
         if self._loop is None:
             raise RuntimeError("joint loop not running; call connect() first")
+        if self._loop.get_stats()["fallback_active"]:
+            raise RuntimeError(
+                "joint loop e-stopped; its measurements are frozen. Use "
+                "get_joint_position() for live angles (see get_loop_stats())."
+            )
+
+    def get_measured_joints(self) -> Dict[str, float]:
+        """Encoder-measured joint angles in degrees, per loop-controlled joint.
+
+        Raises :class:`RuntimeError` when no loop is running or after the
+        watchdog e-stop (the loop's last measurement is frozen); use
+        :meth:`get_joint_position` for live open-loop angles.
+        """
+        self._require_live_loop()
         return self._loop.get_measured_joints()
 
     def get_loop_correction(self) -> Dict[str, float]:
-        """Per-joint PI trim correction in degrees from the last cycle."""
-        if self._loop is None:
-            raise RuntimeError("joint loop not running; call connect() first")
+        """Per-joint PI trim correction in degrees from the last cycle.
+
+        Raises :class:`RuntimeError` when no loop is running or after the
+        watchdog e-stop (the loop's last correction is frozen).
+        """
+        self._require_live_loop()
         return self._loop.get_correction()
+
+    def get_encoder_link_health(self) -> LinkHealth | None:
+        """Health snapshot of the joint-encoder serial link, or ``None`` when
+        no encoder link is open. ``port_dead`` reports a hard port failure
+        (e.g. USB unplug) the stream cannot recover from."""
+        return _link_health(self._encoder_link)
 
     def get_loop_stats(self) -> Dict[str, float]:
         """Diagnostic counters from the joint-loop thread (cycles_ok,
@@ -815,6 +909,18 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
     config_cls = OrcaHandTouchConfig
 
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
+        # Idempotent like the motor-only connect: never orphan the running
+        # loop or the live links by re-attaching over them.
+        if (
+            self.is_connected()
+            and self._loop is not None
+            and self._tactile_client is not None
+        ):
+            return True, "Already connected"
+        self._require_validated_feedback_side()
+        # A sensors-only tactile attach can't be kept: this connect re-resolves
+        # the topology (tactile may need to ride the shared encoder link).
+        self._teardown_tactile()
         # Motor bus only — bypass the single-sensor connect() chains so this
         # class fully controls how the tactile and encoder links are opened.
         success, msg = OrcaHand.connect(self, interactive)
@@ -874,12 +980,19 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
             f"| Tactile on {tactile_where}"
         )
 
+    def get_tactile_link_health(self) -> LinkHealth | None:
+        """Health of the link carrying the tactile stream — the shared
+        encoder link when both streams ride one port."""
+        if self._tactile_link is None and self._tactile_client is not None:
+            return _link_health(self._encoder_link)
+        return super().get_tactile_link_health()
+
     def disconnect(self) -> tuple[bool, str]:
-        # Tactile first: its stop_stream() needs the link alive. Joint-feedback
-        # teardown then stops the loop that drives the motor bus and closes the
-        # shared (or dedicated encoder) link; a shared link is closed once
-        # because tactile left _tactile_link None. Motors go down last, once
-        # nothing is writing to the bus anymore.
+        """Tear down in dependency order: tactile first (its ``stop_stream()``
+        needs the link alive), then joint feedback (stopping the loop that
+        drives the motor bus and closing the shared or dedicated encoder link
+        — closed once, since tactile leaves ``_tactile_link`` unset when
+        shared), motors last, once nothing writes to the bus anymore."""
         self._teardown_tactile()
         self._teardown_joint_feedback()
         return OrcaHand.disconnect(self)
@@ -964,6 +1077,17 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
             return False, f"Sensor connection failed on {port}: {e}"
         return True, f"Sensor connected on {port} @ {baudrate}"
 
+    @property
+    def tactile_mock_link(self) -> "MockHandSerialLink":
+        """The in-memory link behind the mock tactile client — feed it
+        synthetic frames via :mod:`orca_core.hardware.sensing.tactile_mock`."""
+        if self._tactile_link is None:
+            raise RuntimeError(
+                "tactile mock link not open; call connect() or "
+                "connect_sensors_only() first"
+            )
+        return self._tactile_link
+
 
 class MockOrcaHandJointFeedback(MockMotorResolutionMixin, OrcaHandJointFeedback):
     """Drop-in :class:`OrcaHandJointFeedback` with in-memory mock motor +
@@ -1034,3 +1158,11 @@ class MockOrcaHandFull(MockOrcaHandTouch, MockOrcaHandJointFeedback, OrcaHandFul
     The mock bases supply the in-memory motor client and mock serial links;
     :class:`OrcaHandFull` supplies the shared-link connect/disconnect logic.
     """
+
+    @property
+    def tactile_mock_link(self) -> "MockHandSerialLink":
+        """The mock link carrying the tactile stream — the shared encoder
+        link when both streams ride one port."""
+        if self._tactile_link is None and self._encoder_link is not None:
+            return self._encoder_link
+        return super().tactile_mock_link

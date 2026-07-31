@@ -6,13 +6,12 @@ import numpy as np
 import pytest
 
 import orca_core
-from orca_core import OrcaHandTouch, Transform, frames
+from orca_core import MockOrcaHandTouch, Transform, frames
 from orca_core.constants import FINGER_NAMES
-from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
-from orca_core.hardware.tactile_client import TactileClient
 
-from tests._tactile_helpers import TactileMockState, feed_taxels_frame, install_tactile_mock
+from tests._tactile_helpers import feed_taxels_frame
+from tests.conftest import wait_until
 
 CONFIG_V2_TOUCH = os.path.join(
     os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-touch-right", "config.yaml"
@@ -25,23 +24,21 @@ def _mock_taxels():
     return {f: [[0.5, -0.3, 1.2]] * DEFAULT_TAXEL_COUNTS[f] for f in FINGER_NAMES}
 
 
+def _active_order(hand):
+    """Connected fingers in slot-id order (matches wire-frame order)."""
+    return sorted(FINGER_NAMES, key=lambda f: hand.config.finger_to_sensor_id[f])
+
+
 @pytest.fixture
 def hand():
-    hand = OrcaHandTouch(config_path=CONFIG_V2_TOUCH)
-    state = TactileMockState()
-    link = MockHandSerialLink()
-    install_tactile_mock(link, state)
-    link.connect()
-    client = TactileClient(link, finger_to_sensor_id=state.finger_to_sensor_id)
-    client.connect()
-    client.start_stream(resultant=False, taxels=True)
-    feed_taxels_frame(link, _mock_taxels(), state.active_sensors)
-    client.wait_for_first_frame()
-    hand._tactile_client = client
+    hand = MockOrcaHandTouch(config_path=CONFIG_V2_TOUCH)
+    ok, msg = hand.connect_sensors_only()
+    assert ok, msg
+    hand.start_tactile_stream(resultant=False, taxels=True)
+    feed_taxels_frame(hand.tactile_mock_link, _mock_taxels(), _active_order(hand))
+    wait_until(lambda: hand.get_tactile_taxels() is not None)
     yield hand
-    client.stop_stream()
-    client.disconnect()
-    link.disconnect()
+    hand.disconnect()
 
 
 class TestGetTaxelData:
@@ -110,17 +107,13 @@ class TestGetTaxelData:
             hand.get_taxel_data(frame="fingernail")
 
     def test_none_before_first_stream_frame(self):
-        hand = OrcaHandTouch(config_path=CONFIG_V2_TOUCH)
-        state = TactileMockState()
-        link = MockHandSerialLink()
-        install_tactile_mock(link, state)
-        link.connect()
-        client = TactileClient(link, finger_to_sensor_id=state.finger_to_sensor_id)
-        client.connect()
-        hand._tactile_client = client
-        assert hand.get_taxel_data() is None
-        client.disconnect()
-        link.disconnect()
+        hand = MockOrcaHandTouch(config_path=CONFIG_V2_TOUCH)
+        ok, msg = hand.connect_sensors_only()
+        assert ok, msg
+        try:
+            assert hand.get_taxel_data() is None
+        finally:
+            hand.disconnect()
 
 
 class TestSensorTransforms:

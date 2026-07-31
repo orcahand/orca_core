@@ -15,6 +15,8 @@ from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.serial_discovery import SensingPorts
 from orca_core.hardware.sensing.tactile_mock import TactileMockState, install_tactile_mock
 
+from tests.conftest import wait_until
+
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOUCH_CONFIG = os.path.join(
@@ -99,6 +101,81 @@ def test_touch_connect_rolls_back_motor_bus_on_sensor_failure():
     assert not success
     assert "sensor boom" in msg
     assert not hand.is_connected()
+
+
+def test_touch_second_connect_is_noop_and_orphans_nothing():
+    """A second connect() must be a no-op success — not re-open the tactile
+    link and orphan the first one."""
+    hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
+    hand.connect()
+    try:
+        link, client = hand._tactile_link, hand._tactile_client
+        ok, msg = hand.connect()
+        assert ok and msg == "Already connected"
+        assert hand._tactile_link is link
+        assert hand._tactile_client is client
+    finally:
+        hand.disconnect()
+
+
+def test_touch_connect_after_sensors_only_keeps_tactile_link():
+    """connect() after connect_sensors_only() completes the motor half but
+    must not re-attach over the live tactile link."""
+    hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    link, client = hand._tactile_link, hand._tactile_client
+    ok, msg = hand.connect()
+    try:
+        assert ok
+        assert "Sensor already connected" in msg
+        assert hand.is_connected()
+        assert hand._tactile_link is link
+        assert hand._tactile_client is client
+    finally:
+        hand.disconnect()
+
+
+def test_touch_link_health_reports_port_death():
+    """The public health accessor must surface link liveness and the latched
+    port-dead state without callers touching private link attributes."""
+    hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
+    assert hand.get_tactile_link_health() is None
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    try:
+        health = hand.get_tactile_link_health()
+        assert health.connected
+        assert not health.port_dead
+        assert health.port_error is None
+
+        hand._tactile_link.simulate_port_death()
+        wait_until(lambda: hand.get_tactile_link_health().port_dead)
+        health = hand.get_tactile_link_health()
+        assert not health.connected
+        assert health.port_error
+    finally:
+        hand.disconnect()
+
+
+def test_zero_tactile_sensors_forwards_timeout():
+    """zero_tactile_sensors must pass its timeout_s through to the client's
+    offset capture."""
+    hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    captured = {}
+
+    def fake_capture(num_samples=100, timeout_s=None):
+        captured.update(num_samples=num_samples, timeout_s=timeout_s)
+        return {}
+
+    hand._tactile_client.capture_taxel_offsets = fake_capture
+    try:
+        hand.zero_tactile_sensors(num_samples=7, timeout_s=1.5)
+        assert captured == {"num_samples": 7, "timeout_s": 1.5}
+    finally:
+        hand.disconnect()
 
 
 def test_touch_disconnect_returns_lifecycle_tuple():

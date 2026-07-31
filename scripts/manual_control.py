@@ -449,8 +449,15 @@ class JointFeedbackSliderUI:
         self.root.after(REFRESH_MS, self._schedule_refresh)
 
     def _refresh(self) -> None:
-        measured = self.hand.get_measured_joints()
-        correction = self.hand.get_loop_correction()
+        try:
+            measured = self.hand.get_measured_joints()
+            correction = self.hand.get_loop_correction()
+        except RuntimeError as exc:
+            for joint in self.slider_joints:
+                self.measured_labels[joint].config(text="meas: e-stop")
+                self.trim_labels[joint].config(text="trim: --")
+            logging.warning("joint loop unavailable: %s", exc)
+            return
         for joint in self.slider_joints:
             self.measured_labels[joint].config(
                 text=f"meas: {measured.get(joint, float('nan')):+6.1f}°"

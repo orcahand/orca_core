@@ -179,7 +179,8 @@ ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 # while an explicit joint list narrows to that subset for bring-up/debugging.
 ENCODER_JOINTS_ALL = "all"
 
-# Per-joint encoder polarity.
+# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation.
+# Validated on right-hand assemblies only; mirroring changes mounting senses.
 JOINT_ENCODER_POLARITY = {
     "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
     "index_abd": 1, "index_mcp": 1, "index_pip": -1,
@@ -188,6 +189,26 @@ JOINT_ENCODER_POLARITY = {
     "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
     "wrist": 1,
 }
+
+# Polarity tables by hand side; a side is absent until its table is validated
+# on hardware ("left" deliberately has none yet).
+JOINT_ENCODER_POLARITY_BY_SIDE = {"right": JOINT_ENCODER_POLARITY}
+
+
+def joint_encoder_polarity_for_side(side):
+    """Per-joint encoder polarity table for hands of ``side``.
+
+    Raises ``KeyError`` for sides without a validated table (currently
+    everything but ``"right"``), so closed-loop consumers fail loudly
+    instead of decoding with wrong signs.
+    """
+    try:
+        return JOINT_ENCODER_POLARITY_BY_SIDE[side]
+    except KeyError:
+        raise KeyError(
+            f"no validated joint-encoder polarity table for hand side {side!r}; "
+            f"validated sides: {sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}"
+        ) from None
 
 # Slots the production hand ships with encoders wired (all 17, wrist included).
 # Diagnostics treat a stuck slot outside this set as reserved rather than faulty.

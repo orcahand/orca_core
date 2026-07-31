@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import dataclasses
+import logging
 import math
 import os
 import threading
@@ -49,6 +50,8 @@ from .joint_position import OrcaJointPositions
 # Motor-rad per joint-deg used to synthesise mock motor calibration. Sized so
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
+
+logger = logging.getLogger(__name__)
 
 
 class OrcaHand(BaseHand):
@@ -97,6 +100,7 @@ class OrcaHand(BaseHand):
         self._wrap_offsets_dict: Dict[int, float] = None
         self._motor_client: MotorClient = None
         self._motor_lock: RLock = RLock()
+        self._uncalibrated_warned: set = set()
 
         self._task_thread: threading.Thread = None
         self._task_stop_event = threading.Event()
@@ -758,8 +762,10 @@ class OrcaHand(BaseHand):
         rather than proceed on stale cache.
         """
         for _ in range(retries):
-            motor_pos = self.get_motor_pos()
-            if self._motor_client.last_read_ok:
+            with self._motor_lock:
+                motor_pos = self.get_motor_pos()
+                read_ok = self._motor_client.last_read_ok
+            if read_ok:
                 return motor_pos
             time.sleep(retry_interval)
         raise RuntimeError(
@@ -888,6 +894,16 @@ class OrcaHand(BaseHand):
 
             self._motor_client.write_desired_pos(motor_ids_to_write, positions_to_write)
 
+    def _warn_uncalibrated(self, motor_id: int, joint_name: str, missing: str) -> None:
+        """Warn once per motor about missing calibration data (reads can run at loop rate)."""
+        if motor_id in self._uncalibrated_warned:
+            return
+        self._uncalibrated_warned.add(motor_id)
+        logger.warning(
+            "Motor ID %s (Joint: %s) has not been fully calibrated (missing %s).",
+            motor_id, joint_name, missing,
+        )
+
     def _motor_to_joint_pos(self, motor_pos: np.ndarray) -> dict:
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
@@ -898,14 +914,10 @@ class OrcaHand(BaseHand):
             joint_name = self.config.motor_to_joint_dict.get(motor_id)
             if any(limit is None for limit in self.motor_limits_dict[motor_id]):
                 joint_pos[joint_name] = None
-                print(
-                    f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing motor limits).\033[0m"
-                )
+                self._warn_uncalibrated(motor_id, joint_name, "motor limits")
             elif self.calibration.joint_to_motor_ratios_dict[motor_id] == 0:
                 joint_pos[joint_name] = None
-                print(
-                    f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m"
-                )
+                self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
                 if self.config.joint_inversion_dict.get(joint_name, False):
@@ -943,9 +955,7 @@ class OrcaHand(BaseHand):
                 or self.calibration.joint_to_motor_ratios_dict[motor_id] == 0
             ):
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = None
-                print(
-                    f"\033[93mWarning: Motor ID {motor_id} (Joint: {joint_name}) has not been fully calibrated (missing joint-to-motor ratio).\033[0m"
-                )
+                self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
                 continue
 
             if self.config.joint_inversion_dict.get(joint_name, False):

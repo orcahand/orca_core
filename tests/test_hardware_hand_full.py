@@ -127,3 +127,86 @@ def test_full_connect_rolls_back_on_missing_encoder_calibration(full_config):
     assert hand._loop is None
     assert hand._encoder_client is None
     assert hand._tactile_client is None
+
+
+def test_full_connect_refuses_left_config(full_config, tmp_path):
+    """Closed-loop control is unvalidated for left-hand assemblies: connect
+    must refuse before opening the motor bus, any link, or the loop."""
+    from orca_core import JointFeedbackConnectError
+
+    with open(full_config) as f:
+        cfg = yaml.safe_load(f)
+    cfg["type"] = "left"
+    left_dir = tmp_path / "left"
+    left_dir.mkdir()
+    left_path = left_dir / "config.yaml"
+    with open(left_path, "w") as f:
+        yaml.safe_dump(cfg, f)
+
+    hand = make_full_hand(str(left_path))
+    with pytest.raises(JointFeedbackConnectError, match="left"):
+        hand.connect()
+    assert not hand.is_connected()
+    assert hand._loop is None
+    assert hand._encoder_link is None
+    assert hand._tactile_client is None
+    assert hand._tactile_link is None
+
+
+def test_full_second_connect_is_noop_and_orphans_nothing(full_config):
+    """A second connect() must be a no-op success — not re-attach either
+    stream and orphan the shared link, tactile client, or loop thread."""
+    hand = make_full_hand(full_config)
+    hand.connect()
+    try:
+        loop, thread = hand._loop, hand._loop._thread
+        link, tactile = hand._encoder_link, hand._tactile_client
+
+        ok, msg = hand.connect()
+        assert ok and msg == "Already connected"
+        assert hand._loop is loop
+        assert hand._loop._thread is thread and thread.is_alive()
+        assert hand._encoder_link is link
+        assert hand._tactile_client is tactile
+        assert hand._tactile_link is None
+    finally:
+        hand.disconnect()
+    assert not thread.is_alive()
+
+
+def test_full_connect_after_sensors_only_orphans_no_link(full_config):
+    """connect() after connect_sensors_only() re-resolves the topology; the
+    sensors-only tactile link must be closed, not silently orphaned while
+    health accessors keep reporting on it."""
+    hand = make_full_hand(full_config)
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    sensors_only_link = hand._tactile_link
+    assert sensors_only_link.is_connected
+
+    ok, _ = hand.connect()
+    try:
+        assert ok
+        assert not sensors_only_link.is_connected
+        assert hand._tactile_link is None  # shared-link topology
+        assert hand.get_tactile_link_health().connected
+    finally:
+        hand.disconnect()
+
+
+def test_full_link_health_and_mock_seam_use_shared_link(full_config):
+    """With both streams on one port, tactile health and the mock feed seam
+    must resolve to the shared encoder link."""
+    hand = make_full_hand(full_config)
+    assert hand.get_tactile_link_health() is None
+    assert hand.get_encoder_link_health() is None
+    hand.connect()
+    try:
+        assert hand._tactile_link is None  # shared-link topology
+        tactile_health = hand.get_tactile_link_health()
+        encoder_health = hand.get_encoder_link_health()
+        assert tactile_health is not None and tactile_health.connected
+        assert encoder_health is not None and encoder_health.connected
+        assert hand.tactile_mock_link is hand._encoder_link
+    finally:
+        hand.disconnect()

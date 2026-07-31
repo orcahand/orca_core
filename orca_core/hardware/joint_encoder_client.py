@@ -37,7 +37,14 @@ from orca_core.hardware.sensing.types import EncoderReading
 logger = logging.getLogger(__name__)
 
 
-class EncodersNotAvailableError(RuntimeError):
+class JointFeedbackConnectError(RuntimeError):
+    """Raised when a joint-feedback connect precondition fails (unsupported
+    hand side, no encoder port resolved, no encoder-backed joints, missing
+    encoder calibration, or no encoder frames arriving).
+    """
+
+
+class EncodersNotAvailableError(JointFeedbackConnectError):
     """Raised when no valid encoder frame arrives within the start-stream timeout."""
 
 
