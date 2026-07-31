@@ -394,6 +394,169 @@ def test_calibrate_partial_single_direction_preserves_motor_limits(calib_dir):
 
 
 # ---------------------------------------------------------------------------
+# Encoder anchors survive failed samples and aborted runs
+# ---------------------------------------------------------------------------
+
+
+def _seed_anchor_block(calib_dir, anchors):
+    """Persist a joint_encoder_calibration block before the hand is built."""
+    update_yaml(
+        str(calib_dir / "calibration.yaml"),
+        JOINT_ENCODER_CALIBRATION,
+        {j: {"enc_at_anchor_count": c} for j, c in anchors.items()},
+    )
+
+
+def test_failed_anchor_sample_keeps_previous_anchor(calib_dir, monkeypatch):
+    """A failed encoder anchor sample must keep the joint's previously
+    persisted anchor instead of deleting it."""
+    from orca_core.hardware.joint_encoder_client import JointEncoderCalibrationError
+    from orca_core.maintenance import calibration_routine
+
+    config_path = calib_dir / "config.yaml"
+    update_yaml(str(config_path), "joint_encoder_joints", ["ring_mcp", "ring_pip"])
+    _seed_anchor_block(calib_dir, {"ring_mcp": 111, "ring_pip": 222})
+
+    hand = MockOrcaHand(config_path=str(config_path))
+    hand.connect()
+
+    failing_slot = JOINT_TO_ENCODER_SLOT["ring_pip"]
+
+    def fake_sample(client, *, slot, **kwargs):
+        if slot == failing_slot:
+            raise JointEncoderCalibrationError("no frames")
+        return 5000
+
+    monkeypatch.setattr(
+        calibration_routine, "sample_anchor_count_from_client", fake_sample
+    )
+
+    events = []
+    hand.calibrate(joint_encoder_client=object(), progress_callback=events.append)
+
+    block = read_yaml(str(calib_dir / "calibration.yaml"))["joint_encoder_calibration"]
+    assert block["ring_pip"]["enc_at_anchor_count"] == 222, "previous anchor lost"
+    assert block["ring_mcp"]["enc_at_anchor_count"] == 5000, "anchor not re-sampled"
+    assert (
+        hand.calibration.joint_encoder_calibration_dict["ring_pip"].enc_at_anchor_count
+        == 222
+    )
+    assert any(
+        e["event"] == "encoder_anchor_failed" and e["joint"] == "ring_pip"
+        for e in events
+    )
+
+
+def test_aborted_run_preserves_previous_anchors_on_disk(calib_dir, monkeypatch):
+    """Aborting after the first step must leave previously persisted anchors
+    of not-yet-visited joints in calibration.yaml."""
+    from orca_core.maintenance import calibration_routine
+
+    config_path = calib_dir / "config.yaml"
+    update_yaml(str(config_path), "joint_encoder_joints", ["ring_mcp", "ring_pip"])
+    _seed_anchor_block(calib_dir, {"ring_mcp": 111, "ring_pip": 222})
+
+    hand = MockOrcaHand(config_path=str(config_path))
+    hand.connect()
+    monkeypatch.setattr(
+        calibration_routine,
+        "sample_anchor_count_from_client",
+        lambda client, *, slot, **kwargs: 5000,
+    )
+
+    events = []
+
+    def stop_after_first_step(event):
+        events.append(event)
+        if event["event"] == "step_done":
+            hand._task_stop_event.set()
+
+    hand.calibrate(
+        joint_encoder_client=object(), progress_callback=stop_after_first_step
+    )
+
+    kinds = [e["event"] for e in events]
+    assert kinds[-1] == "calibration_aborted"
+    assert kinds.count("step_done") == 1, "expected an abort right after step 1"
+    block = read_yaml(str(calib_dir / "calibration.yaml"))["joint_encoder_calibration"]
+    assert block == {
+        "ring_mcp": {"enc_at_anchor_count": 111},
+        "ring_pip": {"enc_at_anchor_count": 222},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Persistence: persist=False seam and full-document write
+# ---------------------------------------------------------------------------
+
+
+def test_run_calibration_persist_false_leaves_disk_untouched(calib_dir):
+    from orca_core.maintenance.calibration_routine import run_calibration
+
+    calib_path = calib_dir / "calibration.yaml"
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    before = read_yaml(str(calib_path))
+
+    result = run_calibration(hand, persist=False)
+
+    assert result is not None and result.calibrated
+    assert hand.calibration.calibrated
+    assert read_yaml(str(calib_path)) == before, "persist=False wrote to disk"
+
+
+def test_per_step_persist_preserves_unrelated_keys(calib_dir):
+    calib_path = calib_dir / "calibration.yaml"
+    update_yaml(str(calib_path), "operator_note", "check tendon 3")
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate()
+
+    raw = read_yaml(str(calib_path))
+    assert raw["operator_note"] == "check tendon 3"
+    assert raw["calibrated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Events replace stdout reporting
+# ---------------------------------------------------------------------------
+
+
+def test_calibrate_reports_limits_via_events_not_stdout(calib_dir, capsys):
+    """Every motor's captured limits arrive as limit_recorded events; the
+    routine itself prints no operator-facing progress to stdout."""
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    capsys.readouterr()
+
+    events = []
+    hand.calibrate(progress_callback=events.append)
+
+    bounds_by_motor = {}
+    for e in events:
+        if e["event"] == "limit_recorded":
+            bounds_by_motor.setdefault(e["motor"], set()).add(e["bound"])
+    assert set(bounds_by_motor) == set(hand.config.motor_ids)
+    assert all(b == {"lower", "upper"} for b in bounds_by_motor.values())
+
+    out = capsys.readouterr().out
+    for fragment in ("reached the limit", "Joint calibrated", "Enabling torque"):
+        assert fragment not in out
+
+
+def test_second_calibrate_skips_wrist_with_event(calib_dir):
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(joints=["wrist"])
+    assert hand.calibration.wrist_calibrated
+
+    events = []
+    hand.calibrate(joints=["thumb_cmc"], progress_callback=events.append)
+    assert any(e["event"] == "wrist_skipped" for e in events)
+
+
+# ---------------------------------------------------------------------------
 # Validator
 # ---------------------------------------------------------------------------
 

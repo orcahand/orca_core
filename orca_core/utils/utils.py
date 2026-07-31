@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import os
+import tempfile
 import yaml
 import numpy as np
 
@@ -176,6 +177,57 @@ def update_yaml(file_path, key, value):
             yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
 
 
+def _to_plain(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v)
+            for k, v in value.items()
+        }
+    return value
+
+
+def write_yaml_atomic(file_path, data):
+    """Replace a YAML file with ``data`` as its complete document, atomically.
+
+    The document is written to a temporary file in the same directory and
+    moved over ``file_path`` with ``os.replace``, so a crash mid-write can
+    never leave the target truncated or partially updated. NumPy arrays are
+    converted to plain Python lists, as in :func:`update_yaml`.
+
+    Args:
+        file_path: Path to the YAML file. Created if it does not exist.
+        data: Mapping of top-level keys to values forming the whole document.
+    """
+    data = {key: _to_plain(value) for key, value in data.items()}
+
+    # mkstemp creates 0600 files; carry over the target's permissions so the
+    # replace doesn't silently restrict who can read an existing file.
+    try:
+        mode = os.stat(file_path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+
+    target_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir, prefix=os.path.basename(file_path) + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def read_yaml(file_path):
     """Reads a YAML file and returns its content."""
     try:
@@ -216,11 +268,8 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     import serial.tools.list_ports
     from ..constants import KNOWN_VIDS
 
-    # The ORCA OH board carries the motor bus on a dual-CDC device whose two
-    # interfaces share a VID/PID, so VID matching can't separate the motor port
-    # from the sensor port. Identify it with the ORCA_ID? handshake first (the
-    # same mechanism the sensor discovery uses); fall back to VID matching for
-    # classic adapters (U2D2, Feetech) that don't speak ORCA_ID?.
+    # The hand's controller board presents two CDC interfaces with one VID/PID;
+    # find the motor one via ORCA_ID?, falling back to VID for classic adapters.
     try:
         from ..hardware.sensing.serial_discovery import find_motor_port
 
