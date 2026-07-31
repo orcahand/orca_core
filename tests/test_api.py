@@ -141,3 +141,120 @@ def test_set_config(api_env):
     assert resp.status_code == 200
     assert isinstance(api.hand, OrcaHand)
     api.hand = mock_hand
+
+
+@pytest.fixture
+def disconnected_client(tmp_path, monkeypatch):
+    """TestClient whose hand is a constructed-but-never-connected MockOrcaHand."""
+    packaged = os.path.join(
+        os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
+    )
+    shutil.copy(packaged, tmp_path / "config.yaml")
+    (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
+    hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(api, "hand", hand)
+    return TestClient(api.app)
+
+
+def test_mutating_endpoints_busy_return_409(api_env):
+    """A lifecycle endpoint arriving while another holds the lock is rejected."""
+    client, _, _ = api_env
+    assert api._hand_lock.acquire(blocking=False)
+    try:
+        for path, body in (
+            ("/connect", None),
+            ("/disconnect", None),
+            ("/config", "/some/config.yaml"),
+            ("/calibrate", None),
+        ):
+            resp = client.post(path, json=body) if body else client.post(path)
+            assert resp.status_code == 409, path
+            assert "in progress" in resp.json()["detail"]
+    finally:
+        api._hand_lock.release()
+
+
+def test_read_endpoints_stay_responsive_while_locked(api_env):
+    client, _, _ = api_env
+    assert api._hand_lock.acquire(blocking=False)
+    try:
+        assert client.get("/status").status_code == 200
+        assert client.get("/motors/position").status_code == 200
+        assert client.get("/calibrate/status").status_code == 200
+    finally:
+        api._hand_lock.release()
+
+
+def test_connect_failure_detail_is_not_rewrapped(monkeypatch):
+    class _FailingConnectHand:
+        def is_connected(self):
+            return False
+
+        def connect(self, interactive=True):
+            return False, "boom"
+
+    monkeypatch.setattr(api, "hand", _FailingConnectHand())
+    client = TestClient(api.app)
+    resp = client.post("/connect")
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Connection failed: boom"
+
+
+def test_motor_state_endpoints_return_null_when_disconnected(disconnected_client):
+    for path, key in (
+        ("/motors/position", "positions"),
+        ("/motors/current", "currents"),
+        ("/motors/temperature", "temperatures"),
+    ):
+        resp = disconnected_client.get(path)
+        assert resp.status_code == 200, path
+        assert resp.json() == {key: None}
+
+
+def test_control_endpoints_return_409_when_disconnected(disconnected_client):
+    assert disconnected_client.post("/torque/enable").status_code == 409
+    assert disconnected_client.post("/torque/disable").status_code == 409
+    assert disconnected_client.post("/current/max", json={"current": 300.0}).status_code == 409
+    assert disconnected_client.get("/joints/position").status_code == 409
+    resp = disconnected_client.post("/joints/position", json={"positions": {"wrist": 0.0}})
+    assert resp.status_code == 409
+
+
+def test_set_config_does_not_build_default_hand(monkeypatch):
+    """POST /config on a fresh server builds only the requested hand."""
+    constructed = []
+
+    def _factory(*args, **kwargs):
+        constructed.append(kwargs)
+        return MockOrcaHand.__new__(MockOrcaHand)
+
+    monkeypatch.setattr(api, "hand", None)
+    monkeypatch.setattr(api, "OrcaHand", _factory)
+    client = TestClient(api.app)
+    resp = client.post("/config", json="/some/config.yaml")
+    assert resp.status_code == 200
+    assert constructed == [{"config_path": "/some/config.yaml"}]
+
+
+def test_hand_is_constructed_lazily_on_first_use(monkeypatch):
+    created = []
+
+    class _StubHand:
+        def is_connected(self):
+            return False
+
+        def is_calibrated(self):
+            return False
+
+    def _factory(*args, **kwargs):
+        stub = _StubHand()
+        created.append(stub)
+        return stub
+
+    monkeypatch.setattr(api, "hand", None)
+    monkeypatch.setattr(api, "OrcaHand", _factory)
+    client = TestClient(api.app)
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert resp.json() == {"connected": False, "calibrated": False}
+    assert len(created) == 1 and api.hand is created[0]

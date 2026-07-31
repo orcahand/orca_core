@@ -31,6 +31,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import List
 
+import numpy as np
+
 from orca_core import OrcaHand, OrcaHandJointFeedback, load_hand
 from orca_core.control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
@@ -38,16 +40,9 @@ from orca_core.control.constants import (
     DEFAULT_KP,
 )
 from orca_core import JointFeedbackConnectError
+from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
 
-FINGER_TO_JOINTS = {
-    "thumb": ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"],
-    "index": ["index_abd", "index_mcp", "index_pip"],
-    "middle": ["middle_abd", "middle_mcp", "middle_pip"],
-    "ring": ["ring_abd", "ring_mcp", "ring_pip"],
-    "pinky": ["pinky_abd", "pinky_mcp", "pinky_pip"],
-}
-ALL_JOINTS = [j for joints in FINGER_TO_JOINTS.values() for j in joints]
 REFRESH_MS = 100
 
 # Half-width of each motor-space slider, in motor radians around the position
@@ -74,14 +69,23 @@ def parse_args() -> argparse.Namespace:
         help="Feedback hands only.",
     )
     p.add_argument(
-        "--fingers", nargs="+", choices=list(FINGER_TO_JOINTS.keys()),
+        "--fingers", nargs="+",
         help="Show sliders for these fingers only (feedback hands).",
     )
     p.add_argument(
-        "--joints", nargs="+", choices=ALL_JOINTS,
+        "--joints", nargs="+",
         help="Show sliders for these joints only (feedback hands).",
     )
     return p.parse_args()
+
+
+def _finger_joint_map(joint_ids: List[str]) -> dict[str, List[str]]:
+    """Group the config's joint names by finger prefix ({finger}_{type}; bare wrist)."""
+    mapping: dict[str, List[str]] = {}
+    for joint in joint_ids:
+        finger = joint.split("_", 1)[0]
+        mapping.setdefault(finger, []).append(joint)
+    return mapping
 
 
 def _resolve_joint_set(
@@ -91,7 +95,7 @@ def _resolve_joint_set(
     if args.fingers and args.joints:
         raise SystemExit("Cannot specify both --fingers and --joints.")
 
-    encoder_backed = list(hand._encoder_backed_joints())
+    encoder_backed = hand.encoder_backed_joints
     if not encoder_backed:
         raise SystemExit(
             "No encoder-backed joints configured on this hand "
@@ -102,8 +106,19 @@ def _resolve_joint_set(
         return encoder_backed
 
     if args.fingers:
-        requested = {j for finger in args.fingers for j in FINGER_TO_JOINTS[finger]}
+        finger_map = _finger_joint_map(hand.config.joint_ids)
+        unknown = [f for f in args.fingers if f not in finger_map]
+        if unknown:
+            raise SystemExit(
+                f"Unknown finger(s) {unknown}; this hand has {sorted(finger_map)}."
+            )
+        requested = {j for finger in args.fingers for j in finger_map[finger]}
     else:
+        unknown = [j for j in args.joints if j not in hand.config.joint_ids]
+        if unknown:
+            raise SystemExit(
+                f"Unknown joint(s) {unknown}; this hand has {hand.config.joint_ids}."
+            )
         requested = set(args.joints)
 
     selected = [j for j in encoder_backed if j in requested]
@@ -259,8 +274,9 @@ class MotorSliderUI:
 
     def update_motor_position(self, motor, value):
         try:
-            motor_positions = {m: v.get() for m, v in self.motor_values.items()}
-            self.hand._set_motor_pos(motor_positions)
+            motor_ids = list(self.motor_values)
+            positions = np.array([self.motor_values[m].get() for m in motor_ids])
+            self.hand.write_motor_pos(motor_ids, positions)
             print(f"Updated motor {motor} to position: {float(value):.1f}")
         except Exception as e:
             print(f"Error updating motor {motor}: {e}")
@@ -480,7 +496,11 @@ def _run_motor_space(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        hand.init_joints(force_calibrate=False)
+        # Minimal bring-up only: this mode runs pre-calibration on hands with
+        # unseated tendons, so it must never calibrate or move the hand.
+        hand.enable_torque()
+        hand.set_control_mode(hand.config.control_mode)
+        hand.set_max_current(hand.config.max_current)
         root = tk.Tk()
         MotorSliderUI(root, hand)
         root.mainloop()
@@ -509,7 +529,7 @@ def main() -> int:
 
     try:
         success, msg = hand.connect()
-    except JointFeedbackConnectError as exc:
+    except (JointFeedbackConnectError, EncodersNotAvailableError) as exc:
         print(f"FAIL: {exc}")
         return 1
     print(msg)

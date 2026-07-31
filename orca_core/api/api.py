@@ -6,23 +6,57 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
-import os
-import sys
+import threading
 import time
+from contextlib import contextmanager
+from typing import Dict, List, Optional, Union
+
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Union, Tuple
-import numpy as np
 import uvicorn
 
 from orca_core import OrcaHand
 
 app = FastAPI(title="OrcaHand API", version="1.0.0")
 
-# --- Global OrcaHand Instance ---
-# Ensure necessary config files are present or adjust path as needed
+# Created lazily on first use so importing this module has no side effects.
+hand: Optional[OrcaHand] = None
 
-hand = OrcaHand()
+_hand_init_lock = threading.Lock()
+
+# Serializes /connect, /disconnect, /config, and /calibrate against each other
+# and in-flight operations; read endpoints stay lock-free and responsive.
+_hand_lock = threading.Lock()
+
+
+def _get_hand() -> OrcaHand:
+    global hand
+    if hand is None:
+        with _hand_init_lock:
+            if hand is None:
+                hand = OrcaHand()
+    return hand
+
+
+@contextmanager
+def _exclusive_hand_operation():
+    """Hold the lifecycle lock for the request; reject overlap with a 409
+    instead of queueing behind a possibly long-running operation."""
+    if not _hand_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Another hand operation (connect/disconnect/config/calibrate) is in progress.",
+        )
+    try:
+        yield
+    finally:
+        _hand_lock.release()
+
+
+def _require_connected(h: OrcaHand) -> None:
+    if not h.is_connected():
+        raise HTTPException(status_code=409, detail="Hand is not connected.")
+
 
 class MotorList(BaseModel):
     motor_ids: Optional[List[int]] = None
@@ -31,11 +65,15 @@ class MaxCurrent(BaseModel):
     current: Union[float, List[float]]
 
 class JointPositions(BaseModel):
-    positions: Dict[str, float] = Field(..., example={"index_flex": 0.5, "thumb_flex": 0.2})
+    positions: Dict[str, float] = Field(
+        ..., json_schema_extra={"example": {"index_flex": 0.5, "thumb_flex": 0.2}}
+    )
 
 
 def handle_hand_exception(e: Exception):
     """Translates OrcaHand runtime errors to HTTP exceptions."""
+    if isinstance(e, HTTPException):
+        raise e
     if isinstance(e, RuntimeError):
         if "not connected" in str(e).lower():
             raise HTTPException(status_code=409, detail=f"Hand operation failed: {e}")
@@ -51,7 +89,9 @@ def handle_hand_exception(e: Exception):
 
 # --- API Endpoints ---
 @app.post("/config", summary="Set Hand Configuration", tags=["Configuration"])
-def set_hand_config(config_path: str = Body(..., example="/path/to/config")):
+def set_hand_config(
+    config_path: str = Body(..., json_schema_extra={"example": "/path/to/config"})
+):
     """
     Sets or updates the hand configuration by recreating the OrcaHand object.
 
@@ -61,17 +101,19 @@ def set_hand_config(config_path: str = Body(..., example="/path/to/config")):
     Returns:
         dict: Success message.
     """
-    global hand, current_config_path
-    try:
-        if hand.is_connected():
-            hand.disconnect()
+    global hand
+    with _exclusive_hand_operation():
+        try:
+            # Don't build the default hand just to replace it: only an
+            # already-constructed, connected hand needs disconnecting.
+            if hand is not None and hand.is_connected():
+                hand.disconnect()
 
-        current_config_path = config_path
-        hand = OrcaHand(config_path=current_config_path)
-        return {"message": f"Hand configuration updated to: {config_path}"}
-    except Exception as e:
-        handle_hand_exception(e)
-        
+            hand = OrcaHand(config_path=config_path)
+            return {"message": f"Hand configuration updated to: {config_path}"}
+        except Exception as e:
+            handle_hand_exception(e)
+
 @app.post("/connect", summary="Connect to the OrcaHand", tags=["Connection"])
 def connect_hand():
     """
@@ -80,17 +122,19 @@ def connect_hand():
     Returns:
         dict: Status message indicating success or failure.
     """
-    if hand.is_connected():
-        return {"message": "Hand already connected."}
-    try:
-        # Headless server: fail cleanly instead of opening the terminal picker.
-        success, msg = hand.connect(interactive=False)
-        if success:
-             return {"message": msg}
-        else:
-            raise HTTPException(status_code=500, detail=f"Connection failed: {msg}")
-    except Exception as e:
-        handle_hand_exception(e)
+    with _exclusive_hand_operation():
+        h = _get_hand()
+        if h.is_connected():
+            return {"message": "Hand already connected."}
+        try:
+            # Headless server: fail cleanly instead of opening the terminal picker.
+            success, msg = h.connect(interactive=False)
+            if success:
+                 return {"message": msg}
+            else:
+                raise HTTPException(status_code=500, detail=f"Connection failed: {msg}")
+        except Exception as e:
+            handle_hand_exception(e)
 
 @app.post("/disconnect", summary="Disconnect from the OrcaHand", tags=["Connection"])
 def disconnect_hand():
@@ -100,22 +144,24 @@ def disconnect_hand():
     Returns:
         dict: Status message indicating success or failure.
     """
-    if not hand.is_connected():
-        return {"message": "Hand already disconnected."}
-    try:
+    with _exclusive_hand_operation():
+        h = _get_hand()
+        if not h.is_connected():
+            return {"message": "Hand already disconnected."}
         try:
-            hand.disable_torque()
-            time.sleep(0.1) 
-        except Exception as torque_err:
-            print(f"Warning: Error disabling torque before disconnect: {torque_err}")
+            try:
+                h.disable_torque()
+                time.sleep(0.1)
+            except Exception as torque_err:
+                print(f"Warning: Error disabling torque before disconnect: {torque_err}")
 
-        success, msg = hand.disconnect()
-        if success:
-            return {"message": msg}
-        else:
-            raise HTTPException(status_code=500, detail=f"Disconnection failed: {msg}")
-    except Exception as e:
-         handle_hand_exception(e)
+            success, msg = h.disconnect()
+            if success:
+                return {"message": msg}
+            else:
+                raise HTTPException(status_code=500, detail=f"Disconnection failed: {msg}")
+        except Exception as e:
+             handle_hand_exception(e)
 
 
 @app.get("/status", summary="Get Hand Status", tags=["Status"])
@@ -127,9 +173,10 @@ def get_status():
         dict: Contains 'connected' (bool) and 'calibrated' (bool) status.
     """
     try:
+        h = _get_hand()
         return {
-            "connected": hand.is_connected(),
-            "calibrated": hand.is_calibrated() if hand.is_connected() else False
+            "connected": h.is_connected(),
+            "calibrated": h.is_calibrated() if h.is_connected() else False
         }
     except Exception as e:
         handle_hand_exception(e)
@@ -148,8 +195,10 @@ def enable_torque(motor_list: MotorList = Body(None)):
         dict: Success message.
     """
     try:
+        h = _get_hand()
+        _require_connected(h)
         ids = motor_list.motor_ids if motor_list else None
-        hand.enable_torque(motor_ids=ids)
+        h.enable_torque(motor_ids=ids)
         return {"message": f"Torque enabled for motors: {ids or 'all'}"}
     except Exception as e:
         handle_hand_exception(e)
@@ -168,8 +217,10 @@ def disable_torque(motor_list: MotorList = Body(None)):
         dict: Success message.
     """
     try:
+        h = _get_hand()
+        _require_connected(h)
         ids = motor_list.motor_ids if motor_list else None
-        hand.disable_torque(motor_ids=ids)
+        h.disable_torque(motor_ids=ids)
         return {"message": f"Torque disabled for motors: {ids or 'all'}"}
     except Exception as e:
         handle_hand_exception(e)
@@ -190,7 +241,9 @@ def set_max_current(max_current: MaxCurrent):
         dict: Success message.
     """
     try:
-        hand.set_max_current(current=max_current.current)
+        h = _get_hand()
+        _require_connected(h)
+        h.set_max_current(current=max_current.current)
         return {"message": "Maximum current set successfully."}
     except Exception as e:
         handle_hand_exception(e)
@@ -205,7 +258,10 @@ def get_motor_position():
               Returns null if not connected.
     """
     try:
-        pos = hand.get_motor_pos()
+        h = _get_hand()
+        if not h.is_connected():
+            return {"positions": None}
+        pos = h.get_motor_pos()
         return {"positions": pos.tolist() if pos is not None else None}
     except Exception as e:
         handle_hand_exception(e)
@@ -221,7 +277,10 @@ def get_motor_current():
               Returns null if not connected.
     """
     try:
-        cur = hand.get_motor_current()
+        h = _get_hand()
+        if not h.is_connected():
+            return {"currents": None}
+        cur = h.get_motor_current()
         return {"currents": cur.tolist() if cur is not None else None}
     except Exception as e:
         handle_hand_exception(e)
@@ -236,7 +295,10 @@ def get_motor_temperature():
               Returns null if not connected.
     """
     try:
-        temp = hand.get_motor_temp()
+        h = _get_hand()
+        if not h.is_connected():
+            return {"temperatures": None}
+        temp = h.get_motor_temp()
         return {"temperatures": temp.tolist() if temp is not None else None}
     except Exception as e:
         handle_hand_exception(e)
@@ -250,9 +312,12 @@ def get_joint_position():
         dict: A dictionary mapping joint names to their positions:
               {"positions": {"joint1": pos1, "joint2": pos2, ...}}.
               Joints without a calibrated mapping are omitted.
+              Responds 409 if the hand is not connected.
     """
     try:
-        return {"positions": hand.get_joint_position().as_dict()}
+        h = _get_hand()
+        _require_connected(h)
+        return {"positions": h.get_joint_position().as_dict()}
     except Exception as e:
         handle_hand_exception(e)
 
@@ -270,7 +335,9 @@ def set_joint_position(joint_positions: JointPositions):
         dict: Success message.
     """
     try:
-        hand.set_joint_positions(joint_positions.positions)
+        h = _get_hand()
+        _require_connected(h)
+        h.set_joint_positions(joint_positions.positions)
         return {"message": "Joint positions command sent successfully."}
     except Exception as e:
         handle_hand_exception(e)
@@ -284,7 +351,7 @@ def get_calibration_status():
         dict: Contains 'calibrated' (bool) status.
     """
     try:
-        return {"calibrated": hand.is_calibrated()}
+        return {"calibrated": _get_hand().is_calibrated()}
     except Exception as e:
         handle_hand_exception(e)
 
@@ -297,15 +364,17 @@ def calibrate_auto():
     Returns:
         dict: Message indicating calibration start and eventual result.
     """
-    if not hand.is_connected():
-         raise HTTPException(status_code=409, detail="Hand must be connected to calibrate.")
-    try:
-        hand.calibrate()
-        calib_status = hand.is_calibrated()
-        msg = "Automatic calibration finished." + (" Successfully." if calib_status else " Failed or incomplete.")
-        return {"message": msg, "calibrated": calib_status}
-    except Exception as e:
-        handle_hand_exception(e)
+    with _exclusive_hand_operation():
+        h = _get_hand()
+        if not h.is_connected():
+             raise HTTPException(status_code=409, detail="Hand must be connected to calibrate.")
+        try:
+            h.calibrate()
+            calib_status = h.is_calibrated()
+            msg = "Automatic calibration finished." + (" Successfully." if calib_status else " Failed or incomplete.")
+            return {"message": msg, "calibrated": calib_status}
+        except Exception as e:
+            handle_hand_exception(e)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

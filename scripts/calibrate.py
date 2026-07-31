@@ -11,16 +11,80 @@ from orca_core.hardware.joint_encoder_client import (
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 
 
-FINGER_TO_JOINTS = {
-    "thumb": ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"],
-    "index": ["index_abd", "index_mcp", "index_pip"],
-    "middle": ["middle_abd", "middle_mcp", "middle_pip"],
-    "ring": ["ring_abd", "ring_mcp", "ring_pip"],
-    "pinky": ["pinky_abd", "pinky_mcp", "pinky_pip"],
-    "wrist": ["wrist"],
-}
+ENCODER_DISABLED = "disabled"
 
-ALL_JOINTS = [j for joints in FINGER_TO_JOINTS.values() for j in joints]
+
+def _finger_joint_map(joint_ids: list[str]) -> dict[str, list[str]]:
+    """Group the config's joint names by finger prefix ({finger}_{type}; bare wrist)."""
+    mapping: dict[str, list[str]] = {}
+    for joint in joint_ids:
+        finger = joint.split("_", 1)[0]
+        mapping.setdefault(finger, []).append(joint)
+    return mapping
+
+
+def _resolve_joints(parser, args, joint_ids: list[str]) -> list[str] | None:
+    """Expand --fingers / validate --joints against the loaded config."""
+    if args.fingers:
+        finger_map = _finger_joint_map(joint_ids)
+        unknown = [f for f in args.fingers if f not in finger_map]
+        if unknown:
+            parser.error(
+                f"Unknown finger(s) {unknown}; this hand has {sorted(finger_map)}."
+            )
+        joints = [j for finger in args.fingers for j in finger_map[finger]]
+        print(f"Calibrating fingers: {args.fingers}")
+        print(f"Resolved joints: {joints}")
+        return joints
+    if args.joints:
+        unknown = [j for j in args.joints if j not in joint_ids]
+        if unknown:
+            parser.error(
+                f"Unknown joint(s) {unknown}; this hand has {joint_ids}."
+            )
+        print(f"Calibrating joints: {args.joints}")
+        return list(args.joints)
+    return None
+
+
+def _print_progress(event: dict) -> None:
+    """Render calibration progress events on the terminal."""
+    name = event.get("event")
+    if name == "calibration_started":
+        print(
+            f"Calibrating {len(event['joints'])} joint(s) "
+            f"over {event['steps']} step(s)..."
+        )
+    elif name == "step_started":
+        joints = ", ".join(f"{j} ({d})" for j, d in event["joints"].items())
+        print(f"[step {event['index'] + 1}/{event['total']}] {joints}")
+    elif name == "limit_recorded":
+        print(
+            f"  motor {event['motor']} ({event['joint']}) "
+            f"{event['bound']} limit at {event['limit']:.4f} rad"
+        )
+    elif name == "joint_calibrated":
+        print(f"  {event['joint']} calibrated (ratio {event['ratio']:.4f})")
+    elif name == "wrist_skipped":
+        print("Wrist already calibrated; skipping wrist steps (--force-wrist overrides).")
+    elif name == "encoder_anchor_recorded":
+        print(
+            f"  {event['joint']} encoder anchor: count {event['anchor_count']} "
+            f"at {event['anchor_angle_deg']:.1f} deg"
+        )
+    elif name == "encoder_anchor_failed":
+        print(f"  WARNING: encoder anchor failed for {event['joint']}: {event['error']}")
+    elif name == "offset_calibration_failed":
+        print(
+            f"  WARNING: offset calibration failed for motor {event['motor']} "
+            f"({event['joint']}); skipped"
+        )
+    elif name == "calibration_done":
+        print("Calibration complete.")
+    elif name == "calibration_aborted":
+        print("Calibration aborted.")
+    elif name == "cleanup_failed":
+        print(f"WARNING: cleanup after abort failed: {event['error']}")
 
 
 def _open_encoder_client(encoder_port_override: str, baudrate: int):
@@ -72,14 +136,12 @@ def main():
         "--fingers",
         type=str,
         nargs="+",
-        choices=list(FINGER_TO_JOINTS.keys()),
         help="Fingers to calibrate (e.g., --fingers thumb index pinky)",
     )
     parser.add_argument(
         "--joints",
         type=str,
         nargs="+",
-        choices=ALL_JOINTS,
         help="Individual joints to calibrate (e.g., --joints thumb_cmc index_mcp)",
     )
     parser.add_argument(
@@ -99,17 +161,6 @@ def main():
     if args.fingers and args.joints:
         parser.error("Cannot specify both --fingers and --joints. Use one or the other.")
 
-    joints = None
-    if args.fingers:
-        joints = []
-        for finger in args.fingers:
-            joints.extend(FINGER_TO_JOINTS[finger])
-        print(f"Calibrating fingers: {args.fingers}")
-        print(f"Resolved joints: {joints}")
-    elif args.joints:
-        joints = args.joints
-        print(f"Calibrating joints: {joints}")
-
     # With no config given, pick the bundled model matching the connected hand.
     model_name = None
     if args.config_path is None and not args.mock:
@@ -126,6 +177,8 @@ def main():
             hand.config, encoder_serial_port=args.encoder_port,
         )
 
+    joints = _resolve_joints(parser, args, hand.config.joint_ids)
+
     status = hand.connect()
     print(status)
 
@@ -135,7 +188,14 @@ def main():
 
     link = None
     client = None
-    if hand.config.joint_feedback_enabled and not args.mock:
+    encoder_pass = (
+        hand.config.joint_feedback_enabled
+        and not args.mock
+        and hand.config.encoder_serial_port != ENCODER_DISABLED
+    )
+    if hand.config.joint_feedback_enabled and not encoder_pass and not args.mock:
+        print("Encoder pass disabled; running the open-loop motor-limits pass only.")
+    if encoder_pass:
         try:
             link, client = _open_encoder_client(
                 hand.config.encoder_serial_port, hand.config.encoder_baudrate
@@ -150,7 +210,10 @@ def main():
             force_wrist=args.force_wrist,
             joints=joints,
             joint_encoder_client=client,
+            progress_callback=_print_progress,
         )
+    except KeyboardInterrupt:
+        print("\nCalibration interrupted.")
     finally:
         if client is not None:
             try:
@@ -160,6 +223,7 @@ def main():
             client.disconnect()
         if link is not None:
             link.disconnect()
+        hand.disconnect()
 
 
 if __name__ == "__main__":

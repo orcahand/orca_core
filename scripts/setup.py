@@ -8,21 +8,10 @@ import argparse
 import time
 
 from orca_core.utils.cli import connect_hand, create_hand, shutdown_hand
-from orca_core import OrcaJointPositions
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
 DIVIDER = "=" * 60
-
-
-def pose_from_fractions(hand, fractions: dict[str, float]) -> OrcaJointPositions:
-    pose = dict(hand.config.neutral_position)
-    for joint, fraction in fractions.items():
-        if joint not in hand.config.joint_roms_dict:
-            continue
-        joint_min, joint_max = hand.config.joint_roms_dict[joint]
-        pose[joint] = joint_min + fraction * (joint_max - joint_min)
-    return OrcaJointPositions.from_dict(pose)
 
 
 def wait_for_enter(msg="Press ENTER to continue..."):
@@ -96,8 +85,7 @@ def run_motion_test(hand, step_num, duration=60):
     hand.enable_torque()
     hand.set_control_mode('current_based_position')
 
-    open_pos = pose_from_fractions(
-        hand,
+    open_pos = hand.pose_from_fractions(
         {
             "thumb_cmc": 0.70,
             "thumb_abd": 0.80,
@@ -118,8 +106,7 @@ def run_motion_test(hand, step_num, duration=60):
             "wrist": 0.30,
         },
     )
-    closed_pos = pose_from_fractions(
-        hand,
+    closed_pos = hand.pose_from_fractions(
         {
             "thumb_cmc": 0.35,
             "thumb_abd": 0.55,

@@ -4,6 +4,8 @@
 Positions come from the static sensor geometry and are transformed through the
 hand's forward kinematics; forces are rotated into the same frame. With
 ``--mock`` no hardware is needed (synthetic tactile data, fixed joint pose).
+On hardware, the joint-dependent frames (palm/base/world) connect the full
+hand for live joint angles; sensor/fingertip frames connect sensors only.
 
 Usage:
     uv run python examples/taxel_frames.py --mock --frame base
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from orca_core import OrcaHandTouch, frames
+from orca_core import MockOrcaHandTouch, OrcaHandTouch, frames
 
 DEFAULT_CONFIG = (
     Path(__file__).resolve().parents[1]
@@ -27,25 +29,15 @@ DEFAULT_CONFIG = (
 MOCK_POSE = {"wrist": -10.0, "index_mcp": 30.0, "index_pip": 20.0, "thumb_cmc": -15.0}
 
 
-def _connect_mock(hand):
-    """Attach a TactileClient on a mock serial link and return a frame feeder."""
+def _make_mock_feeder(hand):
+    """Return a feeder that pushes synthetic taxel frames into the mock link."""
     from orca_core.constants import FINGER_NAMES
-    from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
     from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
-    from orca_core.hardware.tactile_client import TactileClient
-    from orca_core.hardware.sensing.tactile_mock import (
-        TactileMockState,
-        feed_taxels_frame,
-        install_tactile_mock,
-    )
+    from orca_core.hardware.sensing.tactile_mock import feed_taxels_frame
 
-    state = TactileMockState()
-    link = MockHandSerialLink()
-    install_tactile_mock(link, state)
-    link.connect()
-    client = TactileClient(link, finger_to_sensor_id=state.finger_to_sensor_id)
-    client.connect()
-    hand._tactile_client = client
+    # Slot-id order matches the wire-frame order the parser expects.
+    active = sorted(FINGER_NAMES, key=lambda f: hand.config.finger_to_sensor_id[f])
+    link = hand._tactile_link  # no public seam for feeding mock frames yet
 
     def feed(t: float) -> None:
         taxels = {}
@@ -53,7 +45,7 @@ def _connect_mock(hand):
             n = DEFAULT_TAXEL_COUNTS[finger]
             fz = [1.0 + np.sin(t * 2.0 + i * 0.3) for i in range(n)]
             taxels[finger] = [[0.2, -0.1, round(max(f, 0.0), 1)] for f in fz]
-        feed_taxels_frame(link, taxels, state.active_sensors)
+        feed_taxels_frame(link, taxels, active)
 
     return feed
 
@@ -65,17 +57,20 @@ def main():
     parser.add_argument("--mock", action="store_true", help="run without hardware")
     args = parser.parse_args()
 
-    hand = OrcaHandTouch(config_path=args.config_path)
-    feed = None
-    if args.mock:
-        feed = _connect_mock(hand)
+    needs_joints = args.frame in (frames.PALM, frames.BASE, frames.WORLD)
+    hand_cls = MockOrcaHandTouch if args.mock else OrcaHandTouch
+    hand = hand_cls(config_path=args.config_path)
+
+    if not args.mock and needs_joints:
+        # Kinematic frames need live joint angles, so open the motor bus too.
+        ok, msg = hand.connect()
     else:
         ok, msg = hand.connect_sensors_only()
-        print(msg)
-        if not ok:
-            sys.exit(1)
+    print(msg)
+    if not ok:
+        sys.exit(1)
 
-    needs_joints = args.frame in (frames.PALM, frames.BASE, frames.WORLD)
+    feed = _make_mock_feeder(hand) if args.mock else None
     joint_pos = MOCK_POSE if (args.mock and needs_joints) else None
 
     try:
@@ -106,8 +101,7 @@ def main():
     except KeyboardInterrupt:
         print("\n" * (len(data) + 1) if data else "")
     finally:
-        if not args.mock:
-            hand.disconnect()
+        hand.disconnect()
 
 
 if __name__ == "__main__":
