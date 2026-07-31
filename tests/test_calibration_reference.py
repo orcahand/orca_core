@@ -32,7 +32,7 @@ def calibration_result():
 
     hand = MockOrcaHand(config_path=os.path.join(tmp, "config.yaml"))
     hand.connect()
-    hand.calibrate()
+    hand.calibrate(persist=True)
     hand.disconnect()
 
     result = read_yaml(calib_path)

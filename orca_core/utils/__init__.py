@@ -7,6 +7,7 @@ from .utils import (
     linear_interp,
     read_yaml,
     update_yaml,
+    write_yaml_atomic,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "linear_interp",
     "read_yaml",
     "update_yaml",
+    "write_yaml_atomic",
 ]

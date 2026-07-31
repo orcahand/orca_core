@@ -56,9 +56,10 @@ def test_calibration_yaml_missing(calib_dir):
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
 
-    assert not hand.calibrated, "Hand should not be marked as calibrated before calibration"
+    assert hand.calibrated, "Synthesized mock calibration should count as calibrated in memory"
+    assert not calib_path.exists(), "Construction must not create calibration.yaml"
 
-    hand.calibrate()
+    hand.calibrate(persist=True)
 
     assert calib_path.exists(), "calibration.yaml should be created"
 
@@ -253,7 +254,7 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
     encoder = MockJointEncoderSource(
         hand._motor_client, hand.config.joint_to_motor_map
     )
-    hand.calibrate(joint_encoder_client=encoder)
+    hand.calibrate(joint_encoder_client=encoder, persist=True)
 
     calib_path = calib_dir / "calibration.yaml"
     raw = read_yaml(str(calib_path))
@@ -321,7 +322,7 @@ def test_calibrate_writes_encoder_block_only_for_configured_subset(calib_dir):
     encoder = MockJointEncoderSource(
         hand._motor_client, hand.config.joint_to_motor_map
     )
-    hand.calibrate(joint_encoder_client=encoder)
+    hand.calibrate(joint_encoder_client=encoder, persist=True)
 
     raw = read_yaml(str(calib_dir / "calibration.yaml"))
     assert set(raw["joint_encoder_calibration"].keys()) == {"ring_mcp", "ring_pip"}
@@ -432,7 +433,9 @@ def test_failed_anchor_sample_keeps_previous_anchor(calib_dir, monkeypatch):
     )
 
     events = []
-    hand.calibrate(joint_encoder_client=object(), progress_callback=events.append)
+    hand.calibrate(
+        joint_encoder_client=object(), progress_callback=events.append, persist=True
+    )
 
     block = read_yaml(str(calib_dir / "calibration.yaml"))["joint_encoder_calibration"]
     assert block["ring_pip"]["enc_at_anchor_count"] == 222, "previous anchor lost"
@@ -472,7 +475,9 @@ def test_aborted_run_preserves_previous_anchors_on_disk(calib_dir, monkeypatch):
             hand._task_stop_event.set()
 
     hand.calibrate(
-        joint_encoder_client=object(), progress_callback=stop_after_first_step
+        joint_encoder_client=object(),
+        progress_callback=stop_after_first_step,
+        persist=True,
     )
 
     kinds = [e["event"] for e in events]
@@ -511,7 +516,7 @@ def test_per_step_persist_preserves_unrelated_keys(calib_dir):
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
-    hand.calibrate()
+    hand.calibrate(persist=True)
 
     raw = read_yaml(str(calib_path))
     assert raw["operator_note"] == "check tendon 3"
@@ -637,13 +642,12 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
         return orig_set_motor_pos(*args, **kwargs)
 
     hand._set_motor_pos = set_and_stop
-    hand.calibrate(progress_callback=events.append)
+    hand.calibrate(progress_callback=events.append, persist=True)
 
     kinds = [e["event"] for e in events]
     assert kinds[-1] == "calibration_aborted"
     assert "joint_calibrated" not in kinds
     assert "step_done" not in kinds
-    assert not hand.calibrated
     if calib_path.exists():
         calib = read_yaml(str(calib_path)) or {}
         assert not (calib.get("joint_to_motor_ratios") or {})

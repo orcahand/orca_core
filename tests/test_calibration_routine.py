@@ -106,7 +106,7 @@ def test_initial_offset_failure_skips_joint_and_keeps_limits(
     target = "thumb_cmc"
     target_motor = hand.config.joint_to_motor_map[target]
     events = []
-    hand.calibrate(joints=[target], progress_callback=events.append)
+    hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
 
     assert hand.motor_limits_dict[target_motor] == pre[target_motor]
     raw = read_yaml(str(calib_dir / "calibration.yaml"))

@@ -264,7 +264,12 @@ class OrcaHandConfig(BaseHandConfig):
             resolved_config_path, calibration_path
         )
 
-        config = read_yaml(resolved_config_path)  # {} when file is not found
+        config = read_yaml(resolved_config_path) or {}
+        if not config:
+            raise HandConfigValidationError(
+                f"config.yaml at {resolved_config_path} is empty. Restore it "
+                "from the bundled model or your hand's backup."
+            )
 
         kwargs = {"config_path": resolved_config_path, "calibration_path": resolved_calibration_path}
 
@@ -424,14 +429,17 @@ class OrcaHandTouchConfig(OrcaHandConfig):
             model_name=model_name,
         )
 
-        config = read_yaml(base.config_path)
+        config = read_yaml(base.config_path) or {}
         sensors = config.get("sensors", {})
 
         sensor_kwargs = {}
         if "port" in sensors:
             sensor_kwargs["sensor_port"] = sensors["port"]
         if "baudrate" in sensors:
-            sensor_kwargs["sensor_baudrate"] = int(sensors["baudrate"])
+            raw_baud = sensors["baudrate"]
+            sensor_kwargs["sensor_baudrate"] = (
+                raw_baud if raw_baud == "auto" else int(raw_baud)
+            )
         if "finger_to_sensor_id" in sensors:
             sensor_kwargs["finger_to_sensor_id"] = dict(sensors["finger_to_sensor_id"])
 

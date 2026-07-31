@@ -8,6 +8,7 @@
 
 import dataclasses
 import math
+import os
 import threading
 import time
 from threading import RLock
@@ -27,10 +28,12 @@ from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
     get_and_choose_port,
+    read_yaml,
     update_yaml,
 )
 
 from .constants import (
+    CALIBRATED,
     MODE_MAP,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -43,8 +46,9 @@ from .constants import (
 
 from .joint_position import OrcaJointPositions
 
-# Motor-rad per joint-deg used to synthesise mock motor calibration.
-MOCK_JOINT_TO_MOTOR_RATIO = 0.01
+# Motor-rad per joint-deg used to synthesise mock motor calibration. Sized so
+# the widest bundled joint ROM stays inside the mock motors' simulated travel.
+MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
 
 class OrcaHand(BaseHand):
@@ -69,6 +73,10 @@ class OrcaHand(BaseHand):
     """
 
     config_cls = OrcaHandConfig
+
+    # Whether calibrate() writes results to calibration.yaml by default.
+    # Mock classes flip this off so synthesized values never reach disk.
+    _persist_calibration = True
 
     def __init__(
         self,
@@ -181,6 +189,17 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.connect()
 
+    def _discard_motor_client(self) -> None:
+        """Drop the motor client, best-effort closing it first so a failed
+        connect can't leak an open (and advisory-locked) serial port."""
+        client, self._motor_client = self._motor_client, None
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
         """Open connection to the motor bus.
 
@@ -191,6 +210,10 @@ class OrcaHand(BaseHand):
         :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Resolved values are
         persisted back to ``config.yaml``.
 
+        Idempotent: calling ``connect()`` on an already-connected hand is a
+        no-op that returns success. Call :meth:`disconnect` first to force a
+        fresh connection.
+
         Args:
             interactive: When ``False``, skip the terminal port picker that
                 otherwise runs as a last resort, so headless callers (servers,
@@ -200,6 +223,9 @@ class OrcaHand(BaseHand):
             A ``(success, message)`` tuple where *success* is ``True`` on a
             successful connection.
         """
+        if self.is_connected():
+            return True, "Already connected"
+
         existing_config = self.config
 
         # ``port: auto`` keeps the tracked config hardware-agnostic; if no
@@ -219,7 +245,7 @@ class OrcaHand(BaseHand):
             )
 
         except Exception as e:
-            self._motor_client = None
+            self._discard_motor_client()
             self.config = existing_config
             print(f"Connection failed on {first_port}: {str(e)}")
 
@@ -234,7 +260,7 @@ class OrcaHand(BaseHand):
                     )
 
                 except Exception:
-                    self._motor_client = None
+                    self._discard_motor_client()
                     self.config = existing_config
 
             if not interactive:
@@ -249,20 +275,21 @@ class OrcaHand(BaseHand):
                 self._persist_resolved_driver(existing_config)
                 return True, f"Connection successful with port {chosen_port}"
             except Exception as e2:
-                self._motor_client = None
+                self._discard_motor_client()
                 self.config = existing_config
                 return False, f"Connection failed with selected port: {str(e2)}"
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque and close the serial connection.
 
-        Safe to call even when the hand is already disconnected.
+        Idempotent: calling it on an already-disconnected hand succeeds
+        without touching the bus.
 
         Returns:
             A ``(success, message)`` tuple.
         """
         try:
-            if self._motor_client is None:
+            if not self.is_connected():
                 return True, "Disconnected successfully"
             with self._motor_lock:
                 self.disable_torque()
@@ -570,6 +597,18 @@ class OrcaHand(BaseHand):
 
         return overall_calibrated
 
+    @property
+    def encoder_backed_joints(self) -> list[str]:
+        """Names of the joints whose angle this hand reads from a joint encoder.
+
+        A joint qualifies when it has an encoder slot in the wire protocol, a
+        driving motor on this hand, and an entry in
+        ``config.joint_encoder_joints`` (the ``["all"]`` sentinel selects
+        every slotted, motor-driven joint; the wrist never qualifies). Empty
+        when the config field is unset. Available before ``connect()``.
+        """
+        return self._encoder_backed_joints()
+
     def _encoder_backed_joints(self) -> list[str]:
         """Joints with a protocol slot, a driving motor on this hand, and an
         entry in ``config.joint_encoder_joints``. Returns ``[]`` when the
@@ -641,6 +680,7 @@ class OrcaHand(BaseHand):
         joints: list[str] | None = None,
         joint_encoder_client=None,
         progress_callback=None,
+        persist: bool | None = None,
     ):
         """Run the joint calibration routine.
 
@@ -657,12 +697,22 @@ class OrcaHand(BaseHand):
                 and an encoder client, the encoder pass also runs and writes a
                 ``joint_encoder_calibration:`` block.
             progress_callback: Optional ``callable(dict)`` invoked with
-                structured progress events (``calibration_started``,
-                ``step_started``, ``joint_calibrated``, ``step_done``,
-                ``calibration_done``, ``calibration_aborted``). Called from
-                the calibrating thread; must be fast and non-blocking.
-                Exceptions raised by the callback are swallowed.
+                structured progress events: ``calibration_started``,
+                ``step_started``, ``limit_recorded``, ``joint_calibrated``,
+                ``encoder_anchor_recorded``, ``encoder_anchor_failed``,
+                ``offset_calibration_failed``, ``wrist_skipped``,
+                ``step_done``, ``calibration_done``, ``calibration_aborted``,
+                and ``cleanup_failed``. Called from the calibrating thread;
+                must be fast and non-blocking. Exceptions raised by the
+                callback are swallowed.
+            persist: Whether results are written to ``calibration.yaml``
+                (in-memory ``self.calibration`` updates either way). ``None``
+                (default) defers to the class: real hands persist, ``Mock*``
+                hands don't. Pass ``True`` on a mock to deliberately write a
+                synthetic calibration file.
         """
+        if persist is None:
+            persist = self._persist_calibration
         if blocking:
             self._task_stop_event.clear()
             self._calibrate_and_apply(
@@ -670,6 +720,7 @@ class OrcaHand(BaseHand):
                 joints=joints,
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
+                persist=persist,
             )
         else:
             self._start_task(
@@ -678,6 +729,7 @@ class OrcaHand(BaseHand):
                 joints=joints,
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
+                persist=persist,
             )
 
     def _calibrate_and_apply(self, **kwargs):
@@ -916,12 +968,23 @@ class OrcaHand(BaseHand):
         return motor_pos
 
     def _sanity_check(self):
-        for motor_limit in self.motor_limits_dict.values():
-            if any(limit is None for limit in motor_limit):
-                self.calibration = dataclasses.replace(
-                    self.calibration, calibrated=False
-                )
-                update_yaml(self.config.calibration_path, "calibrated", False)
+        """Demote the calibrated flag when any motor limit is missing.
+
+        The on-disk flag is corrected only when ``calibration.yaml`` exists
+        and still claims ``calibrated: true``; constructing a hand never
+        creates or rewrites the file otherwise.
+        """
+        if not any(
+            any(limit is None for limit in limits)
+            for limits in self.motor_limits_dict.values()
+        ):
+            return
+        self.calibration = dataclasses.replace(self.calibration, calibrated=False)
+        calibration_path = self.config.calibration_path
+        if os.path.exists(calibration_path) and (
+            (read_yaml(calibration_path) or {}).get(CALIBRATED)
+        ):
+            update_yaml(calibration_path, CALIBRATED, False)
 
     def tension(
         self,
@@ -941,10 +1004,11 @@ class OrcaHand(BaseHand):
             blocking: When ``True`` (default) blocks until the user interrupts
                 with Ctrl-C. When ``False`` runs in a background thread.
             progress_callback: Optional ``callable(dict)`` invoked with
-                structured progress events (``phase`` with
-                winding/ramp/holding/released, ``winding_progress``). Called
-                from the tensioning thread; must be fast and non-blocking.
-                Exceptions raised by the callback are swallowed.
+                structured progress events: ``phase`` (with ``phase`` one of
+                winding/ramp/holding/released), ``winding_progress``, and
+                ``cleanup_failed``. Called from the tensioning thread; must
+                be fast and non-blocking. Exceptions raised by the callback
+                are swallowed.
         """
         if blocking:
             self._task_stop_event.clear()
@@ -1057,8 +1121,13 @@ class MockMotorResolutionMixin:
 
     It also synthesises the motor calibration a mock can't measure, so the
     bundled models are usable out of the box (see
-    :meth:`_install_mock_calibration`).
+    :meth:`_install_mock_calibration`). Mock-derived calibration never
+    reaches disk: ``_persist_calibration`` defaults ``calibrate()`` to
+    in-memory-only so synthesized values can't overwrite a real hand's
+    ``calibration.yaml`` (pass ``persist=True`` to opt in deliberately).
     """
+
+    _persist_calibration = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1071,8 +1140,10 @@ class MockMotorResolutionMixin:
         wheel install doesn't carry, and mock motors have no hardstops to
         sweep. Limits and ratios are derived from the config ROMs so
         joint-motor conversion round-trips exactly. Entries that are already
-        calibrated are left untouched, and ``calibrated`` stays as loaded —
-        nothing here stands in for an actual calibration run.
+        calibrated are left untouched. When every motor ends up with limits
+        and a ratio, the in-memory ``calibrated`` flag is set so
+        ``init_joints()`` doesn't launch a calibration run against simulated
+        hardstops; the on-disk file is never modified.
         """
         motor_limits = dict(self.calibration.motor_limits_dict)
         ratios = dict(self.calibration.joint_to_motor_ratios_dict)
@@ -1094,11 +1165,19 @@ class MockMotorResolutionMixin:
                 ratios[motor_id] = MOCK_JOINT_TO_MOTOR_RATIO
                 changed = True
 
-        if changed:
+        calibrated = all(
+            limits[0] is not None and limits[1] is not None
+            for limits in motor_limits.values()
+        ) and all(
+            ratio is not None and ratio != 0.0 for ratio in ratios.values()
+        )
+
+        if changed or calibrated != self.calibration.calibrated:
             self.calibration = dataclasses.replace(
                 self.calibration,
                 motor_limits_dict=motor_limits,
                 joint_to_motor_ratios_dict=ratios,
+                calibrated=calibrated,
             )
 
     def connect(self, interactive: bool = True) -> tuple[bool, str]:
