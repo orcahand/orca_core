@@ -87,13 +87,21 @@ DYNAMIXEL_MODELS = {
 }
 
 def dynamixel_cleanup_handler():
-    """Cleanup function to ensure Dynamixels are disconnected properly."""
+    """Cleanup function to ensure Dynamixels are disconnected properly.
+
+    Each client is handled independently so one failing client cannot
+    prevent torque-disable of the others.
+    """
     open_clients = list(DynamixelClient.OPEN_CLIENTS)
     for open_client in open_clients:
-        if open_client.port_handler.is_using:
-            logging.warning('Forcing client to close.')
-        open_client.port_handler.is_using = False
-        open_client.disconnect()
+        try:
+            if open_client.port_handler.is_using:
+                logging.warning('Forcing client to close.')
+            open_client.port_handler.is_using = False
+            open_client.disconnect()
+        except Exception:
+            logging.exception('Exit cleanup failed for client on %s',
+                              getattr(open_client, 'port_name', '<unknown>'))
 
 
 def signed_to_unsigned(value: int, size: int) -> int:
@@ -143,7 +151,8 @@ class DynamixelClient(MotorClient):
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
 
-    # The currently open clients.
+    # Clients with an open port; registered on successful connect() so the
+    # atexit cleanup only ever touches live connections.
     OPEN_CLIENTS = set()
 
     def __init__(self,
@@ -206,18 +215,12 @@ class DynamixelClient(MotorClient):
         self._operating_modes = {}
         self._recovering = set()
 
-        self.OPEN_CLIENTS.add(self)
-
     @property
     def is_connected(self) -> bool:
         return self.port_handler.is_open
 
     def connect(self):
-        """Connects to the Dynamixel motors.
-
-        NOTE: This should be called after all DynamixelClients on the same
-            process are created.
-        """
+        """Connects to the Dynamixel motors."""
         assert not self.is_connected, 'Client is already connected.'
 
         with self._bus_lock:
@@ -256,6 +259,8 @@ class DynamixelClient(MotorClient):
 
             # Torque is left as-is: connecting must never make the hand
             # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+            self.OPEN_CLIENTS.add(self)
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -301,8 +306,7 @@ class DynamixelClient(MotorClient):
             # Ensure motors are disabled at the end.
             self.set_torque_enabled(self.motor_ids, False, retries=0)
             self.port_handler.closePort()
-        if self in self.OPEN_CLIENTS:
-            self.OPEN_CLIENTS.remove(self)
+        self.OPEN_CLIENTS.discard(self)
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""

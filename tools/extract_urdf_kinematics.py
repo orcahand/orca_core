@@ -23,7 +23,8 @@ about the URDF axis. It is derived two ways:
 
 An audit report goes to stderr, along with a warning for any config ROM that
 commands past the URDF's mechanical limit. A sign that stays undetermined is
-fatal: the tool refuses to emit data it could not verify.
+fatal, and so is a limit-verified sign that contradicts axis coherence: the
+tool refuses to emit data it could not verify.
 
 Usage:
     uv run python tools/extract_urdf_kinematics.py <orcahand_right.urdf> \
@@ -237,7 +238,9 @@ def resolve_abduction_signs(chains: dict, audits: dict[str, str]) -> list[str]:
 
     All four finger abduction joints rotate about the palm normal, so their
     sign-applied axes must be parallel in the palm frame. Anchor on one whose
-    sign the limit audit could determine and flip the rest to match.
+    sign the limit audit could determine and flip the rest to match. Only
+    limit-unverified signs may be flipped: a limit-verified sign that turns out
+    anti-parallel means the URDF and config disagree, which is fatal.
     """
     fingers = chains["fingers"]
     reference = next(
@@ -261,13 +264,19 @@ def resolve_abduction_signs(chains: dict, audits: dict[str, str]) -> list[str]:
                 f"{finger}_abd axis is not parallel to {reference}_abd in the palm "
                 f"frame (cos={alignment:.3f}); the coherence assumption does not hold"
             )
-        entry = next(e for e in fingers[finger] if e.get("joint") == f"{finger}_abd")
+        joint_id = f"{finger}_abd"
         if alignment < 0:
+            if audits[joint_id].startswith("verified"):
+                raise ValueError(
+                    f"{joint_id} sign was {audits[joint_id]} yet its sign-applied "
+                    f"axis is anti-parallel to {reference}_abd in the palm frame; "
+                    "the URDF limits and the config ROM contradict axis coherence "
+                    "and must be reconciled by hand"
+                )
+            entry = next(e for e in fingers[finger] if e.get("joint") == joint_id)
             entry["sign"] = -entry["sign"]
-        if audits[f"{finger}_abd"].startswith("unverified"):
-            audits[f"{finger}_abd"] = (
-                f"resolved by axis coherence with {reference}_abd"
-            )
+        if audits[joint_id].startswith("unverified"):
+            audits[joint_id] = f"resolved by axis coherence with {reference}_abd"
         notes.append(finger)
     return notes
 

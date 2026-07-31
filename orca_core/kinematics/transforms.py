@@ -42,9 +42,14 @@ def rotation_about_axis(axis: np.ndarray, angle: float) -> np.ndarray:
     return np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Transform:
-    """Immutable rigid transform; maps points from the child frame to the parent frame."""
+    """Immutable rigid transform; maps points from the child frame to the parent frame.
+
+    Value semantics: two transforms are equal iff their matrices are element-wise
+    identical (exact, no tolerance), and equal transforms hash alike, so
+    transforms can be used as set members and dict keys.
+    """
 
     matrix: np.ndarray = field(default_factory=lambda: np.eye(4))
 
@@ -92,6 +97,15 @@ class Transform:
     def translation(self) -> np.ndarray:
         """The (3,) translation, meters."""
         return self.matrix[:3, 3]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Transform):
+            return NotImplemented
+        return bool(np.array_equal(self.matrix, other.matrix))
+
+    def __hash__(self) -> int:
+        # Tuple-of-floats, not raw bytes: keeps -0.0 and 0.0 hashing alike, as they compare equal.
+        return hash(tuple(self.matrix.ravel()))
 
     def __matmul__(self, other: Transform) -> Transform:
         return Transform._from_trusted(self.matrix @ other.matrix)

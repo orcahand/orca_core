@@ -19,9 +19,9 @@ class JointEncoderCal:
 
     ``joint_angle = polarity * Δenc_wrapped + anchor_angle_deg``, where
     ``Δenc_wrapped`` is the wrap-corrected 14-bit encoder delta from
-    ``enc_at_anchor_count``, ``polarity`` is looked up from
-    :data:`JOINT_ENCODER_POLARITY` (hardware-fixed by mounting + magnet
-    orientation), and ``anchor_angle_deg`` is the joint's ROM upper from
+    ``enc_at_anchor_count``, ``polarity`` comes from the hand side's polarity
+    table via :func:`joint_encoder_polarity_for_side` (hardware-fixed by
+    mounting + magnet orientation), and ``anchor_angle_deg`` is the joint's ROM upper from
     :attr:`OrcaHandConfig.joint_roms_dict` (the pose the calibration sweep
     stalls the motor at).
     """

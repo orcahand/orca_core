@@ -643,11 +643,13 @@ class OrcaHand(BaseHand):
         """Convert raw encoder counts ``(AUTO_ENC_NUM_JOINTS,)`` into joint
         angles in degrees, keyed by joint name. Joints without a
         :class:`~orca_core.calibration.JointEncoderCal` entry are omitted.
+        Raises ``KeyError`` when this hand's side has no validated encoder
+        polarity table, so wrong-signed angles are never returned.
         """
         from .hardware.sensing.constants import (
             AUTO_ENC_NUM_JOINTS,
-            JOINT_ENCODER_POLARITY,
             JOINT_TO_ENCODER_SLOT,
+            joint_encoder_polarity_for_side,
         )
         from .hardware.sensing.encoder_protocol import encoder_to_joint_angle
 
@@ -666,9 +668,10 @@ class OrcaHand(BaseHand):
         if not joints:
             return {}
 
+        polarity_table = joint_encoder_polarity_for_side(self.config.type)
         slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
         anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
-        polarities = np.array([JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64)
+        polarities = np.array([polarity_table[j] for j in joints], dtype=np.int64)
         anchor_angles = np.array(
             [self.config.joint_roms_dict[j][1] for j in joints], dtype=np.float64
         )

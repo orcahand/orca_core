@@ -92,6 +92,38 @@ class TestTransform:
             atol=1e-12,
         )
 
+    def test_equality_is_a_bool_and_exact(self):
+        a = Transform.from_xyz_rpy([1.0, 2.0, 3.0], [0.1, 0.2, 0.3])
+        b = Transform.from_xyz_rpy([1.0, 2.0, 3.0], [0.1, 0.2, 0.3])
+        c = Transform.from_xyz_rpy([1.0, 2.0, 3.1], [0.1, 0.2, 0.3])
+        assert (a == b) is True
+        assert (a == c) is False
+        assert a != c
+        assert not (a != b)
+
+    def test_equality_with_non_transform_is_false_not_an_error(self):
+        assert (Transform.identity() == 4) is False
+        assert (Transform.identity() == None) is False  # noqa: E711
+        assert Transform.identity() != "not a transform"
+
+    def test_equal_transforms_collapse_in_sets_and_dicts(self):
+        a = Transform.from_xyz_rpy([0.5, 0.0, 0.0])
+        b = Transform.from_xyz_rpy([0.5, 0.0, 0.0])
+        c = Transform.identity()
+        assert hash(a) == hash(b)
+        assert {a, b, c} == {a, c}
+        d = {a: "first", c: "identity"}
+        d[b] = "second"
+        assert d[a] == "second"
+        assert len(d) == 2
+
+    def test_signed_zero_compares_and_hashes_alike(self):
+        matrix = np.eye(4)
+        matrix[0, 3] = -0.0
+        a, b = Transform(np.eye(4)), Transform(matrix)
+        assert a == b
+        assert hash(a) == hash(b)
+
 
 class TestPackagedKinematics:
     @pytest.mark.parametrize("kin", [RIGHT, LEFT], ids=["right", "left"])

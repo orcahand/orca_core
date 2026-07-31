@@ -74,13 +74,21 @@ POSITION_DIRECTION = -1
 
 
 def feetech_cleanup_handler():
-    """Cleanup function to ensure Feetech servos are disconnected properly."""
+    """Cleanup function to ensure Feetech servos are disconnected properly.
+
+    Each client is handled independently so one failing client cannot
+    prevent torque-disable of the others.
+    """
     open_clients = list(FeetechClient.OPEN_CLIENTS)
     for client in open_clients:
-        if client.port_handler.is_using:
-            logging.warning('Forcing Feetech client to close.')
-        client.port_handler.is_using = False
-        client.disconnect()
+        try:
+            if client.port_handler.is_using:
+                logging.warning('Forcing Feetech client to close.')
+            client.port_handler.is_using = False
+            client.disconnect()
+        except Exception:
+            logging.exception('Exit cleanup failed for client on %s',
+                              getattr(client, 'port_name', '<unknown>'))
 
 
 class FeetechClient(MotorClient):
@@ -119,6 +127,8 @@ class FeetechClient(MotorClient):
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
 
+    # Clients with an open port; registered on successful connect() so the
+    # atexit cleanup only ever touches live connections.
     OPEN_CLIENTS = set()
 
     def __init__(
@@ -176,8 +186,6 @@ class FeetechClient(MotorClient):
         self._default_acc = 150  # Acceleration (0-254): faster ramp-up
         self._default_torque = 500  # Torque limit (0-1000), required for motion
 
-        self.OPEN_CLIENTS.add(self)
-
     @property
     def is_connected(self) -> bool:
         return self._connected and self.port_handler.is_open
@@ -229,6 +237,8 @@ class FeetechClient(MotorClient):
             # Torque is left as-is: connecting must never make the hand
             # stiffen or move. Callers opt in via enable_torque()/init_joints().
 
+            self.OPEN_CLIENTS.add(self)
+
     def disconnect(self) -> None:
         """Disconnects from the Feetech motors."""
         if not self._connected:
@@ -245,8 +255,7 @@ class FeetechClient(MotorClient):
             self.port_handler.closePort()
             self._connected = False
 
-        if self in self.OPEN_CLIENTS:
-            self.OPEN_CLIENTS.remove(self)
+        self.OPEN_CLIENTS.discard(self)
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
