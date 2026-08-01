@@ -492,9 +492,8 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
 
 
 def _run_motor_space(args: argparse.Namespace) -> int:
-    # OrcaHand directly rather than load_hand(): motor-space nudging wants the
-    # motor bus alone, and the factory would also open the encoder and tactile
-    # links for a sensing hand.
+    # OrcaHand directly rather than load_hand(): motor-space nudging wants the motor
+    # bus alone, not the encoder and tactile links the factory opens for a sensing hand.
     hand = OrcaHand(config_path=args.config_path)
     success, msg = hand.connect()
     print(msg)

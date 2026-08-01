@@ -11,7 +11,12 @@ import time
 import pytest
 
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
-from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
+from orca_core.hardware.sensing.constants import (
+    ADDR_AUTO_ENABLE,
+    DEFAULT_TAXEL_COUNTS,
+    REGISTER_DISABLE,
+    TACTILE_REGISTER_ATTEMPTS,
+)
 from orca_core.hardware.sensing.tactile_protocol import compute_distal_module_index
 from orca_core.hardware.tactile_client import TactileClient, TactileSensorConfiguration
 
@@ -347,3 +352,66 @@ def test_slot_order_custom_mapping():
 def test_slot_order_subset_preserves_order():
     config = _make_config(["pinky", "thumb"])
     assert config.active_sensors == ["thumb", "pinky"]
+
+
+# ---------------------------------------------------------------------------
+# Stream re-arm bounding (stop/disconnect must never wait behind retries)
+# ---------------------------------------------------------------------------
+
+def test_rearm_register_writes_use_a_single_attempt(tactile_mock, monkeypatch):
+    """Re-arm writes must not retry: retries would hold the stream control
+    lock and stall a concurrent stop_stream/disconnect for seconds."""
+    link, client, state = tactile_mock
+    client.start_stream(resultant=True, taxels=False)
+
+    recorded = []
+    orig = client._send_register_request
+
+    def spy(request, response_timeout_s, attempts=TACTILE_REGISTER_ATTEMPTS):
+        recorded.append(attempts)
+        return orig(request, response_timeout_s, attempts)
+
+    monkeypatch.setattr(client, "_send_register_request", spy)
+    client._rearm_stream(3.0, True, False, client._stream_generation)
+
+    assert recorded == [1, 1]
+
+
+def test_stop_between_rearm_writes_skips_the_enable(tactile_mock, monkeypatch):
+    """A stop_stream() landing between the re-arm's two register writes must
+    win: the enable write is skipped and the device stays disabled."""
+    link, client, state = tactile_mock
+    client.start_stream(resultant=True, taxels=False)
+    state.write_log.clear()
+
+    wrote_type = threading.Event()
+    release = threading.Event()
+    orig_set_type = client.set_auto_data_type
+
+    def gated(*args, **kwargs):
+        result = orig_set_type(*args, **kwargs)
+        wrote_type.set()
+        assert release.wait(timeout=2.0)
+        return result
+
+    monkeypatch.setattr(client, "set_auto_data_type", gated)
+
+    generation = client._stream_generation
+    rearm = threading.Thread(
+        target=client._rearm_stream, args=(3.0, True, False, generation), daemon=True
+    )
+    rearm.start()
+    assert wrote_type.wait(timeout=2.0)
+
+    # stop_stream bumps the generation immediately, then queues behind the
+    # re-arm's control lock for its own disable write.
+    stopper = threading.Thread(target=client.stop_stream, daemon=True)
+    stopper.start()
+    wait_until(lambda: client._stream_generation != generation)
+    release.set()
+    rearm.join(timeout=2.0)
+    stopper.join(timeout=2.0)
+    assert not rearm.is_alive() and not stopper.is_alive()
+
+    enable_writes = [d for a, d in state.write_log if a == ADDR_AUTO_ENABLE]
+    assert enable_writes == [REGISTER_DISABLE]

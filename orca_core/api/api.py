@@ -58,6 +58,9 @@ def _require_connected(h: OrcaHand) -> None:
         raise HTTPException(status_code=409, detail="Hand is not connected.")
 
 
+_TASK_STOP_TIMEOUT_S = 10.0
+
+
 class MotorList(BaseModel):
     motor_ids: Optional[List[int]] = None
 
@@ -107,6 +110,12 @@ def set_hand_config(
             # Don't build the default hand just to replace it: only an
             # already-constructed, connected hand needs disconnecting.
             if hand is not None and hand.is_connected():
+                if not hand.stop_task(_TASK_STOP_TIMEOUT_S):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="A running task (e.g. calibration) did not stop; "
+                        "configuration unchanged.",
+                    )
                 hand.disconnect()
 
             hand = OrcaHand(config_path=config_path)
@@ -141,6 +150,10 @@ def disconnect_hand():
     """
     Disconnects from the OrcaHand hardware, disabling torque first.
 
+    A running background task (e.g. a calibration started via POST
+    /calibrate) is signalled to stop and awaited before the disconnect, so
+    this endpoint doubles as the remote abort.
+
     Returns:
         dict: Status message indicating success or failure.
     """
@@ -149,6 +162,12 @@ def disconnect_hand():
         if not h.is_connected():
             return {"message": "Hand already disconnected."}
         try:
+            if not h.stop_task(_TASK_STOP_TIMEOUT_S):
+                raise HTTPException(
+                    status_code=500,
+                    detail="A running task (e.g. calibration) did not stop; "
+                    "hand left connected.",
+                )
             try:
                 h.disable_torque()
                 time.sleep(0.1)
@@ -174,9 +193,11 @@ def get_status():
     """
     try:
         h = _get_hand()
+        # Same source as GET /calibrate/status: calibration is persisted
+        # state, meaningful whether or not the hand is currently connected.
         return {
             "connected": h.is_connected(),
-            "calibrated": h.is_calibrated() if h.is_connected() else False
+            "calibrated": h.is_calibrated(),
         }
     except Exception as e:
         handle_hand_exception(e)
@@ -345,36 +366,43 @@ def set_joint_position(joint_positions: JointPositions):
 @app.get("/calibrate/status", summary="Get Calibration Status", tags=["Calibration"])
 def get_calibration_status():
     """
-    Checks if the hand is fully calibrated.
+    Reports whether the hand is fully calibrated and whether a background
+    calibration is currently running.
 
     Returns:
-        dict: Contains 'calibrated' (bool) status.
+        dict: Contains 'calibrated' (bool) and 'running' (bool) status.
     """
     try:
-        return {"calibrated": _get_hand().is_calibrated()}
+        h = _get_hand()
+        return {"calibrated": h.is_calibrated(), "running": h.task_running}
     except Exception as e:
         handle_hand_exception(e)
 
-@app.post("/calibrate")
+@app.post("/calibrate", status_code=202)
 def calibrate_auto():
     """
-    Starts the automatic calibration routine defined in the configuration.
-    This might take some time.
+    Starts the automatic calibration routine in the background and returns
+    immediately. Poll GET /calibrate/status for progress; POST /disconnect
+    aborts a running calibration.
 
     Returns:
-        dict: Message indicating calibration start and eventual result.
+        dict: Message indicating the calibration was started.
     """
+    # The lock covers only the start of the task, so /disconnect can still
+    # abort a calibration that runs for minutes.
     with _exclusive_hand_operation():
         h = _get_hand()
         if not h.is_connected():
              raise HTTPException(status_code=409, detail="Hand must be connected to calibrate.")
+        if h.task_running:
+            raise HTTPException(
+                status_code=409, detail="A hand task is already running."
+            )
         try:
-            h.calibrate()
-            calib_status = h.is_calibrated()
-            msg = "Automatic calibration finished." + (" Successfully." if calib_status else " Failed or incomplete.")
-            return {"message": msg, "calibrated": calib_status}
+            h.calibrate(blocking=False)
         except Exception as e:
             handle_hand_exception(e)
+    return {"message": "Calibration started. Poll /calibrate/status for progress."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

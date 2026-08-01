@@ -2,6 +2,8 @@
 
 import os
 import shutil
+import threading
+import time
 
 import pytest
 
@@ -111,15 +113,103 @@ def test_calibrate_status(api_env):
     client, _, _ = api_env
     resp = client.get("/calibrate/status")
     assert resp.status_code == 200
-    assert resp.json() == {"calibrated": True}
+    assert resp.json() == {"calibrated": True, "running": False}
 
 
-def test_calibrate(api_env):
+def _wait_for_calibration_idle(client, timeout_s: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        status = client.get("/calibrate/status").json()
+        if not status["running"]:
+            return status
+        time.sleep(0.02)
+    raise AssertionError(f"calibration still running after {timeout_s}s")
+
+
+def test_calibrate_starts_in_background(api_env):
     client, _, _ = api_env
     resp = client.post("/calibrate")
+    assert resp.status_code == 202
+    assert "/calibrate/status" in resp.json()["message"]
+
+    status = _wait_for_calibration_idle(client)
+    assert status["calibrated"] is True
+
+
+def test_calibrate_returns_before_completion_and_disconnect_aborts(
+    api_env, monkeypatch
+):
+    """POST /calibrate must not block on the routine, and POST /disconnect
+    must preempt a running calibration by stopping it first."""
+    client, hand, _ = api_env
+    started = threading.Event()
+
+    def _slow_calibrate(**kwargs):
+        started.set()
+        while not hand._task_stop_event.is_set():
+            time.sleep(0.01)
+
+    monkeypatch.setattr(hand, "_calibrate_and_apply", _slow_calibrate)
+
+    resp = client.post("/calibrate")
+    assert resp.status_code == 202
+    assert started.wait(timeout=2.0)
+    assert client.get("/calibrate/status").json()["running"] is True
+
+    # A second calibrate while one runs is rejected, not queued.
+    assert client.post("/calibrate").status_code == 409
+
+    resp = client.post("/disconnect")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["calibrated"] is True
+    assert not hand.task_running
+    assert not hand.is_connected()
+    assert client.get("/calibrate/status").json()["running"] is False
+
+    assert client.post("/connect").status_code == 200
+
+
+def test_disconnect_reports_a_wedged_task_instead_of_hanging(api_env, monkeypatch):
+    """A task that ignores the stop signal must bound the request and leave
+    the hand connected, not block the endpoint until the task feels like it."""
+    client, hand, _ = api_env
+    monkeypatch.setattr(api, "_TASK_STOP_TIMEOUT_S", 0.3)
+    started, release = threading.Event(), threading.Event()
+
+    def _wedged_calibrate(**kwargs):
+        started.set()
+        release.wait(20.0)
+
+    monkeypatch.setattr(hand, "_calibrate_and_apply", _wedged_calibrate)
+    assert client.post("/calibrate").status_code == 202
+    assert started.wait(timeout=2.0)
+
+    try:
+        started_at = time.monotonic()
+        resp = client.post("/disconnect")
+        assert time.monotonic() - started_at < 5.0
+        assert resp.status_code == 500
+        assert "did not stop" in resp.json()["detail"]
+        assert hand.is_connected()
+    finally:
+        release.set()
+        assert hand.stop_task(5.0)
+
+
+def test_status_and_calibrate_status_share_the_calibrated_source(api_env):
+    """Both endpoints must answer 'calibrated' identically, connected or not."""
+    client, hand, _ = api_env
+    assert client.post("/disconnect").status_code == 200
+    try:
+        status = client.get("/status").json()
+        calibrate_status = client.get("/calibrate/status").json()
+        assert status["connected"] is False
+        assert (
+            status["calibrated"]
+            == calibrate_status["calibrated"]
+            == hand.is_calibrated()
+        )
+    finally:
+        assert client.post("/connect").status_code == 200
 
 
 def test_disconnect_and_reconnect(api_env):

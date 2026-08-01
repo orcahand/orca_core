@@ -68,6 +68,11 @@ from .kinematics import frames as tactile_frames
 
 logger = logging.getLogger(__name__)
 
+_LOOP_ALREADY_RUNNING_MSG = (
+    "Already connected with the joint-feedback loop running; call disconnect() "
+    "before reconnecting with engage_feedback=False for open-loop control"
+)
+
 
 def _link_health(link: Optional[HandSerialLink]) -> Optional[LinkHealth]:
     """Snapshot ``link``'s health, or ``None`` when there is no link."""
@@ -202,7 +207,14 @@ class OrcaHandTouch(OrcaHand):
             "or check that the sensor adapter is plugged in)"
         )
 
-    def connect(self, interactive: bool = True) -> tuple[bool, str]:
+    def connect(
+        self, interactive: bool = True, engage_feedback: bool = True
+    ) -> tuple[bool, str]:
+        """Open the motor bus and the tactile sensor link.
+
+        ``engage_feedback`` is accepted for signature parity with the
+        joint-feedback hands; this hand has no loop to engage.
+        """
         # Idempotent like the motor-only connect: never re-attach over (and
         # orphan) a live tactile link.
         if self.is_connected() and self._tactile_client is not None:
@@ -461,7 +473,8 @@ class OrcaHandJointFeedback(OrcaHand):
     timeout each surface as a :class:`JointFeedbackConnectError`. The motor
     bus opened by ``super().connect()`` is rolled back before the exception
     escapes, so a caller that catches the error sees the hand in the same
-    state it started in.
+    state it started in. ``connect(engage_feedback=False)`` skips the loop
+    (and its preconditions) entirely and opens the motor bus alone.
     """
 
     def __init__(
@@ -559,12 +572,20 @@ class OrcaHandJointFeedback(OrcaHand):
     def _require_validated_feedback_side(self) -> None:
         """Closed-loop control needs the per-side encoder polarity table;
         refuse sides (e.g. left-hand assemblies) without a validated one."""
-        if self.config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
+        side = self.config.type
+        if side not in JOINT_ENCODER_POLARITY_BY_SIDE:
+            alternative = (
+                f"load a feedback-free model such as orcahand-{side} / "
+                f"orcahand-touch-{side} (load_hand(..., engage_feedback=False) "
+                "does the same)"
+                if side in ("left", "right")
+                else "set 'type:' in config.yaml to a validated side"
+            )
             raise JointFeedbackConnectError(
-                f"Closed-loop joint feedback is unvalidated for "
-                f"{self.config.type!r} hand assemblies: no encoder polarity "
-                "table exists for that side. Use the motor-only classes "
-                "(OrcaHand / MockOrcaHand) instead."
+                f"Closed-loop joint feedback is unvalidated for {side!r} hand "
+                "assemblies: no encoder polarity table exists for that side. "
+                "Call connect(engage_feedback=False) to drive this hand "
+                f"open-loop (tactile still works), or {alternative}."
             )
 
     def _loop_ready_joints(self) -> List[str]:
@@ -600,7 +621,21 @@ class OrcaHandJointFeedback(OrcaHand):
 
     # ----- Lifecycle -------------------------------------------------------
 
-    def connect(self, interactive: bool = True) -> tuple[bool, str]:
+    def connect(
+        self, interactive: bool = True, engage_feedback: bool = True
+    ) -> tuple[bool, str]:
+        """Open the motor bus and start the closed-loop joint feedback.
+
+        ``engage_feedback=False`` opens the motor bus only — no encoder
+        link, no loop, and no validated-side gate — so the hand can be
+        driven open-loop (e.g. for maintenance or on hand sides the loop
+        does not support yet). It fails on a hand whose loop already runs
+        rather than reporting an open-loop hand that isn't one.
+        """
+        if not engage_feedback:
+            if self._loop is not None:
+                return False, _LOOP_ALREADY_RUNNING_MSG
+            return super().connect(interactive)
         # Idempotent like the motor-only connect: never orphan a running
         # loop and encoder link by re-attaching over them.
         if self.is_connected() and self._loop is not None:
@@ -693,13 +728,13 @@ class OrcaHandJointFeedback(OrcaHand):
         finally:
             loop.resume_writes()
 
-    def disable_torque(self, motor_ids: Optional[List[int]] = None):
+    def disable_torque(self, motor_ids: Optional[List[int]] = None) -> List[int]:
         with self._loop_writes_paused():
-            super().disable_torque(motor_ids)
+            return super().disable_torque(motor_ids)
 
-    def enable_torque(self, motor_ids: Optional[List[int]] = None):
+    def enable_torque(self, motor_ids: Optional[List[int]] = None) -> List[int]:
         with self._loop_writes_paused():
-            super().enable_torque(motor_ids)
+            return super().enable_torque(motor_ids)
 
     def set_control_mode(self, mode: str, motor_ids: Optional[List[int]] = None):
         # Mode changes are torque-off/mode-write/torque-on round-trip
@@ -904,7 +939,20 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
 
     config_cls = OrcaHandTouchConfig
 
-    def connect(self, interactive: bool = True) -> tuple[bool, str]:
+    def connect(
+        self, interactive: bool = True, engage_feedback: bool = True
+    ) -> tuple[bool, str]:
+        """Connect motors, tactile sensing, and the joint-feedback loop.
+
+        ``engage_feedback=False`` connects motors + tactile only — no
+        encoder link, no loop, and no validated-side gate — so e.g. a
+        left-hand assembly still gets open-loop control with tactile. It
+        fails on a hand whose loop already runs rather than reporting an
+        open-loop hand that isn't one.
+        """
+        if not engage_feedback:
+            return self._connect_without_feedback(interactive)
+
         # Idempotent like the motor-only connect: never orphan the running
         # loop or the live links by re-attaching over them.
         if (
@@ -914,16 +962,18 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
         ):
             return True, "Already connected"
         self._require_validated_feedback_side()
-        # A sensors-only tactile attach can't be kept: this connect re-resolves
-        # the topology (tactile may need to ride the shared encoder link).
-        self._teardown_tactile()
         # Motor bus only — bypass the single-sensor connect() chains so this
         # class fully controls how the tactile and encoder links are opened.
         success, msg = OrcaHand.connect(self, interactive)
         if not success:
+            # A failed motor connect must not cost a live sensors-only
+            # tactile session (the documented sensors-first bring-up).
             return success, msg
 
         try:
+            # A sensors-only tactile attach can't be kept: the topology is
+            # re-resolved here (tactile may need the shared encoder link).
+            self._teardown_tactile()
             ports = resolve_sensing_ports(
                 tactile_override=self.config.sensor_port,
                 encoder_override=self.config.encoder_serial_port,
@@ -974,6 +1024,30 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
             f"{msg} | Joint feedback loop running on {ports.encoder}{loop_note} "
             f"| Tactile on {tactile_where}"
         )
+
+    def _connect_without_feedback(self, interactive: bool) -> tuple[bool, str]:
+        """Motor bus + tactile only, mirroring :meth:`OrcaHandTouch.connect`
+        but never touching the encoder link or loop."""
+        if self._loop is not None:
+            return False, _LOOP_ALREADY_RUNNING_MSG
+        if self.is_connected() and self._tactile_client is not None:
+            return True, "Already connected"
+        success, msg = OrcaHand.connect(self, interactive)
+        if not success:
+            return success, msg
+        if self._tactile_client is not None:
+            return True, f"{msg} | Sensor already connected"
+
+        sensor_ok, sensor_msg = self._connect_sensor_with_fallback()
+        if not sensor_ok:
+            # Roll the motor bus back so the caller doesn't inherit a
+            # half-connected hand.
+            try:
+                OrcaHand.disconnect(self)
+            except Exception:
+                logger.exception("motor disconnect failed during connect rollback")
+            return False, f"{msg} | {sensor_msg}"
+        return True, f"{msg} | {sensor_msg}"
 
     def get_tactile_link_health(self) -> LinkHealth | None:
         """Health of the link carrying the tactile stream — the shared

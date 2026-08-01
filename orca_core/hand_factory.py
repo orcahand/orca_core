@@ -33,6 +33,7 @@ model explicitly whenever detection can't.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -41,7 +42,10 @@ from .hand_config import (
     OrcaHandTouchConfig,
     _resolve_config_path,
 )
-from .hardware.sensing.constants import DEFAULT_ENCODER_BAUDRATE
+from .hardware.sensing.constants import (
+    DEFAULT_ENCODER_BAUDRATE,
+    JOINT_ENCODER_POLARITY_BY_SIDE,
+)
 from .hardware.sensing.serial_discovery import (
     OrcaBoardInfo,
     _tactile_responds_at,
@@ -60,6 +64,9 @@ from .hardware_hand_sensing import (
     OrcaHandTouch,
 )
 from .utils.utils import read_yaml
+
+
+logger = logging.getLogger(__name__)
 
 
 # (feedback, tactile, mock) -> hand class
@@ -233,6 +240,20 @@ def load_hand(
         config = _pin_detected_ports(config, detection)
 
     feedback = engage_feedback and config.joint_feedback_enabled
+    if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
+        fallback_model = ("orcahand-touch-" if tactile else "orcahand-") + str(config.type)
+        alternative = (
+            f"use the {fallback_model} model"
+            if config.type in ("left", "right")
+            else "set 'type:' in config.yaml to a validated side"
+        )
+        logger.warning(
+            "closed-loop joint feedback is unvalidated for %r hand assemblies; "
+            "connect() will refuse to engage the loop. Pass "
+            "engage_feedback=False (to load_hand or connect) for open-loop "
+            "control, or %s.",
+            config.type, alternative,
+        )
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
     return hand_cls(config=config)

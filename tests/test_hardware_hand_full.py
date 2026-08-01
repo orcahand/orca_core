@@ -129,11 +129,8 @@ def test_full_connect_rolls_back_on_missing_encoder_calibration(full_config):
     assert hand._tactile_client is None
 
 
-def test_full_connect_refuses_left_config(full_config, tmp_path):
-    """Closed-loop control is unvalidated for left-hand assemblies: connect
-    must refuse before opening the motor bus, any link, or the loop."""
-    from orca_core import JointFeedbackConnectError
-
+@pytest.fixture
+def left_full_config(full_config, tmp_path):
     with open(full_config) as f:
         cfg = yaml.safe_load(f)
     cfg["type"] = "left"
@@ -142,15 +139,105 @@ def test_full_connect_refuses_left_config(full_config, tmp_path):
     left_path = left_dir / "config.yaml"
     with open(left_path, "w") as f:
         yaml.safe_dump(cfg, f)
+    return str(left_path)
 
-    hand = make_full_hand(str(left_path))
-    with pytest.raises(JointFeedbackConnectError, match="left"):
+
+def test_full_connect_refuses_left_config(left_full_config):
+    """Closed-loop control is unvalidated for left-hand assemblies: connect
+    must refuse before opening the motor bus, any link, or the loop — and
+    the refusal must name the concrete escape hatches."""
+    from orca_core import JointFeedbackConnectError
+
+    hand = make_full_hand(left_full_config)
+    with pytest.raises(JointFeedbackConnectError) as excinfo:
         hand.connect()
+    message = str(excinfo.value)
+    assert "left" in message
+    assert "connect(engage_feedback=False)" in message
+    assert "orcahand-touch-left" in message
     assert not hand.is_connected()
     assert hand._loop is None
     assert hand._encoder_link is None
     assert hand._tactile_client is None
     assert hand._tactile_link is None
+
+
+def test_full_left_connect_without_feedback_gets_motors_and_tactile(left_full_config):
+    """``engage_feedback=False`` is the left-hand escape hatch: motors and
+    tactile connect open-loop, and neither the encoder link nor the loop is
+    touched."""
+    hand = make_full_hand(left_full_config)
+    success, msg = hand.connect(engage_feedback=False)
+    try:
+        assert success, msg
+        assert hand.is_connected()
+        assert hand._loop is None
+        assert hand._encoder_link is None
+        assert hand._encoder_client is None
+        assert hand._tactile_client is not None
+        assert hand.get_tactile_configuration() is not None
+        hand.start_tactile_stream()
+        hand.stop_tactile_stream()
+    finally:
+        hand.disconnect()
+
+
+def test_full_connect_without_feedback_refuses_while_the_loop_runs(full_config):
+    """``engage_feedback=False`` promises an open-loop hand; on a hand whose
+    loop already runs it must say so instead of reporting success."""
+    hand = make_full_hand(full_config)
+    assert hand.connect()[0]
+    try:
+        success, msg = hand.connect(engage_feedback=False)
+        assert not success
+        assert "disconnect()" in msg
+        assert hand._loop is not None
+    finally:
+        hand.disconnect()
+
+
+def test_full_reconnect_open_loop_after_disconnect(full_config):
+    """The documented recovery from the refusal above."""
+    hand = make_full_hand(full_config)
+    assert hand.connect()[0]
+    hand.disconnect()
+    success, msg = hand.connect(engage_feedback=False)
+    try:
+        assert success, msg
+        assert hand._loop is None
+        assert hand._tactile_client is not None
+    finally:
+        hand.disconnect()
+
+
+def test_full_failed_motor_connect_preserves_sensors_only_tactile(
+    full_config, monkeypatch
+):
+    """Sensors-first bring-up: tactile is live via connect_sensors_only()
+    while the motors are unpowered. A failing motor connect must report the
+    failure without tearing the live tactile session down."""
+    from orca_core.hardware_hand import OrcaHand
+
+    hand = make_full_hand(full_config)
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    link, client = hand._tactile_link, hand._tactile_client
+
+    monkeypatch.setattr(
+        OrcaHand,
+        "connect",
+        lambda self, interactive=True: (False, "motor bus unpowered"),
+    )
+    try:
+        success, msg = hand.connect()
+        assert not success
+        assert "motor bus unpowered" in msg
+        assert hand._tactile_client is client
+        assert hand._tactile_link is link and link.is_connected
+        assert hand.get_tactile_configuration() is not None
+    finally:
+        monkeypatch.undo()
+        hand.disconnect()
 
 
 def test_full_second_connect_is_noop_and_orphans_nothing(full_config):

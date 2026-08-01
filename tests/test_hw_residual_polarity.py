@@ -79,9 +79,11 @@ def test_right_hand_decode_matches_the_validated_right_table(right_hand):
 
 @pytest.mark.parametrize("side", ["left", None])
 def test_unvalidated_side_raises_at_decode_time(right_hand, side):
+    """Decoding without a validated table names the side and the fix."""
     right_hand.config = dc.replace(right_hand.config, type=side)
-    with pytest.raises(KeyError, match="polarity"):
+    with pytest.raises(ValueError, match="polarity") as excinfo:
         right_hand._raw_to_joint_angle(_raw_frame())
+    assert str(side) in str(excinfo.value)
 
 
 def test_unvalidated_side_without_encoder_calibration_decodes_nothing(right_hand):

@@ -463,7 +463,7 @@ def test_snapshot_rejects_unvalidated_hand_side(calibrated_hand, monkeypatch):
     )
     encoder = _static_at_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder)
-    with pytest.raises(KeyError, match="polarity"):
+    with pytest.raises(ValueError, match="polarity"):
         loop.prime_for_step()
 
 

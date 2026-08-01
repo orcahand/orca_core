@@ -289,6 +289,19 @@ def test_disconnect_after_port_death_is_clean():
     assert not link.is_connected
 
 
+def test_connect_after_port_death_raises():
+    """The link is one-shot: connect() on a port-dead link must fail loudly
+    (pointing at a fresh link) instead of silently doing nothing."""
+    link = MockHandSerialLink()
+    link.connect()
+    link.simulate_port_death()
+    wait_until(lambda: link.is_port_dead)
+
+    with pytest.raises(RuntimeError, match="build a new link"):
+        link.connect()
+    link.disconnect()
+
+
 def test_implausible_response_length_has_own_counter(link):
     marker = _Capture()
     link.register_frame_handler(PROTOCOL_BYTE_AUTO, marker)

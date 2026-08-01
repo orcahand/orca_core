@@ -208,8 +208,13 @@ class TactileClient:
 
     # ----- Register I/O -----------------------------------------------------
 
-    def _send_register_request(self, request: bytes, response_timeout_s: float) -> bytes:
-        """Send a register request, retrying on timeout.
+    def _send_register_request(
+        self,
+        request: bytes,
+        response_timeout_s: float,
+        attempts: int = TACTILE_REGISTER_ATTEMPTS,
+    ) -> bytes:
+        """Send a register request, retrying on timeout up to ``attempts`` times.
 
         A single round-trip is occasionally lost on a busy link; the retries
         recover it. A link that is not running raises ``RuntimeError``, which
@@ -217,7 +222,7 @@ class TactileClient:
         and its retries fail fast on the closed link.
         """
         last_err: IOError | None = None
-        for _ in range(TACTILE_REGISTER_ATTEMPTS):
+        for _ in range(attempts):
             try:
                 return self._link.send_register_request(
                     request, response_timeout_s=response_timeout_s
@@ -233,11 +238,17 @@ class TactileClient:
         response = self._send_register_request(request, response_timeout_s)
         return parse_read_response(response, expected_address=address)
 
-    def _write_register(self, address: int, data: bytes, response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S) -> None:
+    def _write_register(
+        self,
+        address: int,
+        data: bytes,
+        response_timeout_s: float = LINK_DEFAULT_RESPONSE_TIMEOUT_S,
+        attempts: int = TACTILE_REGISTER_ATTEMPTS,
+    ) -> None:
         if not self._connected:
             raise OSError("Must call connect() first.")
         request = build_write_request(address, data)
-        response = self._send_register_request(request, response_timeout_s)
+        response = self._send_register_request(request, response_timeout_s, attempts)
         parse_write_response(response, expected_address=address)
 
     def read_connected_sensors(self) -> dict[str, bool]:
@@ -334,12 +345,22 @@ class TactileClient:
             logger.error(f"Failed to get sensor configuration: {e}")
             raise IOError(f"Failed to read sensor configuration: {e}") from e
 
-    def set_auto_data_type(self, resultant: bool = True, taxels: bool = False) -> None:
+    def set_auto_data_type(
+        self,
+        resultant: bool = True,
+        taxels: bool = False,
+        attempts: int = TACTILE_REGISTER_ATTEMPTS,
+    ) -> None:
         """Configure which data types are included in auto-stream frames."""
-        self._write_register(ADDR_AUTO_DATA_TYPE, encode_auto_data_type(resultant, taxels))
+        self._write_register(
+            ADDR_AUTO_DATA_TYPE, encode_auto_data_type(resultant, taxels),
+            attempts=attempts,
+        )
 
-    def enable_auto_data_transmission(self) -> None:
-        self._write_register(ADDR_AUTO_ENABLE, REGISTER_ENABLE)
+    def enable_auto_data_transmission(
+        self, attempts: int = TACTILE_REGISTER_ATTEMPTS
+    ) -> None:
+        self._write_register(ADDR_AUTO_ENABLE, REGISTER_ENABLE, attempts=attempts)
 
     def disable_auto_data_transmission(self) -> None:
         self._write_register(ADDR_AUTO_ENABLE, REGISTER_DISABLE)
@@ -376,8 +397,7 @@ class TactileClient:
             )
 
         # Idempotent: clear any auto-stream left running from a prior session.
-        # Best-effort — if the device or link is unreachable here, the next
-        # register write will surface the error.
+        # Best-effort — a failure here surfaces on the next register write.
         try:
             self.disable_auto_data_transmission()
         except (OSError, RuntimeError) as e:
@@ -467,9 +487,15 @@ class TactileClient:
                 "(a device reset clears its volatile enable register)",
                 stale_s,
             )
+            # Single-attempt writes keep the control-lock hold short, so a concurrent
+            # stop_stream/disconnect never waits behind register retries.
             try:
-                self.set_auto_data_type(resultant=resultant, taxels=taxels)
-                self.enable_auto_data_transmission()
+                self.set_auto_data_type(resultant=resultant, taxels=taxels, attempts=1)
+                with self._auto_lock:
+                    # Stream stopped or restarted mid-re-arm: leave it disabled.
+                    if not self._auto_running or generation != self._stream_generation:
+                        return
+                self.enable_auto_data_transmission(attempts=1)
             except Exception as e:
                 logger.warning("tactile stream re-arm failed: %s", e)
 

@@ -6,6 +6,7 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+import logging
 import os
 import shutil
 
@@ -57,6 +58,42 @@ def test_load_hand_selects_class_from_config(model, expected):
 def test_load_hand_engage_feedback_false_returns_motor_only(model, expected):
     hand = load_hand(config_path=_config(model), mock=True, engage_feedback=False)
     assert type(hand) is expected
+
+
+@pytest.mark.parametrize(
+    ("model", "expected", "fallback_model"),
+    [
+        ("orcahand-joint-left", MockOrcaHandJointFeedback, "orcahand-left"),
+        ("orcahand-full-left", MockOrcaHandFull, "orcahand-touch-left"),
+    ],
+)
+def test_load_hand_warns_on_left_feedback_config(
+    caplog, model, expected, fallback_model
+):
+    """Left feedback configs still map to the feedback classes (connect()
+    gates the loop), but the factory must warn and name the escape hatches."""
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        hand = load_hand(config_path=_config(model), mock=True)
+    assert type(hand) is expected
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "engage_feedback=False" in m and fallback_model in m for m in messages
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"config_path": _config("orcahand-joint-right")},
+        {"config_path": _config("orcahand-joint-left"), "engage_feedback": False},
+    ],
+)
+def test_load_hand_does_not_warn_when_loop_can_engage_or_is_suppressed(
+    caplog, kwargs
+):
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        load_hand(mock=True, **kwargs)
+    assert not [r for r in caplog.records if "unvalidated" in r.getMessage()]
 
 
 def test_load_hand_carries_full_config_when_feedback_suppressed(tmp_path):

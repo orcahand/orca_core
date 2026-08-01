@@ -145,6 +145,11 @@ class HandSerialLink:
         return self._port_error
 
     def connect(self) -> None:
+        if self._port_dead:
+            raise RuntimeError(
+                f"hand serial link port failed ({self._port_error}); "
+                "the link cannot recover — build a new link to reconnect"
+            )
         if self._connected:
             return
         if self._disconnected:

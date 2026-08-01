@@ -196,16 +196,18 @@ JOINT_ENCODER_POLARITY_BY_SIDE = {"right": JOINT_ENCODER_POLARITY}
 def joint_encoder_polarity_for_side(side):
     """Per-joint encoder polarity table for hands of ``side``.
 
-    Raises ``KeyError`` for sides without a validated table (currently
+    Raises ``ValueError`` for sides without a validated table (currently
     everything but ``"right"``), so closed-loop consumers fail loudly
     instead of decoding with wrong signs.
     """
     try:
         return JOINT_ENCODER_POLARITY_BY_SIDE[side]
     except KeyError:
-        raise KeyError(
-            f"no validated joint-encoder polarity table for hand side {side!r}; "
-            f"validated sides: {sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}"
+        raise ValueError(
+            f"hand side {side!r} (config field 'type') has no validated "
+            f"joint-encoder polarity table, so encoder angles cannot be "
+            f"decoded. Set 'type:' in config.yaml to one of "
+            f"{sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}."
         ) from None
 
 # Slots the production hand ships with encoders wired (all 17, wrist included).

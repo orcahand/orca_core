@@ -68,9 +68,8 @@ TAXEL_ACTIVE_N = 0.1  # |fz| above this counts as "pressed" in the ASCII grid
 ENCODER_DURATION_S = 10.0
 ENCODER_MIN_RATE_HZ = 50.0
 
-# (rows, cols, positions) per (role, taxel_count). role ∈ {"thumb","finger","pinky"}.
-# positions[i] = (row, col) of taxel i in the auto-stream sequence; row=0 is the
-# fingertip. Multiple taxels may share a cell — the renderer ORs hot states.
+# (role, taxel_count) -> (rows, cols, positions), role ∈ {"thumb","finger","pinky"};
+# positions[i] = (row, col) of taxel i in the auto-stream sequence, row 0 = fingertip.
 TAXEL_LAYOUTS: dict[tuple[str, int], tuple[int, int, tuple[tuple[int, int], ...]]] = {
     ("finger", 87): (18, 19, (
         (1,13), (3,16), (3,16), (1,13), (3,15), (3,9),
@@ -120,7 +119,7 @@ FINGER_TO_ROLE = {"thumb": "thumb", "index": "finger", "middle": "finger",
 def render_taxel_grid(role: str, num_taxels: int, taxels, threshold_n: float = TAXEL_ACTIVE_N) -> str | None:
     """Return multi-line ASCII art of taxel state (X = active, O = inactive,
     space = no taxel at that cell), or None if no layout exists for this
-    (role, taxel_count) combination."""
+    (role, taxel_count) combination. Taxels sharing a cell OR their states."""
     layout = TAXEL_LAYOUTS.get((role, num_taxels))
     if layout is None:
         return None

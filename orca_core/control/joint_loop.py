@@ -572,9 +572,8 @@ class JointLoopThread:
             try:
                 self.step_once(dt=dt)
             except Exception:
-                # Keep the thread alive on transient bus errors; the cycle
-                # surfaces as cycles_exception so a sick loop is visible
-                # without conflating it with jitter overruns.
+                # Keep the thread alive on transient bus errors; counted as
+                # cycles_exception, kept distinct from jitter overruns.
                 self._stats["cycles_exception"] += 1
                 self._maybe_log_step_exception()
             self._record_loop_period(dt)

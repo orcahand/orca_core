@@ -70,7 +70,10 @@ def test_connect_starts_loop_without_touching_operating_modes(joint_feedback_con
 def test_disconnect_stops_loop_and_clears_state(joint_feedback_config):
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
-    modes_after_connect = dict(hand._motor_client._operating_mode)
+    # Disconnect discards the hand's motor client; keep a handle to check
+    # the teardown left the motors' operating modes untouched.
+    motor_client = hand._motor_client
+    modes_after_connect = dict(motor_client._operating_mode)
     loop_thread = hand._loop._thread
 
     hand.disconnect()
@@ -80,7 +83,7 @@ def test_disconnect_stops_loop_and_clears_state(joint_feedback_config):
     assert hand._encoder_client is None
     assert hand._encoder_link is None
     assert not loop_thread.is_alive()
-    assert dict(hand._motor_client._operating_mode) == modes_after_connect
+    assert dict(motor_client._operating_mode) == modes_after_connect
 
 
 def test_connect_raises_when_encoder_calibration_missing(joint_feedback_config):
@@ -279,15 +282,67 @@ def test_second_connect_is_noop_and_orphans_nothing(joint_feedback_config):
 
 def test_connect_refuses_left_hand_config(left_joint_feedback_config):
     """Closed-loop control is unvalidated for left-hand assemblies: connect
-    must refuse before opening the motor bus, any link, or the loop."""
+    must refuse before opening the motor bus, any link, or the loop — and
+    the refusal must name the concrete escape hatches."""
     hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
-    with pytest.raises(JointFeedbackConnectError, match="left"):
+    with pytest.raises(JointFeedbackConnectError) as excinfo:
         hand.connect()
+    message = str(excinfo.value)
+    assert "left" in message
+    assert "connect(engage_feedback=False)" in message
+    assert "orcahand-left" in message
     assert not hand.is_connected()
     assert hand._loop is None
     assert hand._encoder_client is None
     assert hand._encoder_link is None
     assert hand._encoder_pump is None
+
+
+def test_left_connect_without_feedback_opens_motor_bus_only(
+    left_joint_feedback_config,
+):
+    """``engage_feedback=False`` is the left-hand escape hatch: the motor bus
+    opens for open-loop control and the encoder stack stays untouched."""
+    hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
+    success, msg = hand.connect(engage_feedback=False)
+    try:
+        assert success, msg
+        assert hand.is_connected()
+        assert hand._loop is None
+        assert hand._encoder_client is None
+        assert hand._encoder_link is None
+        assert hand._encoder_pump is None
+    finally:
+        hand.disconnect()
+
+
+def test_connect_without_feedback_refuses_while_the_loop_runs(joint_feedback_config):
+    """``engage_feedback=False`` promises an open-loop hand; on a hand whose
+    loop already runs it must say so instead of reporting success — otherwise
+    the caller goes on to a maintenance routine the loop then refuses."""
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    assert hand.connect()[0]
+    try:
+        success, msg = hand.connect(engage_feedback=False)
+        assert not success
+        assert "disconnect()" in msg
+        assert hand._loop is not None
+    finally:
+        hand.disconnect()
+
+
+def test_open_loop_connect_after_disconnect_admits_calibration(joint_feedback_config):
+    """The documented recovery: disconnect, reconnect open-loop, calibrate."""
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    assert hand.connect()[0]
+    hand.disconnect()
+    success, msg = hand.connect(engage_feedback=False)
+    try:
+        assert success, msg
+        assert hand._loop is None
+        hand.calibrate(joints=["index_mcp"])
+    finally:
+        hand.disconnect()
 
 
 def test_tension_jitter_and_calibrate_refused_while_loop_runs(joint_feedback_config):
