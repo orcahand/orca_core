@@ -117,6 +117,75 @@ def test_initial_offset_failure_skips_joint_and_keeps_limits(
     assert not any(e["event"] == "joint_calibrated" for e in events)
 
 
+def test_wrist_offset_failure_keeps_wrist_uncalibrated_and_recoverable(
+    connected_hand, calib_dir, monkeypatch
+):
+    """A wrist step skipped by a failed offset calibration must not persist
+    wrist_calibrated, and a later run with working offsets must calibrate it."""
+    import dataclasses as dc
+
+    hand = connected_hand
+    wrist_motor = hand.config.joint_to_motor_map["wrist"]
+    limits = {mid: list(l) for mid, l in hand.calibration.motor_limits_dict.items()}
+    limits[wrist_motor] = [None, None]
+    hand.calibration = dc.replace(
+        hand.calibration, motor_limits_dict=limits, calibrated=False
+    )
+    assert not hand.calibration.wrist_calibrated
+
+    _force_offset_calibration(
+        hand, monkeypatch, lambda motor_id, upper=True: motor_id != wrist_motor
+    )
+
+    events = []
+    hand.calibrate(joints=["wrist"], progress_callback=events.append, persist=True)
+
+    assert not hand.calibration.wrist_calibrated
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert raw["wrist_calibrated"] is False
+    assert raw["calibrated"] is False
+    assert any(
+        e["event"] == "offset_calibration_failed" and e["motor"] == wrist_motor
+        for e in events
+    )
+
+    monkeypatch.setattr(
+        hand.motor_client, "calibrate_offset", lambda motor_id, upper=True: True
+    )
+    events = []
+    hand.calibrate(joints=["wrist"], progress_callback=events.append, persist=True)
+
+    assert not any(e["event"] == "wrist_skipped" for e in events)
+    assert hand.calibration.wrist_calibrated
+    assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
+    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+
+
+def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir):
+    """A persisted wrist_calibrated flag with no stored wrist limits must not
+    skip the wrist; the run recalibrates it and leaves a consistent state."""
+    import dataclasses as dc
+
+    hand = connected_hand
+    wrist_motor = hand.config.joint_to_motor_map["wrist"]
+    limits = {mid: list(l) for mid, l in hand.calibration.motor_limits_dict.items()}
+    limits[wrist_motor] = [None, None]
+    hand.calibration = dc.replace(
+        hand.calibration,
+        motor_limits_dict=limits,
+        wrist_calibrated=True,
+        calibrated=False,
+    )
+
+    events = []
+    hand.calibrate(joints=["wrist"], progress_callback=events.append, persist=True)
+
+    assert not any(e["event"] == "wrist_skipped" for e in events)
+    assert hand.calibration.wrist_calibrated
+    assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
+    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+
+
 def test_final_offset_failure_records_no_limit(connected_hand, monkeypatch):
     """A failed post-release offset calibration must not record a limit taken
     in the un-shifted motor frame."""
@@ -137,6 +206,49 @@ def test_final_offset_failure_records_no_limit(connected_hand, monkeypatch):
 
     assert hand.motor_limits_dict[target_motor] == pre
     assert any(e["event"] == "offset_calibration_failed" for e in events)
+    assert not any(e["event"] == "limit_recorded" for e in events)
+    assert not any(e["event"] == "joint_calibrated" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Torque-release failure handling
+# ---------------------------------------------------------------------------
+
+
+def test_failed_torque_release_skips_limit_capture(
+    connected_hand, calib_dir, monkeypatch
+):
+    """A pre-capture torque release the bus rejected must not record a limit
+    taken under tendon tension; the prior limit stays in place."""
+    import dataclasses as dc
+
+    hand = connected_hand
+    pre = {mid: [-0.7, 0.7] for mid in hand.config.motor_ids}
+    ratios = {mid: 0.02 for mid in hand.config.motor_ids}
+    hand.calibration = dc.replace(
+        hand.calibration, motor_limits_dict=pre, joint_to_motor_ratios_dict=ratios
+    )
+
+    target = "thumb_cmc"
+    target_motor = hand.config.joint_to_motor_map[target]
+    orig_disable = hand.disable_torque
+
+    def failing_disable(motor_ids=None):
+        result = orig_disable(motor_ids)
+        if motor_ids == [target_motor]:
+            return [target_motor]
+        return result
+
+    monkeypatch.setattr(hand, "disable_torque", failing_disable)
+
+    events = []
+    hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
+
+    assert hand.motor_limits_dict[target_motor] == pre[target_motor]
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert raw["motor_limits"][target_motor] == pre[target_motor]
+    failures = [e for e in events if e["event"] == "torque_release_failed"]
+    assert failures and all(e["motor"] == target_motor for e in failures)
     assert not any(e["event"] == "limit_recorded" for e in events)
     assert not any(e["event"] == "joint_calibrated" for e in events)
 
@@ -180,6 +292,24 @@ def test_write_yaml_atomic_preserves_permissions(tmp_path):
     os.chmod(path, 0o664)
     write_yaml_atomic(str(path), {"calibrated": True})
     assert os.stat(path).st_mode & 0o777 == 0o664
+
+
+def test_write_yaml_atomic_preserves_symlink(tmp_path):
+    target = tmp_path / "real_calibration.yaml"
+    target.write_text("calibrated: false\n")
+    link = tmp_path / "calibration.yaml"
+    link.symlink_to(target)
+
+    write_yaml_atomic(str(link), {"calibrated": True})
+
+    assert link.is_symlink(), "symlink was replaced by a regular file"
+    assert os.readlink(str(link)) == str(target), "symlink was repointed"
+    assert read_yaml(str(target)) == {"calibrated": True}
+    assert read_yaml(str(link)) == {"calibrated": True}
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "calibration.yaml",
+        "real_calibration.yaml",
+    ]
 
 
 def test_write_yaml_atomic_converts_numpy_arrays(tmp_path):

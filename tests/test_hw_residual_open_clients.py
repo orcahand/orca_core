@@ -45,6 +45,7 @@ def _make_fake_dxl_sdk():
 
     class PortHandler:
         open_result = True
+        baud_result = True
 
         def __init__(self, port):
             self.port_name = port
@@ -58,7 +59,7 @@ def _make_fake_dxl_sdk():
 
         def setBaudRate(self, baudrate):
             self.baudrate = baudrate
-            return True
+            return self.baud_result
 
         def closePort(self):
             self.is_open = False
@@ -193,6 +194,16 @@ def test_dxl_failed_connect_leaves_registry_empty(dxl_registry):
     assert dxl_registry == set()
 
 
+def test_dxl_failure_after_open_closes_port_before_raising(dxl_registry):
+    client = _make_dxl()
+    client.port_handler.baud_result = False
+    with pytest.raises(OSError):
+        client.connect()
+    assert not client.port_handler.is_open, "mid-connect failure left the port open"
+    assert not client.is_connected
+    assert dxl_registry == set()
+
+
 def test_dxl_repeated_failed_connects_do_not_accumulate(dxl_registry):
     for _ in range(5):
         client = _make_dxl()
@@ -245,6 +256,21 @@ def test_feetech_failed_connect_leaves_registry_empty(feetech_registry):
     client.port_handler.open_result = False
     with pytest.raises(OSError):
         client.connect()
+    assert feetech_registry == set()
+
+
+def test_feetech_failure_after_open_closes_port_before_raising(
+        feetech_registry, monkeypatch):
+    class RaisingSmsSts:
+        def __init__(self, port_handler):
+            raise OSError("packet handler init failed")
+
+    monkeypatch.setattr(feetech_client_module, "sms_sts", RaisingSmsSts)
+    client = _make_feetech()
+    with pytest.raises(OSError):
+        client.connect()
+    assert not client.port_handler.is_open, "mid-connect failure left the port open"
+    assert not client.is_connected
     assert feetech_registry == set()
 
 

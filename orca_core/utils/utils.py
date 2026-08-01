@@ -6,6 +6,7 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+import logging
 import os
 import tempfile
 import yaml
@@ -13,6 +14,8 @@ import numpy as np
 
 from ..constants import DEFAULT_MODEL_NAME
 from ..version import LATEST_VERSION
+
+logger = logging.getLogger(__name__)
 
 ################################################################################
 ### Model path utils ##########################################################
@@ -193,25 +196,28 @@ def write_yaml_atomic(file_path, data):
 
     The document is written to a temporary file in the same directory and
     moved over ``file_path`` with ``os.replace``, so a crash mid-write can
-    never leave the target truncated or partially updated. NumPy arrays are
-    converted to plain Python lists, as in :func:`update_yaml`.
+    never leave the target truncated or partially updated. A symlinked
+    ``file_path`` is resolved first, so the write replaces the file the link
+    points to rather than swapping the link for a regular file. NumPy arrays
+    are converted to plain Python lists, as in :func:`update_yaml`.
 
     Args:
         file_path: Path to the YAML file. Created if it does not exist.
         data: Mapping of top-level keys to values forming the whole document.
     """
     data = {key: _to_plain(value) for key, value in data.items()}
+    real_path = os.path.realpath(file_path)
 
     # mkstemp creates 0600 files; carry over the target's permissions so the
     # replace doesn't silently restrict who can read an existing file.
     try:
-        mode = os.stat(file_path).st_mode & 0o7777
+        mode = os.stat(real_path).st_mode & 0o7777
     except OSError:
         mode = 0o644
 
-    target_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+    target_dir = os.path.dirname(real_path) or "."
     fd, tmp_path = tempfile.mkstemp(
-        dir=target_dir, prefix=os.path.basename(file_path) + ".", suffix=".tmp"
+        dir=target_dir, prefix=os.path.basename(real_path) + ".", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "w") as file:
@@ -219,7 +225,7 @@ def write_yaml_atomic(file_path, data):
             file.flush()
             os.fsync(file.fileno())
         os.chmod(tmp_path, mode)
-        os.replace(tmp_path, file_path)
+        os.replace(tmp_path, real_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -277,7 +283,7 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     except Exception:
         orca_motor_port = None
     if orca_motor_port is not None:
-        print(f"Auto-detected ORCA motor bus via ORCA_ID?: {orca_motor_port}")
+        logger.info("Auto-detected ORCA motor bus via ORCA_ID?: %s", orca_motor_port)
         return orca_motor_port
 
     if motor_type is None:
@@ -293,7 +299,12 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
 
     if len(matches) == 1:
         port = matches[0]
-        print(f"Auto-detected {motor_type or 'motor'} adapter: {port.device} ({port.description or 'unknown'})")
+        logger.info(
+            "Auto-detected %s adapter: %s (%s)",
+            motor_type or "motor",
+            port.device,
+            port.description or "unknown",
+        )
         return port.device
 
     return None

@@ -206,41 +206,56 @@ class FeetechClient(MotorClient):
                     'powered on and connected to your computer).'
                 )
 
-            # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
+            # A failure past this point must not leave the port open (and
+            # advisory-locked) with no registered owner to close it.
             try:
-                import fcntl
-                fcntl.flock(self.port_handler.ser.fileno(),
-                            fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (ImportError, AttributeError, OSError):
-                pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
-
-            # Enable low latency mode for faster communication
-            if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
                 try:
-                    self.port_handler.ser.set_low_latency_mode(True)
-                    logging.info('Enabled low latency mode for USB serial')
+                    import fcntl
+                    fcntl.flock(self.port_handler.ser.fileno(),
+                                fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (ImportError, AttributeError, OSError):
+                    pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
+
+                # Enable low latency mode for faster communication
+                if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                    try:
+                        self.port_handler.ser.set_low_latency_mode(True)
+                        logging.info('Enabled low latency mode for USB serial')
+                    except Exception:
+                        pass  # Not critical if it fails
+
+                self.packet_handler = sms_sts(self.port_handler)
+                self._connected = True
+
+                # Ensure motors are in servo mode (not wheel mode)
+                # This prevents issues if motors were left in wheel mode from a previous session
+                for motor_id in self.motor_ids:
+                    result, error = self.packet_handler.write1ByteTxRx(
+                        motor_id, SMS_STS_MODE, 0
+                    )
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+
+                # Torque is left as-is: connecting must never make the hand
+                # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+                self.OPEN_CLIENTS.add(self)
+            except Exception:
+                self._connected = False
+                try:
+                    self.port_handler.closePort()
                 except Exception:
-                    pass  # Not critical if it fails
-
-            self.packet_handler = sms_sts(self.port_handler)
-            self._connected = True
-
-            # Ensure motors are in servo mode (not wheel mode)
-            # This prevents issues if motors were left in wheel mode from a previous session
-            for motor_id in self.motor_ids:
-                result, error = self.packet_handler.write1ByteTxRx(
-                    motor_id, SMS_STS_MODE, 0
-                )
-                if result != COMM_SUCCESS or error != 0:
-                    self._flush_input_buffer()
-
-            # Torque is left as-is: connecting must never make the hand
-            # stiffen or move. Callers opt in via enable_torque()/init_joints().
-
-            self.OPEN_CLIENTS.add(self)
+                    pass
+                raise
 
     def disconnect(self) -> None:
-        """Disconnects from the Feetech motors."""
+        """Disconnects from the Feetech motors.
+
+        The port is always closed and the client deregistered, even when the
+        final torque-disable raises (e.g. the serial link is already gone);
+        that exception propagates after cleanup.
+        """
         if not self._connected:
             return
 
@@ -249,13 +264,13 @@ class FeetechClient(MotorClient):
             return
 
         with self._bus_lock:
-            # Disable torque before disconnecting
-            self.set_torque_enabled(self.motor_ids, False, retries=0)
-
-            self.port_handler.closePort()
-            self._connected = False
-
-        self.OPEN_CLIENTS.discard(self)
+            try:
+                # Disable torque before disconnecting
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self._connected = False
+                self.OPEN_CLIENTS.discard(self)
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
@@ -445,10 +460,17 @@ class FeetechClient(MotorClient):
             )
 
         with self._bus_lock:
-            # Disable torque to change mode
-            self.set_torque_enabled(motor_ids, False)
+            # Mode changes require torque off; motors that never acked the
+            # torque-disable are skipped so their mode is not changed blind.
+            failed_ids = self.set_torque_enabled(motor_ids, False)
+            if failed_ids:
+                logging.error(
+                    'Skipping mode change for motors that did not ack torque '
+                    'disable: %s', str(failed_ids)
+                )
+            acked_ids = [mid for mid in motor_ids if mid not in failed_ids]
 
-            for motor_id in motor_ids:
+            for motor_id in acked_ids:
                 # Only velocity mode (1) maps to wheel mode; all others use servo mode
                 feetech_mode = 1 if mode == 1 else 0
 
@@ -463,7 +485,8 @@ class FeetechClient(MotorClient):
                     )
 
             # Re-enable torque
-            self.set_torque_enabled(motor_ids, True)
+            if acked_ids:
+                self.set_torque_enabled(acked_ids, True)
 
     def _read_state_per_motor_fallback(self) -> MotorRead:
         """Per-motor read of position/velocity/current; used only when sync

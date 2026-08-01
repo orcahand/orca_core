@@ -21,10 +21,12 @@ from orca_core.hardware.feetech_client import (
     FeetechClient,
 )
 from orca_core.hardware.feetech import (
+    SMS_STS_MODE,
     SMS_STS_MOVING,
     SMS_STS_PRESENT_CURRENT_L,
     SMS_STS_PRESENT_POSITION_L,
     SMS_STS_PRESENT_SPEED_L,
+    SMS_STS_TORQUE_ENABLE,
 )
 
 
@@ -301,8 +303,31 @@ def test_set_operating_mode_is_bounded_on_dead_motor(client, monkeypatch):
     _patch_sleep(monkeypatch)
     handler.write1_hook = lambda motor_id, address, value: (1, 0)
     feetech.set_operating_mode([1], 5)  # must return, never spin forever
-    # Torque-off (1+3 retries) + mode write + torque-on (1+3 retries).
-    assert handler.log.count("write1") == 9
+    # Torque-off (1+3 retries) only: the unacked motor gets no mode write
+    # and no torque re-enable.
+    assert handler.log.count("write1") == 4
+
+
+def test_set_operating_mode_skips_motors_that_did_not_ack_torque_off(
+        client, monkeypatch):
+    feetech, handler = client
+    _patch_sleep(monkeypatch)
+    calls = []
+
+    def hook(motor_id, address, value):
+        calls.append((motor_id, address, value))
+        if motor_id == 2 and address == SMS_STS_TORQUE_ENABLE:
+            return 1, 0
+        return COMM_SUCCESS, 0
+
+    handler.write1_hook = hook
+    feetech.set_operating_mode([1, 2, 3], 5)
+
+    mode_writes = [mid for mid, addr, _ in calls if addr == SMS_STS_MODE]
+    assert mode_writes == [1, 3], "unacked motor 2 must get no mode write"
+    reenabled = [mid for mid, addr, val in calls
+                 if addr == SMS_STS_TORQUE_ENABLE and val == 1]
+    assert reenabled == [1, 3], "unacked motor 2 must not be torque re-enabled"
 
 
 # ----- calibrate_offset contract -------------------------------------------

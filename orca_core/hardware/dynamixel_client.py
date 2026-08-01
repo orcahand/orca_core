@@ -231,36 +231,45 @@ class DynamixelClient(MotorClient):
                     ('Failed to open port at {} (Check that the device is powered '
                      'on and connected to your computer).').format(self.port_name))
 
-            if self.port_handler.setBaudRate(self.baudrate):
-                logging.info('Succeeded to set baudrate to %d', self.baudrate)
-            else:
-                raise OSError(
-                    ('Failed to set the baudrate to {} (Ensure that the device was '
-                     'configured for this baudrate).').format(self.baudrate))
-
-            # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
+            # A failure past this point must not leave the port open (and
+            # advisory-locked) with no registered owner to close it.
             try:
-                import fcntl
-                fcntl.flock(self.port_handler.ser.fileno(),
-                            fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (ImportError, AttributeError, OSError):
-                pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
+                if self.port_handler.setBaudRate(self.baudrate):
+                    logging.info('Succeeded to set baudrate to %d', self.baudrate)
+                else:
+                    raise OSError(
+                        ('Failed to set the baudrate to {} (Ensure that the device was '
+                         'configured for this baudrate).').format(self.baudrate))
 
-            # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
-            if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
                 try:
-                    self.port_handler.ser.set_low_latency_mode(True)
-                    logging.info('Enabled low latency mode for USB serial')
+                    import fcntl
+                    fcntl.flock(self.port_handler.ser.fileno(),
+                                fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (ImportError, AttributeError, OSError):
+                    pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
+
+                # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
+                if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                    try:
+                        self.port_handler.ser.set_low_latency_mode(True)
+                        logging.info('Enabled low latency mode for USB serial')
+                    except Exception:
+                        pass  # Not critical if it fails
+
+                # Clear any pre-existing hardware errors.
+                self.check_overload_and_reboot(self.motor_ids)
+
+                # Torque is left as-is: connecting must never make the hand
+                # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+                self.OPEN_CLIENTS.add(self)
+            except Exception:
+                try:
+                    self.port_handler.closePort()
                 except Exception:
-                    pass  # Not critical if it fails
-
-            # Clear any pre-existing hardware errors.
-            self.check_overload_and_reboot(self.motor_ids)
-
-            # Torque is left as-is: connecting must never make the hand
-            # stiffen or move. Callers opt in via enable_torque()/init_joints().
-
-            self.OPEN_CLIENTS.add(self)
+                    pass
+                raise
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -296,17 +305,24 @@ class DynamixelClient(MotorClient):
                 pass
 
     def disconnect(self):
-        """Disconnects from the Dynamixel device."""
+        """Disconnects from the Dynamixel device.
+
+        The port is always closed and the client deregistered, even when the
+        final torque-disable raises (e.g. the serial link is already gone);
+        that exception propagates after cleanup.
+        """
         if not self.is_connected:
             return
         if self.port_handler.is_using:
             logging.error('Port handler in use; cannot disconnect.')
             return
         with self._bus_lock:
-            # Ensure motors are disabled at the end.
-            self.set_torque_enabled(self.motor_ids, False, retries=0)
-            self.port_handler.closePort()
-        self.OPEN_CLIENTS.discard(self)
+            try:
+                # Ensure motors are disabled at the end.
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self.OPEN_CLIENTS.discard(self)
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
@@ -367,11 +383,19 @@ class DynamixelClient(MotorClient):
         5: current-based position control mode
         """
         with self._bus_lock:
-            # data in EEPROM area can only be written when torque is disabled
-            self.set_torque_enabled(motor_ids, False)
-            self.sync_write(motor_ids, [mode_value]*len(motor_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-            self.set_torque_enabled(motor_ids, True)
-            for mid in motor_ids:
+            # EEPROM data can only be written when torque is disabled; motors
+            # that never acked the disable are skipped, not written blind.
+            failed_ids = self.set_torque_enabled(motor_ids, False)
+            if failed_ids:
+                logging.error(
+                    'Skipping mode change for motors that did not ack torque '
+                    'disable: %s', str(failed_ids))
+            acked_ids = [mid for mid in motor_ids if mid not in failed_ids]
+            if not acked_ids:
+                return
+            self.sync_write(acked_ids, [mode_value]*len(acked_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
+            self.set_torque_enabled(acked_ids, True)
+            for mid in acked_ids:
                 self._operating_modes[mid] = mode_value
 
     def read_position_velocity_current(self) -> MotorRead:
@@ -761,9 +785,8 @@ class DynamixelReader:
         self.address = address
         self.size = size
         self.last_read_ok = True
-        # Fallback bounds: a motor whose individual read failed is skipped for
-        # a cooldown, and full-bus sweeps are rate limited, so a dead motor
-        # cannot stall every read cycle while the bus lock is held.
+        # Fallback bounds: a failed motor is skipped for a cooldown and full-bus sweeps
+        # are rate limited, so a dead motor cannot stall reads while the bus lock is held.
         self._fallback_skip_until: Dict[int, float] = {}
         self._last_full_fallback = 0.0
         self._initialize_data()
@@ -814,7 +837,6 @@ class DynamixelReader:
 
             errored_ids = []
             for i, motor_id in enumerate(self.motor_ids):
-                # Check if the data is available.
                 available = self.operation.isAvailable(motor_id, self.address,
                                                        self.size)
                 if not available:
@@ -972,7 +994,6 @@ class DynamixelTempReader(DynamixelReader):
     """Reads present temperature (1 byte) for each Dynamixel motor."""
     
     def _initialize_data(self):
-        # We'll store one float per motor for the temperature values.
         self._temp_data = np.zeros(len(self.motor_ids), dtype=np.float32)
 
     def _update_data(self, index: int, motor_id: int):
@@ -1007,7 +1028,6 @@ class DynamixelTempReader(DynamixelReader):
     def _get_data(self):
         return self._temp_data.copy()
 
-# Register global cleanup function.
 atexit.register(dynamixel_cleanup_handler)
 
 if __name__ == '__main__':

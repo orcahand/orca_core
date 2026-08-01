@@ -33,9 +33,8 @@ from ..utils.utils import auto_detect_port
 
 logger = logging.getLogger(__name__)
 
-# Timings local to chain assembly: how often to poll for a USB device node,
-# how often to re-scan for a freshly plugged motor, and how long a motor takes
-# to settle after its ID is rewritten.
+# Timings local to chain assembly: USB device-node polling, re-scan for a freshly
+# plugged motor, and settle time after a motor's ID is rewritten.
 PORT_POLL_INTERVAL_S = 0.3
 PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
@@ -400,9 +399,8 @@ def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
     """
     motors = scan_motors(plan.motor_type, plan.port, plan.target_baud, (1, plan.total_motors))
 
-    # When target_baud == default_baud (Feetech), a fresh finger motor sitting at
-    # the default ID is indistinguishable from a configured wrist. Drop it; a real
-    # wrist motor survives because its model name differs.
+    # With target_baud == default_baud, a fresh motor at the default ID is
+    # indistinguishable from a configured wrist; only a matching model name survives.
     if plan.target_baud == plan.default_baud:
         motors = [
             m for m in motors

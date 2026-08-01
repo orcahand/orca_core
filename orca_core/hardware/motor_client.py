@@ -126,6 +126,10 @@ class MotorClient(ABC):
     ) -> "list[int]":
         """Sets whether torque is enabled for the specified motors.
 
+        Unacked motors are reported, never raised: implementations must
+        return the failing IDs (and log them) so callers decide whether the
+        toggle was best-effort or must be acted on.
+
         Args:
             motor_ids: The motor IDs to configure.
             enabled: Whether to engage or disengage the motors.
@@ -134,13 +138,18 @@ class MotorClient(ABC):
             retry_interval: The number of seconds to wait between retries.
 
         Returns:
-            The motor IDs that could not be set.
+            The motor IDs that could not be set; an empty list means every
+            motor acknowledged the change.
         """
         ...
 
     @abstractmethod
     def set_operating_mode(self, motor_ids: Sequence[int], mode: int) -> None:
         """Sets the operating mode for the specified motors.
+
+        Mode changes require torque off; implementations must not write mode
+        registers for motors whose torque-disable was not acknowledged —
+        those motors are logged and skipped.
 
         Args:
             motor_ids: The motor IDs to configure.

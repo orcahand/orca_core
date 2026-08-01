@@ -633,6 +633,13 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
 
+    pre_limits = {
+        mid: list(limits)
+        for mid, limits in hand.calibration.motor_limits_dict.items()
+    }
+    pre_ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
+    pre_encoders = dict(hand.calibration.joint_encoder_calibration_dict)
+
     events = []
     orig_set_motor_pos = hand._set_motor_pos
 
@@ -648,6 +655,9 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     assert kinds[-1] == "calibration_aborted"
     assert "joint_calibrated" not in kinds
     assert "step_done" not in kinds
+    assert hand.calibration.motor_limits_dict == pre_limits
+    assert hand.calibration.joint_to_motor_ratios_dict == pre_ratios
+    assert hand.calibration.joint_encoder_calibration_dict == pre_encoders
     if calib_path.exists():
         calib = read_yaml(str(calib_path)) or {}
         assert not (calib.get("joint_to_motor_ratios") or {})

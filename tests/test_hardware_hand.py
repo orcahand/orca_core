@@ -1,9 +1,13 @@
+import dataclasses
+import logging
 import os
 import shutil
 
 import numpy as np
 import pytest
 from orca_core import MockOrcaHand, OrcaHand
+from orca_core.calibration import JointEncoderCal
+from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,9 +64,11 @@ def test_set_max_current_supports_scalar_and_list(mock_hand):
         assert mock_hand._motor_client._cur[motor_id] == desired
 
 
-def test_disconnect_disables_torque(mock_hand):
+def test_disconnect_disables_torque_and_discards_client(mock_hand):
+    client = mock_hand._motor_client
     mock_hand.disconnect()
-    assert all(not enabled for enabled in mock_hand._motor_client._torque_enabled.values())
+    assert all(not enabled for enabled in client._torque_enabled.values())
+    assert mock_hand._motor_client is None
 
 
 def test_wait_for_motion_is_noop_for_non_waiting_clients(mock_hand):
@@ -131,6 +137,30 @@ def test_sanity_check_does_not_rewrite_already_uncalibrated_file(tmp_path):
     assert calib_path.read_text(encoding="utf-8") == original
 
 
+def test_sanity_check_demote_write_is_gated_on_persist_calibration(tmp_path, monkeypatch):
+    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    calib_path = tmp_path / "calibration.yaml"
+    original = "calibrated: true\n"
+    calib_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(OrcaHand, "_persist_calibration", False)
+
+    hand = OrcaHand(config_path=str(tmp_path / "config.yaml"))
+
+    assert not hand.calibrated, "stale flag must still be demoted in memory"
+    assert calib_path.read_text(encoding="utf-8") == original
+
+
+def test_mock_construction_never_rewrites_stale_calibration_file(tmp_path):
+    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    calib_path = tmp_path / "calibration.yaml"
+    original = "calibrated: true\n"
+    calib_path.write_text(original, encoding="utf-8")
+
+    MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+
+    assert calib_path.read_text(encoding="utf-8") == original
+
+
 # ---------------------------------------------------------------------------
 # connect()/disconnect() idempotence and failure cleanup
 # ---------------------------------------------------------------------------
@@ -147,14 +177,90 @@ def test_second_disconnect_succeeds_without_touching_the_bus(mock_hand):
     success, _ = mock_hand.disconnect()
     assert success
 
-    def boom(*args, **kwargs):
-        raise OSError("Must call connect() first.")
-
-    # Real clients raise on bus ops after the port closes; the second
-    # disconnect must succeed without issuing any.
-    mock_hand._motor_client.set_torque_enabled = boom
+    # The client is discarded on disconnect, so a second disconnect has no
+    # bus to touch and must still succeed.
+    assert mock_hand._motor_client is None
     success, msg = mock_hand.disconnect()
     assert success, msg
+
+
+def test_disconnect_with_raising_torque_off_still_closes_and_allows_reconnect(mock_hand):
+    client = mock_hand._motor_client
+
+    def boom(*args, **kwargs):
+        raise OSError("serial link lost")
+
+    client.set_torque_enabled = boom
+    success, msg = mock_hand.disconnect()
+
+    assert not success
+    assert "torque disable failed" in msg
+    assert not mock_hand.is_connected()
+    assert mock_hand._motor_client is None
+    assert not client.is_connected, "dead client left marked connected"
+
+    success, msg = mock_hand.connect()
+    assert success, msg
+    assert mock_hand.is_connected()
+    assert mock_hand._motor_client is not client, "reconnect reused the dead client"
+
+
+def test_del_releases_hands_that_hold_no_motor_client(mock_hand):
+    """Sensing variants can hold live links with the motor client unset (e.g.
+    a sensors-only connect), so __del__ must always route through disconnect."""
+    calls = []
+
+    class _RecordingHand(MockOrcaHand):
+        def disconnect(self):
+            calls.append(True)
+            return super().disconnect()
+
+    hand = _RecordingHand(config_path=REAL_CONFIG)
+    assert hand._motor_client is None
+    hand.__del__()
+    assert calls == [True], "__del__ skipped the teardown of a live hand"
+
+
+def test_del_on_a_half_constructed_hand_does_not_raise():
+    hand = OrcaHand.__new__(OrcaHand)
+    hand.__del__()
+
+
+def test_disconnect_reports_unacked_torque_disable_but_still_closes(mock_hand):
+    client = mock_hand._motor_client
+    client.set_torque_enabled = lambda *args, **kwargs: [5, 7]
+
+    success, msg = mock_hand.disconnect()
+
+    assert not success
+    assert "[5, 7]" in msg
+    assert not mock_hand.is_connected()
+    assert mock_hand._motor_client is None
+
+
+def test_torque_toggles_return_failed_ids_and_warn(mock_hand, caplog):
+    assert mock_hand.enable_torque() == []
+    assert mock_hand.disable_torque() == []
+
+    def hand_warnings():
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "orca_core.hardware_hand"
+            and "not acknowledged" in record.getMessage()
+        ]
+
+    valid_id = mock_hand.config.motor_ids[0]
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        failed = mock_hand.enable_torque([valid_id, 99])
+    assert failed == [99]
+    assert any("99" in message for message in hand_warnings())
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        failed = mock_hand.disable_torque([valid_id, 99])
+    assert failed == [99]
+    assert any("99" in message for message in hand_warnings())
 
 
 def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
@@ -183,6 +289,28 @@ def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
     assert not success
     assert hand._motor_client is None
     assert created and not created[0].is_connected, "connected client leaked open"
+
+
+def test_failed_connect_logs_instead_of_printing(tmp_path, monkeypatch, capsys, caplog):
+    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+
+    def failing_persist(existing):
+        raise RuntimeError("post-connect failure")
+
+    monkeypatch.setattr(hand, "_persist_resolved_driver", failing_persist)
+    monkeypatch.setattr(
+        "orca_core.hardware_hand.auto_detect_port", lambda *a, **k: None
+    )
+
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        success, _ = hand.connect(interactive=False)
+
+    assert not success
+    assert any(
+        "Connection failed on" in record.getMessage() for record in caplog.records
+    )
+    assert "Connection failed" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +386,55 @@ def test_widest_joint_rom_round_trips_on_synthesized_mock(fresh_mock_dir):
         assert actual == pytest.approx(float(target), abs=1e-6), (
             f"{joint} saturated inside the mock plant at {target}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Uncalibrated warn-once state and encoder decoding errors
+# ---------------------------------------------------------------------------
+
+
+def test_applying_a_calibration_rearms_uncalibrated_warnings(mock_hand, caplog):
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        mock_hand._warn_uncalibrated(3, "index_mcp", "motor limits")
+        mock_hand._warn_uncalibrated(3, "index_mcp", "motor limits")
+        assert len(caplog.records) == 1, "warn-once must not repeat"
+
+        mock_hand.calibration = dataclasses.replace(mock_hand.calibration)
+        mock_hand._warn_uncalibrated(3, "index_mcp", "motor limits")
+        assert len(caplog.records) == 2, "new calibration must re-arm the warning"
+
+
+def test_raw_to_joint_angle_without_validated_side_raises_actionable_error(tmp_path):
+    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+    hand.calibration = dataclasses.replace(
+        hand.calibration,
+        joint_encoder_calibration_dict={
+            "index_mcp": JointEncoderCal(enc_at_anchor_count=100)
+        },
+    )
+    hand.config = dataclasses.replace(hand.config, type=None)
+
+    with pytest.raises(ValueError, match="polarity"):
+        hand._raw_to_joint_angle(np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.int64))
+
+
+# ---------------------------------------------------------------------------
+# Background tasks
+# ---------------------------------------------------------------------------
+
+
+def test_stop_task_reports_and_logs_a_well_formed_message(mock_hand, caplog):
+    def wait_for_stop():
+        mock_hand._task_stop_event.wait(5.0)
+
+    with caplog.at_level(logging.INFO, logger="orca_core.hardware_hand"):
+        mock_hand._start_task(wait_for_stop)
+        assert mock_hand.stop_task(timeout=5.0)
+        assert not mock_hand.task_running
+
+    # getMessage() raises when a record's args don't match its format string.
+    assert any("task stopped" in record.getMessage() for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

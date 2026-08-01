@@ -53,13 +53,21 @@ DEFAULT_CUR_SCALE = 1.34
 
 
 def dynamixel_cleanup_handler():
-    """Cleanup function to ensure Dynamixels are disconnected properly."""
+    """Cleanup function to ensure mock clients are disconnected properly.
+
+    Each client is handled independently so one failing client cannot
+    prevent torque-disable of the others.
+    """
     open_clients = list(MockDynamixelClient.OPEN_CLIENTS)
     for open_client in open_clients:
-        if open_client.port_handler.is_using:
-            logging.warning('Forcing client to close.')
-        open_client.port_handler.is_using = False
-        open_client.disconnect()
+        try:
+            if open_client.port_handler.is_using:
+                logging.warning('Forcing client to close.')
+            open_client.port_handler.is_using = False
+            open_client.disconnect()
+        except Exception:
+            logging.exception('Exit cleanup failed for client on %s',
+                              getattr(open_client, 'port_name', '<unknown>'))
 
 
 def signed_to_unsigned(value: int, size: int) -> int:
@@ -87,7 +95,8 @@ class MockDynamixelClient(MotorClient):
 
     motor_type = DYNAMIXEL
 
-    # The currently open clients.
+    # Clients with an open (simulated) port; registered on successful
+    # connect() so the atexit cleanup only ever touches live connections.
     OPEN_CLIENTS = set()
 
     def __init__(self,
@@ -148,43 +157,45 @@ class MockDynamixelClient(MotorClient):
             vel_scale=vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE,
             cur_scale=cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE,
         )
-        
-        self.OPEN_CLIENTS.add(self)
 
     @property
     def is_connected(self) -> bool:
         return self._connected
 
     def connect(self):
-        """Connects to the Dynamixel motors.
+        """Connects to the simulated Dynamixel motors.
 
-        NOTE: This should be called after all DynamixelClients on the same
-            process are created.
+        Mirrors the real clients' registry contract: the client joins
+        ``OPEN_CLIENTS`` only once the connect completed, so a failed
+        connect never leaves a dead entry for the exit cleanup.
         """
         assert not self.is_connected, 'Client is already connected.'
 
-        if True:
-            logging.info('Succeeded to open port: %s', self.port_name)
+        logging.info('Succeeded to open port: %s', self.port_name)
+        logging.info('Succeeded to set baudrate to %d', self.baudrate)
 
-        if True:
-            logging.info('Succeeded to set baudrate to %d', self.baudrate)
-            
         self._connected = True
 
         # Torque is left as-is, mirroring the real clients: connecting must
         # never make the hand stiffen or move.
 
+        self.OPEN_CLIENTS.add(self)
+
     def disconnect(self):
-        """Disconnects from the Dynamixel device."""
+        """Disconnects from the simulated Dynamixel device.
+
+        The client is always marked disconnected and deregistered, even when
+        the final torque-disable raises; that exception propagates after
+        cleanup, mirroring the real clients.
+        """
         if not self.is_connected:
             return
-        
-        self.set_torque_enabled(self.motor_ids, False, retries=0)
-        
-        self._connected = False
-        
-        if self in self.OPEN_CLIENTS:
-            self.OPEN_CLIENTS.remove(self)
+
+        try:
+            self.set_torque_enabled(self.motor_ids, False, retries=0)
+        finally:
+            self._connected = False
+            self.OPEN_CLIENTS.discard(self)
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

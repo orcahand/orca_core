@@ -112,8 +112,9 @@ def run_calibration(
             structured progress events (``calibration_started``,
             ``step_started``, ``limit_recorded``, ``joint_calibrated``,
             ``encoder_anchor_recorded``, ``encoder_anchor_failed``,
-            ``offset_calibration_failed``, ``wrist_skipped``, ``step_done``,
-            ``calibration_done``, ``calibration_aborted``,
+            ``offset_calibration_failed``, ``torque_release_failed``,
+            ``wrist_skipped``, ``step_done``, ``calibration_done``,
+            ``calibration_aborted``,
             ``cleanup_failed``). Called from the calibrating thread; must be
             fast and non-blocking. Exceptions raised by the callback are
             swallowed.
@@ -250,15 +251,27 @@ def _drive_calibration(
     - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
     - Uses a higher calibration current.
     - If already calibrated (and calibration run is not forcing), skip wrist steps.
-    - If missing from sequence, is calibrated.
+    - If missing from the sequence, wrist flex/extend steps are appended.
     - If force_wrist=True, always include wrist in calibration steps.
+    - `wrist_calibrated` turns true only once both wrist limits are captured;
+      a persisted flag without stored wrist limits is treated as uncalibrated.
     """
     wrist_in_sequence = any(
         "wrist" in step[JOINTS] for step in hand.config.calibration_sequence
     )
     calibration_sequence = list(hand.config.calibration_sequence)
 
-    if hand.wrist_calibrated and not force_wrist:
+    # A calibrated flag without recorded wrist limits is inconsistent; treat
+    # the wrist as uncalibrated so it is driven again rather than skipped.
+    wrist_motor_id = hand.config.joint_to_motor_map.get(WRIST)
+    prior_wrist_limits = hand.calibration.motor_limits_dict.get(
+        wrist_motor_id, [None, None]
+    )
+    wrist_calibrated = (
+        hand.calibration.wrist_calibrated and None not in prior_wrist_limits
+    )
+
+    if wrist_calibrated and not force_wrist:
         if wrist_in_sequence:
             _emit(progress_callback, "wrist_skipped")
             logger.warning(
@@ -501,7 +514,21 @@ def _drive_calibration(
                 continue
             idx = hand.config.motor_id_to_idx_dict[motor_id]
 
-            hand.disable_torque([motor_id])
+            # A failed torque release leaves the tendon tensioned, so a limit
+            # read now would be biased. A None return reports no failed motors.
+            failed_release = hand.disable_torque([motor_id])
+            if failed_release:
+                _emit(
+                    progress_callback,
+                    "torque_release_failed",
+                    motor=motor_id,
+                    joint=hand.config.motor_to_joint_dict[motor_id],
+                )
+                logger.warning(
+                    "torque release failed for motor %d; limit not recorded",
+                    motor_id,
+                )
+                continue
             time.sleep(TINY_SLEEP)
             avg_limit = float(_read_motor_pos_checked(hand)[idx])
 
@@ -572,13 +599,12 @@ def _drive_calibration(
             )
             calibrated_joints[joint] = 0.0
 
-        step_wrist_calibrated = hand.calibration.wrist_calibrated or (
-            WRIST in calibrated_joints
-        )
+        if WRIST in calibrated_joints:
+            wrist_calibrated = True
         hand.calibration = _build_calibration_result(
             motor_limits=motor_limits,
             joint_to_motor_ratios=joint_to_motor_ratios,
-            wrist_calibrated=step_wrist_calibrated,
+            wrist_calibrated=wrist_calibrated,
             joint_encoder_calibration_dict=joint_encoder_calibration,
         )
         # Persist partial progress after every step so an interrupted run
@@ -600,14 +626,10 @@ def _drive_calibration(
         # TODO(fracapuano): Is this necessary?
         time.sleep(0.1)
 
-    new_wrist_calibrated = hand.calibration.wrist_calibrated
-    if any(WRIST in step[JOINTS] for step in calibration_sequence):
-        new_wrist_calibrated = True
-
     final_result = _build_calibration_result(
         motor_limits=motor_limits,
         joint_to_motor_ratios=joint_to_motor_ratios,
-        wrist_calibrated=new_wrist_calibrated,
+        wrist_calibrated=wrist_calibrated,
         joint_encoder_calibration_dict=joint_encoder_calibration,
     )
     hand.calibration = final_result
