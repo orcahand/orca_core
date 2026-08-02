@@ -658,7 +658,4 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     assert hand.calibration.motor_limits_dict == pre_limits
     assert hand.calibration.joint_to_motor_ratios_dict == pre_ratios
     assert hand.calibration.joint_encoder_calibration_dict == pre_encoders
-    if calib_path.exists():
-        calib = read_yaml(str(calib_path)) or {}
-        assert not (calib.get("joint_to_motor_ratios") or {})
-        assert not calib.get("joint_encoder_calibration")
+    assert not calib_path.exists(), "aborted mid-drive run must not write calibration"

@@ -15,10 +15,10 @@ from orca_core import MockOrcaHand
 from orca_core.calibration import JointEncoderCal
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
+    ENCODER_LSB_DEG,
     JOINT_ENCODER_POLARITY,
     JOINT_TO_ENCODER_SLOT,
 )
-from orca_core.hardware.sensing.encoder_protocol import encoder_to_joint_angle
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JOINT_MODEL_CONFIG = os.path.join(
@@ -53,28 +53,24 @@ def _raw_frame() -> np.ndarray:
     return raw
 
 
-def test_right_hand_decode_matches_the_validated_right_table(right_hand):
-    """Identical output to decoding straight from the right-hand table, for
-    joints of both polarity signs."""
+def test_right_hand_decode_wires_slot_anchor_and_rom_per_joint(right_hand):
+    """Each joint decodes from its own slot, anchor and ROM upper bound.
+
+    The expected angle is written out in degrees rather than re-derived through
+    ``encoder_to_joint_angle``, so a bug in that math fails here too. The table
+    values themselves are pinned in test_hardware_constants.py.
+    """
     assert right_hand.config.type == "right"
     signs = {JOINT_ENCODER_POLARITY[j] for j in DECODED_JOINTS}
     assert signs == {1, -1}, "regression joints must exercise both signs"
 
-    raw = _raw_frame()
-    angles = right_hand._raw_to_joint_angle(raw)
+    angles = right_hand._raw_to_joint_angle(_raw_frame())
     assert set(angles) == set(DECODED_JOINTS)
 
-    encoder_cal = right_hand.calibration.joint_encoder_calibration_dict
     for joint in DECODED_JOINTS:
-        expected = encoder_to_joint_angle(
-            raw[np.array([JOINT_TO_ENCODER_SLOT[joint]])],
-            np.array([encoder_cal[joint].enc_at_anchor_count], dtype=np.int64),
-            np.array([JOINT_ENCODER_POLARITY[joint]], dtype=np.int64),
-            np.array(
-                [right_hand.config.joint_roms_dict[joint][1]], dtype=np.float64
-            ),
-        )
-        assert angles[joint] == float(expected[0])
+        anchor_angle = right_hand.config.joint_roms_dict[joint][1]
+        offset_deg = JOINT_ENCODER_POLARITY[joint] * 37 * ENCODER_LSB_DEG
+        assert angles[joint] == pytest.approx(anchor_angle + offset_deg)
 
 
 @pytest.mark.parametrize("side", ["left", None])

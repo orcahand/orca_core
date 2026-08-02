@@ -24,7 +24,7 @@ from orca_core.hardware.sensing.constants import (
 )
 
 from tests._encoder_helpers import feed_encoder_frame
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 # ---------------------------------------------------------------------------

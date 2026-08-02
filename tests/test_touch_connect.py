@@ -15,7 +15,7 @@ from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.serial_discovery import SensingPorts
 from orca_core.hardware.sensing.tactile_mock import TactileMockState, install_tactile_mock
 
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

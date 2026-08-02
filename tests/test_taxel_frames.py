@@ -9,9 +9,9 @@ import orca_core
 from orca_core import MockOrcaHandTouch, Transform, frames
 from orca_core.constants import FINGER_NAMES
 from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
+from orca_core.hardware.sensing.tactile_mock import feed_taxels_frame
 
-from tests._tactile_helpers import feed_taxels_frame
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 CONFIG_V2_TOUCH = os.path.join(
     os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-touch-right", "config.yaml"
@@ -129,6 +129,9 @@ class TestSensorTransforms:
     def test_palm_differs_from_base_by_wrist_chain(self, hand):
         palm = hand.get_sensor_transforms(frames.PALM, joint_pos=BENT_POSE)
         base = hand.get_sensor_transforms(frames.BASE, joint_pos=BENT_POSE)
+        # BENT_POSE bends the wrist, so the two frames must actually differ
+        for finger in palm:
+            assert not np.allclose(palm[finger].matrix, base[finger].matrix)
         # relative transform between the two must be the same for every finger
         rels = [(base[f] @ palm[f].inverse()).matrix for f in sorted(palm)]
         for rel in rels[1:]:

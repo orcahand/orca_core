@@ -71,9 +71,23 @@ def test_disconnect_disables_torque_and_discards_client(mock_hand):
     assert mock_hand._motor_client is None
 
 
-def test_wait_for_motion_is_noop_for_non_waiting_clients(mock_hand):
+def test_wait_for_motion_skips_the_bus_for_non_waiting_clients(mock_hand):
+    """Clients that report no motion wait must not reach the motor lock."""
+    calls = []
+    mock_hand._motor_client.wait_for_motion_complete = lambda **kw: calls.append(kw)
+
     assert not mock_hand._motor_client.waits_for_motion
     mock_hand.wait_for_motion(timeout=0.1)
+    assert calls == []
+
+
+def test_wait_for_motion_delegates_for_waiting_clients(mock_hand):
+    calls = []
+    mock_hand._motor_client.wait_for_motion_complete = lambda **kw: calls.append(kw)
+    mock_hand._motor_client.waits_for_motion = True
+
+    mock_hand.wait_for_motion(timeout=0.1)
+    assert calls == [{"timeout": 0.1}]
 
 
 def test_init_joints_can_skip_neutral_move(calibrated_hand):
@@ -91,6 +105,26 @@ def test_calibrated_joint_command_round_trips_through_motor_mapping(calibrated_h
     actual = calibrated_hand.get_joint_position().as_dict()
     for joint, expected in target.items():
         assert actual[joint] == pytest.approx(expected, abs=1e-5)
+
+
+def test_joint_to_motor_pos_applies_the_wrap_offset(calibrated_hand):
+    """A wrapped motor's command is shifted by its recorded offset.
+
+    Without this the write path and the closed-loop path disagree by a full
+    revolution on any motor whose encoder has wrapped.
+    """
+    joint = calibrated_hand.config.joint_ids[0]
+    motor_id = calibrated_hand.config.joint_to_motor_map[joint]
+    idx = calibrated_hand.config.motor_id_to_idx_dict[motor_id]
+    target = {joint: sum(calibrated_hand.config.joint_roms_dict[joint]) / 2.0}
+
+    calibrated_hand._wrap_offsets_dict[motor_id] = 0.0
+    unwrapped = calibrated_hand._joint_to_motor_pos(target)[idx]
+
+    calibrated_hand._wrap_offsets_dict[motor_id] = 2 * np.pi
+    assert calibrated_hand._joint_to_motor_pos(target)[idx] == pytest.approx(
+        unwrapped + 2 * np.pi
+    )
 
 
 def test_calibrated_list_command_round_trips(calibrated_hand):

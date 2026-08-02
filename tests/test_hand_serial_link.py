@@ -25,7 +25,7 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.tactile_protocol import build_read_request
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ from orca_core import JointFeedbackConnectError
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -19,10 +19,10 @@ import yaml
 from orca_core.calibration import JointEncoderCal
 from orca_core.control import JointLoopThread
 from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
-from orca_core import MockOrcaHandFull
+from orca_core import JointFeedbackConnectError, MockOrcaHandFull
 
 from tests._encoder_helpers import make_encoder_frame
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -122,7 +122,7 @@ def test_full_connect_rolls_back_on_missing_encoder_calibration(full_config):
     hand.calibration = dc.replace(
         hand.calibration, joint_encoder_calibration_dict={}
     )
-    with pytest.raises(Exception):
+    with pytest.raises(JointFeedbackConnectError, match="joint-encoder calibration"):
         hand.connect()
     assert hand._loop is None
     assert hand._encoder_client is None

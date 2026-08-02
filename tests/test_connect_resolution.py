@@ -15,7 +15,7 @@ from orca_core.utils.utils import (
     motor_type_for_port,
 )
 
-from .conftest import fake_serial_port
+from tests._helpers import fake_serial_port
 
 DYNAMIXEL_VID = KNOWN_VIDS["dynamixel"][0]
 FEETECH_VID = KNOWN_VIDS["feetech"][0]

@@ -72,18 +72,10 @@ def _static_at_zero(hand, freshness_ms: float = 0.0) -> StaticEncoderSource:
 
 
 def _expected_motor_pos(hand, joint: str, joint_command_deg: float) -> float:
-    """Mirror :meth:`OrcaHand._joint_to_motor_pos`: joint_roms is degrees,
-    joint_to_motor_ratios is motor-rad per joint-deg."""
+    """Open-loop scalar mapping, for cross-checking the loop's vectorised one."""
     motor_id = hand.config.joint_to_motor_map[joint]
-    lower = hand.motor_limits_dict[motor_id][0]
-    ratio = hand.calibration.joint_to_motor_ratios_dict[motor_id]
-    if hand.config.joint_inversion_dict.get(joint, False):
-        rom_upper = hand.config.joint_roms_dict[joint][1]
-        base = lower + (rom_upper - joint_command_deg) * ratio
-    else:
-        rom_lower = hand.config.joint_roms_dict[joint][0]
-        base = lower + (joint_command_deg - rom_lower) * ratio
-    return base + hand._wrap_offsets_dict.get(motor_id, 0.0)
+    idx = hand.config.motor_id_to_idx_dict[motor_id]
+    return hand._joint_to_motor_pos({joint: joint_command_deg})[idx]
 
 
 def test_bumpless_first_step_leaves_motors_where_they_are(calibrated_hand):

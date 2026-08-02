@@ -8,19 +8,41 @@ from orca_core.hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
     DEFAULT_TAXEL_COUNTS,
 )
+from orca_core.hardware.sensing.tactile_mock import (
+    TactileMockState,
+    install_tactile_mock,
+)
 from orca_core.hardware.tactile_client import TactileClient
 
-from tests._tactile_helpers import TactileMockState, install_tactile_mock
+
+class _NoSleepTime:
+    """Stand-in for the ``time`` module whose ``sleep`` is a no-op."""
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    def sleep(self, _seconds):
+        pass
 
 
-def wait_until(predicate, timeout: float = 1.0) -> None:
-    """Spin on ``predicate`` until true; lets async link dispatch settle."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.005)
-    raise AssertionError(f"predicate not satisfied within {timeout}s")
+@pytest.fixture(autouse=True, scope="session")
+def _no_settle_sleeps():
+    """Skip hardware settle waits; the mock backends have nothing to settle.
+
+    Swaps the ``time`` module reference inside the routines that pace themselves
+    for real motors. Patching ``time.sleep`` itself would be global and would
+    break tests that rely on real delays to open a race window.
+    """
+    from orca_core import base_hand
+    from orca_core.maintenance import calibration_routine, tensioning
+
+    fake = _NoSleepTime()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(base_hand, "time", fake)
+        mp.setattr(calibration_routine, "time", fake)
+        mp.setattr(tensioning, "time", fake)
+        mp.setattr(calibration_routine, "TINY_SLEEP", 0.0)
+        yield
 
 
 @pytest.fixture
@@ -133,13 +155,6 @@ def mock_hand(mock_config_dir):
     from orca_core import MockOrcaHand
 
     return MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
-
-
-def fake_serial_port(device: str, vid: int):
-    """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
-    from types import SimpleNamespace
-
-    return SimpleNamespace(device=device, vid=vid, description="fake")
 
 
 @pytest.fixture
