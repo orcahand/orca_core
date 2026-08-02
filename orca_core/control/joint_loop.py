@@ -1,0 +1,583 @@
+"""Host-side joint-loop thread.
+
+Each cycle reads joint angles from a ``JointEncoderClient``, asks the
+``JointController`` for a per-joint correction (degrees), maps
+``target + correction`` to motor positions, and writes via
+``write_desired_pos``. The motor's internal position PID tracks the motor
+target on the motor encoder; this thread trims the residual offset
+between motor angle and joint angle.
+
+Encoder-freshness watchdog (the motor PID keeps holding the last
+commanded position even without host updates, so the higher tiers do not
+drop torque):
+
+  > WATCHDOG_WARN_MS      rate-limited warning, control unchanged.
+  > WATCHDOG_HOLD_MS      freeze the integrator; P term still runs.
+  > WATCHDOG_HOLD_BASE_MS drop the PI trim; write only the base motor
+                          target so the motor's internal PID holds pose.
+  > WATCHDOG_STOP_LOOP_MS stop the loop, set ``fallback_active``.
+
+A loop-period jitter monitor escalates to the stop tier on five
+consecutive cycles slower than 10× target.
+"""
+
+import logging
+import threading
+import time
+from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
+
+from ..constants import WRIST
+from ..hardware.sensing.constants import (
+    AUTO_ENC_NUM_JOINTS,
+    JOINT_TO_ENCODER_SLOT,
+    joint_encoder_polarity_for_side,
+)
+from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
+from .joint_controller import JointController
+from .constants import (
+    DEFAULT_LOOP_HZ,
+    FRESHNESS_WARN_INTERVAL_S,
+    JITTER_ESTOP_CONSECUTIVE,
+    JITTER_ESTOP_RATIO,
+    JITTER_WARN_CONSECUTIVE,
+    JITTER_WARN_RATIO,
+    LOOP_EXCEPTION_LOG_INTERVAL_S,
+    WATCHDOG_HOLD_BASE_MS,
+    WATCHDOG_HOLD_MS,
+    WATCHDOG_STOP_LOOP_MS,
+    WATCHDOG_WARN_MS,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+JointTargets = Union[Dict[str, float], np.ndarray]
+
+
+class JointLoopThread:
+    """Host-side joint-loop thread.
+
+    Calibration (encoder + motor kinematics + wrap offsets) is snapshotted
+    on ``prime_for_step()``. Mid-run calibration changes require ``stop()``
+    then ``start()``.
+    """
+
+    def __init__(
+        self,
+        orca_hand: Any,
+        joint_encoder_client: Any,
+        controller: JointController,
+        target_hz: int = DEFAULT_LOOP_HZ,
+        joints: Optional[List[str]] = None,
+    ):
+        self._hand = orca_hand
+        self._encoder_client = joint_encoder_client
+        self._controller = controller
+        self._target_hz = int(target_hz)
+        self._target_period = 1.0 / float(self._target_hz)
+        # Explicit joint set to close the loop on (e.g. only fully-calibrated
+        # joints); None = every encoder-backed joint with an anchor.
+        self._configured_joints = list(joints) if joints is not None else None
+
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._writes_paused = threading.Event()
+        self._lock = threading.Lock()
+
+        self._joint_names: List[str] = []
+        self._slots = np.zeros(0, dtype=np.int64)
+        self._anchors = np.zeros(0, dtype=np.int64)
+        self._enc_polarities = np.zeros(0, dtype=np.int64)
+        self._anchor_angles = np.zeros(0, dtype=np.float64)
+        self._motor_ids: List[int] = []
+        self._motor_limits_lower = np.zeros(0, dtype=np.float64)
+        self._joint_to_motor_ratios = np.zeros(0, dtype=np.float64)
+        self._joint_inversion_mask = np.zeros(0, dtype=bool)
+        self._joint_rom_lower = np.zeros(0, dtype=np.float64)
+        self._joint_rom_upper = np.zeros(0, dtype=np.float64)
+        self._wrap_offsets = np.zeros(0, dtype=np.float64)
+
+        self._target_deg = np.zeros(0, dtype=np.float64)
+        self._latest_measured = np.zeros(0, dtype=np.float64)
+        self._last_correction = np.zeros(0, dtype=np.float64)
+        self._motor_bias = np.zeros(0, dtype=np.float64)
+
+        self._stats = {
+            "cycles_ok": 0,
+            "cycles_overrun": 0,
+            "cycles_no_reading": 0,
+            "cycles_held": 0,
+            "cycles_held_base": 0,
+            "cycles_paused": 0,
+            "cycles_exception": 0,
+            "commands_sent": 0,
+            "e_stops": 0,
+            "joints_flagged_invalid": 0,
+            "last_dt_s": float("nan"),
+            "fallback_active": False,
+        }
+        self._last_freshness_warn_time: float = 0.0
+        self._last_exception_log_time: float = 0.0
+        self._slow_cycle_streak: int = 0
+        self._pathological_cycle_streak: int = 0
+
+    @property
+    def joint_names(self) -> List[str]:
+        """The joints this loop closes on (snapshot order)."""
+        with self._lock:
+            return list(self._joint_names)
+
+    def prime_for_step(self) -> None:
+        """Snapshot calibration, latch the target to the measured pose for
+        bumpless entry, and reset the controller."""
+        self._snapshot_calibration()
+        self._anchor_to_current_pose()
+
+    def rebase(self) -> None:
+        """Re-anchor a running loop to the current pose without a full restart:
+        latch the target to the live measured pose, recapture the feed-forward
+        bias from the current motor position, and reset the controller. Use
+        after the motors have moved out from under the loop (e.g. torque was
+        disabled to hand-pose the hand) so re-enabling torque doesn't lurch."""
+        self._anchor_to_current_pose()
+
+    def _anchor_to_current_pose(self) -> None:
+        measured = self._measure_joint_angles_for_anchor()
+        motor_now = self._read_motor_pos_now()
+        with self._lock:
+            self._target_deg = measured.copy()
+            self._latest_measured = measured.copy()
+            # Bumpless feed-forward: hold the constant motor↔encoder mapping
+            # offset so the loop starts where the motors are, not lurching.
+            self._motor_bias = motor_now - self._joint_to_motor_pos(measured)
+        self._controller.reset()
+
+    def _read_motor_pos_now(
+        self, retries: int = 5, retry_interval: float = 0.05
+    ) -> np.ndarray:
+        """Current motor positions (rad) for the snapshotted joints, rejecting
+        reads the bus never actually answered.
+
+        A partial or stale read here would bake a bogus feed-forward bias that
+        commands the affected motors toward absolute zero on every cycle, so
+        retry while the motor client reports the read failed and raise on
+        persistent failure rather than anchor to garbage.
+        """
+        for _ in range(retries):
+            # Capture the read and its ok-flag under one (re-entrant) motor
+            # lock so a concurrent read can't overwrite the flag in between.
+            with self._hand._motor_lock:
+                pos = self._hand.get_motor_pos(as_dict=True)
+                read_ok = self._hand._motor_client.last_read_ok
+            if read_ok:
+                return np.array(
+                    [pos[mid] for mid in self._motor_ids], dtype=np.float64
+                )
+            time.sleep(retry_interval)
+        raise RuntimeError(
+            "motor position read failed while anchoring the joint loop: the "
+            "motor bus returned no fresh data. Retry; if it persists, "
+            "power-cycle the board."
+        )
+
+    def step_once(self, dt: float) -> None:
+        """One cycle: encoder read → watchdog → PI → motor-pos write."""
+        if self._stats["fallback_active"]:
+            return
+
+        self._stats["last_dt_s"] = float(dt)
+
+        reading = self._encoder_client.get_latest()
+        if reading is None:
+            self._stats["cycles_no_reading"] += 1
+            return
+
+        if self._writes_paused.is_set():
+            # Motor op in flight (see pause_writes): keep measurements live
+            # for callers but issue no motor writes.
+            measured = self._decode_measured(reading)
+            with self._lock:
+                self._latest_measured = measured.copy()
+            self._controller.freeze_integral()
+            self._stats["cycles_paused"] += 1
+            # A dead encoder must still trip the e-stop while paused —
+            # otherwise a leaked pause silently disables the watchdog.
+            if float(reading.freshness_ms) > WATCHDOG_STOP_LOOP_MS:
+                self._trigger_estop(
+                    f"encoder freshness {reading.freshness_ms:.0f} ms exceeds "
+                    "stop threshold (while writes paused)"
+                )
+            return
+
+        freshness_ms = float(reading.freshness_ms)
+
+        if freshness_ms > WATCHDOG_STOP_LOOP_MS:
+            self._trigger_estop(
+                f"encoder freshness {freshness_ms:.0f} ms exceeds stop threshold"
+            )
+            return
+
+        # Target and bias are read in one locked section so a concurrent
+        # rebase can't pair an old target with a new bias for one cycle.
+        with self._lock:
+            target = self._target_deg.copy()
+            motor_bias = self._motor_bias.copy()
+
+        if freshness_ms > WATCHDOG_HOLD_BASE_MS:
+            motor_targets = self._joint_to_motor_pos(target) + motor_bias
+            self._hand.write_motor_pos(self._motor_ids, motor_targets)
+            self._stats["cycles_held_base"] += 1
+            self._stats["commands_sent"] += 1
+            return
+
+        if freshness_ms > WATCHDOG_HOLD_MS:
+            self._controller.freeze_integral()
+            self._stats["cycles_held"] += 1
+        else:
+            self._controller.unfreeze_integral()
+
+        if freshness_ms > WATCHDOG_WARN_MS:
+            self._maybe_log_freshness_warning(freshness_ms)
+
+        measured = self._decode_measured(reading)
+
+        correction = self._controller.step(target, measured, dt)
+        motor_targets = self._joint_to_motor_pos(target + correction) + motor_bias
+        self._hand.write_motor_pos(self._motor_ids, motor_targets)
+
+        with self._lock:
+            self._latest_measured = measured.copy()
+            self._last_correction = correction.copy()
+
+        self._stats["cycles_ok"] += 1
+        self._stats["commands_sent"] += 1
+
+    def set_target(self, joint_targets: JointTargets) -> None:
+        """Update the joint setpoint. Accepts a ``{joint_name: angle_deg}``
+        dict or a ``(num_joints,)`` array indexed in the snapshotted joint
+        order. Concurrent calls compose atomically — each dict updates only
+        the joints it names, on top of whatever the previous caller wrote."""
+        if isinstance(joint_targets, dict):
+            unknown = set(joint_targets) - set(self._joint_names)
+            if unknown:
+                raise ValueError(f"unknown joints in target: {sorted(unknown)}")
+            joint_index = {name: i for i, name in enumerate(self._joint_names)}
+            with self._lock:
+                new_target = self._target_deg.copy()
+                for joint, value in joint_targets.items():
+                    new_target[joint_index[joint]] = float(value)
+                self._target_deg = new_target
+            return
+
+        array = np.asarray(joint_targets, dtype=np.float64)
+        if array.shape != (len(self._joint_names),):
+            raise ValueError(
+                f"target array must have shape ({len(self._joint_names)},), "
+                f"got {array.shape}"
+            )
+        with self._lock:
+            self._target_deg = array.copy()
+
+    def get_measured_joints(self) -> Dict[str, float]:
+        with self._lock:
+            measured = self._latest_measured.copy()
+        return {name: float(measured[i]) for i, name in enumerate(self._joint_names)}
+
+    def get_correction(self) -> Dict[str, float]:
+        with self._lock:
+            correction = self._last_correction.copy()
+        return {name: float(correction[i]) for i, name in enumerate(self._joint_names)}
+
+    def get_stats(self) -> Dict[str, float]:
+        return dict(self._stats)
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self.prime_for_step()
+        # A deliberate restart recovers from a prior e-stop. Cleared only
+        # after priming succeeds so a failed restart keeps the e-stop state.
+        self._stats["fallback_active"] = False
+        self._pathological_cycle_streak = 0
+        self._slow_cycle_streak = 0
+        self._last_freshness_warn_time = 0.0
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run_loop, name="JointLoopThread", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 1.0) -> bool:
+        if self._thread is None:
+            return True
+        self._stop_event.set()
+        self._thread.join(timeout=timeout)
+        clean = not self._thread.is_alive()
+        self._thread = None
+        return clean
+
+    def pause_writes(self) -> None:
+        """Fence the loop's motor writes off the bus (encoder decoding and
+        ``get_measured_joints`` keep running) so a round-trip motor op — a
+        torque toggle or a bulk read — can complete without the loop's
+        sync_writes interleaving with its status-packet reads and stalling
+        them. Idempotent; pair with :meth:`resume_writes`."""
+        self._writes_paused.set()
+
+    def resume_writes(self) -> None:
+        """Re-enable motor writes after :meth:`pause_writes`. The controller
+        integral was frozen while paused; the next live cycle unfreezes it."""
+        self._writes_paused.clear()
+
+    def _snapshot_calibration(self) -> None:
+        """Freeze the joint set and the kinematics arrays for one loop run.
+        Wrist is excluded; joints without an encoder calibration entry are
+        skipped.
+
+        Raises:
+            RuntimeError: no encoder-backed joints to control, or a selected
+                joint lacks motor limits or a nonzero joint-to-motor ratio.
+            ValueError: controller size disagrees with the resolved set.
+            KeyError: the hand's side has no validated encoder polarity table.
+        """
+        encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
+        joint_to_motor = self._hand.config.joint_to_motor_map
+        inversion = self._hand.config.joint_inversion_dict
+        joint_roms = self._hand.config.joint_roms_dict
+        motor_limits = self._hand.motor_limits_dict
+        ratios = self._hand.calibration.joint_to_motor_ratios_dict
+        polarity = joint_encoder_polarity_for_side(self._hand.config.type)
+
+        joints = [
+            j for j in JOINT_TO_ENCODER_SLOT
+            if j != WRIST and j in joint_to_motor and j in encoder_dict
+        ]
+        if self._configured_joints is not None:
+            missing = [j for j in self._configured_joints if j not in joints]
+            if missing:
+                raise RuntimeError(
+                    f"configured loop joints {missing} lack a motor mapping "
+                    "or an encoder anchor"
+                )
+            joints = [j for j in joints if j in self._configured_joints]
+        if not joints:
+            raise RuntimeError("no encoder-backed joints to control")
+        # A zero ratio makes the joint→motor map a constant (silent no-op) and
+        # a None limit becomes NaN motor targets; fail loudly instead.
+        uncalibrated = [
+            j for j in joints
+            if motor_limits.get(joint_to_motor[j]) is None
+            or any(limit is None for limit in motor_limits[joint_to_motor[j]])
+            or not ratios.get(joint_to_motor[j])
+        ]
+        if uncalibrated:
+            raise RuntimeError(
+                f"joints {uncalibrated} lack motor limits or a nonzero "
+                "joint-to-motor ratio; calibrate them or exclude them via "
+                "the joints argument"
+            )
+        if self._controller.num_joints != len(joints):
+            raise ValueError(
+                f"controller was constructed with num_joints={self._controller.num_joints} "
+                f"but {len(joints)} encoder-backed joints are available"
+            )
+        if self._hand._wrap_offsets_dict is None:
+            raise RuntimeError(
+                "hand has no wrap-offsets snapshot; caller must compute it "
+                "before constructing the joint loop"
+            )
+
+        self._joint_names = joints
+        self._slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
+        self._anchors = np.array(
+            [encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64
+        )
+        self._enc_polarities = np.array(
+            [polarity[j] for j in joints], dtype=np.int64
+        )
+        self._anchor_angles = np.array(
+            [joint_roms[j][1] for j in joints], dtype=np.float64
+        )
+        self._motor_ids = [joint_to_motor[j] for j in joints]
+        self._motor_limits_lower = np.array(
+            [motor_limits[mid][0] for mid in self._motor_ids], dtype=np.float64
+        )
+        self._joint_to_motor_ratios = np.array(
+            [ratios[mid] for mid in self._motor_ids], dtype=np.float64
+        )
+        self._joint_inversion_mask = np.array(
+            [bool(inversion.get(j, False)) for j in joints], dtype=bool
+        )
+        self._joint_rom_lower = np.array(
+            [joint_roms[j][0] for j in joints], dtype=np.float64
+        )
+        self._joint_rom_upper = np.array(
+            [joint_roms[j][1] for j in joints], dtype=np.float64
+        )
+        self._wrap_offsets = np.array(
+            [self._hand._wrap_offsets_dict.get(mid, 0.0) for mid in self._motor_ids],
+            dtype=np.float64,
+        )
+        self._target_deg = np.zeros(len(joints), dtype=np.float64)
+        self._latest_measured = np.zeros(len(joints), dtype=np.float64)
+        self._last_correction = np.zeros(len(joints), dtype=np.float64)
+        self._motor_bias = np.zeros(len(joints), dtype=np.float64)
+
+    def _joint_to_motor_pos(self, joint_command_deg: np.ndarray) -> np.ndarray:
+        """Vectorised joint→motor mapping for the snapshotted joint set.
+
+        Joint angles are degrees; motor positions are radians (the
+        ``joint_to_motor_ratios`` is motor-rad per joint-deg). See
+        :meth:`OrcaHand._joint_to_motor_pos` for the equivalent scalar
+        implementation.
+        """
+        inverted_term = (
+            self._motor_limits_lower
+            + (self._joint_rom_upper - joint_command_deg) * self._joint_to_motor_ratios
+        )
+        forward_term = (
+            self._motor_limits_lower
+            + (joint_command_deg - self._joint_rom_lower) * self._joint_to_motor_ratios
+        )
+        motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
+        return motor_pos + self._wrap_offsets
+
+    def _measure_joint_angles_for_anchor(
+        self, retries: int = 5, retry_interval: float = 0.05
+    ) -> np.ndarray:
+        """Joint angles for anchoring, requiring a fresh, chip-valid sample
+        for every controlled joint. Anchoring to a missing, stale, or flagged
+        reading would latch a bogus target the PI then drives toward, so
+        retry and raise on persistent failure rather than anchor to garbage."""
+        for _ in range(retries):
+            reading = self._encoder_client.get_latest()
+            if (
+                reading is not None
+                and float(reading.freshness_ms) <= WATCHDOG_HOLD_MS
+            ):
+                invalid = (
+                    ~np.asarray(reading.parity_ok)[self._slots]
+                    | np.asarray(reading.angle_error)[self._slots]
+                )
+                if not np.any(invalid):
+                    return self._decode_measured(reading)
+            time.sleep(retry_interval)
+        raise RuntimeError(
+            "no valid encoder reading while anchoring the joint loop: the "
+            "encoder stream is missing, stale, or chip-flagged. Check the "
+            "encoder connection; retry once readings are healthy."
+        )
+
+    def _decode_measured(self, reading) -> np.ndarray:
+        """Decode an :class:`EncoderReading` into per-joint angles in
+        degrees, sliced and aligned to the snapshotted joint set. Joints the
+        encoder chip flags as invalid (parity fail or angle-error bit) hold
+        their previous measured value for this cycle."""
+        raw_counts = np.asarray(reading.raw_counts)
+        if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
+            raise RuntimeError(
+                f"encoder reading has shape {raw_counts.shape}, "
+                f"expected ({AUTO_ENC_NUM_JOINTS},)"
+            )
+        angles = encoder_to_joint_angle(
+            raw_counts[self._slots],
+            self._anchors,
+            self._enc_polarities,
+            self._anchor_angles,
+        )
+        invalid = (
+            ~np.asarray(reading.parity_ok)[self._slots]
+            | np.asarray(reading.angle_error)[self._slots]
+        )
+        if np.any(invalid):
+            self._stats["joints_flagged_invalid"] += int(np.count_nonzero(invalid))
+            with self._lock:
+                angles = np.where(invalid, self._latest_measured, angles)
+        return angles
+
+    def _trigger_estop(self, reason: str) -> None:
+        """Set ``fallback_active`` and signal the thread to stop. The motor
+        PID holds the last commanded position; nothing else is touched."""
+        if self._stats["fallback_active"]:
+            return
+        logger.error("joint loop e-stop: %s", reason)
+        self._stats["fallback_active"] = True
+        self._stats["e_stops"] += 1
+        self._stop_event.set()
+
+    def _maybe_log_freshness_warning(self, freshness_ms: float) -> None:
+        now = time.monotonic()
+        if now - self._last_freshness_warn_time >= FRESHNESS_WARN_INTERVAL_S:
+            logger.warning(
+                "encoder freshness %.0f ms exceeds %d ms warn threshold",
+                freshness_ms,
+                WATCHDOG_WARN_MS,
+            )
+            self._last_freshness_warn_time = now
+
+    def _maybe_log_step_exception(self) -> None:
+        now = time.monotonic()
+        if now - self._last_exception_log_time >= LOOP_EXCEPTION_LOG_INTERVAL_S:
+            logger.exception("step_once raised; thread continues")
+            self._last_exception_log_time = now
+
+    def _record_loop_period(self, period_s: float) -> None:
+        """Update jitter streak counters; e-stop on a sustained run of
+        pathological cycles. A single transient >10× cycle is tolerated."""
+        is_pathological = period_s >= self._target_period * JITTER_ESTOP_RATIO
+        is_slow = period_s > self._target_period * JITTER_WARN_RATIO
+
+        if is_pathological:
+            self._pathological_cycle_streak += 1
+        else:
+            self._pathological_cycle_streak = 0
+
+        if is_slow:
+            self._slow_cycle_streak += 1
+        else:
+            self._slow_cycle_streak = 0
+
+        if self._pathological_cycle_streak >= JITTER_ESTOP_CONSECUTIVE:
+            self._trigger_estop(
+                f"loop period exceeded {JITTER_ESTOP_RATIO}× target for "
+                f"{JITTER_ESTOP_CONSECUTIVE} consecutive cycles "
+                f"(last={period_s * 1000:.1f} ms)"
+            )
+            self._pathological_cycle_streak = 0
+            self._slow_cycle_streak = 0
+            return
+
+        if self._slow_cycle_streak == JITTER_WARN_CONSECUTIVE:
+            logger.warning(
+                "loop jitter: %d consecutive cycles slower than %.1f× target",
+                JITTER_WARN_CONSECUTIVE,
+                JITTER_WARN_RATIO,
+            )
+
+    def _run_loop(self) -> None:
+        period = self._target_period
+        next_deadline = time.monotonic()
+        prev_time: Optional[float] = None
+        while not self._stop_event.is_set():
+            now = time.monotonic()
+            if now < next_deadline:
+                time.sleep(min(next_deadline - now, period))
+                continue
+            if now > next_deadline + period:
+                self._stats["cycles_overrun"] += 1
+            dt = (now - prev_time) if prev_time is not None else period
+            try:
+                self.step_once(dt=dt)
+            except Exception:
+                # Keep the thread alive on transient bus errors; counted as
+                # cycles_exception, kept distinct from jitter overruns.
+                self._stats["cycles_exception"] += 1
+                self._maybe_log_step_exception()
+            self._record_loop_period(dt)
+            prev_time = now
+            # Clamp the schedule to now so a long stall doesn't flood the bus
+            # with back-to-back writes to catch up on missed deadlines.
+            next_deadline = max(next_deadline + period, now)

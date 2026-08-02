@@ -1,4 +1,4 @@
-# Reference calibration output for MockOrcaHand with v2/orcahand_right config.
+# Reference calibration output for MockOrcaHand with v2/orcahand-right config.
 #
 # The mock motor client clamps all positions to [-1.0, 1.0], so every motor
 # discovers limits of exactly [-1.0, 1.0]. Ratios follow from:

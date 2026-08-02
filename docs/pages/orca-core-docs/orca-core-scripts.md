@@ -11,12 +11,12 @@ Calibrates the ORCA Hand. This script reads the calibration sequence from the ha
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/calibrate.py /path/to/orcahand_v1_right/config.yaml
+python scripts/calibrate.py /path/to/orcahand-right/config.yaml
 ```
 </details>
 
@@ -42,7 +42,7 @@ python scripts/check_motor.py --motor_id 5 --port /dev/ttyUSB0
 ```
 </details>
 
-### Demonstration Scripts
+### Demo Examples (`examples/`)
 
 <details>
 <summary><strong>main_demo.py</strong></summary>
@@ -51,12 +51,12 @@ Runs a demonstration of the ORCA Hand, making the fingers perform a wave-like mo
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/main_demo.py
+python examples/main_demo.py
 ```
 </details>
 
@@ -67,12 +67,12 @@ Runs a demonstration of the ORCA Hand, similar to `main_demo.py`, but with a foc
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/main_demo_abduction.py
+python examples/main_demo_abduction.py
 ```
 </details>
 
@@ -85,12 +85,12 @@ Moves the ORCA Hand to its neutral (home) position. It connects to the hand, ena
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/neutral.py /path/to/orcahand_v1_right/config.yaml
+python scripts/neutral.py /path/to/orcahand-right/config.yaml
 ```
 </details>
 
@@ -101,16 +101,16 @@ Moves all joints of the ORCA Hand to the zero position. It connects to the hand,
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/zero.py /path/to/orcahand_v1_right/config.yaml
+python scripts/zero.py /path/to/orcahand-right/config.yaml
 ```
 </details>
 
-### Recording and Replay Scripts
+### Recording and Replay Examples (`examples/`)
 
 <details>
 <summary><strong>record_angles.py</strong></summary>
@@ -119,13 +119,13 @@ Records a sequence of joint angle waypoints for the ORCA Hand. The user is promp
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, the script uses the default config path.</li><br>
-    <li><strong>--output_dir</strong> (<strong>str</strong>, optional): Directory to save the replay sequence. Defaults to `replay_sequences/` at the project root.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-left/config.yaml`). If not provided, the script uses the default config path.</li><br>
+    <li><strong>--output-dir</strong> (<strong>str</strong>, optional): Directory to save the replay sequence. Defaults to `replay_sequences/` in the current working directory.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_angles.py /path/to/orcahand_v1_left/config.yaml --output_dir my_recordings
+python examples/record_angles.py /path/to/orcahand-left/config.yaml --output-dir my_recordings
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -137,15 +137,15 @@ Continuously records joint angles from the ORCA Hand at a specified frequency an
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-left/config.yaml`). If not provided, uses the default config path.</li><br>
     <li><strong>--frequency</strong> (<strong>float</strong>, optional): Sampling frequency in Hz (default: 50.0).</li><br>
     <li><strong>--duration</strong> (<strong>float</strong>, optional): Recording duration in seconds. Records indefinitely if not set.</li><br>
-    <li><strong>--output_dir</strong> (<strong>str</strong>, optional): Directory to save the output file. Defaults to `replay_sequences/` at the project root.</li>
+    <li><strong>--output-dir</strong> (<strong>str</strong>, optional): Directory to save the output file. Defaults to `replay_sequences/` in the current working directory.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/record_continuous.py /path/to/orcahand_v1_right/config.yaml --frequency 100 --duration 10 --output_dir ./custom_replays
+python examples/record_continuous.py /path/to/orcahand-right/config.yaml --frequency 100 --duration 10 --output-dir ./custom_replays
 # Then enter a filename prefix when prompted.
 ```
 </details>
@@ -153,18 +153,18 @@ python scripts/record_continuous.py /path/to/orcahand_v1_right/config.yaml --fre
 <details>
 <summary><strong>replay_angles.py</strong></summary>
 
-Replays a recorded sequence of hand movements (waypoints) from a YAML file. It interpolates between waypoints for smooth motion and loops the sequence indefinitely.
+Replays a recorded sequence of hand movements (waypoints) from a YAML file. It interpolates between waypoints for smooth motion and plays the sequence once (pass <code>--loop</code> to repeat indefinitely).
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1/config.yaml`). If not provided, uses the default config path.</li><br>
-    <li><strong>--step_time</strong> (<strong>float</strong>, optional): Timestep for interpolation (default: 0.02 seconds).</li><br>
-    <li><strong>--replay_file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `project_root/replay_sequences/`).</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>--step-time</strong> (<strong>float</strong>, optional): Timestep for interpolation (default: 0.02 seconds).</li><br>
+    <li><strong>--replay-file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `replay_sequences/` under the current working directory).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_angles.py /path/to/orcahand_v1_right/config.yaml --replay_file my_capture_replay_sequence_TIMESTAMP.yaml --step_time 0.01
+python examples/replay_angles.py /path/to/orcahand-right/config.yaml --replay-file my_capture_replay_sequence_TIMESTAMP.yaml --step-time 0.01
 ```
 </details>
 
@@ -175,47 +175,37 @@ Replays continuously recorded hand joint movements from a YAML file. It attempts
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
-    <li><strong>--replay_file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `project_root/replay_sequences/`).</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-left/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>--replay-file</strong> (<strong>str</strong>, required): Path to the replay file. Can be an absolute/relative path, or a plain filename (searched in `replay_sequences/` under the current working directory).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/replay_continuous.py /path/to/orcahand_v1_right/config.yaml --replay_file continuous_angles_YYYYMMDD_HHMMSS.yaml
+python examples/replay_continuous.py /path/to/orcahand-right/config.yaml --replay-file continuous_angles_YYYYMMDD_HHMMSS.yaml
 ```
 </details>
 
 ### UI Control Scripts
 
 <details>
-<summary><strong>slider_joint.py</strong></summary>
+<summary><strong>manual_control.py</strong></summary>
 
-Provides a Tkinter-based GUI with sliders to control each joint of the ORCA Hand individually. It allows enabling/disabling torque and displays current joint values.
+Provides a Tkinter-based GUI with sliders to drive the ORCA Hand from the PC. By default the sliders are in joint space, one per joint, with torque enable/disable. On a hand with joint encoders the sliders cover the encoder-backed joints and gain a live encoder readback plus a Kp / Ki / correction_max / max_current tuning panel.
+
+With <code>--motor-space</code> the sliders are one-per-motor over a narrow window around each motor's startup position, for nudging a single tendon during bring-up. That mode opens the motor bus only.
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>--motor-space</strong>: One slider per motor instead of per joint.</li><br>
+    <li><strong>--fingers</strong> / <strong>--joints</strong>: Restrict the slider set (joint-feedback hands).</li><br>
+    <li><strong>--Kp</strong> / <strong>--Ki</strong> / <strong>--correction-max-deg</strong> / <strong>--max-current</strong>: Initial loop tuning (joint-feedback hands).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/slider_joint.py /path/to/orcahand_v1_right/config.yaml
-```
-</details>
-
-<details>
-<summary><strong>slider_motor.py</strong></summary>
-
-Provides a Tkinter-based GUI with sliders to control each motor of the ORCA Hand individually. This allows for direct motor position control rather than joint-level control. Sliders have a small range for precise adjustments around the current motor position.
-
-<br><strong>Args:</strong><br>
-<ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
-</ul>
-
-<strong>Example:</strong>
-```bash
-python scripts/slider_motor.py /path/to/orcahand_v1_right/config.yaml
+python scripts/manual_control.py /path/to/orcahand-right/config.yaml
+python scripts/manual_control.py /path/to/orcahand-right/config.yaml --motor-space
 ```
 </details>
 
@@ -224,36 +214,85 @@ python scripts/slider_motor.py /path/to/orcahand_v1_right/config.yaml
 <details>
 <summary><strong>tension.py</strong></summary>
 
-Enables torque on the ORCA Hand servos and holds the current position, effectively locking the bottom spools in order to be able to rachet the top spools. The script runs until interrupted (Ctrl+C).
+Enables torque on the ORCA Hand servos and holds the current position, effectively locking the bottom spools in order to be able to rachet the top spools. By default it first runs a short preconditioning flexion/extension motion before holding. The script runs until interrupted (Ctrl+C).
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_left/config.yaml`). If not provided, uses the default config path.</li><br>
-    <li><strong>--move_motors</strong>: Move all motors CCW with a the calibration current specified in `config.py` and then enable torque in order to hold the servos in position for tensioning.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-left/config.yaml`). If not provided, uses the default config path.</li><br>
+    <li><strong>--move-motors</strong> / <strong>--no-move-motors</strong>: Run or skip the preconditioning motion before holding tension (default: enabled).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/tension.py /path/to/orcahand_v1_left/config.yaml
+python scripts/tension.py /path/to/orcahand-left/config.yaml
+python scripts/tension.py /path/to/orcahand-left/config.yaml --no-move-motors
 ```
 </details>
+
 
 <details>
 <summary><strong>stress_test.py</strong></summary>
 
-Cycles the hand between OPEN and CLOSE poses while monitoring motor temperatures, aborting if any motor exceeds the safe operating temperature.
+Cycles the hand between fixed OPEN and CLOSE poses while monitoring motor temperatures, aborting if any motor exceeds the safe operating temperature. Supports <code>--mock</code>.
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand_v1_right/config.yaml`). If not provided, uses the default config path.</li>
-    <li><strong>--num-steps</strong> (<strong>int</strong>, optional): Interpolation steps per move (default 25).</li>
-    <li><strong>--step-size</strong> (<strong>float</strong>, optional): Sleep between interpolation steps in seconds (default 0.001).</li>
-    <li><strong>--hold</strong> (<strong>float</strong>, optional): Extra seconds to hold each pose AFTER motion completes (default 0).</li>
-    <li><strong>--motion-timeout</strong> (<strong>float</strong>, optional): Max seconds to wait for a pose to be reached (default 5).</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, uses the default config path.</li><br>
+    <li><strong>--num-steps</strong>: Interpolation steps per move.</li><br>
+    <li><strong>--step-size</strong>: Sleep between interpolation steps in seconds.</li><br>
+    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
-python scripts/stress_test.py
+python scripts/stress_test.py /path/to/orcahand-right/config.yaml --hold 1
+```
+</details>
+
+### Sensing Diagnostic Scripts
+
+The two sensing scripts split by intent: `monitor_sensors.py` shows you the data, `check_sensors.py` tells you whether the sensors are healthy.
+
+<details>
+<summary><strong>monitor_sensors.py</strong></summary>
+
+Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate. Autodetects the connector-board serial port; pass <code>--port</code> to override.
+
+<strong>Example:</strong>
+```bash
+python scripts/monitor_sensors.py
+python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
+```
+</details>
+
+<details>
+<summary><strong>check_sensors.py</strong></summary>
+
+Pass/fail health check. Reads the hand's config and runs the checks its declared hardware supports: joint-encoder stream health (frame integrity, rate, per-slot parity / angle-error / stuck-bus detection — non-interactive), and tactile sensor checks (enumeration, stream rate, per-finger press response, zeroing, stream lifecycle — interactive). A hand with both runs both, encoders first. Motors need not be powered.
+
+<code>--port</code> skips the config and runs the encoder checks against a raw serial port, for bringing up a connector board before a hand config exists.
+
+<br><strong>Args:</strong><br>
+<ul>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand's config.yaml.</li><br>
+    <li><strong>--port</strong>: Raw serial port; runs encoder checks only and ignores the config.</li><br>
+    <li><strong>--encoder-duration</strong>: Seconds to sample the encoder stream (default 10).</li>
+</ul>
+
+<strong>Example:</strong>
+```bash
+python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
+python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
+```
+</details>
+
+<details>
+<summary><strong>examples/taxel_frames.py</strong></summary>
+
+Streams per-taxel forces with 3D taxel positions in a chosen coordinate frame (sensor, fingertip, palm, base, world). Runs without hardware via <code>--mock</code>.
+
+<strong>Example:</strong>
+```bash
+python examples/taxel_frames.py --mock --frame base
 ```
 </details>

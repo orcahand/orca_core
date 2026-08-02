@@ -7,22 +7,11 @@ Three rounds of tension+calibration with a 1-minute motion test in between.
 import argparse
 import time
 
-from common import connect_hand, create_hand, shutdown_hand
-from orca_core import OrcaJointPositions
+from orca_core.utils.cli import connect_hand, create_hand, shutdown_hand
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
 DIVIDER = "=" * 60
-
-
-def pose_from_fractions(hand, fractions: dict[str, float]) -> OrcaJointPositions:
-    pose = dict(hand.config.neutral_position)
-    for joint, fraction in fractions.items():
-        if joint not in hand.config.joint_roms_dict:
-            continue
-        joint_min, joint_max = hand.config.joint_roms_dict[joint]
-        pose[joint] = joint_min + fraction * (joint_max - joint_min)
-    return OrcaJointPositions.from_dict(pose)
 
 
 def wait_for_enter(msg="Press ENTER to continue..."):
@@ -39,6 +28,51 @@ def print_step(step_num, title):
     print(f"\n{DIVIDER}")
     print(f"  STEP {step_num}: {title}")
     print(DIVIDER)
+
+
+def _print_calibration_progress(event: dict) -> None:
+    """Render calibration progress events on the terminal."""
+    name = event.get("event")
+    if name == "calibration_started":
+        print(
+            f"Calibrating {len(event['joints'])} joint(s) "
+            f"over {event['steps']} step(s)..."
+        )
+    elif name == "step_started":
+        joints = ", ".join(f"{j} ({d})" for j, d in event["joints"].items())
+        print(f"[step {event['index'] + 1}/{event['total']}] {joints}")
+    elif name == "limit_recorded":
+        print(
+            f"  motor {event['motor']} ({event['joint']}) "
+            f"{event['bound']} limit at {event['limit']:.4f} rad"
+        )
+    elif name == "joint_calibrated":
+        print(f"  {event['joint']} calibrated (ratio {event['ratio']:.4f})")
+    elif name == "wrist_skipped":
+        print("Wrist already calibrated; skipping wrist steps.")
+    elif name == "encoder_anchor_recorded":
+        print(
+            f"  {event['joint']} encoder anchor: count {event['anchor_count']} "
+            f"at {event['anchor_angle_deg']:.1f} deg"
+        )
+    elif name == "encoder_anchor_failed":
+        print(f"  WARNING: encoder anchor failed for {event['joint']}: {event['error']}")
+    elif name == "offset_calibration_failed":
+        print(
+            f"  WARNING: offset calibration failed for motor {event['motor']} "
+            f"({event['joint']}); skipped"
+        )
+    elif name == "torque_release_failed":
+        print(
+            f"  WARNING: torque release failed for motor {event['motor']} "
+            f"({event['joint']}); limit not recorded"
+        )
+    elif name == "calibration_done":
+        print("Calibration complete.")
+    elif name == "calibration_aborted":
+        print("Calibration aborted.")
+    elif name == "cleanup_failed":
+        print(f"WARNING: cleanup after abort failed: {event['error']}")
 
 
 def run_tension(hand, step_num, label):
@@ -66,8 +100,9 @@ def run_calibrate(hand, step_num, label, force_wrist=False):
     else:
         print("  Calibrating finger joints (wrist already calibrated, skipping)...")
     try:
-        hand.calibrate(force_wrist=force_wrist)
-        print("  Calibration complete.")
+        hand.calibrate(
+            force_wrist=force_wrist, progress_callback=_print_calibration_progress
+        )
     except KeyboardInterrupt:
         print("\n  Calibration skipped.")
 
@@ -96,8 +131,7 @@ def run_motion_test(hand, step_num, duration=60):
     hand.enable_torque()
     hand.set_control_mode('current_based_position')
 
-    open_pos = pose_from_fractions(
-        hand,
+    open_pos = hand.pose_from_fractions(
         {
             "thumb_cmc": 0.70,
             "thumb_abd": 0.80,
@@ -118,8 +152,7 @@ def run_motion_test(hand, step_num, duration=60):
             "wrist": 0.30,
         },
     )
-    closed_pos = pose_from_fractions(
-        hand,
+    closed_pos = hand.pose_from_fractions(
         {
             "thumb_cmc": 0.35,
             "thumb_abd": 0.55,

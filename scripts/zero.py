@@ -1,10 +1,8 @@
-
-
 import argparse
 
-from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 from orca_core.constants import NUM_STEPS, STEP_SIZE
-    
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Move all joints to zero.")
@@ -22,8 +20,7 @@ def main() -> int:
     try:
         connect_hand(hand)
         hand.init_joints(
-            force_calibrate=args.force_calibrate or args.mock,
-            move_to_neutral=False,
+            force_calibrate=args.force_calibrate or args.mock, move_to_neutral=False
         )
         print("Moving all joints to zero...")
         hand.set_zero_position(num_steps=args.num_steps, step_size=args.step_size)

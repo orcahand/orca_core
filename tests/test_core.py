@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from orca_core import OrcaHand, OrcaJointPositions
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
+from orca_core.utils import get_model_path
 import pytest
 
 
@@ -25,7 +28,6 @@ def test_orca_hand_exposes_refactored_methods(mock_config_dir):
         "register_position",
         "set_named_position",
         "play_named_positions",
-        "run_demo",
         "get_joint_position",
     ]:
         assert hasattr(hand, method_name), f"Missing hardware method: {method_name}"
@@ -54,12 +56,37 @@ def test_mock_workflow_smoke(initialized_mock_hand):
         assert actual[joint] == pytest.approx(expected, abs=1e-6)
 
 
-def test_builtin_demo_positions_can_run_on_mock_hand(initialized_mock_hand):
+def test_fraction_poses_can_be_sequenced_on_mock_hand(initialized_mock_hand):
     hand = initialized_mock_hand
 
-    sequence = hand.run_demo("main", cycles=1, num_steps=1, step_size=0.0)
-    assert sequence == ("open_hand", "power_grasp", "pinch")
+    for name, fraction in (("open", 0.1), ("closed", 0.9)):
+        hand.register_position(
+            name, hand.pose_from_fractions({j: fraction for j in hand.config.joint_ids})
+        )
+
+    hand.play_named_positions(
+        ["open", "closed"],
+        cycles=1,
+        num_steps=1,
+        step_size=0.0,
+        return_to_neutral=True,
+    )
 
     actual = hand.get_joint_position().as_dict()
     for joint, expected in hand.config.neutral_position.items():
         assert actual[joint] == pytest.approx(expected)
+
+
+def test_get_model_path_falls_back_across_versions_for_bare_model_name(tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    for version, name in [
+        ("v1", "orcahand-right"),
+        ("v1", "orcahand-left"),
+        ("v2", "orcahand-right"),
+    ]:
+        model_dir = models_dir / version / name
+        model_dir.mkdir(parents=True)
+        (model_dir / "config.yaml").write_text("joint_ids: []\n", encoding="utf-8")
+    monkeypatch.setattr("orca_core.utils.utils._get_models_dir", lambda: str(models_dir))
+
+    assert Path(get_model_path("orcahand-left")) == models_dir / "v1" / "orcahand-left"

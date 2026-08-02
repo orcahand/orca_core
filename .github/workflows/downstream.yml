@@ -1,0 +1,45 @@
+name: Downstream Checks on Pull Request
+
+# orca_core ships to PyPI and is consumed by sibling repos whose code our own
+# suite never sees. Each leg checks out one consumer beside this PR's orca_core
+# and runs its suite against it. Advisory for now (continue-on-error): a sibling
+# can be independently broken, and that should not block an unrelated orca_core
+# PR. orca_firmware is private and is covered by tools/check_downstream.py
+# locally instead.
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  downstream:
+    name: ${{ matrix.repo }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [orca_ui, orca_teleop]
+
+    steps:
+      - name: Checkout orca_core (this PR)
+        uses: actions/checkout@v4
+        with:
+          path: orca_core
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: orcahand/${{ matrix.repo }}
+          path: ${{ matrix.repo }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Resolves the sibling's orca_core imports, then runs its suite against
+      # this working tree. Siblings that are not checked out are skipped.
+      - name: Check ${{ matrix.repo }} against this orca_core
+        working-directory: orca_core
+        run: uv run python tools/check_downstream.py --repos-root .. --run-tests

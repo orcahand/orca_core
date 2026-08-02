@@ -1,6 +1,6 @@
 # Setting Up Config
 
-Learn how to configure your ORCA Hand system settings. The primary configuration for the ORCA Hand is managed through the `config.yaml` file located in the model-specific directory (e.g., `orca_core/models/orcahand_v1_right/config.yaml`).
+Learn how to configure your ORCA Hand system settings. The primary configuration for the ORCA Hand is managed through the `config.yaml` file located in the model-specific directory (e.g., `orca_core/models/v2/orcahand-right/config.yaml`).
 
 This file defines parameters crucial for the hand's operation, including communication settings, motor and joint mappings, movement ranges, and calibration procedures.
 
@@ -14,8 +14,9 @@ This file defines parameters crucial for the hand's operation, including communi
 ### 1. General Settings
 
 ```yaml
-version: 0.2.0
-max_current: 400
+port: auto
+baudrate: 1000000
+max_current: 300
 type: right
 control_mode: current_based_position
 ```
@@ -24,23 +25,23 @@ control_mode: current_based_position
 
 Change `type` to right or left depending on the hand assembly. `max_current` is set to a sane default; adjust if your tasks need more or less. `control_mode` should generally stay at `current_based_position`.
 
-#### Optional driver overrides
+#### Driver settings: `port`, `baudrate`, `motor_type`
 
-`port`, `baudrate`, and `motor_type` are **not in the bundled configs** — they're auto-detected at connect time:
+The bundled configs ship with `port: auto` and a `baudrate` pinned for the hand version (1M for v2, 3M for v1). Anything not pinned is auto-detected at connect time and persisted back to `config.yaml`:
 
-- The serial port is found by USB VID, falling back to "the only adapter present" or an interactive picker.
-- The motor family (Dynamixel vs Feetech) is identified by pinging factory defaults on the bus.
-- The baudrate comes from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
+- `port: auto` finds the serial adapter by USB VID, falling back to "the only adapter present" or an interactive picker.
+- A missing `motor_type` is identified by pinging each motor family (Dynamixel vs Feetech) on the bus.
+- A missing `baudrate` is probed from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
 
-Drop any of these into `config.yaml` if you need to override that behaviour:
+Override any of them explicitly if you need to:
 
 ```yaml
-port: /dev/cu.usbmodemXXXX  # only when multiple adapters are connected
-baudrate: 1000000           # only when motors are configured for a non-default rate
-motor_type: feetech         # only when probing might misidentify the bus
+port: /dev/cu.usbmodemXXXX  # when multiple adapters are connected
+baudrate: 1000000           # when motors are configured for a non-default rate
+motor_type: feetech         # when probing might misidentify the bus
 ```
 
-You won't normally need any of them — the script will tell you on the command line if a probe failed and asking for an override would help.
+You won't normally need to — the script will tell you on the command line if a probe failed and asking for an override would help.
 
 ---
 

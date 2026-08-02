@@ -1,6 +1,6 @@
 [project]
 name = "orca_core"
-version = "0.3.0"
+version = "0.4.0"
 description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
 authors = [
     {name = "clemens-chr", email = "cchristoph@student.ethz.ch"},
@@ -22,8 +22,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "matplotlib>=3.10.1,<4.0.0",
     "pytest>=8.3.5,<9.0.0",
+    "httpx>=0.27,<1.0",
 ]
 docs = [
     "mkdocs==1.6.1",

@@ -6,12 +6,16 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+import logging
 import os
+import tempfile
 import yaml
 import numpy as np
 
 from ..constants import DEFAULT_MODEL_NAME
 from ..version import LATEST_VERSION
+
+logger = logging.getLogger(__name__)
 
 ################################################################################
 ### Model path utils ##########################################################
@@ -119,7 +123,7 @@ def get_model_path(model_path=None, model_version: str | None = None, model_name
                 )
                 if fallback_model_dir is not None:
                     resolved_path = fallback_model_dir
-    
+
     if not os.path.exists(resolved_path):
         available = _list_available_models(models_dir)
         msg = f"\033[1;35mModel '{requested_model}' not found."
@@ -176,6 +180,60 @@ def update_yaml(file_path, key, value):
             yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
 
 
+def _to_plain(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v)
+            for k, v in value.items()
+        }
+    return value
+
+
+def write_yaml_atomic(file_path, data):
+    """Replace a YAML file with ``data`` as its complete document, atomically.
+
+    The document is written to a temporary file in the same directory and
+    moved over ``file_path`` with ``os.replace``, so a crash mid-write can
+    never leave the target truncated or partially updated. A symlinked
+    ``file_path`` is resolved first, so the write replaces the file the link
+    points to rather than swapping the link for a regular file. NumPy arrays
+    are converted to plain Python lists, as in :func:`update_yaml`.
+
+    Args:
+        file_path: Path to the YAML file. Created if it does not exist.
+        data: Mapping of top-level keys to values forming the whole document.
+    """
+    data = {key: _to_plain(value) for key, value in data.items()}
+    real_path = os.path.realpath(file_path)
+
+    # mkstemp creates 0600 files; carry over the target's permissions so the
+    # replace doesn't silently restrict who can read an existing file.
+    try:
+        mode = os.stat(real_path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+
+    target_dir = os.path.dirname(real_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir, prefix=os.path.basename(real_path) + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, real_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def read_yaml(file_path):
     """Reads a YAML file and returns its content."""
     try:
@@ -202,11 +260,12 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
-def auto_detect_port(motor_type: str = "dynamixel") -> str:
+def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     """Auto-detect a serial adapter port for the given motor type.
 
     Args:
-        motor_type: The motor driver type (``"dynamixel"`` or ``"feetech"``).
+        motor_type: The motor driver type (``"dynamixel"`` or ``"feetech"``),
+            or ``None`` to match adapters of any known motor family.
 
     Returns:
         The port device string if exactly one matching adapter is found,
@@ -215,19 +274,43 @@ def auto_detect_port(motor_type: str = "dynamixel") -> str:
     import serial.tools.list_ports
     from ..constants import KNOWN_VIDS
 
-    known_vids = KNOWN_VIDS.get(motor_type, [])
+    # The hand's controller board presents two CDC interfaces with one VID/PID;
+    # find the motor one via ORCA_ID?, falling back to VID for classic adapters.
+    try:
+        from ..hardware.sensing.serial_discovery import find_motor_port
+
+        orca_motor_port = find_motor_port()
+    except Exception:
+        orca_motor_port = None
+    if orca_motor_port is not None:
+        logger.info("Auto-detected ORCA motor bus via ORCA_ID?: %s", orca_motor_port)
+        return orca_motor_port
+
+    if motor_type is None:
+        known_vids = [
+            vid
+            for family in ("dynamixel", "feetech")
+            for vid in KNOWN_VIDS.get(family, [])
+        ]
+    else:
+        known_vids = KNOWN_VIDS.get(motor_type, [])
     ports = serial.tools.list_ports.comports()
     matches = [p for p in ports if p.vid in known_vids]
 
     if len(matches) == 1:
         port = matches[0]
-        print(f"Auto-detected {motor_type} adapter: {port.device} ({port.description or 'unknown'})")
+        logger.info(
+            "Auto-detected %s adapter: %s (%s)",
+            motor_type or "motor",
+            port.device,
+            port.description or "unknown",
+        )
         return port.device
 
     return None
 
 
-def motor_type_for_port(port_device: str) -> str | None:
+def motor_type_for_port(port_device: str) -> "str | None":
     """Return the motor family whose USB VID matches ``port_device``, or None."""
     import serial.tools.list_ports
     from ..constants import KNOWN_VIDS
@@ -242,7 +325,7 @@ def motor_type_for_port(port_device: str) -> str | None:
     return None
 
 
-def find_single_usb_serial_port() -> str | None:
+def find_single_usb_serial_port() -> "str | None":
     """Return the device path of the only attached USB serial adapter, or None.
 
     Filters out built-in / non-USB serial endpoints (Bluetooth, debug console)

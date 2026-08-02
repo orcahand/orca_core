@@ -14,7 +14,7 @@ graph TB
     end
 
     subgraph "Core Integration"
-        ORCA[OrcaHand API<br/>core.py]
+        ORCA[OrcaHand API<br/>hardware_hand.py]
     end
 
     subgraph "Hardware"
@@ -50,8 +50,8 @@ client = FeetechClient(
 )
 client.connect()
 
-# Read motor state
-positions, velocities, currents = client.read_pos_vel_cur()
+# Read motor state (MotorRead NamedTuple, also unpacks as a tuple)
+positions, velocities, currents = client.read_position_velocity_current()
 print(f"Position: {positions}")
 
 # Write position
@@ -80,7 +80,7 @@ from orca_core.hardware.motor_client import MotorClient
 | `is_connected` | Property: connection status |
 | `set_torque_enabled()` | Enable/disable motor torque |
 | `set_operating_mode()` | Set control mode |
-| `read_pos_vel_cur()` | Read position, velocity, current |
+| `read_position_velocity_current()` | Read position, velocity, current as a `MotorRead` |
 | `read_temperature()` | Read motor temperatures |
 | `write_desired_pos()` | Command target positions |
 | `write_desired_current()` | Command target currents |
@@ -126,7 +126,7 @@ FeetechClient(
 | `baudrate` | int | 1000000 | Communication baud rate |
 | `lazy_connect` | bool | False | Auto-connect on first operation |
 | `pos_scale` | float | 2π/4095 | Position conversion (rad/unit) |
-| `vel_scale` | float | 0.732 | Velocity conversion (rpm/unit) |
+| `vel_scale` | float | 0.732×2π/60 | Velocity conversion (rad/s per unit) |
 | `cur_scale` | float | 6.5 | Current conversion (mA/unit) |
 
 ### Connection Methods
@@ -242,27 +242,29 @@ client.set_operating_mode([4, 5], 1)
 
 ### Reading State
 
-#### read_pos_vel_cur()
+#### read_position_velocity_current()
 
 ```python
-read_pos_vel_cur() -> Tuple[np.ndarray, np.ndarray, np.ndarray]
+read_position_velocity_current() -> MotorRead
 ```
 
 Read position, velocity, and current for all motors.
 
-**Returns:** Tuple of three numpy arrays:
-- `positions`: Motor positions in radians
-- `velocities`: Motor velocities in rpm
-- `currents`: Motor currents in mA
+**Returns:** A `MotorRead` NamedTuple of three numpy arrays:
+- `position`: Motor positions in radians
+- `velocity`: Motor velocities in rad/s
+- `current`: Motor currents in mA
 
-Arrays are ordered by `motor_ids` from constructor.
+Arrays are ordered by `motor_ids` from constructor. Since `MotorRead` is a
+NamedTuple, it also unpacks:
+`position, velocity, current = client.read_position_velocity_current()`.
 
 **Example:**
 ```python
-positions, velocities, currents = client.read_pos_vel_cur()
+read = client.read_position_velocity_current()
 for i, motor_id in enumerate(client.motor_ids):
-    print(f"Motor {motor_id}: pos={positions[i]:.2f} rad, "
-          f"vel={velocities[i]:.1f} rpm, cur={currents[i]:.1f} mA")
+    print(f"Motor {motor_id}: pos={read.position[i]:.2f} rad, "
+          f"vel={read.velocity[i]:.2f} rad/s, cur={read.current[i]:.1f} mA")
 ```
 
 ---
@@ -349,7 +351,7 @@ FeetechClient supports context manager usage:
 
 ```python
 with FeetechClient([1, 2, 3], port="/dev/ttyUSB0") as client:
-    positions, _, _ = client.read_pos_vel_cur()
+    positions, _, _ = client.read_position_velocity_current()
     print(positions)
 # Automatically disconnects
 ```
@@ -445,11 +447,11 @@ sequenceDiagram
     MotorClient->>SDK: Enable torque
     SDK->>Hardware: Write TORQUE_ENABLE=1
 
-    App->>MotorClient: read_pos_vel_cur()
+    App->>MotorClient: read_position_velocity_current()
     MotorClient->>SDK: Read position register
     SDK->>Hardware: Request data
     Hardware-->>SDK: Position/velocity/current bytes
-    MotorClient-->>App: (pos, vel, cur) arrays
+    MotorClient-->>App: MotorRead(position, velocity, current)
 
     App->>MotorClient: write_desired_pos(ids, pos)
     MotorClient->>SDK: Write position command
@@ -516,7 +518,7 @@ def main():
         print(f"Connected to {len(motor_ids)} motors")
 
         # Read initial state
-        positions, velocities, currents = client.read_pos_vel_cur()
+        positions, velocities, currents = client.read_position_velocity_current()
         print(f"Initial positions: {np.degrees(positions)}")
 
         # Read temperatures
@@ -530,7 +532,7 @@ def main():
 
         # Wait and read final position
         time.sleep(2.0)
-        positions, _, _ = client.read_pos_vel_cur()
+        positions, _, _ = client.read_position_velocity_current()
         print(f"Final positions: {np.degrees(positions)}")
 
     except OSError as e:

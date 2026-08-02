@@ -12,7 +12,6 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 
-from .demo_presets import DEMO_POSE_FRACTIONS, DEMO_SEQUENCES
 from .hand_config import BaseHandConfig
 from .joint_position import OrcaJointPositions
 
@@ -166,7 +165,11 @@ class BaseHand(ABC):
         return out
 
     def register_position(self, name: str, joint_pos: OrcaJointPositions):
-        self.recorded_positions[name] = self.config.clamp_joint_positions(joint_pos)
+        # Uncalibrated joints read as None and carry no pose information.
+        defined = {joint: value for joint, value in joint_pos if value is not None}
+        self.recorded_positions[name] = self.config.clamp_joint_positions(
+            OrcaJointPositions.from_dict(defined)
+        )
 
     def remove_position(self, name: str):
         try:
@@ -198,33 +201,6 @@ class BaseHand(ABC):
                     num_steps=num_steps if neutral_num_steps is None else neutral_num_steps,
                     step_size=step_size if neutral_step_size is None else neutral_step_size,
                 )
-
-    def run_demo(
-        self,
-        demo_name: str = "main",
-        cycles: int = 1,
-        num_steps: int = NUM_STEPS,
-        step_size: float = STEP_SIZE,
-        return_to_neutral: bool = True,
-    ) -> tuple[str, ...]:
-        if demo_name not in DEMO_POSE_FRACTIONS or demo_name not in DEMO_SEQUENCES:
-            available = ", ".join(sorted(DEMO_SEQUENCES))
-            raise ValueError(f"Unknown demo '{demo_name}'. Available demos: {available}.")
-
-        poses = {
-            name: self.pose_from_fractions(fractions)
-            for name, fractions in DEMO_POSE_FRACTIONS[demo_name].items()
-        }
-        sequence = DEMO_SEQUENCES[demo_name]
-
-        for _ in range(cycles):
-            for name in sequence:
-                self.set_joint_positions(poses[name], num_steps=num_steps, step_size=step_size)
-            
-            if return_to_neutral:
-                self.set_neutral_position(num_steps=num_steps, step_size=step_size)
-
-        return sequence
 
     def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         """Move hand to neutral position."""

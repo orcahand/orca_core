@@ -6,35 +6,38 @@ calibration behavior has changed and needs to be investigated.
 """
 
 import os
+import shutil
+import tempfile
 
 import pytest
 import yaml
 
-from orca_core.hardware_hand import MockOrcaHand
+from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REFERENCE_PATH = os.path.join(
-    REPO_ROOT, "tests", "reference", "calibration_expected.yaml"
-)
+CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
+REFERENCE_PATH = os.path.join(REPO_ROOT, "tests", "reference", "calibration_expected.yaml")
 
 
 # ── fixtures ──
 
 
-@pytest.fixture
-def calibration_result(mock_config_dir):
+@pytest.fixture(scope="module")
+def calibration_result():
     """Run a full from-scratch calibration on MockOrcaHand and return the persisted YAML."""
-    calib_path = mock_config_dir / "calibration.yaml"
-    hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
-    success, msg = hand.connect()
-    assert success, f"Failed to connect mock hand: {msg}"
-    try:
-        hand.calibrate()
-        return read_yaml(str(calib_path))
-    finally:
-        hand.stop_task()
-        hand.disconnect()
+    tmp = tempfile.mkdtemp()
+    shutil.copy(os.path.join(CONFIG_DIR, "config.yaml"), os.path.join(tmp, "config.yaml"))
+    calib_path = os.path.join(tmp, "calibration.yaml")
+
+    hand = MockOrcaHand(config_path=os.path.join(tmp, "config.yaml"))
+    hand.connect()
+    hand.calibrate(persist=True)
+    hand.disconnect()
+
+    result = read_yaml(calib_path)
+    shutil.rmtree(tmp)
+    return result
 
 
 @pytest.fixture(scope="module")

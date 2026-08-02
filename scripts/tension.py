@@ -2,7 +2,16 @@
 
 import argparse
 
-from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+
+
+def _print_progress(event: dict) -> None:
+    """Render tension progress events on the terminal."""
+    phase = event.get("phase") if event.get("event") == "phase" else None
+    if phase == "winding":
+        print("Winding tendons taut...")
+    elif phase == "holding":
+        print("Holding motors for manual tensioning — press Ctrl+C when done.")
 
 
 def main() -> int:
@@ -21,7 +30,7 @@ def main() -> int:
     hand = create_hand(args.config_path, use_mock=args.mock)
     try:
         connect_hand(hand)
-        hand.tension(move_motors=args.move_motors)
+        hand.tension(move_motors=args.move_motors, progress_callback=_print_progress)
         return 0
     except KeyboardInterrupt:
         print("\nTension interrupted.")

@@ -80,7 +80,7 @@ class OrcaJointPositions:
         result, mirroring the behaviour of :meth:`from_dict` with ``None``.
 
         Args:
-            joint_pos: 1-D array of joint positions in radians. Its length
+            joint_pos: 1-D array of joint positions in degrees. Its length
                 must match ``len(joint_ids)``.
             joint_ids: Ordered joint names corresponding to *joint_pos*. When
                 ``None`` the class-level default registered via
@@ -115,7 +115,7 @@ class OrcaJointPositions:
         """Return a plain :class:`dict` copy of the joint positions.
 
         Returns:
-            Dictionary mapping joint name to position in radians.
+            Dictionary mapping joint name to position in degrees.
         """
         return dict(self.data)
 

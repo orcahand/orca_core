@@ -3,7 +3,7 @@
 import argparse
 import time
 
-from common import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
