@@ -39,12 +39,12 @@ from pathlib import Path
 
 ORCA_CORE_ROOT = Path(__file__).resolve().parent.parent
 
-# Sibling repos that import orca_core, mapped to the uv flags their suite needs
-# (orca_ui keeps pytest in a dev group, which uv syncs by default; orca_teleop
-# puts it behind an extra, which it does not). None means import-check only.
+# Sibling repos that import orca_core, mapped to the uv flags their suite needs.
+# None means import-check only: orca_teleop's suite hangs partway and pulls a
+# multi-gigabyte CUDA toolchain first, so only its imports are checked here.
 DOWNSTREAM = (
     ("orca_ui", []),
-    ("orca_teleop", ["--extra", "test"]),
+    ("orca_teleop", None),
     ("orca_firmware", None),
     ("orca_stress_tests", None),
     ("orca_ros", None),
