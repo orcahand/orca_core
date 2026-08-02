@@ -39,14 +39,15 @@ from pathlib import Path
 
 ORCA_CORE_ROOT = Path(__file__).resolve().parent.parent
 
-# Sibling repos that import orca_core. `tests` marks the ones with a suite worth
-# running; the rest are import-checked only.
+# Sibling repos that import orca_core, mapped to the uv flags their suite needs
+# (orca_ui keeps pytest in a dev group, which uv syncs by default; orca_teleop
+# puts it behind an extra, which it does not). None means import-check only.
 DOWNSTREAM = (
-    ("orca_ui", True),
-    ("orca_teleop", True),
-    ("orca_firmware", False),
-    ("orca_stress_tests", False),
-    ("orca_ros", False),
+    ("orca_ui", []),
+    ("orca_teleop", ["--extra", "test"]),
+    ("orca_firmware", None),
+    ("orca_stress_tests", None),
+    ("orca_ros", None),
 )
 
 SKIP_DIRS = {"node_modules", "__pycache__", "dist", "build"}
@@ -110,11 +111,13 @@ def check_imports(repo: Path) -> list[Unresolved]:
     return failures
 
 
-def run_tests(repo: Path) -> bool:
+def run_tests(repo: Path, uv_args: list) -> bool:
     """Run *repo*'s suite against this working tree via an ephemeral overlay."""
     cmd = ["uv", "run"]
     if (repo / ".venv").is_dir():
         cmd.append("--no-sync")
+    else:
+        cmd += uv_args
     cmd += ["--with-editable", str(ORCA_CORE_ROOT), "python", "-m", "pytest", "-q"]
     print(f"  $ {' '.join(cmd)}", flush=True)
     return subprocess.run(cmd, cwd=repo).returncode == 0
@@ -130,12 +133,12 @@ def find_symbol(repo: Path, symbol: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-def resolve_repos(repos_root: Path) -> tuple[list[tuple[Path, bool]], list[str]]:
+def resolve_repos(repos_root: Path) -> tuple[list, list[str]]:
     present, missing = [], []
-    for name, has_tests in DOWNSTREAM:
+    for name, test_args in DOWNSTREAM:
         path = repos_root / name
         if path.is_dir():
-            present.append((path, has_tests))
+            present.append((path, test_args))
         else:
             missing.append(name)
     return present, missing
@@ -172,7 +175,7 @@ def main() -> int:
         return 0
 
     failed = []
-    for repo, has_tests in present:
+    for repo, test_args in present:
         print(f"\n=== {repo.name} ===", flush=True)
         unresolved = check_imports(repo)
         if unresolved:
@@ -184,9 +187,9 @@ def main() -> int:
             print("  imports: OK")
 
         if args.run_tests:
-            if not has_tests:
+            if test_args is None:
                 print("  tests: none")
-            elif not run_tests(repo):
+            elif not run_tests(repo, test_args):
                 failed.append(repo.name)
 
     if missing:
