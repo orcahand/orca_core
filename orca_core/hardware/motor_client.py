@@ -63,18 +63,24 @@ class MotorClient(ABC):
         except Exception:
             pass
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A new motor family gets its own registry; subclasses of an existing
+        # family share theirs, so that family's exit cleanup still sees them.
+        if not any("OPEN_CLIENTS" in base.__dict__ for base in cls.__mro__):
+            cls.OPEN_CLIENTS = set()
+
     @classmethod
     def cleanup_open_clients(cls):
         """Disconnect every open client of this family at interpreter exit.
 
         Each client is handled independently so one failing client cannot
-        prevent torque-disable of the others. ``OPEN_CLIENTS`` is per-class,
-        so each family cleans up only its own.
+        prevent torque-disable of the others.
         """
         for client in list(cls.OPEN_CLIENTS):
             try:
                 if client.port_handler.is_using:
-                    logging.warning("Forcing client to close.")
+                    logging.warning("Forcing %s to close.", cls.__name__)
                 client.port_handler.is_using = False
                 client.disconnect()
             except Exception:
