@@ -146,6 +146,27 @@ uv sync --group dev
 uv run pytest tests/
 ```
 
+### Downstream consumers
+
+`orca_core` is published on PyPI and imported by sibling repos checked out beside it
+(`orca_ui`, `orca_teleop`, `orca_firmware`, `orca_stress_tests`, `orca_ros`). Their code is
+invisible to this test suite.
+
+**Never conclude a public symbol is unused from this repo alone.** A green suite here — and
+even a green downstream suite — does not prove it. Check first:
+
+```bash
+uv run python tools/check_downstream.py --symbol MockOrcaHand   # who references it?
+uv run python tools/check_downstream.py                          # do their imports resolve?
+uv run python tools/check_downstream.py --run-tests              # do their suites still pass?
+```
+
+Missing sibling checkouts are skipped and reported, so this works with only `orca_core` present.
+
+The public API surface is pinned in `tests/test_public_api_surface.py`. Changing it is a
+breaking change: update the sets deliberately and bump the minor version in `pyproject.toml`.
+Note that `release.yml` publishes to PyPI on every push to `main` carrying a new version.
+
 ### Common Scripts
 
 Every script takes an optional positional `config_path` pointing at a model's `config.yaml` (defaults to the package's bundled model if omitted). Run `--help` on any script for its full flag list.
