@@ -210,6 +210,24 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.connect()
 
+    def _try_port(
+        self, port: str, base_config: "OrcaHandConfig"
+    ) -> "Exception | None":
+        """Attempt a connect on ``port``, returning the error on failure.
+
+        On failure the opened client is closed and the config restored to
+        ``base_config``, so every attempt in the cascade starts clean and a
+        failed one can never leak an open (advisory-locked) port.
+        """
+        try:
+            self._connect_on_port(port, base_config)
+            self._persist_resolved_driver(base_config)
+            return None
+        except Exception as e:
+            self._discard_motor_client()
+            self.config = base_config
+            return e
+
     def _discard_motor_client(self) -> None:
         """Drop the motor client, best-effort closing it first so a failed
         connect can't leak an open (and advisory-locked) serial port."""
@@ -262,48 +280,33 @@ class OrcaHand(BaseHand):
             if detected is not None:
                 first_port = detected
 
-        try:
-            self._connect_on_port(first_port, existing_config)
-            self._persist_resolved_driver(existing_config)
+        error = self._try_port(first_port, existing_config)
+        if error is None:
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "
                 f"{self.config.port}, {self.config.baudrate} baud)"
             )
+        logger.warning("Connection failed on %s: %s", first_port, error)
 
-        except Exception as e:
-            self._discard_motor_client()
-            self.config = existing_config
-            logger.warning("Connection failed on %s: %s", first_port, e)
+        chosen_port = auto_detect_port(self.config.motor_type)
+        if chosen_port and chosen_port != first_port:
+            if self._try_port(chosen_port, existing_config) is None:
+                return (
+                    True,
+                    f"Connection successful with auto-detected port {chosen_port}",
+                )
 
-            chosen_port = auto_detect_port(self.config.motor_type)
-            if chosen_port and chosen_port != first_port:
-                try:
-                    self._connect_on_port(chosen_port, existing_config)
-                    self._persist_resolved_driver(existing_config)
-                    return (
-                        True,
-                        f"Connection successful with auto-detected port {chosen_port}",
-                    )
+        if not interactive:
+            return False, f"Connection failed on {first_port}: {str(error)}"
+        print("Please select a port from available devices:")
+        chosen_port = get_and_choose_port()
+        if chosen_port is None:
+            return False, "Connection failed: No port selected"
 
-                except Exception:
-                    self._discard_motor_client()
-                    self.config = existing_config
-
-            if not interactive:
-                return False, f"Connection failed on {first_port}: {str(e)}"
-            print("Please select a port from available devices:")
-            chosen_port = get_and_choose_port()
-            if chosen_port is None:
-                return False, "Connection failed: No port selected"
-
-            try:
-                self._connect_on_port(chosen_port, existing_config)
-                self._persist_resolved_driver(existing_config)
-                return True, f"Connection successful with port {chosen_port}"
-            except Exception as e2:
-                self._discard_motor_client()
-                self.config = existing_config
-                return False, f"Connection failed with selected port: {str(e2)}"
+        error = self._try_port(chosen_port, existing_config)
+        if error is None:
+            return True, f"Connection successful with port {chosen_port}"
+        return False, f"Connection failed with selected port: {str(error)}"
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque (best-effort) and close the serial connection.

@@ -87,21 +87,8 @@ DYNAMIXEL_MODELS = {
 }
 
 def dynamixel_cleanup_handler():
-    """Cleanup function to ensure Dynamixels are disconnected properly.
-
-    Each client is handled independently so one failing client cannot
-    prevent torque-disable of the others.
-    """
-    open_clients = list(DynamixelClient.OPEN_CLIENTS)
-    for open_client in open_clients:
-        try:
-            if open_client.port_handler.is_using:
-                logging.warning('Forcing client to close.')
-            open_client.port_handler.is_using = False
-            open_client.disconnect()
-        except Exception:
-            logging.exception('Exit cleanup failed for client on %s',
-                              getattr(open_client, 'port_name', '<unknown>'))
+    """Disconnect every open Dynamixel client at interpreter exit."""
+    DynamixelClient.cleanup_open_clients()
 
 
 def signed_to_unsigned(value: int, size: int) -> int:
@@ -323,16 +310,6 @@ class DynamixelClient(MotorClient):
             finally:
                 self.port_handler.closePort()
                 self.OPEN_CLIENTS.discard(self)
-
-    def _flush_input_buffer(self):
-        """Discards stale RX bytes so a late reply can't be misread as the next response."""
-        ser = getattr(self.port_handler, 'ser', None)
-        if ser is None or not hasattr(ser, 'reset_input_buffer'):
-            return
-        try:
-            ser.reset_input_buffer()
-        except Exception:
-            pass
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

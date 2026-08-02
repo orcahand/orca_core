@@ -53,21 +53,8 @@ DEFAULT_CUR_SCALE = 1.34
 
 
 def dynamixel_cleanup_handler():
-    """Cleanup function to ensure mock clients are disconnected properly.
-
-    Each client is handled independently so one failing client cannot
-    prevent torque-disable of the others.
-    """
-    open_clients = list(MockDynamixelClient.OPEN_CLIENTS)
-    for open_client in open_clients:
-        try:
-            if open_client.port_handler.is_using:
-                logging.warning('Forcing client to close.')
-            open_client.port_handler.is_using = False
-            open_client.disconnect()
-        except Exception:
-            logging.exception('Exit cleanup failed for client on %s',
-                              getattr(open_client, 'port_name', '<unknown>'))
+    """Disconnect every open mock client at interpreter exit."""
+    MockDynamixelClient.cleanup_open_clients()
 
 
 def signed_to_unsigned(value: int, size: int) -> int:

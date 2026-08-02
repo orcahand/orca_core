@@ -74,21 +74,8 @@ POSITION_DIRECTION = -1
 
 
 def feetech_cleanup_handler():
-    """Cleanup function to ensure Feetech servos are disconnected properly.
-
-    Each client is handled independently so one failing client cannot
-    prevent torque-disable of the others.
-    """
-    open_clients = list(FeetechClient.OPEN_CLIENTS)
-    for client in open_clients:
-        try:
-            if client.port_handler.is_using:
-                logging.warning('Forcing Feetech client to close.')
-            client.port_handler.is_using = False
-            client.disconnect()
-        except Exception:
-            logging.exception('Exit cleanup failed for client on %s',
-                              getattr(client, 'port_name', '<unknown>'))
+    """Disconnect every open Feetech client at interpreter exit."""
+    FeetechClient.cleanup_open_clients()
 
 
 class FeetechClient(MotorClient):
@@ -271,16 +258,6 @@ class FeetechClient(MotorClient):
                 self.port_handler.closePort()
                 self._connected = False
                 self.OPEN_CLIENTS.discard(self)
-
-    def _flush_input_buffer(self):
-        """Discards stale RX bytes so a late reply can't be misread as the next response."""
-        ser = getattr(self.port_handler, 'ser', None)
-        if ser is None or not hasattr(ser, 'reset_input_buffer'):
-            return
-        try:
-            ser.reset_input_buffer()
-        except Exception:
-            pass
 
     @staticmethod
     def scan_for_motors(

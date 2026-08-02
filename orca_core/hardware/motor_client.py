@@ -8,6 +8,7 @@
 
 """Abstract base class for motor communication clients."""
 
+import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
@@ -51,6 +52,36 @@ class MotorClient(ABC):
     # Subclasses set this to True when ``wait_for_motion_complete`` actually
     # blocks; callers can use it to skip locking around no-op waits.
     waits_for_motion: bool = False
+
+    def _flush_input_buffer(self):
+        """Discards stale RX bytes so a late reply can't be misread as the next response."""
+        ser = getattr(getattr(self, "port_handler", None), "ser", None)
+        if ser is None or not hasattr(ser, "reset_input_buffer"):
+            return
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+
+    @classmethod
+    def cleanup_open_clients(cls):
+        """Disconnect every open client of this family at interpreter exit.
+
+        Each client is handled independently so one failing client cannot
+        prevent torque-disable of the others. ``OPEN_CLIENTS`` is per-class,
+        so each family cleans up only its own.
+        """
+        for client in list(cls.OPEN_CLIENTS):
+            try:
+                if client.port_handler.is_using:
+                    logging.warning("Forcing client to close.")
+                client.port_handler.is_using = False
+                client.disconnect()
+            except Exception:
+                logging.exception(
+                    "Exit cleanup failed for client on %s",
+                    getattr(client, "port_name", "<unknown>"),
+                )
 
     # ----- Motor-family description ----------------------------------------
 
