@@ -214,6 +214,8 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
     use_joint_feedback: bool | None = None
+    # Joint names or the ["all"] sentinel (every slotted joint, wrist
+    # included); an explicit finger-only list leaves the wrist open-loop.
     joint_encoder_joints: List[str] | None = None
     encoder_serial_port: str = "auto"
     encoder_baudrate: int = DEFAULT_ENCODER_BAUDRATE
@@ -393,7 +395,7 @@ class OrcaHandConfig(BaseHandConfig):
             for joint in self.joint_encoder_joints:
                 if str(joint).lower() == ENCODER_JOINTS_ALL:
                     continue
-                if joint == "wrist" or joint not in JOINT_TO_ENCODER_SLOT:
+                if joint not in JOINT_TO_ENCODER_SLOT:
                     raise HandConfigValidationError(
                         f"joint_encoder_joints contains {joint!r}, which has no encoder slot."
                     )

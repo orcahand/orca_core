@@ -39,7 +39,6 @@ from .constants import (
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
     CURRENT,
-    WRIST,
     NUM_STEPS,
     POSITION,
     STEP_SIZE,
@@ -667,8 +666,8 @@ class OrcaHand(BaseHand):
         A joint qualifies when it has an encoder slot in the wire protocol, a
         driving motor on this hand, and an entry in
         ``config.joint_encoder_joints`` (the ``["all"]`` sentinel selects
-        every slotted, motor-driven joint; the wrist never qualifies). Empty
-        when the config field is unset. Available before ``connect()``.
+        every slotted, motor-driven joint, wrist included). Empty when the
+        config field is unset. Available before ``connect()``.
         """
         return self._encoder_backed_joints()
 
@@ -676,7 +675,7 @@ class OrcaHand(BaseHand):
         """Joints with a protocol slot, a driving motor on this hand, and an
         entry in ``config.joint_encoder_joints``. Returns ``[]`` when the
         config field is ``None``. The sentinel ``["all"]`` selects every
-        slotted, motor-driven joint. Wrist is always excluded.
+        slotted, motor-driven joint, wrist included.
         """
         from .hardware.sensing.constants import (
             ENCODER_JOINTS_ALL,
@@ -690,7 +689,7 @@ class OrcaHand(BaseHand):
         available = [
             joint
             for joint in JOINT_TO_ENCODER_SLOT
-            if joint != WRIST and joint in self.config.joint_to_motor_map
+            if joint in self.config.joint_to_motor_map
         ]
         if any(str(j).lower() == ENCODER_JOINTS_ALL for j in configured):
             return available
