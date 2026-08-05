@@ -137,7 +137,106 @@ def test_nothing_plugged_in_yields_plain_right_hand(monkeypatch):
     assert d.sensing_port is None
     assert d.identity is None
     assert (d.motor_type, d.motor_baudrate) == (None, None)
+    assert d.busy_ports == ()
 
+
+# ----- ports held by another client ------------------------------------------
+
+def test_port_held_elsewhere_is_reported_not_silently_absent(monkeypatch):
+    """A CDC another process holds is silent, so it reads exactly like an
+    absent board; it has to come back named rather than as a plain None."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={"/dev/cu.s": OrcaBoardInfo(role="sensor", side="left")},
+        encoder_stream=True,
+        busy_ports=("/dev/cu.m",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.m",)
+
+
+def test_ports_that_answered_are_never_reported_busy(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={
+            "/dev/cu.m": OrcaBoardInfo(role="motor", side="left"),
+            "/dev/cu.s": OrcaBoardInfo(role="sensor", side="left"),
+        },
+        busy_ports=("/dev/cu.m", "/dev/cu.s"),
+    )
+    assert detect_hand().busy_ports == ()
+
+
+def test_load_hand_warns_that_a_busy_port_may_understate_the_hand(monkeypatch, caplog):
+    """The silent failure mode: with the sensing CDC held, detection sees no
+    sensors and load_hand() would hand back a plain OrcaHand without a word."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        busy_ports=("/dev/cu.s",),
+    )
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        hand = load_hand()
+    assert type(hand) is OrcaHand
+    assert "/dev/cu.s" in caplog.text
+
+
+def test_load_hand_is_silent_when_every_port_answered(monkeypatch, caplog):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+    )
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        load_hand()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ----- load_hand integration -------------------------------------------------
+
+def test_load_hand_autodetects_and_pins_ports(monkeypatch):
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-touch-left",
+        side="left",
+        has_tactile=True,
+        has_encoders=False,
+        motor_port="/dev/cu.m",
+        sensing_port="/dev/cu.s",
+    )
+    monkeypatch.setattr(hand_factory, "detect_hand", lambda: detection)
+    hand = load_hand()
+    assert type(hand) is OrcaHandTouch
+    assert hand.config.type == "left"
+    assert hand.config.port == "/dev/cu.m"
+    assert hand.config.sensor_port == "/dev/cu.s"
+
+
+def test_load_hand_detection_fallback_is_default_model(monkeypatch):
+    _patch_hardware(monkeypatch)
+    hand = load_hand()
+    assert type(hand) is OrcaHand
+    assert hand.config.type == "right"
+    assert hand.config.port == "auto"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"mock": True},
+        {"model_name": "orcahand-left"},
+        {"model_version": "v2"},
+    ],
+)
+def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
+    def _must_not_probe():
+        raise AssertionError("detect_hand() ran despite explicit selection")
+
+    monkeypatch.setattr(hand_factory, "detect_hand", _must_not_probe)
+    load_hand(**kwargs)
 
 # ----- motor-family detection ------------------------------------------------
 

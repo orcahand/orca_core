@@ -104,7 +104,9 @@ class HandDetection:
     sensing capabilities; the port fields carry what was discovered so the
     hand can connect without re-probing. ``identity`` is ``None`` for hands
     whose board doesn't report one, and ``motor_type``/``motor_baudrate`` are
-    ``None`` when the motor bus answered nothing.
+    ``None`` when the motor bus answered nothing. ``busy_ports`` lists
+    controller-board CDCs another process holds: those stay silent under
+    probing, so anything behind them is missing from the rest of this result.
     """
 
     model_name: str
@@ -117,6 +119,7 @@ class HandDetection:
     identity: Optional[OrcaBoardInfo] = None
     motor_type: Optional[str] = None
     motor_baudrate: Optional[int] = None
+    busy_ports: tuple[str, ...] = ()
 
 
 # Motor IDs the family probe pings when no config names them yet.
@@ -178,6 +181,10 @@ def detect_hand() -> HandDetection:
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
+
+    A CDC another process already holds is silent under probing and so reads
+    as absent; those ports are reported in ``busy_ports`` so callers can tell
+    an incomplete result from a genuinely simpler hand.
     """
     motor_port: Optional[str] = None
     sensing_port: Optional[str] = None
@@ -226,6 +233,12 @@ def detect_hand() -> HandDetection:
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
 
+    busy_ports = tuple(
+        port
+        for port in candidates
+        if port not in (motor_port, sensing_port) and port_in_use(port)
+    )
+
     return HandDetection(
         model_name=model_name,
         side=side,
@@ -237,6 +250,7 @@ def detect_hand() -> HandDetection:
         identity=identity,
         motor_type=motor_type,
         motor_baudrate=motor_baudrate,
+        busy_ports=busy_ports,
     )
 
 
@@ -332,6 +346,14 @@ def load_hand(
     if config_path is None and model_name is None and model_version is None and not mock:
         detection = detect_hand()
         model_name = detection.model_name
+        if detection.busy_ports:
+            logger.warning(
+                "controller-board port(s) %s are held by another process, so "
+                "anything behind them went undetected and %r may understate "
+                "this hand. Close the other client (a running UI, script or "
+                "serial monitor), or name the model explicitly.",
+                ", ".join(detection.busy_ports), model_name,
+            )
 
     resolved_config_path = _resolve_config_path(
         config_path,
