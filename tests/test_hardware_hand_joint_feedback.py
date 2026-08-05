@@ -12,11 +12,13 @@ import logging
 import os
 import shutil
 
+import numpy as np
 import pytest
 
 from orca_core.constants import CURRENT, MODE_MAP, WRIST
 from orca_core.control import JointController, JointLoopThread
 from orca_core import JointFeedbackConnectError
+from orca_core.hardware.sensing.constants import JOINT_ENCODER_POLARITY_LEFT
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
@@ -42,6 +44,16 @@ def left_joint_feedback_config(tmp_path):
         text = f.read()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(text.replace("type: right", "type: left"))
+    return str(config_path)
+
+
+@pytest.fixture
+def unknown_side_joint_feedback_config(tmp_path):
+    """A side with no measured polarity table."""
+    with open(REAL_CONFIG) as f:
+        text = f.read()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(text.replace("type: right", "type: middle"))
     return str(config_path)
 
 
@@ -341,17 +353,37 @@ def test_second_connect_is_noop_and_orphans_nothing(joint_feedback_config):
     assert not thread.is_alive()
 
 
-def test_connect_refuses_left_hand_config(left_joint_feedback_config):
-    """Closed-loop control is unvalidated for left-hand assemblies: connect
-    must refuse before opening the motor bus, any link, or the loop — and
-    the refusal must name the concrete escape hatches."""
+def test_connect_engages_the_loop_on_a_left_hand(left_joint_feedback_config):
+    """Left assemblies have a measured polarity table, so closed-loop control
+    starts exactly as it does on a right hand."""
     hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
+    success, msg = hand.connect()
+    try:
+        assert success, msg
+        assert isinstance(hand._loop, JointLoopThread)
+        assert hand._loop._thread is not None and hand._loop._thread.is_alive()
+        assert hand._encoder_client is not None
+        assert np.array_equal(
+            hand._loop._enc_polarities,
+            np.array(
+                [JOINT_ENCODER_POLARITY_LEFT[j] for j in hand._loop._joint_names]
+            ),
+        )
+    finally:
+        hand.disconnect()
+
+
+def test_connect_refuses_a_side_without_a_polarity_table(
+    unknown_side_joint_feedback_config,
+):
+    """An unrecognised side must be refused before opening the motor bus, any
+    link, or the loop — and the refusal must name the escape hatch."""
+    hand = make_calibrated_joint_feedback_hand(unknown_side_joint_feedback_config)
     with pytest.raises(JointFeedbackConnectError) as excinfo:
         hand.connect()
     message = str(excinfo.value)
-    assert "left" in message
+    assert "middle" in message
     assert "connect(engage_feedback=False)" in message
-    assert "orcahand-left" in message
     assert not hand.is_connected()
     assert hand._loop is None
     assert hand._encoder_client is None
@@ -362,7 +394,7 @@ def test_connect_refuses_left_hand_config(left_joint_feedback_config):
 def test_left_connect_without_feedback_opens_motor_bus_only(
     left_joint_feedback_config,
 ):
-    """``engage_feedback=False`` is the left-hand escape hatch: the motor bus
+    """``engage_feedback=False`` stays available on a left hand: the motor bus
     opens for open-loop control and the encoder stack stays untouched."""
     hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
     success, msg = hand.connect(engage_feedback=False)

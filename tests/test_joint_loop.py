@@ -548,15 +548,17 @@ def test_anchor_reads_motor_flag_under_motor_lock(calibrated_hand):
     assert lock_owned_at_flag_read and all(lock_owned_at_flag_read)
 
 
-def test_snapshot_rejects_unvalidated_hand_side(calibrated_hand, monkeypatch):
-    """A hand side without a validated encoder polarity table must fail the
-    snapshot instead of silently decoding with right-hand signs."""
+def test_snapshot_rejects_unrecognised_hand_side(calibrated_hand, monkeypatch):
+    """A hand side without a measured encoder polarity table must fail the
+    snapshot instead of silently decoding with another side's signs."""
     import dataclasses as dc
 
-    monkeypatch.setattr(
-        calibrated_hand, "config", dc.replace(calibrated_hand.config, type="left")
-    )
+    # Build the reading while the side is still valid; the snapshot is the
+    # gate under test.
     encoder = _static_at_zero(calibrated_hand)
+    monkeypatch.setattr(
+        calibrated_hand, "config", dc.replace(calibrated_hand.config, type="middle")
+    )
     loop = _make_loop(calibrated_hand, encoder)
     with pytest.raises(ValueError, match="polarity"):
         loop.prime_for_step()
