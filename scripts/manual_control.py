@@ -33,12 +33,7 @@ from typing import List
 
 import numpy as np
 
-from orca_core import OrcaHand, OrcaHandJointFeedback, load_hand
-from orca_core.control.constants import (
-    DEFAULT_CORRECTION_MAX_DEG,
-    DEFAULT_KI,
-    DEFAULT_KP,
-)
+from orca_core import JointGains, OrcaHand, OrcaHandJointFeedback, load_hand
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
@@ -62,11 +57,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--encoder-port", default=None, help="Feedback hands only.")
     p.add_argument("--max-current", type=int, default=None, help="Feedback hands only.")
-    p.add_argument("--Kp", type=float, default=DEFAULT_KP, help="Feedback hands only.")
-    p.add_argument("--Ki", type=float, default=DEFAULT_KI, help="Feedback hands only.")
     p.add_argument(
-        "--correction-max-deg", type=float, default=DEFAULT_CORRECTION_MAX_DEG,
-        help="Feedback hands only.",
+        "--Kp", type=float, default=None,
+        help="Feedback hands only. Overrides the configured gain on every joint.",
+    )
+    p.add_argument(
+        "--Ki", type=float, default=None,
+        help="Feedback hands only. Overrides the configured gain on every joint.",
+    )
+    p.add_argument(
+        "--correction-max-deg", type=float, default=None,
+        help="Feedback hands only. Overrides the configured clamp on every joint.",
     )
     p.add_argument(
         "--fingers", nargs="+",
@@ -293,7 +294,7 @@ class JointFeedbackSliderUI:
         root: tk.Tk,
         hand: OrcaHandJointFeedback,
         slider_joints: List[str],
-        initial_gains: tuple[float, float, float],
+        initial_gains: JointGains,
     ):
         self.hand = hand
         self.root = root
@@ -302,9 +303,23 @@ class JointFeedbackSliderUI:
         self.measured_labels: dict[str, ttk.Label] = {}
         self.trim_labels: dict[str, ttk.Label] = {}
 
-        self.kp_var = tk.StringVar(value=f"{initial_gains[0]}")
-        self.ki_var = tk.StringVar(value=f"{initial_gains[1]}")
-        self.corr_var = tk.StringVar(value=f"{initial_gains[2]}")
+        # Seeded from the live gains, collapsed when uniform across joints
+        # (the baseline otherwise). Apply pushes only the fields you edited,
+        # so per-joint overrides survive an untouched panel.
+        live = hand.get_pid_gains()
+
+        def _seed(pick):
+            values = {pick(g) for g in live.values()}
+            return values.pop() if len(values) == 1 else pick(initial_gains)
+
+        self._gain_seeds = {
+            "kp": _seed(lambda g: g.kp),
+            "ki": _seed(lambda g: g.ki),
+            "corr": _seed(lambda g: g.correction_max_deg),
+        }
+        self.kp_var = tk.StringVar(value=f"{self._gain_seeds['kp']}")
+        self.ki_var = tk.StringVar(value=f"{self._gain_seeds['ki']}")
+        self.corr_var = tk.StringVar(value=f"{self._gain_seeds['corr']}")
         self.max_current_var = tk.StringVar(value=f"{int(hand.config.max_current)}")
         self.apply_status_var = tk.StringVar(value="")
 
@@ -425,13 +440,26 @@ class JointFeedbackSliderUI:
                 self.apply_status_var.set(f"set_max_current failed: {exc}")
                 return
 
-        try:
-            self.hand.set_pid_gains(Kp=kp, Ki=ki, correction_max_deg=corr)
-        except Exception as exc:
-            self.apply_status_var.set(f"set_pid_gains failed: {exc}")
-            return
+        # Only edited fields are pushed (to every joint); untouched fields
+        # keep whatever per-joint gains are in force.
+        gain_kwargs = {}
+        if kp != self._gain_seeds["kp"]:
+            gain_kwargs["Kp"] = kp
+        if ki != self._gain_seeds["ki"]:
+            gain_kwargs["Ki"] = ki
+        if corr != self._gain_seeds["corr"]:
+            gain_kwargs["correction_max_deg"] = corr
+        if gain_kwargs:
+            try:
+                self.hand.set_pid_gains(**gain_kwargs)
+            except Exception as exc:
+                self.apply_status_var.set(f"set_pid_gains failed: {exc}")
+                return
+            self._gain_seeds.update(kp=kp, ki=ki, corr=corr)
+
+        parts = [f"{k}={v}" for k, v in gain_kwargs.items()] or ["gains unchanged"]
         self.apply_status_var.set(
-            f"applied: Kp={kp} Ki={ki} correction_max={corr:.1f}°  max_current={mc}mA"
+            f"applied to all joints: {', '.join(parts)}  max_current={mc}mA"
         )
 
     def _on_slider(self, joint: str, value_str) -> None:
@@ -475,19 +503,28 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
         print(f"  → max_current = {args.max_current} mA")
 
     slider_joints = _resolve_joint_set(args, hand)
-    hand.set_pid_gains(
-        Kp=args.Kp, Ki=args.Ki, correction_max_deg=args.correction_max_deg,
-    )
-    print(
-        f"  → gains Kp={args.Kp} Ki={args.Ki} "
-        f"correction_max={args.correction_max_deg:.1f}°"
-    )
+    # Unset flags leave config.yaml's per-joint gains alone; any flag given
+    # applies to every joint, replacing whatever that joint was configured with.
+    if any(g is not None for g in (args.Kp, args.Ki, args.correction_max_deg)):
+        hand.set_pid_gains(
+            Kp=args.Kp, Ki=args.Ki, correction_max_deg=args.correction_max_deg,
+        )
+    gains = hand.get_pid_gains()
+    distinct = {(g.kp, g.ki, g.correction_max_deg) for g in gains.values()}
+    if len(distinct) == 1:
+        kp, ki, corr = distinct.pop()
+        print(f"  → gains Kp={kp} Ki={ki} correction_max={corr:.1f}° (all joints)")
+    else:
+        print(f"  → per-joint gains active on {len(distinct)} distinct settings:")
+        for joint, g in gains.items():
+            print(f"      {joint:<12} Kp={g.kp} Ki={g.ki} "
+                  f"correction_max={g.correction_max_deg:.1f}°")
     print(f"  → sliders for {len(slider_joints)} joint(s): {slider_joints}")
 
     root = tk.Tk()
     JointFeedbackSliderUI(
         root, hand, slider_joints,
-        initial_gains=(args.Kp, args.Ki, args.correction_max_deg),
+        initial_gains=hand.config.joint_gains_baseline,
     )
     root.mainloop()
     return 0

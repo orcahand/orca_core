@@ -193,6 +193,7 @@ uv run python scripts/monitor_sensors.py
 All hand-specific settings are in `config.yaml`:
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
+- `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)
 
 ---

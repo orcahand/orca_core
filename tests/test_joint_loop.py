@@ -57,7 +57,6 @@ def _make_loop(
     controller.set_gains(
         Kp=Kp, Ki=Ki,
         correction_max_deg=correction_max_deg,
-        i_clamp_deg=correction_max_deg,
     )
     return JointLoopThread(hand, encoder_source, controller, target_hz=target_hz)
 
