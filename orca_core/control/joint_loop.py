@@ -114,6 +114,7 @@ class JointLoopThread:
             "cycles_held_base": 0,
             "cycles_paused": 0,
             "cycles_exception": 0,
+            "cycles_clamped": 0,
             "commands_sent": 0,
             "e_stops": 0,
             "joints_flagged_invalid": 0,
@@ -467,6 +468,11 @@ class JointLoopThread:
     def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
         """Write motor targets, clamping joints with a bounded travel
         (currently the wrist) to their snapshot limits."""
+        if np.any(
+            (motor_targets < self._motor_target_lower)
+            | (motor_targets > self._motor_target_upper)
+        ):
+            self._stats["cycles_clamped"] += 1
         np.clip(
             motor_targets,
             self._motor_target_lower,

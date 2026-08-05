@@ -300,11 +300,11 @@ def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
     loop = _make_loop(calibrated_hand, encoder, Kp=1.0, correction_max_deg=60.0)
     loop.prime_for_step()
 
-    # Big wrist error engages the clamp; the finger stays modest so its
-    # pass-through command lands inside the mock motor's travel.
+    # Big errors on both joints: the finger's command exceeds what a
+    # wrist-style bound would allow, proving fingers pass through unclamped.
     roms = calibrated_hand.config.joint_roms_dict
     finger = next(j for j in loop._joint_names if j != WRIST)
-    loop.set_target({WRIST: roms[WRIST][1], finger: 10.0})
+    loop.set_target({WRIST: roms[WRIST][1], finger: 40.0})
     loop.step_once(dt=0.01)
 
     correction = loop.get_correction()
@@ -328,12 +328,37 @@ def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
     assert bound_lower <= written <= bound_upper
 
     finger_mid = calibrated_hand.config.joint_to_motor_map[finger]
+    finger_limits = calibrated_hand.calibration.motor_limits_dict[finger_mid]
+    finger_ratio = calibrated_hand.calibration.joint_to_motor_ratios_dict[
+        finger_mid
+    ]
+    finger_margin = WRIST_MOTOR_TARGET_MARGIN_DEG * abs(finger_ratio)
     finger_expected = (
-        _expected_motor_pos(calibrated_hand, finger, 10.0 + correction[finger])
+        _expected_motor_pos(calibrated_hand, finger, 40.0 + correction[finger])
         + _bias_for(loop, finger)
     )
+    assert not (
+        finger_limits[0] - finger_margin
+        <= finger_expected
+        <= finger_limits[1] + finger_margin
+    ), "finger scenario must exceed a would-be clamp to prove pass-through"
     assert calibrated_hand._motor_client._pos[finger_mid] == pytest.approx(
         finger_expected, abs=1e-9
+    )
+
+    # Opposite direction engages the upper bound.
+    loop.set_target({WRIST: roms[WRIST][0]})
+    loop.step_once(dt=0.01)
+    correction = loop.get_correction()
+    unclamped_upper = (
+        _expected_motor_pos(
+            calibrated_hand, WRIST, roms[WRIST][0] + correction[WRIST]
+        )
+        + _bias_for(loop, WRIST)
+    )
+    assert unclamped_upper > bound_upper
+    assert calibrated_hand._motor_client._pos[wrist_mid] == pytest.approx(
+        bound_upper, abs=1e-9
     )
 
 

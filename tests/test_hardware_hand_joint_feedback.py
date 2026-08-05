@@ -141,10 +141,12 @@ def test_connect_skips_uncalibrated_joints_and_keeps_loop(joint_feedback_config)
 
 
 def test_set_joint_positions_routes_wrist_through_loop_when_anchored(
-    joint_feedback_config,
+    joint_feedback_config, monkeypatch
 ):
     """The wrist is an anchored encoder joint like any other: its target
-    lands in the loop, not in a synchronous motor write."""
+    lands in the loop, with no synchronous open-loop write alongside."""
+    from orca_core.hardware_hand import OrcaHand
+
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
     try:
@@ -153,6 +155,14 @@ def test_set_joint_positions_routes_wrist_through_loop_when_anchored(
             j for j in hand._encoder_backed_joints() if j != WRIST
         )
 
+        open_loop_joints = []
+        orig = OrcaHand._set_joint_positions
+
+        def _recording(self, joint_pos):
+            open_loop_joints.extend(joint_pos.as_dict())
+            return orig(self, joint_pos)
+
+        monkeypatch.setattr(OrcaHand, "_set_joint_positions", _recording)
         hand.set_joint_positions(
             OrcaJointPositions.from_dict({encoder_joint: 30.0, WRIST: 5.0}),
         )
@@ -161,6 +171,7 @@ def test_set_joint_positions_routes_wrist_through_loop_when_anchored(
         assert hand._loop._target_deg[loop_idx] == pytest.approx(30.0)
         wrist_idx = hand._loop._joint_names.index(WRIST)
         assert hand._loop._target_deg[wrist_idx] == pytest.approx(5.0)
+        assert WRIST not in open_loop_joints
     finally:
         hand.disconnect()
 
