@@ -1,5 +1,7 @@
 """Hand autodetection: identity parsing, the detection ladder, and load_hand()."""
 
+import logging
+
 import pytest
 
 import orca_core.hand_factory as hand_factory
@@ -51,10 +53,12 @@ def _patch_hardware(
     encoder_stream=False,
     paxini_port=None,
     tactile_register=False,
+    busy_ports=(),
 ):
     infos = infos or {}
     monkeypatch.setattr(hand_factory, "oh_board_ports", lambda: list(oh_ports))
     monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: infos.get(port))
+    monkeypatch.setattr(hand_factory, "port_in_use", lambda port: port in busy_ports)
     monkeypatch.setattr(
         hand_factory, "detect_encoder_stream", lambda port: encoder_stream
     )
@@ -114,6 +118,63 @@ def test_nothing_plugged_in_yields_plain_right_hand(monkeypatch):
     assert d.motor_port is None
     assert d.sensing_port is None
     assert d.identity is None
+    assert d.busy_ports == ()
+
+
+# ----- ports held by another client ------------------------------------------
+
+def test_port_held_elsewhere_is_reported_not_silently_absent(monkeypatch):
+    """A CDC another process holds is silent, so it reads exactly like an
+    absent board; it has to come back named rather than as a plain None."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={"/dev/cu.s": OrcaBoardInfo(role="sensor", side="left")},
+        encoder_stream=True,
+        busy_ports=("/dev/cu.m",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.m",)
+
+
+def test_ports_that_answered_are_never_reported_busy(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={
+            "/dev/cu.m": OrcaBoardInfo(role="motor", side="left"),
+            "/dev/cu.s": OrcaBoardInfo(role="sensor", side="left"),
+        },
+        busy_ports=("/dev/cu.m", "/dev/cu.s"),
+    )
+    assert detect_hand().busy_ports == ()
+
+
+def test_load_hand_warns_that_a_busy_port_may_understate_the_hand(monkeypatch, caplog):
+    """The silent failure mode: with the sensing CDC held, detection sees no
+    sensors and load_hand() would hand back a plain OrcaHand without a word."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        busy_ports=("/dev/cu.s",),
+    )
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        hand = load_hand()
+    assert type(hand) is OrcaHand
+    assert "/dev/cu.s" in caplog.text
+
+
+def test_load_hand_is_silent_when_every_port_answered(monkeypatch, caplog):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+    )
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        load_hand()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # ----- load_hand integration -------------------------------------------------

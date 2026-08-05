@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import logging
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from orca_core.hardware.sensing.serial_discovery import (
     discover_sensing_ports,
     find_motor_port,
     find_tactile_port,
+    port_in_use,
     resolve_sensing_ports,
 )
 from orca_core.utils.utils import auto_detect_port
@@ -201,6 +203,33 @@ def test_tactile_probe_opens_exclusive_and_skips_busy_port():
                side_effect=pyserial.SerialException("Could not exclusively lock port")) as ser:
         assert _tactile_responds_at("/dev/x", DEFAULT_SENSOR_BAUDRATE) is False
     assert ser.call_args.kwargs["exclusive"] is True
+
+
+@pytest.mark.parametrize("busy_errno", [errno.EAGAIN, errno.EBUSY])
+def test_port_in_use_reports_a_port_another_client_holds(busy_errno):
+    """The signal that separates 'held elsewhere' from 'nothing there'."""
+    failure = pyserial.SerialException(
+        busy_errno, f"Could not exclusively lock port /dev/x: [Errno {busy_errno}]"
+    )
+    with patch("serial.Serial", side_effect=failure) as ser:
+        assert port_in_use("/dev/x") is True
+    assert ser.call_args.kwargs["exclusive"] is True
+
+
+def test_port_in_use_is_false_when_the_port_opens():
+    with patch("serial.Serial") as ser:
+        assert port_in_use("/dev/x") is False
+    ser.return_value.__enter__.assert_called_once()
+    ser.return_value.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("quiet_errno", [errno.ENOENT, errno.EACCES])
+def test_port_in_use_is_false_for_absent_or_unpermitted_port(quiet_errno):
+    """A vanished device is absent and EACCES is a permissions problem —
+    neither means another client holds the port."""
+    with patch("serial.Serial",
+               side_effect=pyserial.SerialException(quiet_errno, "cannot open")):
+        assert port_in_use("/dev/gone") is False
 
 
 # ----- Encoder-stream detection (AA A9) --------------------------------------
