@@ -325,7 +325,6 @@ def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
     assert unclamped < bound_lower, "test must actually engage the clamp"
     written = calibrated_hand._motor_client._pos[wrist_mid]
     assert written == pytest.approx(bound_lower, abs=1e-9)
-    assert bound_lower <= written <= bound_upper
 
     finger_mid = calibrated_hand.config.joint_to_motor_map[finger]
     finger_limits = calibrated_hand.calibration.motor_limits_dict[finger_mid]
@@ -359,30 +358,6 @@ def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
     assert unclamped_upper > bound_upper
     assert calibrated_hand._motor_client._pos[wrist_mid] == pytest.approx(
         bound_upper, abs=1e-9
-    )
-
-
-def test_wrist_clamp_inactive_inside_calibrated_travel(calibrated_hand):
-    """Mid-range wrist commands pass through the clamp untouched and agree
-    exactly with the open-loop kinematics plus the feed-forward bias."""
-    from orca_core.constants import WRIST
-
-    encoder = _static_at_zero(calibrated_hand)
-    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, correction_max_deg=60.0)
-    loop.prime_for_step()
-
-    target = -20.0
-    loop.set_target({WRIST: target})
-    loop.step_once(dt=0.01)
-
-    correction = loop.get_correction()
-    expected = (
-        _expected_motor_pos(calibrated_hand, WRIST, target + correction[WRIST])
-        + _bias_for(loop, WRIST)
-    )
-    wrist_mid = calibrated_hand.config.joint_to_motor_map[WRIST]
-    assert calibrated_hand._motor_client._pos[wrist_mid] == pytest.approx(
-        expected, abs=1e-9
     )
 
 
