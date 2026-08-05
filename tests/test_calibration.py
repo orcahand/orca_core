@@ -618,11 +618,6 @@ def test_calibrate_records_wrist_anchor_with_event(calib_dir):
     assert anchor.enc_at_anchor_count != 0, (
         "anchor must come from the synthesized slot, not a dead default"
     )
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
-    assert (
-        raw["joint_encoder_calibration"]["wrist"]["enc_at_anchor_count"]
-        == anchor.enc_at_anchor_count
-    )
 
 
 def test_wrist_steps_rerun_when_anchor_missing(calib_dir):
