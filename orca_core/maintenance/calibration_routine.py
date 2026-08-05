@@ -249,7 +249,8 @@ def _drive_calibration(
 
     Wrist calibration logic:
     - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
-    - Uses its own calibration current (`wrist_calibration_current`).
+    - Wrist steps write `wrist_calibration_current`, though the wrist motor's
+      multi_turn_position mode ignores current caps (PWM-limited torque).
     - If already calibrated (and calibration run is not forcing), skip wrist
       steps — unless the encoder pass is active and the wrist still lacks an
       encoder anchor, in which case the wrist steps run to capture it.
@@ -279,12 +280,19 @@ def _drive_calibration(
     )
 
     # An encoder-backed wrist without an anchor still needs its steps: the
-    # anchor is sampled at the wrist FLEX hardstop during the sweep.
+    # anchor is sampled at the wrist FLEX hardstop during the sweep. A
+    # ``joints`` restriction that excludes the wrist keeps the plain skip.
     wrist_anchor_needed = (
         encoder_pass_active
+        and (joints is None or WRIST in joints)
         and WRIST in set(hand._encoder_backed_joints())
         and WRIST not in hand.calibration.joint_encoder_calibration_dict
     )
+    if wrist_anchor_needed and wrist_calibrated and not force_wrist:
+        logger.info(
+            "wrist is motor-calibrated but missing its encoder anchor; "
+            "running wrist steps to capture it"
+        )
 
     if wrist_calibrated and not force_wrist and not wrist_anchor_needed:
         if wrist_in_sequence:

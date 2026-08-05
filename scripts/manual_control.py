@@ -313,8 +313,9 @@ class JointFeedbackSliderUI:
         self._schedule_refresh()
 
     def _seed_initial_targets(self) -> None:
-        """Latch each slider to the current encoder-measured angle so
-        opening the window doesn't yank the joint.
+        """Latch each slider to the current measured angle so opening the
+        window doesn't yank the joint. Joints the loop skipped (no encoder
+        anchor) seed from the motor-derived pose instead of a fixed default.
 
         Sanitises the seed: a NaN or out-of-ROM reading (a slot that hasn't
         produced a clean frame yet) is clamped into range. ttk.Scale on
@@ -322,9 +323,10 @@ class JointFeedbackSliderUI:
         the slider look invisible even though it still works.
         """
         measured = self.hand.get_measured_joints()
+        motor_pose = self.hand.get_joint_position().as_dict()
         for joint in self.slider_joints:
             rom_min, rom_max = self.hand.config.joint_roms_dict[joint]
-            value = measured.get(joint, 0.0)
+            value = measured.get(joint, motor_pose.get(joint))
             if value is None or math.isnan(value):
                 value = max(rom_min, min(rom_max, 0.0))
             value = max(rom_min, min(rom_max, value))
