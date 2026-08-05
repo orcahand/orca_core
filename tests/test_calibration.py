@@ -569,6 +569,8 @@ def test_calibrate_reports_limits_via_events_not_stdout(calib_dir, capsys):
 
 
 def test_second_calibrate_skips_wrist_with_event(calib_dir):
+    """No encoder client → the anchor-needed override stays inert and a
+    calibrated wrist is skipped as before."""
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
     hand.calibrate(joints=["wrist"])
@@ -577,6 +579,83 @@ def test_second_calibrate_skips_wrist_with_event(calib_dir):
     events = []
     hand.calibrate(joints=["thumb_cmc"], progress_callback=events.append)
     assert any(e["event"] == "wrist_skipped" for e in events)
+
+
+def test_calibrate_records_wrist_anchor_with_event(calib_dir):
+    """A full calibrate with the encoder pass active anchors the wrist at
+    its FLEX hardstop and persists the anchor."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+
+    wrist_events = [
+        e
+        for e in events
+        if e["event"] == "encoder_anchor_recorded" and e["joint"] == "wrist"
+    ]
+    assert len(wrist_events) == 1
+    assert wrist_events[0]["anchor_angle_deg"] == pytest.approx(
+        hand.config.joint_roms_dict["wrist"][1]
+    )
+    assert "wrist" in hand.calibration.joint_encoder_calibration_dict
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert "wrist" in raw["joint_encoder_calibration"]
+
+
+def test_wrist_steps_rerun_when_anchor_missing(calib_dir):
+    """A motor-calibrated wrist without an encoder anchor must not be
+    skipped while the encoder pass is active: the steps re-run to capture
+    the anchor."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(joints=["wrist"])
+    assert hand.calibration.wrist_calibrated
+    assert "wrist" not in hand.calibration.joint_encoder_calibration_dict
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+    events = []
+    hand.calibrate(joint_encoder_client=encoder, progress_callback=events.append)
+
+    assert not any(e["event"] == "wrist_skipped" for e in events)
+    assert "wrist" in hand.calibration.joint_encoder_calibration_dict
+
+
+def test_wrist_skipped_when_anchor_already_present(calib_dir):
+    """Once the anchor exists, a calibrated wrist is skipped again and the
+    anchor is left untouched."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+    hand.calibrate(joint_encoder_client=encoder)
+    anchor = hand.calibration.joint_encoder_calibration_dict["wrist"]
+
+    events = []
+    hand.calibrate(
+        joints=["thumb_cmc"],
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+    )
+    assert any(e["event"] == "wrist_skipped" for e in events)
+    assert hand.calibration.joint_encoder_calibration_dict["wrist"] == anchor
 
 
 # ---------------------------------------------------------------------------

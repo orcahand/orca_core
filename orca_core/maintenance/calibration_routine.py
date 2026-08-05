@@ -249,8 +249,10 @@ def _drive_calibration(
 
     Wrist calibration logic:
     - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
-    - Uses a higher calibration current.
-    - If already calibrated (and calibration run is not forcing), skip wrist steps.
+    - Uses its own calibration current (`wrist_calibration_current`).
+    - If already calibrated (and calibration run is not forcing), skip wrist
+      steps — unless the encoder pass is active and the wrist still lacks an
+      encoder anchor, in which case the wrist steps run to capture it.
     - If missing from the sequence, wrist flex/extend steps are appended.
     - If force_wrist=True, always include wrist in calibration steps.
     - `wrist_calibrated` turns true only once both wrist limits are captured;
@@ -260,6 +262,11 @@ def _drive_calibration(
         "wrist" in step[JOINTS] for step in hand.config.calibration_sequence
     )
     calibration_sequence = list(hand.config.calibration_sequence)
+
+    encoder_pass_active = (
+        getattr(hand.config, "joint_feedback_enabled", False)
+        and joint_encoder_client is not None
+    )
 
     # A calibrated flag without recorded wrist limits is inconsistent; treat
     # the wrist as uncalibrated so it is driven again rather than skipped.
@@ -271,7 +278,15 @@ def _drive_calibration(
         hand.calibration.wrist_calibrated and None not in prior_wrist_limits
     )
 
-    if wrist_calibrated and not force_wrist:
+    # An encoder-backed wrist without an anchor still needs its steps: the
+    # anchor is sampled at the wrist FLEX hardstop during the sweep.
+    wrist_anchor_needed = (
+        encoder_pass_active
+        and WRIST in set(hand._encoder_backed_joints())
+        and WRIST not in hand.calibration.joint_encoder_calibration_dict
+    )
+
+    if wrist_calibrated and not force_wrist and not wrist_anchor_needed:
         if wrist_in_sequence:
             _emit(progress_callback, "wrist_skipped")
             logger.warning(
@@ -317,10 +332,6 @@ def _drive_calibration(
     }
     joint_to_motor_ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
 
-    encoder_pass_active = (
-        getattr(hand.config, "joint_feedback_enabled", False)
-        and joint_encoder_client is not None
-    )
     joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
         hand.calibration.joint_encoder_calibration_dict
     )
