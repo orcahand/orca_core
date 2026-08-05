@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Scripts and examples that take a hand and must expose the shared flags.
 HAND_CLI_MODULES = [
     "scripts/check_motor.py",
+    "scripts/check_encoder_signs.py",
     "scripts/setup.py",
     "scripts/calibrate.py",
     "scripts/stress_test.py",
