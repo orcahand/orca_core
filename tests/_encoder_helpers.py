@@ -87,12 +87,14 @@ class MockJointEncoderSource:
         counts_per_rad: float = _DEFAULT_COUNTS_PER_RAD,
         polarities: dict[str, int] | None = None,
         motor_offsets: dict[str, float] | None = None,
+        dead_slots: frozenset[int] = frozenset(),
     ):
         self._dxl = dxl_client
         self._joint_to_motor_map = dict(joint_to_motor_map)
         self._counts_per_rad = float(counts_per_rad)
         self._polarities = dict(polarities or {j: 1 for j in joint_to_motor_map})
         self._motor_offsets = dict(motor_offsets or {})
+        self._dead_slots = frozenset(dead_slots)
 
     def _raw_count_for_joint(self, joint: str) -> int:
         motor_id = self._joint_to_motor_map.get(joint)
@@ -109,6 +111,8 @@ class MockJointEncoderSource:
     def get_latest(self) -> EncoderReading:
         raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
         for joint, slot in JOINT_TO_ENCODER_SLOT.items():
+            if slot in self._dead_slots:
+                continue  # a dead slot reads a constant, parity-clean 0
             raw[slot] = self._raw_count_for_joint(joint)
         return EncoderReading(
             raw_counts=raw,
