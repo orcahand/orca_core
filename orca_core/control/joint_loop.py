@@ -342,7 +342,7 @@ class JointLoopThread:
             RuntimeError: no encoder-backed joints to control, or a selected
                 joint lacks motor limits or a nonzero joint-to-motor ratio.
             ValueError: controller size disagrees with the resolved set.
-            KeyError: the hand's side has no validated encoder polarity table.
+            ValueError: the hand's side has no measured encoder polarity table.
         """
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map

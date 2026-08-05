@@ -142,19 +142,47 @@ def left_full_config(full_config, tmp_path):
     return str(left_path)
 
 
-def test_full_connect_refuses_left_config(left_full_config):
-    """Closed-loop control is unvalidated for left-hand assemblies: connect
-    must refuse before opening the motor bus, any link, or the loop — and
-    the refusal must name the concrete escape hatches."""
+@pytest.fixture
+def unknown_side_full_config(full_config, tmp_path):
+    """A side with no measured polarity table."""
+    with open(full_config) as f:
+        cfg = yaml.safe_load(f)
+    cfg["type"] = "middle"
+    odd_dir = tmp_path / "middle"
+    odd_dir.mkdir()
+    odd_path = odd_dir / "config.yaml"
+    with open(odd_path, "w") as f:
+        yaml.safe_dump(cfg, f)
+    return str(odd_path)
+
+
+def test_full_connect_engages_the_loop_on_a_left_config(left_full_config):
+    """Left assemblies have a measured polarity table, so the full hand brings
+    up the loop and tactile together as it does on a right hand."""
+    hand = make_full_hand(left_full_config)
+    success, msg = hand.connect()
+    try:
+        assert success, msg
+        assert hand._loop is not None
+        assert hand._encoder_client is not None
+        assert hand._tactile_client is not None
+    finally:
+        hand.disconnect()
+
+
+def test_full_connect_refuses_a_side_without_a_polarity_table(
+    unknown_side_full_config,
+):
+    """An unrecognised side must be refused before opening the motor bus, any
+    link, or the loop — and the refusal must name the escape hatch."""
     from orca_core import JointFeedbackConnectError
 
-    hand = make_full_hand(left_full_config)
+    hand = make_full_hand(unknown_side_full_config)
     with pytest.raises(JointFeedbackConnectError) as excinfo:
         hand.connect()
     message = str(excinfo.value)
-    assert "left" in message
+    assert "middle" in message
     assert "connect(engage_feedback=False)" in message
-    assert "orcahand-touch-left" in message
     assert not hand.is_connected()
     assert hand._loop is None
     assert hand._encoder_link is None
@@ -163,7 +191,7 @@ def test_full_connect_refuses_left_config(left_full_config):
 
 
 def test_full_left_connect_without_feedback_gets_motors_and_tactile(left_full_config):
-    """``engage_feedback=False`` is the left-hand escape hatch: motors and
+    """``engage_feedback=False`` stays available on a left hand: motors and
     tactile connect open-loop, and neither the encoder link nor the loop is
     touched."""
     hand = make_full_hand(left_full_config)

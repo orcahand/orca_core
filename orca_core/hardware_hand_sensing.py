@@ -470,9 +470,9 @@ class OrcaHandJointFeedback(OrcaHand):
     anchor is skipped at connect and driven through the inherited synchronous
     path instead.
 
-    Connect-time preconditions raise: an unsupported hand side (closed-loop
-    control is validated on right-hand assemblies only), a missing encoder
-    port, an absent ``joint_encoder_calibration`` block, or an encoder-stream
+    Connect-time preconditions raise: a hand side with no measured encoder
+    polarity table, a missing encoder port, an absent
+    ``joint_encoder_calibration`` block, or an encoder-stream
     timeout each surface as a :class:`JointFeedbackConnectError`. The motor
     bus opened by ``super().connect()`` is rolled back before the exception
     escapes, so a caller that catches the error sees the hand in the same
@@ -574,21 +574,15 @@ class OrcaHandJointFeedback(OrcaHand):
 
     def _require_validated_feedback_side(self) -> None:
         """Closed-loop control needs the per-side encoder polarity table;
-        refuse sides (e.g. left-hand assemblies) without a validated one."""
+        refuse sides without a measured one."""
         side = self.config.type
         if side not in JOINT_ENCODER_POLARITY_BY_SIDE:
-            alternative = (
-                f"load a feedback-free model such as orcahand-{side} / "
-                f"orcahand-touch-{side} (load_hand(..., engage_feedback=False) "
-                "does the same)"
-                if side in ("left", "right")
-                else "set 'type:' in config.yaml to a validated side"
-            )
             raise JointFeedbackConnectError(
-                f"Closed-loop joint feedback is unvalidated for {side!r} hand "
+                f"Closed-loop joint feedback is unavailable for {side!r} hand "
                 "assemblies: no encoder polarity table exists for that side. "
                 "Call connect(engage_feedback=False) to drive this hand "
-                f"open-loop (tactile still works), or {alternative}."
+                "open-loop (tactile still works), or set 'type:' in "
+                f"config.yaml to one of {sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}."
             )
 
     def _loop_ready_joints(self) -> List[str]:
@@ -948,10 +942,10 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
         """Connect motors, tactile sensing, and the joint-feedback loop.
 
         ``engage_feedback=False`` connects motors + tactile only — no
-        encoder link, no loop, and no validated-side gate — so e.g. a
-        left-hand assembly still gets open-loop control with tactile. It
-        fails on a hand whose loop already runs rather than reporting an
-        open-loop hand that isn't one.
+        encoder link, no loop, and no validated-side gate — so an
+        uncalibrated or unrecognised-side hand still gets open-loop control
+        with tactile. It fails on a hand whose loop already runs rather than
+        reporting an open-loop hand that isn't one.
         """
         if not engage_feedback:
             return self._connect_without_feedback(interactive)

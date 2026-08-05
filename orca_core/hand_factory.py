@@ -241,18 +241,12 @@ def load_hand(
 
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
-        fallback_model = ("orcahand-touch-" if tactile else "orcahand-") + str(config.type)
-        alternative = (
-            f"use the {fallback_model} model"
-            if config.type in ("left", "right")
-            else "set 'type:' in config.yaml to a validated side"
-        )
         logger.warning(
-            "closed-loop joint feedback is unvalidated for %r hand assemblies; "
+            "closed-loop joint feedback is unavailable for %r hand assemblies; "
             "connect() will refuse to engage the loop. Pass "
             "engage_feedback=False (to load_hand or connect) for open-loop "
-            "control, or %s.",
-            config.type, alternative,
+            "control, or set 'type:' in config.yaml to one of %s.",
+            config.type, sorted(JOINT_ENCODER_POLARITY_BY_SIDE),
         )
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
