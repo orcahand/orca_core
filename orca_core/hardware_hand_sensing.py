@@ -38,15 +38,9 @@ if TYPE_CHECKING:
 import numpy as np
 
 from .calibration import JointEncoderCal
-from .control.constants import (
-    DEFAULT_CORRECTION_MAX_DEG,
-    DEFAULT_I_CLAMP_DEG,
-    DEFAULT_KI,
-    DEFAULT_KP,
-)
 from .control.joint_controller import JointController
 from .control.joint_loop import JointLoopThread
-from .hand_config import OrcaHandTouchConfig
+from .hand_config import JointGains, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
 from .hardware.sensing.constants import JOINT_ENCODER_POLARITY_BY_SIDE
@@ -554,12 +548,17 @@ class OrcaHandJointFeedback(OrcaHand):
         self._compute_wrap_offsets_dict()
 
         self._controller = JointController(num_joints=len(ready))
+        gains = [self.config.joint_gains_for(joint) for joint in ready]
         self._controller.set_gains(
-            Kp=DEFAULT_KP,
-            Ki=DEFAULT_KI,
-            correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
-            i_clamp_deg=DEFAULT_I_CLAMP_DEG,
+            Kp=np.array([g.kp for g in gains]),
+            Ki=np.array([g.ki for g in gains]),
+            correction_max_deg=np.array([g.correction_max_deg for g in gains]),
         )
+        tuned = [j for j in ready if j in self.config.joint_gains_overrides]
+        if tuned:
+            logger.info(
+                "per-joint gain override(s) applied: %s", ", ".join(tuned)
+            )
         self._loop = JointLoopThread(
             self, self._encoder_client, self._controller, joints=ready
         )
@@ -849,26 +848,79 @@ class OrcaHandJointFeedback(OrcaHand):
 
     def set_pid_gains(
         self,
-        Kp,
-        Ki,
-        correction_max_deg: float,
-        i_clamp_deg: Optional[float] = None,
+        Kp: "float | Dict[str, float] | None" = None,
+        Ki: "float | Dict[str, float] | None" = None,
+        correction_max_deg: "float | Dict[str, float] | None" = None,
     ) -> None:
         """Retune the outer-loop PI gains while the loop is running.
 
-        ``i_clamp_deg`` defaults to ``correction_max_deg`` (the anti-windup
-        clamp matches the output clamp).
+        Each argument is a scalar applied to every loop-controlled joint, a
+        ``{joint_name: value}`` dict changing only the joints it names, an
+        array in ``loop_joint_names`` order, or ``None`` to leave that gain
+        untouched. Changes are transient — write them to
+        ``joint_control_gains`` in config.yaml to persist them.
+
+        Raises :class:`RuntimeError` when the joint loop isn't active and
+        :class:`ValueError` on a joint the loop isn't controlling.
+        """
+        if self._controller is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        current = self._controller.get_gains()
+        self._controller.set_gains(
+            Kp=self._resolve_gain(Kp, current["Kp"], "Kp"),
+            Ki=self._resolve_gain(Ki, current["Ki"], "Ki"),
+            correction_max_deg=self._resolve_gain(
+                correction_max_deg,
+                current["correction_max_deg"],
+                "correction_max_deg",
+            ),
+        )
+
+    def _resolve_gain(self, value, current: np.ndarray, name: str) -> np.ndarray:
+        """Fold a scalar / per-joint dict / array / None into a full gain
+        vector laid out in the loop's joint order."""
+        if value is None:
+            return current
+        if isinstance(value, dict):
+            joint_names = self._loop.joint_names
+            unknown = set(value) - set(joint_names)
+            if unknown:
+                raise ValueError(
+                    f"{name} names joint(s) the loop does not control: "
+                    f"{sorted(unknown)}. Controlled joints: {joint_names}"
+                )
+            updated = current.copy()
+            index = {joint: i for i, joint in enumerate(joint_names)}
+            for joint, gain in value.items():
+                updated[index[joint]] = float(gain)
+            return updated
+
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim == 0:
+            return np.full(current.shape, float(arr))
+        if arr.shape != current.shape:
+            raise ValueError(
+                f"{name} must be a scalar, a {{joint: value}} dict, or an "
+                f"array of shape {current.shape}; got shape {arr.shape}"
+            )
+        return arr.copy()
+
+    def get_pid_gains(self) -> Dict[str, JointGains]:
+        """Outer-loop PI gains currently in force, per loop-controlled joint.
+
         Raises :class:`RuntimeError` when the joint loop isn't active.
         """
         if self._controller is None:
             raise RuntimeError("joint loop not running; call connect() first")
-        clamp = correction_max_deg if i_clamp_deg is None else i_clamp_deg
-        self._controller.set_gains(
-            Kp=Kp,
-            Ki=Ki,
-            correction_max_deg=correction_max_deg,
-            i_clamp_deg=clamp,
-        )
+        gains = self._controller.get_gains()
+        return {
+            joint: JointGains(
+                kp=float(gains["Kp"][i]),
+                ki=float(gains["Ki"][i]),
+                correction_max_deg=float(gains["correction_max_deg"][i]),
+            )
+            for i, joint in enumerate(self._loop.joint_names)
+        }
 
     def rebase_loop(self) -> None:
         """Re-anchor the running loop to the current pose (target=measured,

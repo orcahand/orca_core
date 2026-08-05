@@ -9,6 +9,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import BaseHandConfig
 from .hand_config import HandConfigValidationError
+from .hand_config import JointGains
 from .hand_config import OrcaHandConfig
 from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
@@ -34,6 +35,7 @@ __all__ = [
     "BaseHand",
     "BaseHandConfig",
     "HandConfigValidationError",
+    "JointGains",
     "OrcaHandConfig",
     "OrcaHandTouchConfig",
     "OrcaHand",
