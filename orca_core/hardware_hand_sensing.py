@@ -460,12 +460,15 @@ class OrcaHandJointFeedback(OrcaHand):
 
     ``connect()`` opens the motor bus, the encoder serial link, and starts a
     :class:`~orca_core.control.JointLoopThread` running a vectorised PI on
-    joint-encoder error. The motors stay in ``current_based_position``: the
-    host writes ``Goal_Position`` per cycle and the motor's internal position
-    PID handles the fast tracking against the motor encoder, while the host
-    trims the residual offset between motor angle and joint angle. The wrist
-    is not part of the loop and is driven through the inherited synchronous
-    path.
+    joint-encoder error. The finger motors stay in ``current_based_position``
+    and the wrist motor in ``multi_turn_position``: the host writes
+    ``Goal_Position`` per cycle and the motor's internal position PID handles
+    the fast tracking against the motor encoder, while the host trims the
+    residual offset between motor angle and joint angle. Because the wrist's
+    mode has no current cap, the loop clamps its commanded motor position to
+    the calibrated travel plus a small margin. A wrist without an encoder
+    anchor is skipped at connect and driven through the inherited synchronous
+    path instead.
 
     Connect-time preconditions raise: an unsupported hand side (closed-loop
     control is validated on right-hand assemblies only), a missing encoder
@@ -842,8 +845,8 @@ class OrcaHandJointFeedback(OrcaHand):
         if not self._loop_engaged():
             return super()._get_joint_positions()
 
-        # Motor-path angles cover the wrist and joints the loop doesn't
-        # measure (e.g. skipped at connect); encoder angles win where present.
+        # Motor-path angles cover joints the loop doesn't measure (skipped
+        # at connect); encoder angles win where present.
         joint_dict: Dict[str, float] = super()._get_joint_positions().as_dict()
         joint_dict.update(self._loop.get_measured_joints())
         return OrcaJointPositions.from_dict(joint_dict)

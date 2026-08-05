@@ -109,8 +109,6 @@ class MockJointEncoderSource:
     def get_latest(self) -> EncoderReading:
         raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
         for joint, slot in JOINT_TO_ENCODER_SLOT.items():
-            if joint == "wrist":
-                continue
             raw[slot] = self._raw_count_for_joint(joint)
         return EncoderReading(
             raw_counts=raw,

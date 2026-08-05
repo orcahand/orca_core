@@ -158,6 +158,25 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
     assert hand.is_calibrated(use_joint_feedback=True) is False
 
 
+def test_is_calibrated_joint_feedback_requires_wrist_anchor(calib_dir):
+    """A calibration made before the wrist joined the loop (finger anchors
+    only) reports uncalibrated — the signal to recalibrate and capture the
+    wrist anchor."""
+    import dataclasses as dc
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    _populate_motor_calibration(hand)
+    finger_dict = {
+        joint: JointEncoderCal(enc_at_anchor_count=0)
+        for joint in hand._encoder_backed_joints()
+        if joint != "wrist"
+    }
+    hand.calibration = dc.replace(
+        hand.calibration, joint_encoder_calibration_dict=finger_dict
+    )
+    assert hand.is_calibrated(use_joint_feedback=True) is False
+
+
 # ---------------------------------------------------------------------------
 # OrcaHand._raw_to_joint_angle
 # ---------------------------------------------------------------------------
@@ -284,18 +303,17 @@ def test_encoder_backed_joints_respects_config_subset(calib_dir):
 
 def test_encoder_backed_joints_all_selects_every_slotted_motor_joint(calib_dir):
     """The ``["all"]`` default expands to every joint that has both an encoder
-    slot and a driving motor, excluding the wrist."""
+    slot and a driving motor, wrist included."""
     from orca_core.hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
 
     config_path = calib_dir / "config.yaml"
     update_yaml(str(config_path), "joint_encoder_joints", ["all"])
     hand = MockOrcaHand(config_path=str(config_path))
     expected = {
-        j
-        for j in JOINT_TO_ENCODER_SLOT
-        if j != "wrist" and j in hand.config.joint_to_motor_map
+        j for j in JOINT_TO_ENCODER_SLOT if j in hand.config.joint_to_motor_map
     }
     assert set(hand._encoder_backed_joints()) == expected
+    assert "wrist" in hand._encoder_backed_joints()
 
 
 def test_encoder_backed_joints_empty_when_field_unset(tmp_path):
@@ -578,16 +596,15 @@ def test_validator_rejects_unknown_joint_in_joint_encoder_joints(tmp_path):
         MockOrcaHand(config_path=str(config_path))
 
 
-def test_validator_rejects_wrist_in_joint_encoder_joints(tmp_path):
-    from orca_core.hand_config import HandConfigValidationError
-
+def test_validator_accepts_wrist_in_joint_encoder_joints(tmp_path):
+    """The wrist has an encoder slot and may be selected explicitly."""
     src_config = os.path.join(MODEL_DIR, "config.yaml")
     config_path = tmp_path / "config.yaml"
     shutil.copy(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", ["wrist"])
 
-    with pytest.raises(HandConfigValidationError, match="wrist"):
-        MockOrcaHand(config_path=str(config_path))
+    hand = MockOrcaHand(config_path=str(config_path))
+    assert hand._encoder_backed_joints() == ["wrist"]
 
 
 

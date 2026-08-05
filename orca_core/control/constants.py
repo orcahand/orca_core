@@ -22,6 +22,12 @@ DEFAULT_KI = 12.0          # degrees of correction per degree·second of error
 DEFAULT_CORRECTION_MAX_DEG = 60.0
 DEFAULT_I_CLAMP_DEG = 15.0
 
+# The wrist motor runs in multi_turn_position mode, which has no current
+# limiting, so the loop clamps its commanded position to the calibrated
+# travel plus this margin (joint-space degrees). Fingers stay unclamped:
+# their tendon-stretch over-travel is deliberate and mode 5 caps current.
+WRIST_MOTOR_TARGET_MARGIN_DEG = 3.0
+
 # Freshness warning is rate-limited so a chronic stale-encoder condition
 # doesn't drown the log file.
 FRESHNESS_WARN_INTERVAL_S = 1.0
