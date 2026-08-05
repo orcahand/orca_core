@@ -440,10 +440,16 @@ def test_failed_anchor_sample_keeps_previous_anchor(calib_dir, monkeypatch):
     hand.connect()
 
     failing_slot = JOINT_TO_ENCODER_SLOT["ring_pip"]
+    seen_slots = set()
 
     def fake_sample(client, *, slot, **kwargs):
         if slot == failing_slot:
             raise JointEncoderCalibrationError("no frames")
+        # First sample (flex hardstop) 5000, second (extend) far away, so the
+        # healthy slot passes the sweep-tracking guard.
+        if slot in seen_slots:
+            return 9000
+        seen_slots.add(slot)
         return 5000
 
     monkeypatch.setattr(
@@ -663,6 +669,53 @@ def test_subset_calibrate_emits_wrist_skipped_when_wrist_excluded(calib_dir):
     )
     assert any(e["event"] == "wrist_skipped" for e in events)
     assert "wrist" not in hand.calibration.joint_encoder_calibration_dict
+
+
+def test_dead_slot_gets_no_anchor_and_loses_a_stale_one(calib_dir):
+    """A slot that reads a constant through the sweep passes the parity check
+    but must not be anchored: the wrist (no prior anchor) stays unanchored,
+    and a stale anchor on a dead finger slot is dropped, both with a failure
+    event. Healthy slots anchor normally."""
+    import dataclasses as dc
+
+    from orca_core.hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibration = dc.replace(
+        hand.calibration,
+        joint_encoder_calibration_dict={
+            "ring_pip": JointEncoderCal(enc_at_anchor_count=7)
+        },
+    )
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        dead_slots={
+            JOINT_TO_ENCODER_SLOT["wrist"], JOINT_TO_ENCODER_SLOT["ring_pip"]
+        },
+    )
+
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+
+    anchored = hand.calibration.joint_encoder_calibration_dict
+    assert "wrist" not in anchored
+    assert "ring_pip" not in anchored
+    assert "ring_mcp" in anchored
+    rejected = {
+        e["joint"]
+        for e in events
+        if e["event"] == "encoder_anchor_failed" and "did not track" in e["error"]
+    }
+    assert rejected == {"wrist", "ring_pip"}
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert "ring_pip" not in raw["joint_encoder_calibration"]
 
 
 def test_wrist_skipped_when_anchor_already_present(calib_dir):
