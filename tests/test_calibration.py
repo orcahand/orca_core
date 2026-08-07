@@ -962,6 +962,36 @@ def test_measured_rom_dropped_for_a_slot_that_fails_the_sweep(calib_dir):
     )
 
 
+def test_slot_going_dead_drops_its_stale_measured_rom(calib_dir):
+    """A slot that measured a ROM once and later fails the sweep loses that
+    ROM: the map must not keep trusting a span from an encoder now proven
+    dead, the same way the stale anchor is dropped."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+    assert "ring_pip" in hand.calibration.joint_roms_measured_dict
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, 0.95
+        ),
+        dead_slots={JOINT_TO_ENCODER_SLOT["ring_pip"]},
+    )
+    hand.calibrate(joint_encoder_client=encoder, persist=True)
+
+    assert "ring_pip" not in hand.calibration.joint_roms_measured_dict
+    assert "ring_pip" not in hand.calibration.joint_encoder_calibration_dict
+    assert "ring_pip" not in read_yaml(str(calib_dir / "calibration.yaml"))[
+        "joint_roms_measured"
+    ]
+    assert "middle_pip" in hand.calibration.joint_roms_measured_dict
+
+
 def test_partial_recalibration_keeps_untouched_measured_roms(calib_dir):
     """Recalibrating a subset rewrites only those joints' measured ROMs."""
     from tests._encoder_helpers import (
