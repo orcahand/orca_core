@@ -46,6 +46,7 @@ from ..constants import (
     EXTEND,
     FLEX,
     JOINT_ENCODER_CALIBRATION,
+    JOINT_ROMS_MEASURED,
     JOINT_TO_MOTOR_RATIOS,
     JOINTS,
     MOTOR_LIMITS_DICT,
@@ -60,7 +61,7 @@ from ..hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     sample_anchor_count_from_client,
 )
-from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV
+from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV, ENCODER_LSB_DEG
 from ..utils.utils import read_yaml, write_yaml_atomic
 
 if TYPE_CHECKING:
@@ -76,6 +77,15 @@ ShouldStop = Callable[[], bool]
 # constant (which passes the chip parity check) and must not be anchored.
 MIN_ANCHOR_SWEEP_FRACTION = 0.25
 MIN_ANCHOR_SWEEP_COUNTS = 300
+
+# The encoder-measured hardstop span replaces the config nominal in the
+# joint↔motor map, so the config ROM stays its sanity envelope: a measured
+# endpoint this far off nominal is a build, hardstop, or sensor fault rather
+# than unit-to-unit tolerance, and the nominal is kept instead. A clamped
+# value would be neither measured nor nominal, and would enter the map
+# silently.
+MEASURED_ROM_WARN_TOL_DEG = 4.0
+MEASURED_ROM_REJECT_TOL_DEG = 8.0
 
 
 def _count_delta(a: int, b: int) -> int:
@@ -174,6 +184,7 @@ def _build_calibration_result(
     joint_to_motor_ratios: Dict[int, float],
     wrist_calibrated: bool,
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] | None = None,
+    joint_roms_measured_dict: Dict[str, list] | None = None,
 ) -> CalibrationResult:
     calibrated = all(
         limits[0] is not None and limits[1] is not None
@@ -191,6 +202,10 @@ def _build_calibration_result(
         calibrated=calibrated,
         wrist_calibrated=wrist_calibrated,
         joint_encoder_calibration_dict=dict(joint_encoder_calibration_dict or {}),
+        joint_roms_measured_dict={
+            joint: list(rom)
+            for joint, rom in (joint_roms_measured_dict or {}).items()
+        },
     )
 
 
@@ -215,6 +230,10 @@ def _persist_calibration(
         doc[JOINT_ENCODER_CALIBRATION] = joint_encoder_calibration_to_yaml(
             result.joint_encoder_calibration_dict
         )
+        doc[JOINT_ROMS_MEASURED] = {
+            joint: list(rom)
+            for joint, rom in result.joint_roms_measured_dict.items()
+        }
     write_yaml_atomic(calibration_path, doc)
 
 
@@ -356,6 +375,10 @@ def _drive_calibration(
     joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
         hand.calibration.joint_encoder_calibration_dict
     )
+    joint_roms_measured: Dict[str, list] = {
+        joint: list(rom)
+        for joint, rom in hand.calibration.joint_roms_measured_dict.items()
+    }
     # Existing anchors stay until their replacement is sampled, so an aborted
     # or failed run never loses anchors of joints it did not re-anchor.
     joints_to_anchor: set[str] = set()
@@ -535,6 +558,7 @@ def _drive_calibration(
                 joints_to_anchor=joints_to_anchor,
                 pending_anchors=pending_anchors,
                 joint_encoder_calibration=joint_encoder_calibration,
+                joint_roms_measured=joint_roms_measured,
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
             )
@@ -619,10 +643,12 @@ def _drive_calibration(
 
             motor_limits[motor_id] = list(pending_limits[motor_id])
             delta_motor = motor_limits[motor_id][1] - motor_limits[motor_id][0]
-            delta_joint = (
-                hand.config.joint_roms_dict[joint][1]
-                - hand.config.joint_roms_dict[joint][0]
-            )
+            # The encoder pass for this step has already run, so a joint whose
+            # travel was measured this run fits its ratio against the measured
+            # span — putting the map's degrees in the encoders' own units. The
+            # rest fall back to the config nominal.
+            rom = joint_roms_measured.get(joint) or hand.config.joint_roms_dict[joint]
+            delta_joint = rom[1] - rom[0]
             joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
             logger.info("joint calibrated: %s", joint)
             _emit(
@@ -640,6 +666,7 @@ def _drive_calibration(
             joint_to_motor_ratios=joint_to_motor_ratios,
             wrist_calibrated=wrist_calibrated,
             joint_encoder_calibration_dict=joint_encoder_calibration,
+            joint_roms_measured_dict=joint_roms_measured,
         )
         # Persist partial progress after every step so an interrupted run
         # never loses the work already done.
@@ -678,6 +705,7 @@ def _drive_calibration(
         joint_to_motor_ratios=joint_to_motor_ratios,
         wrist_calibrated=wrist_calibrated,
         joint_encoder_calibration_dict=joint_encoder_calibration,
+        joint_roms_measured_dict=joint_roms_measured,
     )
     hand.calibration = final_result
     if persist:
@@ -727,6 +755,65 @@ def _commit_anchor(
     )
 
 
+def _commit_measured_rom(
+    hand: "OrcaHand",
+    joint: str,
+    span_deg: float,
+    *,
+    joint_roms_measured: Dict[str, list],
+    progress_callback: Optional[ProgressCallback],
+) -> None:
+    """Record the ROM implied by an encoder-measured hardstop-to-hardstop span.
+
+    The anchor pose — the flex hardstop, held to be the config ROM upper — is
+    the fixed reference of the encoder frame, so the measured span places the
+    lower endpoint and the upper carries through unchanged. A span implying a
+    lower endpoint too far from nominal is rejected, leaving the joint on its
+    config ROM.
+    """
+    rom_lower, rom_upper = hand.config.joint_roms_dict[joint]
+    measured_lower = rom_upper - span_deg
+    deviation = measured_lower - rom_lower
+
+    if abs(deviation) > MEASURED_ROM_REJECT_TOL_DEG:
+        joint_roms_measured.pop(joint, None)
+        _emit(
+            progress_callback,
+            "measured_rom_rejected",
+            joint=joint,
+            span_deg=span_deg,
+            deviation_deg=deviation,
+        )
+        logger.warning(
+            "joint %s measured span %.2f deg puts its lower hardstop %+.2f deg "
+            "from the configured %.2f deg, beyond the %.1f deg limit; keeping "
+            "the configured ROM. Check the hardstop, the encoder wiring, and "
+            "the configured ROM.",
+            joint, span_deg, deviation, rom_lower, MEASURED_ROM_REJECT_TOL_DEG,
+        )
+        return
+
+    if abs(deviation) > MEASURED_ROM_WARN_TOL_DEG:
+        logger.warning(
+            "joint %s measured span %.2f deg puts its lower hardstop %+.2f deg "
+            "from the configured %.2f deg",
+            joint, span_deg, deviation, rom_lower,
+        )
+
+    joint_roms_measured[joint] = [float(measured_lower), float(rom_upper)]
+    _emit(
+        progress_callback,
+        "measured_rom_recorded",
+        joint=joint,
+        rom=[float(measured_lower), float(rom_upper)],
+        deviation_deg=deviation,
+    )
+    logger.info(
+        "joint %s measured ROM: [%.2f, %.2f] deg (span %.2f, %+.2f deg vs config)",
+        joint, measured_lower, rom_upper, span_deg, deviation,
+    )
+
+
 def _run_joint_encoder_pass_for_step(
     hand: "OrcaHand",
     *,
@@ -735,6 +822,7 @@ def _run_joint_encoder_pass_for_step(
     joints_to_anchor: set,
     pending_anchors: Dict[str, int],
     joint_encoder_calibration: Dict[str, JointEncoderCal],
+    joint_roms_measured: Dict[str, list],
     joint_encoder_client,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
@@ -747,6 +835,10 @@ def _run_joint_encoder_pass_for_step(
     constant and is rejected — including any previously stored anchor for it.
     The caller must hold the step's motors torqued at their hardstops. A
     failed sample keeps the previously persisted anchor.
+
+    The same pair of hardstop samples measures the joint's actual travel, so a
+    committed anchor also commits a measured ROM (see
+    :func:`_commit_measured_rom`).
     """
     from ..hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
 
@@ -801,8 +893,10 @@ def _run_joint_encoder_pass_for_step(
             delta = _count_delta(pending_anchors[joint], extend_count)
             if delta < threshold:
                 pending_anchors.pop(joint)
-                # A slot proven dead now also invalidates any stored anchor.
+                # A slot proven dead now also invalidates any stored anchor and
+                # the measured ROM derived from the same samples.
                 joint_encoder_calibration.pop(joint, None)
+                joint_roms_measured.pop(joint, None)
                 _emit(
                     progress_callback,
                     "encoder_anchor_failed",
@@ -826,5 +920,15 @@ def _run_joint_encoder_pass_for_step(
                 pending_anchors.pop(joint),
                 joint_encoder_calibration=joint_encoder_calibration,
                 joints_to_anchor=joints_to_anchor,
+                progress_callback=progress_callback,
+            )
+            # The two hardstop samples that validated the anchor also measure
+            # the joint's actual travel. The span is wrap-aware and unsigned,
+            # so it is independent of the slot's mounting polarity.
+            _commit_measured_rom(
+                hand,
+                joint,
+                delta * ENCODER_LSB_DEG,
+                joint_roms_measured=joint_roms_measured,
                 progress_callback=progress_callback,
             )

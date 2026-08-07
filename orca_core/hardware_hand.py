@@ -145,6 +145,28 @@ class OrcaHand(BaseHand):
         return self.calibration.joint_to_motor_ratios_dict
 
     @property
+    def effective_joint_roms_dict(self) -> Dict[str, list]:
+        """Config ROMs overlaid with this hand's encoder-measured ROMs.
+
+        The joint↔motor map is calibrated and evaluated in these degrees, so
+        that on an encoder-equipped hand a commanded degree and a measured
+        degree are the same unit. Joints without a measured ROM — every joint
+        on a hand without encoders — fall back to the config nominal.
+
+        This is the map's frame of reference, not a command limit: config ROMs
+        remain the clamp applied by :meth:`OrcaHandConfig.clamp_joint_positions`
+        and the denominator of :meth:`pose_from_fractions`.
+        """
+        measured = self.calibration.joint_roms_measured_dict
+        if not measured:
+            return self.config.joint_roms_dict
+        roms = dict(self.config.joint_roms_dict)
+        for joint, rom in measured.items():
+            if joint in roms:
+                roms[joint] = list(rom)
+        return roms
+
+    @property
     def calibrated(self) -> bool:
         return self.calibration.calibrated
 
@@ -969,6 +991,7 @@ class OrcaHand(BaseHand):
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
+        joint_roms = self.effective_joint_roms_dict
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
             motor_id = self.config.motor_ids[idx]
@@ -983,13 +1006,13 @@ class OrcaHand(BaseHand):
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
                 if self.config.joint_inversion_dict.get(joint_name, False):
                     joint_pos[joint_name] = (
-                        self.config.joint_roms_dict[joint_name][1]
+                        joint_roms[joint_name][1]
                         - (wrapped_pos - self.motor_limits_dict[motor_id][0])
                         / self.calibration.joint_to_motor_ratios_dict[motor_id]
                     )
                 else:
                     joint_pos[joint_name] = (
-                        self.config.joint_roms_dict[joint_name][0]
+                        joint_roms[joint_name][0]
                         + (wrapped_pos - self.motor_limits_dict[motor_id][0])
                         / self.calibration.joint_to_motor_ratios_dict[motor_id]
                     )
@@ -999,6 +1022,7 @@ class OrcaHand(BaseHand):
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
+        joint_roms = self.effective_joint_roms_dict
         motor_pos = [None] * len(self.config.motor_ids)
 
         for joint_name, pos in joint_pos.items():
@@ -1022,13 +1046,13 @@ class OrcaHand(BaseHand):
             if self.config.joint_inversion_dict.get(joint_name, False):
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
                     self.motor_limits_dict[motor_id][0]
-                    + (self.config.joint_roms_dict[joint_name][1] - pos)
+                    + (joint_roms[joint_name][1] - pos)
                     * self.calibration.joint_to_motor_ratios_dict[motor_id]
                 )
             else:
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
                     self.motor_limits_dict[motor_id][0]
-                    + (pos - self.config.joint_roms_dict[joint_name][0])
+                    + (pos - joint_roms[joint_name][0])
                     * self.calibration.joint_to_motor_ratios_dict[motor_id]
                 )
 
