@@ -833,3 +833,188 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     assert hand.calibration.joint_to_motor_ratios_dict == pre_ratios
     assert hand.calibration.joint_encoder_calibration_dict == pre_encoders
     assert not calib_path.exists(), "aborted mid-drive run must not write calibration"
+
+
+# ---------------------------------------------------------------------------
+# Encoder-measured joint ROMs
+# ---------------------------------------------------------------------------
+
+
+def _calibrate_with_measured_roms(calib_dir, span_scale=1.0, dead_slots=frozenset()):
+    """Run a full mock calibration whose synthetic encoder measures each
+    joint's configured ROM span scaled by ``span_scale``."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, span_scale
+        ),
+        dead_slots=dead_slots,
+    )
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+    return hand, events
+
+
+def test_measured_rom_matches_config_when_travel_is_nominal(calib_dir):
+    """A hand whose hardstops sit exactly at the configured ROM measures that
+    ROM back, so the map is unchanged."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir)
+
+    measured = hand.calibration.joint_roms_measured_dict
+    assert set(measured) == set(hand.encoder_backed_joints)
+    for joint, rom in measured.items():
+        assert rom == pytest.approx(hand.config.joint_roms_dict[joint], abs=0.05)
+
+
+def test_measured_rom_moves_only_the_lower_endpoint(calib_dir):
+    """The anchor pose (flex hardstop) defines the encoder frame's upper
+    endpoint, so a short-travelling joint moves its lower endpoint only."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    for joint, (lower, upper) in hand.calibration.joint_roms_measured_dict.items():
+        config_lower, config_upper = hand.config.joint_roms_dict[joint]
+        assert upper == pytest.approx(config_upper, abs=1e-9)
+        expected_span = (config_upper - config_lower) * 0.95
+        assert upper - lower == pytest.approx(expected_span, abs=0.05)
+        assert lower > config_lower
+
+
+def test_measured_rom_sets_the_ratio_and_the_map_frame(calib_dir):
+    """The ratio is fitted against the measured span, so commanding a measured
+    ROM endpoint lands on the corresponding motor limit."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    joint = "index_pip"
+    motor_id = hand.config.joint_to_motor_map[joint]
+    lower, upper = hand.calibration.joint_roms_measured_dict[joint]
+    motor_lower, motor_upper = hand.motor_limits_dict[motor_id]
+
+    ratio = hand.joint_to_motor_ratios_dict[motor_id]
+    assert ratio == pytest.approx((motor_upper - motor_lower) / (upper - lower))
+
+    idx = hand.config.motor_id_to_idx_dict[motor_id]
+    inverted = hand.config.joint_inversion_dict.get(joint, False)
+    at_lower = hand._joint_to_motor_pos({joint: lower})[idx]
+    at_upper = hand._joint_to_motor_pos({joint: upper})[idx]
+    assert at_lower == pytest.approx(motor_upper if inverted else motor_lower)
+    assert at_upper == pytest.approx(motor_lower if inverted else motor_upper)
+
+
+def test_measured_rom_beyond_tolerance_is_rejected(calib_dir):
+    """A span implying a hardstop far off nominal is more likely a fault than
+    a tolerance: the config ROM is kept and the ratio falls back to it."""
+    hand, events = _calibrate_with_measured_roms(calib_dir, span_scale=0.5)
+
+    assert hand.calibration.joint_roms_measured_dict == {}
+    assert hand.effective_joint_roms_dict == hand.config.joint_roms_dict
+    rejected = {e["joint"] for e in events if e["event"] == "measured_rom_rejected"}
+    assert rejected == set(hand.encoder_backed_joints)
+
+    joint = "index_pip"
+    motor_id = hand.config.joint_to_motor_map[joint]
+    config_lower, config_upper = hand.config.joint_roms_dict[joint]
+    motor_lower, motor_upper = hand.motor_limits_dict[motor_id]
+    assert hand.joint_to_motor_ratios_dict[motor_id] == pytest.approx(
+        (motor_upper - motor_lower) / (config_upper - config_lower)
+    )
+
+
+def test_measured_rom_persists_and_reloads(calib_dir):
+    """The measured ROMs survive a round trip through calibration.yaml."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert set(raw["joint_roms_measured"]) == set(
+        hand.calibration.joint_roms_measured_dict
+    )
+
+    reloaded = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    assert (
+        reloaded.calibration.joint_roms_measured_dict
+        == hand.calibration.joint_roms_measured_dict
+    )
+    assert reloaded.effective_joint_roms_dict == hand.effective_joint_roms_dict
+
+
+def test_measured_rom_dropped_for_a_slot_that_fails_the_sweep(calib_dir):
+    """A dead slot yields no anchor, and no measured ROM from the same pair
+    of samples either."""
+    hand, _ = _calibrate_with_measured_roms(
+        calib_dir, dead_slots={JOINT_TO_ENCODER_SLOT["ring_pip"]}
+    )
+
+    assert "ring_pip" not in hand.calibration.joint_roms_measured_dict
+    assert "ring_mcp" in hand.calibration.joint_roms_measured_dict
+    assert hand.effective_joint_roms_dict["ring_pip"] == (
+        hand.config.joint_roms_dict["ring_pip"]
+    )
+
+
+def test_partial_recalibration_keeps_untouched_measured_roms(calib_dir):
+    """Recalibrating a subset rewrites only those joints' measured ROMs."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+    before = dict(hand.calibration.joint_roms_measured_dict)
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, 0.98
+        ),
+    )
+    hand.calibrate(joint_encoder_client=encoder, joints=["index_pip"], persist=True)
+
+    after = hand.calibration.joint_roms_measured_dict
+    assert after["index_pip"] != before["index_pip"]
+    assert after["middle_pip"] == before["middle_pip"]
+    assert read_yaml(str(calib_dir / "calibration.yaml"))["joint_roms_measured"][
+        "middle_pip"
+    ] == pytest.approx(before["middle_pip"])
+
+
+def test_open_loop_calibration_records_no_measured_roms(calib_dir):
+    """Without an encoder client there is nothing to measure the span with, so
+    the map stays on the config ROMs."""
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(persist=True)
+
+    assert hand.calibration.joint_roms_measured_dict == {}
+    assert hand.effective_joint_roms_dict == hand.config.joint_roms_dict
+    assert "joint_roms_measured" not in read_yaml(
+        str(calib_dir / "calibration.yaml")
+    )
+
+
+def test_calibration_result_drops_malformed_measured_rom_entries(tmp_path):
+    path = tmp_path / "calibration.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "joint_roms_measured": {
+                    "index_pip": [-12.0, 107.0],
+                    "middle_pip": [107.0],
+                    "ring_pip": "nonsense",
+                }
+            }
+        )
+    )
+    result = CalibrationResult.from_calibration_path(str(path), motor_ids=[1])
+    assert result.joint_roms_measured_dict == {"index_pip": [-12.0, 107.0]}
