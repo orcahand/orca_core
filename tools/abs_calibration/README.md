@@ -47,6 +47,30 @@ table prints per scenario with per-joint-class budget verdicts and absolute
 fingertip error (which includes the *uncorrected* geometry error — the honest
 v1 number).
 
+## Findings (2026-08-11, full run)
+
+- **A-ideal:** machinery recovers to ≪0.1° (wrist 0.008° mean), fingertip
+  0.05 mm — self-test passed.
+- **E-webcam-combined:** per-joint class means 0.24–0.84°, fingertip mean
+  1.18 mm / p95 2.03 mm — matches the design doc's v1 targets; the 1 mm
+  per-joint budgets are 3–7× exceeded by model error, not by conditioning.
+- **B vs C:** print geometry alone costs ~0.9 mm fingertip; webcam-tier
+  measurement systematics alone ~0.44 mm.
+- **D vs E:** offsets-only trails offset+curve by only ~10% at this tier —
+  geometry bias dominates INL here; the curve's value grows as the rig
+  improves.
+- **F:** de-novo init fully recovers 20°/12° gross hardstop-init errors
+  (identical solution to E).
+- **Base∘wrist degeneracy found and fixed:** no distal observation can split
+  the wrist offset from base pose (constant rotation about the world-fixed
+  wrist axis ⇒ absorbed by base). A mesh-referenced frame anchor on the
+  forearm link is mandatory; with it, scenario A's wrist error fell 0.39° →
+  0.008°.
+
+Known limitation: the §4b axis diagnostic as implemented has a ~0.6° noise
+floor (per-frame Kabsch on 5 dots); the production version must fit each axis
+from all sweep steps jointly (per-dot circle fit) to resolve 0.3–0.5° tilts.
+
 ## Structure
 
 - `model.py` — perturbable chain FK (all link frames) + encoder truth model

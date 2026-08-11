@@ -1,86 +1,516 @@
 A-ideal:
   per_joint_mean_deg:
-    wrist: 0.0050356458152099985
-    thumb_cmc: 0.006461490303370095
-    thumb_abd: 0.026053011113849226
-    thumb_mcp: 0.02054344325364328
-    thumb_dip: 0.06559217842259171
-    index_abd: 0.025474412287616405
-    index_mcp: 0.019205854298078723
-    index_pip: 0.040383714497828585
-    middle_abd: 0.025839294557304444
-    middle_mcp: 0.008854015016882254
-    middle_pip: 0.030597631140630892
-    ring_abd: 0.005519121256574312
-    ring_mcp: 0.020244565761973546
-    ring_pip: 0.03832954884785719
-    pinky_abd: 0.02168517233374212
-    pinky_mcp: 0.008539468148960894
-    pinky_pip: 0.020629656975189516
+    wrist: 0.008372775682796457
+    thumb_cmc: 0.027419457239776703
+    thumb_abd: 0.022494693321127298
+    thumb_mcp: 0.025823925917207072
+    thumb_dip: 0.028158817239107056
+    index_abd: 0.01580248559628673
+    index_mcp: 0.015504535090063762
+    index_pip: 0.019216289045328638
+    middle_abd: 0.012476465447889046
+    middle_mcp: 0.014061338513343175
+    middle_pip: 0.041061162953591454
+    ring_abd: 0.012674705655154902
+    ring_mcp: 0.019573209868250754
+    ring_pip: 0.024896642096983206
+    pinky_abd: 0.020682292090287577
+    pinky_mcp: 0.01918123819257894
+    pinky_pip: 0.028444689061166817
   per_joint_max_deg:
-    wrist: 0.015748502365369177
-    thumb_cmc: 0.020053052201447485
-    thumb_abd: 0.06300888975385632
-    thumb_mcp: 0.04538266818761372
-    thumb_dip: 0.26873028579903746
-    index_abd: 0.05171116750723925
-    index_mcp: 0.057189081825697485
-    index_pip: 0.17589796571982674
-    middle_abd: 0.05711029641571841
-    middle_mcp: 0.03710256411430635
-    middle_pip: 0.1250619578420924
-    ring_abd: 0.016463522167615707
-    ring_mcp: 0.07300625779457803
-    ring_pip: 0.14901770087636024
-    pinky_abd: 0.04107171677142318
-    pinky_mcp: 0.015097622371442299
-    pinky_pip: 0.0824787008918264
+    wrist: 0.016589888113330176
+    thumb_cmc: 0.11793943455065659
+    thumb_abd: 0.038327952155079004
+    thumb_mcp: 0.10792870800175791
+    thumb_dip: 0.1597227739588618
+    index_abd: 0.03614428609089515
+    index_mcp: 0.06653227502117431
+    index_pip: 0.093425601569459
+    middle_abd: 0.022368644925588654
+    middle_mcp: 0.059660414220772395
+    middle_pip: 0.3000904234738613
+    ring_abd: 0.043789667524670506
+    ring_mcp: 0.060555994847192096
+    ring_pip: 0.14527530546761547
+    pinky_abd: 0.03265368383398837
+    pinky_mcp: 0.10721093730985132
+    pinky_pip: 0.15088107724531596
   fingertip_mm:
-    mean: 0.05165362434825827
-    p95: 0.10289153153728445
+    mean: 0.04706166250001337
+    p95: 0.09783393692225714
   axis_diag_deg:
-    wrist: 0.35080836510074953
-    thumb_cmc: 1.3029170562115995
-    thumb_abd: 1.810335920836458
-    thumb_mcp: 0.8180287277028442
-    thumb_dip: 0.7357480020920897
-    index_abd: 1.0631972256500362
-    index_mcp: 0.7010797257170457
-    index_pip: 0.5189283358102444
-    middle_abd: 1.079630176382043
-    middle_mcp: 0.498788586786894
-    middle_pip: 0.4547632118415608
-    ring_abd: 1.5720298994022581
-    ring_mcp: 0.7997600549423436
-    ring_pip: 0.7094434592651515
-    pinky_abd: 0.834919972745165
-    pinky_mcp: 0.2741946756582313
-    pinky_pip: 0.40545691510617066
-  solve_s: 3.747775145515334
-  seeds: 2
+    wrist: 0.52827002222144
+    thumb_cmc: 1.1202585144144557
+    thumb_abd: 0.7841847943709084
+    thumb_mcp: 0.7752643741547691
+    thumb_dip: 0.3159500071260258
+    index_abd: 0.9679564363615658
+    index_mcp: 0.2300331619862817
+    index_pip: 0.7249371464149276
+    middle_abd: 2.6781347427925097
+    middle_mcp: 0.45778084486059745
+    middle_pip: 0.13577503359894202
+    ring_abd: 1.388138099530945
+    ring_mcp: 0.30865686076943183
+    ring_pip: 0.2074503727248613
+    pinky_abd: 1.9714711455027878
+    pinky_mcp: 0.43294237220012904
+    pinky_pip: 0.6440008790256376
+  solve_s: 5.567906694312114
+  seeds: 3
   classes:
   - class: wrist
-    mean_deg: 0.005
-    worst_deg: 0.016
+    mean_deg: 0.008
+    worst_deg: 0.017
     worst_vs_budget: 0.1
     within: true
   - class: abd
-    mean_deg: 0.02
-    worst_deg: 0.057
-    worst_vs_budget: 0.21
+    mean_deg: 0.015
+    worst_deg: 0.044
+    worst_vs_budget: 0.16
     within: true
   - class: mcp
-    mean_deg: 0.014
-    worst_deg: 0.073
-    worst_vs_budget: 0.21
-    within: true
-  - class: pip
-    mean_deg: 0.032
-    worst_deg: 0.176
-    worst_vs_budget: 0.28
-    within: true
-  - class: thumb
-    mean_deg: 0.03
-    worst_deg: 0.269
+    mean_deg: 0.017
+    worst_deg: 0.107
     worst_vs_budget: 0.32
     within: true
+  - class: pip
+    mean_deg: 0.028
+    worst_deg: 0.3
+    worst_vs_budget: 0.48
+    within: true
+  - class: thumb
+    mean_deg: 0.026
+    worst_deg: 0.16
+    worst_vs_budget: 0.45
+    within: true
+B-print-geometry:
+  per_joint_mean_deg:
+    wrist: 0.19829959670042607
+    thumb_cmc: 0.3640206328590283
+    thumb_abd: 0.3901065727824539
+    thumb_mcp: 0.588615391574699
+    thumb_dip: 0.8287700270461927
+    index_abd: 0.3065391956193314
+    index_mcp: 0.8823557655890838
+    index_pip: 0.876557031057444
+    middle_abd: 0.30669864184427287
+    middle_mcp: 0.3341744595964101
+    middle_pip: 0.5648587384696108
+    ring_abd: 0.27978782818616404
+    ring_mcp: 0.5078661984215821
+    ring_pip: 0.5525545467895104
+    pinky_abd: 0.2260386159244053
+    pinky_mcp: 0.857412793441994
+    pinky_pip: 0.7744789226105929
+  per_joint_max_deg:
+    wrist: 0.5059856428233225
+    thumb_cmc: 1.3733346894273382
+    thumb_abd: 1.164666836009708
+    thumb_mcp: 1.002832159528495
+    thumb_dip: 2.046629853576917
+    index_abd: 0.9154834975357105
+    index_mcp: 1.6002660109015636
+    index_pip: 2.343306762115356
+    middle_abd: 0.7863807235260047
+    middle_mcp: 0.840565406142197
+    middle_pip: 2.2057739640622245
+    ring_abd: 0.7861213956157478
+    ring_mcp: 1.4587079196219435
+    ring_pip: 1.8729056899042646
+    pinky_abd: 0.5092648035761229
+    pinky_mcp: 2.5517677987812846
+    pinky_pip: 3.317134809746392
+  fingertip_mm:
+    mean: 0.9017413924110053
+    p95: 1.660767757152026
+  axis_diag_deg:
+    wrist: 0.5267219782967756
+    thumb_cmc: 0.5204702262944465
+    thumb_abd: 0.6849932418173513
+    thumb_mcp: 0.43923770512079396
+    thumb_dip: 0.4936058390869228
+    index_abd: 0.8172646541440645
+    index_mcp: 0.6064102311218954
+    index_pip: 0.9788963152590533
+    middle_abd: 1.5175322744506363
+    middle_mcp: 1.0137591180501933
+    middle_pip: 1.0761342984447815
+    ring_abd: 1.102122933958143
+    ring_mcp: 0.7619592786745378
+    ring_pip: 0.976401815279518
+    pinky_abd: 0.7511823489954117
+    pinky_mcp: 0.5650923101412612
+    pinky_pip: 1.458082016200002
+  solve_s: 6.644634483591654
+  seeds: 5
+  classes:
+  - class: wrist
+    mean_deg: 0.198
+    worst_deg: 0.506
+    worst_vs_budget: 3.16
+    within: false
+  - class: abd
+    mean_deg: 0.28
+    worst_deg: 0.915
+    worst_vs_budget: 3.39
+    within: false
+  - class: mcp
+    mean_deg: 0.645
+    worst_deg: 2.552
+    worst_vs_budget: 7.51
+    within: false
+  - class: pip
+    mean_deg: 0.692
+    worst_deg: 3.317
+    worst_vs_budget: 5.27
+    within: false
+  - class: thumb
+    mean_deg: 0.543
+    worst_deg: 2.047
+    worst_vs_budget: 5.28
+    within: false
+C-measurement-sys:
+  per_joint_mean_deg:
+    wrist: 0.04951922575069832
+    thumb_cmc: 0.12513409501511424
+    thumb_abd: 0.12409547524197369
+    thumb_mcp: 0.13063570748460185
+    thumb_dip: 0.15249420029522048
+    index_abd: 0.10113718796519625
+    index_mcp: 0.12602445216639313
+    index_pip: 0.15256350863656779
+    middle_abd: 0.11341648694902924
+    middle_mcp: 0.10571621713116537
+    middle_pip: 0.20458618504671855
+    ring_abd: 0.08640056974663883
+    ring_mcp: 0.05964978436527705
+    ring_pip: 0.16553818592270247
+    pinky_abd: 0.09264437554813404
+    pinky_mcp: 0.11735807497647047
+    pinky_pip: 0.1899022007819809
+  per_joint_max_deg:
+    wrist: 0.18826581378614549
+    thumb_cmc: 0.30680165679129345
+    thumb_abd: 0.34130924779786653
+    thumb_mcp: 0.394179068327027
+    thumb_dip: 0.6087524220488092
+    index_abd: 0.2155646829979787
+    index_mcp: 0.39488586627629196
+    index_pip: 0.8525177549820135
+    middle_abd: 0.2707588540404795
+    middle_mcp: 0.5028570428567534
+    middle_pip: 1.0588148921089608
+    ring_abd: 0.19946784012516572
+    ring_mcp: 0.19916572061752547
+    ring_pip: 0.5754341868947108
+    pinky_abd: 0.23639968939146705
+    pinky_mcp: 0.3918174633425897
+    pinky_pip: 0.6421307414363966
+  fingertip_mm:
+    mean: 0.4375287156060812
+    p95: 0.787389040500744
+  axis_diag_deg:
+    wrist: 0.3682736016025008
+    thumb_cmc: 1.1660263185718256
+    thumb_abd: 0.5201385541304593
+    thumb_mcp: 1.0337800279582618
+    thumb_dip: 0.6222155504744972
+    index_abd: 1.2448464298867807
+    index_mcp: 0.40681184141180793
+    index_pip: 0.605804337578783
+    middle_abd: 0.970510105063494
+    middle_mcp: 0.6781835001567149
+    middle_pip: 0.6675657774382426
+    ring_abd: 0.7843830403410368
+    ring_mcp: 0.5407218300986923
+    ring_pip: 0.7320513732117944
+    pinky_abd: 1.1500651785745015
+    pinky_mcp: 0.4562301011515243
+    pinky_pip: 0.5482923376284726
+  solve_s: 6.864573783415835
+  seeds: 5
+  classes:
+  - class: wrist
+    mean_deg: 0.05
+    worst_deg: 0.188
+    worst_vs_budget: 1.18
+    within: false
+  - class: abd
+    mean_deg: 0.098
+    worst_deg: 0.271
+    worst_vs_budget: 1.0
+    within: false
+  - class: mcp
+    mean_deg: 0.102
+    worst_deg: 0.503
+    worst_vs_budget: 1.48
+    within: false
+  - class: pip
+    mean_deg: 0.178
+    worst_deg: 1.059
+    worst_vs_budget: 1.68
+    within: false
+  - class: thumb
+    mean_deg: 0.133
+    worst_deg: 0.609
+    worst_vs_budget: 1.22
+    within: false
+D-offsets-only:
+  per_joint_mean_deg:
+    wrist: 0.2434566682087885
+    thumb_cmc: 0.309186931121377
+    thumb_abd: 0.5644640876743218
+    thumb_mcp: 0.5613180304700867
+    thumb_dip: 0.5883024667341008
+    index_abd: 0.2888142586019872
+    index_mcp: 0.6329541873581733
+    index_pip: 0.5793809561255396
+    middle_abd: 0.35228803844617024
+    middle_mcp: 0.5878655144969609
+    middle_pip: 0.5336249541486028
+    ring_abd: 0.23604720255044
+    ring_mcp: 0.5449591043101281
+    ring_pip: 0.5358649673487237
+    pinky_abd: 0.335884932172308
+    pinky_mcp: 1.4515769551245135
+    pinky_pip: 1.195723075920501
+  per_joint_max_deg:
+    wrist: 0.666618914664113
+    thumb_cmc: 0.8868471050084921
+    thumb_abd: 1.2451854921121122
+    thumb_mcp: 2.014842329397311
+    thumb_dip: 1.5202688925935632
+    index_abd: 0.9408346166236825
+    index_mcp: 1.9885821118307838
+    index_pip: 1.5597877607553698
+    middle_abd: 0.8259019961219742
+    middle_mcp: 1.8133079652526902
+    middle_pip: 2.3885967623118063
+    ring_abd: 0.6308846491450097
+    ring_mcp: 1.4974467099104771
+    ring_pip: 1.3014587560603452
+    pinky_abd: 0.6973644194651385
+    pinky_mcp: 2.9168527150805375
+    pinky_pip: 3.0987394654840585
+  fingertip_mm:
+    mean: 1.3089651721891533
+    p95: 2.150213580898453
+  axis_diag_deg:
+    wrist: 0.5216066042655619
+    thumb_cmc: 0.9724511975088913
+    thumb_abd: 1.0242692195997964
+    thumb_mcp: 0.6862974194688438
+    thumb_dip: 0.7279095455837636
+    index_abd: 1.9318941608266906
+    index_mcp: 0.7942176784770013
+    index_pip: 0.9742416553650406
+    middle_abd: 0.9282929648431489
+    middle_mcp: 1.071669573221423
+    middle_pip: 0.37947435001473817
+    ring_abd: 1.9332946991539437
+    ring_mcp: 0.6870227311580226
+    ring_pip: 0.8058496803750937
+    pinky_abd: 0.7885177023605907
+    pinky_mcp: 1.2059883750940887
+    pinky_pip: 0.6187363091109244
+  solve_s: 2.3166755081969312
+  seeds: 5
+  classes:
+  - class: wrist
+    mean_deg: 0.243
+    worst_deg: 0.667
+    worst_vs_budget: 4.17
+    within: false
+  - class: abd
+    mean_deg: 0.303
+    worst_deg: 0.941
+    worst_vs_budget: 3.48
+    within: false
+  - class: mcp
+    mean_deg: 0.804
+    worst_deg: 2.917
+    worst_vs_budget: 8.58
+    within: false
+  - class: pip
+    mean_deg: 0.711
+    worst_deg: 3.099
+    worst_vs_budget: 4.92
+    within: false
+  - class: thumb
+    mean_deg: 0.506
+    worst_deg: 2.015
+    worst_vs_budget: 5.04
+    within: false
+E-webcam-combined:
+  per_joint_mean_deg:
+    wrist: 0.24327761224234906
+    thumb_cmc: 0.4204431562074632
+    thumb_abd: 0.34952159883956424
+    thumb_mcp: 0.5196345305919692
+    thumb_dip: 0.7990420322404581
+    index_abd: 0.26260758180677884
+    index_mcp: 1.0035496608493328
+    index_pip: 1.130918532516123
+    middle_abd: 0.3082218881700447
+    middle_mcp: 0.3703554012553862
+    middle_pip: 0.6038501544844227
+    ring_abd: 0.23597777407640383
+    ring_mcp: 0.5316027268154973
+    ring_pip: 0.5618734112936054
+    pinky_abd: 0.25028305373114834
+    pinky_mcp: 0.9817639139546814
+    pinky_pip: 1.0417462778271251
+  per_joint_max_deg:
+    wrist: 0.6260059012619621
+    thumb_cmc: 1.2457922432722057
+    thumb_abd: 0.916940747439142
+    thumb_mcp: 1.2871118565779085
+    thumb_dip: 2.4318059340425613
+    index_abd: 0.5312991406445313
+    index_mcp: 1.707329371685642
+    index_pip: 4.001031918202539
+    middle_abd: 0.8593274654148608
+    middle_mcp: 0.9981233383503376
+    middle_pip: 1.8361905205857738
+    ring_abd: 0.7094572005352546
+    ring_mcp: 1.5109843566463468
+    ring_pip: 1.7956101114944296
+    pinky_abd: 0.6273993542023355
+    pinky_mcp: 2.328761575023602
+    pinky_pip: 3.330086787109906
+  fingertip_mm:
+    mean: 1.1771173867604188
+    p95: 2.0301014288008505
+  axis_diag_deg:
+    wrist: 0.4796801288385417
+    thumb_cmc: 0.9393743536680964
+    thumb_abd: 1.1163245059599467
+    thumb_mcp: 0.6840407265819591
+    thumb_dip: 0.5752631997826929
+    index_abd: 1.9323068807207384
+    index_mcp: 0.8461694716111392
+    index_pip: 0.9502009246795058
+    middle_abd: 0.8183007349395799
+    middle_mcp: 1.0930123782626815
+    middle_pip: 0.38685403103888594
+    ring_abd: 1.932122240446925
+    ring_mcp: 0.737409198394241
+    ring_pip: 0.78883164133357
+    pinky_abd: 0.9073172883615948
+    pinky_mcp: 0.9046233009904473
+    pinky_pip: 0.6190270705206318
+  solve_s: 6.537675233394839
+  seeds: 5
+  classes:
+  - class: wrist
+    mean_deg: 0.243
+    worst_deg: 0.626
+    worst_vs_budget: 3.91
+    within: false
+  - class: abd
+    mean_deg: 0.264
+    worst_deg: 0.859
+    worst_vs_budget: 3.18
+    within: false
+  - class: mcp
+    mean_deg: 0.722
+    worst_deg: 2.329
+    worst_vs_budget: 6.85
+    within: false
+  - class: pip
+    mean_deg: 0.835
+    worst_deg: 4.001
+    worst_vs_budget: 6.35
+    within: false
+  - class: thumb
+    mean_deg: 0.522
+    worst_deg: 2.432
+    worst_vs_budget: 4.79
+    within: false
+F-gross-init:
+  per_joint_mean_deg:
+    wrist: 0.24319777180912833
+    thumb_cmc: 0.42043816650462745
+    thumb_abd: 0.349521422507031
+    thumb_mcp: 0.5196315980655333
+    thumb_dip: 0.7990393866157245
+    index_abd: 0.26261361393254884
+    index_mcp: 1.0035500763685912
+    index_pip: 1.1309157716114662
+    middle_abd: 0.3082232906157853
+    middle_mcp: 0.37033583361959577
+    middle_pip: 0.6038432119209755
+    ring_abd: 0.23587426979221915
+    ring_mcp: 0.5316121782582497
+    ring_pip: 0.5618748992705811
+    pinky_abd: 0.25029796087674816
+    pinky_mcp: 0.9817557730404923
+    pinky_pip: 1.0417416530937298
+  per_joint_max_deg:
+    wrist: 0.6262144876913993
+    thumb_cmc: 1.245787167168693
+    thumb_abd: 0.9169332820542664
+    thumb_mcp: 1.2871068346006922
+    thumb_dip: 2.4318841866628276
+    index_abd: 0.5312480167493838
+    index_mcp: 1.7073136281561396
+    index_pip: 4.000995831648719
+    middle_abd: 0.8593056849723517
+    middle_mcp: 0.9980940082160927
+    middle_pip: 1.8361809621360798
+    ring_abd: 0.7091605120465196
+    ring_mcp: 1.511012018170291
+    ring_pip: 1.795650422142538
+    pinky_abd: 0.6273791670341176
+    pinky_mcp: 2.3287837483779157
+    pinky_pip: 3.3300723898589553
+  fingertip_mm:
+    mean: 1.1771061839630013
+    p95: 2.0302334846519594
+  axis_diag_deg:
+    wrist: 0.47968921305727963
+    thumb_cmc: 0.9393407061374375
+    thumb_abd: 1.1163427675874669
+    thumb_mcp: 0.6840240066768405
+    thumb_dip: 0.5752619111990465
+    index_abd: 1.93231133803279
+    index_mcp: 0.8461640779963532
+    index_pip: 0.9502031855534432
+    middle_abd: 0.8183090534551862
+    middle_mcp: 1.093014047913298
+    middle_pip: 0.3868512342115722
+    ring_abd: 1.9321224618413406
+    ring_mcp: 0.7371376403913977
+    ring_pip: 0.7889793411270585
+    pinky_abd: 0.9073255793426814
+    pinky_mcp: 0.9046214158944904
+    pinky_pip: 0.6190363216562754
+  solve_s: 11.731630749814212
+  seeds: 5
+  classes:
+  - class: wrist
+    mean_deg: 0.243
+    worst_deg: 0.626
+    worst_vs_budget: 3.91
+    within: false
+  - class: abd
+    mean_deg: 0.264
+    worst_deg: 0.859
+    worst_vs_budget: 3.18
+    within: false
+  - class: mcp
+    mean_deg: 0.722
+    worst_deg: 2.329
+    worst_vs_budget: 6.85
+    within: false
+  - class: pip
+    mean_deg: 0.835
+    worst_deg: 4.001
+    worst_vs_budget: 6.35
+    within: false
+  - class: thumb
+    mean_deg: 0.522
+    worst_deg: 2.432
+    worst_vs_budget: 4.79
+    within: false
