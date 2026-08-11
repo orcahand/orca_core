@@ -330,6 +330,26 @@ class OrcaHandConfig(BaseHandConfig):
 
         return cls(**kwargs)
 
+    def validate_control_mode(self) -> None:
+        """Check ``control_mode`` against what the motor family accepts.
+
+        An unpinned ``motor_type`` is only checked against the union of modes
+        across families; connect re-runs this once the family is resolved.
+        """
+        if self.motor_type is None:
+            if self.control_mode not in CONTROL_MODES:
+                raise HandConfigValidationError("Invalid control mode.")
+            return
+
+        from .hardware.motor_factory import motor_client_class
+
+        supported = motor_client_class(self.motor_type).supported_modes
+        if self.control_mode not in supported:
+            raise HandConfigValidationError(
+                f"control_mode {self.control_mode!r} is not supported by "
+                f"{self.motor_type} motors; supported: {sorted(supported)}."
+            )
+
     def validate_config(self) -> None:
         """Validate the ORCA hand configuration."""
         super().validate()
@@ -344,14 +364,13 @@ class OrcaHandConfig(BaseHandConfig):
                 "Number of motor IDs and joint-to-motor mappings do not match."
             )
 
-        if self.control_mode not in CONTROL_MODES:
-            raise HandConfigValidationError("Invalid control mode.")
-
         if self.motor_type is not None and self.motor_type not in SUPPORTED_MOTOR_TYPES:
             raise HandConfigValidationError(
                 f"Unknown motor_type: {self.motor_type!r}. "
                 f"Expected one of {SUPPORTED_MOTOR_TYPES} or omit for auto-detection."
             )
+
+        self.validate_control_mode()
 
         if self.max_current < self.calibration_current:
             raise HandConfigValidationError(

@@ -9,7 +9,7 @@ import yaml
 from orca_core.utils.cli import (
     add_hand_arguments,
     connect_hand,
-    create_hand,
+    create_hand_from_args,
     resolve_input_path,
     shutdown_hand,
 )
@@ -35,6 +35,11 @@ def main() -> int:
         default="ease_in_out",
     )
     parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replay even when the recording was made on the other hand side.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)
@@ -50,7 +55,7 @@ def main() -> int:
         return 1
 
     metadata = replay_data.get("metadata", {})
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
         hand.init_joints(force_calibrate=args.mock)
@@ -58,6 +63,15 @@ def main() -> int:
         expected_joint_ids = metadata.get("joint_ids")
         if expected_joint_ids is not None and expected_joint_ids != hand.config.joint_ids:
             raise ValueError("Replay joint order does not match the connected hand configuration.")
+
+        # Left and right hands share a joint order, so only hand_type catches a
+        # sequence recorded on the mirrored hand.
+        if not args.force and metadata.get("hand_type") not in (None, hand.config.type):
+            raise ValueError(
+                f"Replay was recorded for hand_type={metadata['hand_type']}, "
+                f"but the connected config is {hand.config.type}. Pass --force to "
+                "replay it anyway."
+            )
 
         interp_func = linear_interp if args.mode == "linear" else ease_in_out
         print(f"Starting waypoint replay from {replay_path}")

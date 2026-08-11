@@ -24,7 +24,8 @@ callers (and scripts) don't have to hand-pick hand classes.
 Called with no config at all, :func:`load_hand` first runs
 :func:`detect_hand`, which probes the connected hardware — the hand's side
 from the controller board's identity reply, joint encoders from a live encoder
-stream, tactile from a sensor register reply — and picks the bundled model
+stream, tactile from a sensor register reply, the motor family from the motor
+bus itself — and picks the bundled model
 that matches, so ``load_hand()`` on a plugged-in hand just works. Hands
 that report no side are treated as right-handed; a config selects the
 model explicitly whenever detection can't.
@@ -101,7 +102,8 @@ class HandDetection:
     ``model_name`` is the bundled v2 model matching the detected side and
     sensing capabilities; the port fields carry what was discovered so the
     hand can connect without re-probing. ``identity`` is ``None`` for hands
-    whose board doesn't report one.
+    whose board doesn't report one, and ``motor_type``/``motor_baudrate`` are
+    ``None`` when the motor bus answered nothing.
     """
 
     model_name: str
@@ -112,6 +114,40 @@ class HandDetection:
     sensing_port: Optional[str] = None
     tactile_port: Optional[str] = None
     identity: Optional[OrcaBoardInfo] = None
+    motor_type: Optional[str] = None
+    motor_baudrate: Optional[int] = None
+
+
+# Motor IDs the family probe pings when no config names them yet.
+_PROBE_MOTOR_IDS = list(range(1, 18))
+
+
+def _detect_motor_family(port: str) -> "tuple[Optional[str], Optional[int]]":
+    """Identify the motor family answering on ``port``, non-fatally.
+
+    A factory-default probe names the family outright; motors already
+    programmed into a chain no longer answer there, so fall back to the
+    connect-time trial probe with both axes unpinned. Returns ``(None, None)``
+    when nothing responds — detection must never fail on this.
+    """
+    try:
+        from .maintenance.motor_chain import detect_motor_type
+
+        motor_type = detect_motor_type(port)
+        if motor_type is not None:
+            return motor_type, None
+
+        from types import SimpleNamespace
+
+        from .hardware.motor_resolution import trial_probe
+
+        return trial_probe(
+            SimpleNamespace(motor_type=None, baudrate=None, motor_ids=_PROBE_MOTOR_IDS),
+            port,
+        )
+    except Exception:
+        logger.debug("motor-family detection failed on %s", port, exc_info=True)
+        return None, None
 
 
 def detect_hand() -> HandDetection:
@@ -120,7 +156,8 @@ def detect_hand() -> HandDetection:
     The hand's side comes from the controller board's identity reply; joint
     encoders are confirmed by a live encoder stream on the sensing CDC and
     tactile by a sensor register reply (on the shared CDC or a dedicated
-    adapter). Any question the hardware doesn't answer falls back
+    adapter) and the motor family by probing the motor bus. Any question the
+    hardware doesn't answer falls back
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
@@ -153,6 +190,10 @@ def detect_hand() -> HandDetection:
     if not has_tactile and sensing_port is not None:
         has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
 
+    motor_type, motor_baudrate = (
+        _detect_motor_family(motor_port) if motor_port is not None else (None, None)
+    )
+
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
 
@@ -165,6 +206,8 @@ def detect_hand() -> HandDetection:
         sensing_port=sensing_port,
         tactile_port=tactile_port,
         identity=identity,
+        motor_type=motor_type,
+        motor_baudrate=motor_baudrate,
     )
 
 
@@ -174,6 +217,18 @@ def _pin_detected_ports(config, detection: HandDetection):
     their configured (typically ``auto``) values."""
     if detection.motor_port is not None:
         config = dataclasses.replace(config, port=detection.motor_port)
+    if detection.motor_type is not None and detection.motor_type != config.motor_type:
+        # The bundled model pins the other family, so its baud rate is wrong
+        # too; an undetected one is left unpinned for the connect-time probe.
+        logger.info(
+            "detected %s motors on %s; overriding the model's %s pinning",
+            detection.motor_type, detection.motor_port, config.motor_type,
+        )
+        config = dataclasses.replace(
+            config,
+            motor_type=detection.motor_type,
+            baudrate=detection.motor_baudrate,
+        )
     if detection.has_encoders and detection.sensing_port is not None:
         config = dataclasses.replace(
             config, encoder_serial_port=detection.sensing_port

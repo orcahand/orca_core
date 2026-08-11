@@ -16,6 +16,7 @@ from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
 from ..constants import DYNAMIXEL
+from .dynamixel_client import DynamixelClient
 from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -81,6 +82,10 @@ class MockDynamixelClient(MotorClient):
     """
 
     motor_type = DYNAMIXEL
+    factory_default_id = DynamixelClient.factory_default_id
+    factory_default_baudrate = DynamixelClient.factory_default_baudrate
+    baud_rate_map = DynamixelClient.baud_rate_map
+    requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.

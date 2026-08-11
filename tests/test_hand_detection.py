@@ -51,8 +51,12 @@ def _patch_hardware(
     encoder_stream=False,
     paxini_port=None,
     tactile_register=False,
+    motor_family=(None, None),
 ):
     infos = infos or {}
+    monkeypatch.setattr(
+        hand_factory, "_detect_motor_family", lambda port: motor_family
+    )
     monkeypatch.setattr(hand_factory, "oh_board_ports", lambda: list(oh_ports))
     monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: infos.get(port))
     monkeypatch.setattr(
@@ -114,6 +118,72 @@ def test_nothing_plugged_in_yields_plain_right_hand(monkeypatch):
     assert d.motor_port is None
     assert d.sensing_port is None
     assert d.identity is None
+    assert (d.motor_type, d.motor_baudrate) == (None, None)
+
+
+# ----- motor-family detection ------------------------------------------------
+
+def test_detects_the_motor_family_on_the_motor_port(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+
+
+def test_motor_family_detection_is_non_fatal(monkeypatch):
+    def _boom(port, progress_callback=None):
+        raise OSError("port went away")
+
+    monkeypatch.setattr("orca_core.maintenance.motor_chain.detect_motor_type", _boom)
+    assert hand_factory._detect_motor_family("/dev/cu.m") == (None, None)
+
+
+def test_motor_family_falls_back_to_the_trial_probe(monkeypatch):
+    """Motors already programmed into a chain no longer answer at their
+    factory defaults, so the family comes from the connect-time probe."""
+    monkeypatch.setattr(
+        "orca_core.maintenance.motor_chain.detect_motor_type",
+        lambda port, progress_callback=None: None,
+    )
+    monkeypatch.setattr(
+        "orca_core.hardware.motor_resolution.trial_probe",
+        lambda config, port: ("feetech", 1_000_000),
+    )
+    assert hand_factory._detect_motor_family("/dev/cu.m") == ("feetech", 1_000_000)
+
+
+def test_pin_detected_ports_overrides_a_config_pinned_family():
+    """A bundled model pins dynamixel; a detected Feetech chain must win, and
+    the model's baud rate must be dropped with it."""
+    config = hand_factory.OrcaHandConfig.from_config_path(
+        model_name="orcahand-right", model_version="v2"
+    )
+    assert config.motor_type == "dynamixel"
+
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False,
+        has_encoders=False, motor_port="/dev/cu.m", motor_type="feetech",
+    )
+    pinned = hand_factory._pin_detected_ports(config, detection)
+    assert pinned.motor_type == "feetech"
+    assert pinned.baudrate is None
+
+
+def test_pin_detected_ports_keeps_a_matching_family():
+    config = hand_factory.OrcaHandConfig.from_config_path(
+        model_name="orcahand-right", model_version="v1"
+    )
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False,
+        has_encoders=False, motor_port="/dev/cu.m", motor_type="dynamixel",
+    )
+    pinned = hand_factory._pin_detected_ports(config, detection)
+    assert pinned.motor_type == "dynamixel"
+    assert pinned.baudrate == config.baudrate
 
 
 # ----- load_hand integration -------------------------------------------------

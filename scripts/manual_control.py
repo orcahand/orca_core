@@ -10,9 +10,10 @@ motor-only ``OrcaHand`` / ``OrcaHandTouch`` and gets one slider per joint plus
 torque enable/disable.
 
 Motor space (``--motor-space``): one slider per motor, each spanning a narrow
-window around the motor's position at startup. This is a tendon bring-up aid
-for nudging a single motor and watching its tendon respond, not a way to pose
-the hand. It talks to the motor bus only — no encoders, no tactile.
+window around the motor's position at startup, clamped to the motor's usable
+travel. This is a tendon bring-up aid for nudging a single motor and watching
+its tendon respond, not a way to pose the hand. The hand is still detected the
+usual way, but the closed-loop controller stays disengaged.
 
 Usage:
     uv run python scripts/manual_control.py CONFIG
@@ -33,7 +34,7 @@ from typing import List
 
 import numpy as np
 
-from orca_core import OrcaHand, OrcaHandJointFeedback, load_hand
+from orca_core import OrcaHandJointFeedback
 from orca_core.control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
     DEFAULT_KI,
@@ -42,6 +43,7 @@ from orca_core.control.constants import (
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 
 REFRESH_MS = 100
 
@@ -50,12 +52,11 @@ REFRESH_MS = 100
 MOTOR_SLIDER_SPAN_RAD = 1.0
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    p.add_argument(
-        "config_path", nargs="?", default=None,
-        help="Path to the hand config.yaml.",
-    )
+    # The mode flag below decides whether the loop is engaged, so the shared
+    # --no-engage-feedback would only contradict it.
+    add_hand_arguments(p, feedback_flag=False)
     p.add_argument(
         "--motor-space", action="store_true",
         help="Slider per motor instead of per joint (tendon bring-up; motor bus only).",
@@ -76,7 +77,7 @@ def parse_args() -> argparse.Namespace:
         "--joints", nargs="+",
         help="Show sliders for these joints only (feedback hands).",
     )
-    return p.parse_args()
+    return p
 
 
 def _finger_joint_map(joint_ids: List[str]) -> dict[str, List[str]]:
@@ -208,6 +209,30 @@ class HandControlUI:
         label.config(text=f"{value:.1f}")
 
 
+def _motor_slider_range(hand, motor: int, current: float) -> tuple[float, float, bool]:
+    """Slider window around ``current``, clamped to the motor's usable travel.
+
+    Calibrated hard limits win; otherwise the motor family's own position range
+    bounds it. Returns ``(from_, to, clamped)``.
+    """
+    low = current - MOTOR_SLIDER_SPAN_RAD
+    high = current + MOTOR_SLIDER_SPAN_RAD
+
+    limits = hand.motor_limits_dict.get(motor) or [None, None]
+    if all(limit is not None for limit in limits):
+        bounds = (min(limits), max(limits))
+    else:
+        bounds = hand.motor_client.position_range_rad
+    if bounds is None:
+        return low, high, False
+
+    clamped_low = max(low, min(bounds))
+    clamped_high = min(high, max(bounds))
+    if clamped_high <= clamped_low:
+        return low, high, False
+    return clamped_low, clamped_high, (clamped_low, clamped_high) != (low, high)
+
+
 class MotorSliderUI:
     """Motor-space slider UI: one slider per motor over a narrow window around
     its startup position, plus torque buttons."""
@@ -235,18 +260,24 @@ class MotorSliderUI:
         sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
         current_motor_pos = self.hand.get_motor_pos(as_dict=True)
+        any_clamped = False
         for motor in self.hand.config.motor_ids:
             self.motor_values[motor].set(current_motor_pos[motor])
+            low, high, clamped = _motor_slider_range(
+                self.hand, motor, current_motor_pos[motor]
+            )
+            any_clamped = any_clamped or clamped
 
             frame = ttk.Frame(sliders_frame)
             frame.pack(fill=tk.X, pady=5)
 
-            ttk.Label(frame, text=f"Motor {motor}", width=15).pack(side=tk.LEFT)
+            label = f"Motor {motor}*" if clamped else f"Motor {motor}"
+            ttk.Label(frame, text=label, width=15).pack(side=tk.LEFT)
 
             slider = tk.Scale(
                 frame,
-                from_=current_motor_pos[motor] - MOTOR_SLIDER_SPAN_RAD,
-                to=current_motor_pos[motor] + MOTOR_SLIDER_SPAN_RAD,
+                from_=low,
+                to=high,
                 orient=tk.HORIZONTAL,
                 variable=self.motor_values[motor],
                 command=lambda value, m=motor: self.update_motor_position(m, value),
@@ -263,6 +294,11 @@ class MotorSliderUI:
                 "write",
                 lambda *args, m=motor, label=value_label: self.update_value_label(m, label),
             )
+
+        if any_clamped:
+            ttk.Label(
+                sliders_frame, text="* range clamped to the motor's usable travel",
+            ).pack(anchor=tk.W, pady=(6, 0))
 
     def enable_torque(self):
         self.hand.enable_torque()
@@ -492,9 +528,9 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
 
 
 def _run_motor_space(args: argparse.Namespace) -> int:
-    # OrcaHand directly rather than load_hand(): motor-space nudging wants the motor
-    # bus alone, not the encoder and tactile links the factory opens for a sensing hand.
-    hand = OrcaHand(config_path=args.config_path)
+    # Detected like every other mode, but with the feedback loop disengaged: the
+    # loop would fight the raw motor writes this mode makes.
+    hand = create_hand_from_args(args, engage_feedback=False)
     success, msg = hand.connect()
     print(msg)
     if not success:
@@ -515,8 +551,19 @@ def _run_motor_space(args: argparse.Namespace) -> int:
         hand.disconnect()
 
 
+def _feedback_only_overrides(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[str]:
+    """Names of the feedback-only tuning flags the caller actually set."""
+    return [
+        flag
+        for flag, dest in (("--Kp", "Kp"), ("--Ki", "Ki"),
+                           ("--correction-max-deg", "correction_max_deg"))
+        if getattr(args, dest) != parser.get_default(dest)
+    ]
+
+
 def main() -> int:
-    args = parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
@@ -524,7 +571,16 @@ def main() -> int:
     if args.motor_space:
         return _run_motor_space(args)
 
-    hand = load_hand(config_path=args.config_path)
+    hand = create_hand_from_args(args)
+    if not isinstance(hand, OrcaHandJointFeedback):
+        given = _feedback_only_overrides(parser, args)
+        if given:
+            print(
+                f"FAIL: {', '.join(given)} tune the closed-loop controller, but this "
+                f"hand loaded as {type(hand).__name__} (no joint feedback)."
+            )
+            return 1
+
     overrides = {}
     if args.encoder_port is not None:
         overrides["encoder_serial_port"] = args.encoder_port

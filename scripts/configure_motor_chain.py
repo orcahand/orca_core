@@ -152,18 +152,46 @@ def _resolve_port(configured_port: str, motor_type: str | None) -> str:
     raise SystemExit(f"{RED}❌ No valid port found. Check your USB connection.{RESET}")
 
 
-def _resolve_motor_type(explicit: str | None, port: str) -> str:
+def _resolve_motor_type(explicit: str | None, config: dict, port: str) -> str:
+    """--motor-type wins, then whichever family answers at its factory defaults,
+    then the config's pinned family.
+
+    The bus decides for a fresh chain: a config names the family the model was
+    written for, not the one this hand was built from. Only a resumed run —
+    whose motors have already moved off the factory defaults, so nothing answers
+    the probe — falls back to what the config declares.
+    """
     if explicit is not None:
         return explicit
     print(f"\n{BOLD}Auto-detecting motor family on {port}...{RESET}")
-    motor_type = detect_motor_type(port, progress_callback=on_progress)
-    if motor_type is None:
-        raise SystemExit(
-            f"\n{RED}❌ No motors responded at either family's factory defaults.{RESET}\n"
-            "   Check power, wiring, and that motors are still at factory defaults\n"
-            "   (re-runs of this script change them). Or pass --motor-type explicitly."
-        )
-    return motor_type
+    detected = detect_motor_type(port, progress_callback=on_progress)
+    configured = config.get('motor_type')
+    if detected is not None:
+        if configured is not None and configured != detected:
+            print(f"{YELLOW}⚠ Config declares {configured}, but {detected} motors "
+                  f"answered; configuring them as {detected}.{RESET}")
+        return detected
+    if configured is not None:
+        print(f"{GREEN}✓ No motor at a factory default; using the config's "
+              f"family: {configured}{RESET}")
+        return configured
+    raise SystemExit(
+        f"\n{RED}❌ No motors responded at either family's factory defaults.{RESET}\n"
+        "   Check power, wiring, and that motors are still at factory defaults\n"
+        "   (re-runs of this script change them). Or pass --motor-type explicitly."
+    )
+
+
+def _config_for_family(config: dict, motor_type: str) -> dict:
+    """Drop a pinned baudrate that belongs to another motor family.
+
+    ``plan_motor_chain`` then falls back to the family's preferred rate rather
+    than a rate the detected family may not even support.
+    """
+    configured = config.get('motor_type')
+    if configured is None or configured == motor_type or 'baudrate' not in config:
+        return config
+    return {k: v for k, v in config.items() if k != 'baudrate'}
 
 
 def _loop_until_interrupt(label: str, once) -> int:
@@ -204,10 +232,10 @@ def main() -> int:
     args = parser.parse_args()
 
     config = _load_config(args.config_path)
-    port = _resolve_port(config.get('port', '/dev/ttyUSB0'), args.motor_type)
-    motor_type = _resolve_motor_type(args.motor_type, port)
+    port = _resolve_port(config.get('port', 'auto'), args.motor_type)
+    motor_type = _resolve_motor_type(args.motor_type, config, port)
     try:
-        plan = plan_motor_chain(config, port, motor_type)
+        plan = plan_motor_chain(_config_for_family(config, motor_type), port, motor_type)
     except MotorChainError as exc:
         print(f"{RED}❌ {exc}{RESET}")
         return 1
