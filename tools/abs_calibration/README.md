@@ -67,9 +67,34 @@ v1 number).
   forearm link is mandatory; with it, scenario A's wrist error fell 0.39° →
   0.008°.
 
-Known limitation: the §4b axis diagnostic as implemented has a ~0.6° noise
-floor (per-frame Kabsch on 5 dots); the production version must fit each axis
-from all sweep steps jointly (per-dot circle fit) to resolve 0.3–0.5° tilts.
+## Axis diagnostic (resolved limitation)
+
+The first implementation had a ~0.6° noise floor (per-frame Kabsch). The
+current one expresses each dot's sweep track in the solved model's
+reference-link frame (held-joint drift is visible to the encoders, so the
+model reference is smooth) and fits one common axis to all tracks jointly
+(smallest eigenvector of summed track covariances). Flexion sweeps resolve
+~0.1°; short abduction arcs with near-parallel dot tangents are honest only
+to ~0.5–1°, and the diagnostic **reports its own per-joint noise floor**
+(eigen-perturbation) so a reading is only ever interpreted against it. Rig
+protocol note: sweeping abd at 2–3 different flexion postures diversifies
+the tangents and would bring abd floors down to the flexion class.
+
+`sigma_deg` from the solver is statistical only (data sufficiency /
+convergence gate); the synthetic study is what quantifies model-error bias,
+which dominates it.
+
+## Production-facing pieces
+
+- `dataset.py` — the session on-disk format: the seam between data producers
+  (synthetic sim today, the camera/detection layer at Phase 1) and the
+  solver. Occlusion (NaN) is part of the format.
+- `solve_session.py` — CLI: session dir → `vision_calibration.yaml`
+  (offset + per-ROM poly + sigma per joint) + `calibration_diagnostics.yaml`
+  (axis disagreements with floors, solver info), with the per-joint prior
+  lever as a YAML and a sigma persistence gate.
+- Load-bearing behavior is pinned in `tests/test_abs_calibration.py`
+  (masked VarPro, session round-trip, axis floor/recovery, sigma, de-novo).
 
 ## Structure
 

@@ -49,7 +49,7 @@ JOINT_BUDGET_DEG = {
 
 def scenarios() -> list[Scenario]:
     base = dict(axis_tilt_deg=0.5, origin_shift_m=3e-4, dir_bias_deg=0.3,
-                tip_bias_m=3e-4, palm_bias_deg=0.2)
+                tip_bias_m=3e-4)
     meas = dict(scale=0.003, field_amp_m=2.5e-4)
     return [
         Scenario(name="A-ideal", inl_deg=0.0, gain_frac=0.0, seeds=3),
@@ -70,7 +70,7 @@ def run_scenario(nominal: KinematicModel, sc: Scenario, quick: bool) -> dict:
 
     per_joint_mean = {j: [] for j in joints}
     per_joint_max = {j: [] for j in joints}
-    tip_errs, axis_diags, times = [], {j: [] for j in joints}, []
+    tip_errs, axis_diags, times, sigmas = [], {j: [] for j in joints}, [], []
 
     for seed in range(seeds):
         rng = np.random.default_rng(1000 + seed)
@@ -90,7 +90,8 @@ def run_scenario(nominal: KinematicModel, sc: Scenario, quick: bool) -> dict:
         t0 = time.monotonic()
         result = est.solve(ds, x0)
         times.append(time.monotonic() - t0)
-        _, _, b = est.unpack(result.x)
+        b = result.b
+        sigmas.append(result.sigma_b0_deg)
 
         # Encoder-mapping recovery over the ROM (model-independent metric).
         for i, j in enumerate(joints):
@@ -103,8 +104,8 @@ def run_scenario(nominal: KinematicModel, sc: Scenario, quick: bool) -> dict:
 
         # Absolute fingertip error at random test poses (includes the
         # uncorrected geometry error, i.e. the honest v1 number).
-        rvec, t, _ = est.unpack(result.x)
-        Rb_hat = _rodrigues(rvec)
+        Rb_hat = _rodrigues(result.base_rvec)
+        t = result.base_t
         q_test = np.stack([
             rng.uniform(lo + 3, hi - 3, size=60)
             for lo, hi in (JOINT_ROMS[j] for j in joints)
@@ -123,8 +124,8 @@ def run_scenario(nominal: KinematicModel, sc: Scenario, quick: bool) -> dict:
                                np.einsum("fij,j->fi", Rt, tip + truth.tip_bias[finger]) + tt) + truth.base_t
             tip_errs.append(np.linalg.norm(x_pred - x_true, axis=1))
 
-        for j, ang in est.axis_diagnostic(result.x, ds).items():
-            axis_diags[j].append(ang)
+        for j, d in est.axis_diagnostic(result.x, ds).items():
+            axis_diags[j].append(d["deg"])
 
     tips = np.concatenate(tip_errs) * 1000.0
     return {
@@ -132,6 +133,7 @@ def run_scenario(nominal: KinematicModel, sc: Scenario, quick: bool) -> dict:
         "per_joint_max_deg": {j: float(np.max(v)) for j, v in per_joint_max.items()},
         "fingertip_mm": {"mean": float(np.mean(tips)), "p95": float(np.percentile(tips, 95))},
         "axis_diag_deg": {j: float(np.median(v)) for j, v in axis_diags.items() if v},
+        "sigma_b0_deg": {j: float(np.median([s[j] for s in sigmas])) for j in joints},
         "solve_s": float(np.mean(times)),
         "seeds": seeds,
     }

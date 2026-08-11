@@ -27,9 +27,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from dataset import Dataset
 from model import (
     FINGERS, HELD_POSE, JOINT_ROMS, TIP_POINT_LOCAL, DISTAL_LINK, PALM_LINK,
-    EncoderTruth, KinematicModel, palm_plane_local,
+    EncoderTruth, KinematicModel,
 )
 from orca_core.kinematics.transforms import rotation_about_axis
 
@@ -52,6 +53,11 @@ DIR_LINKS = [l for l in DOT_LINKS if l != "wrist"]
 # world-fixed wrist axis, which base pose absorbs exactly.
 TOWER_LINK = "fixed0"
 
+# Links carrying a two-axis mesh-referenced frame anchor: the forearm
+# (mandatory, splits base from wrist) and the palm's dorsal printed shell
+# (the palmar face is silicone-skinned and curved — never referenced).
+FRAME_ANCHOR_LINKS = (TOWER_LINK, PALM_LINK)
+
 # Usable dot span along each link's local z, meters (rough link lengths).
 LINK_SPAN = {
     "wrist": 0.055, "thumb_abd": 0.026, "thumb_mcp": 0.030, "thumb_dip": 0.028,
@@ -72,12 +78,16 @@ class Scenario:
     field_amp_m: float = 0.0
     dir_bias_deg: float = 0.0
     tip_bias_m: float = 0.0
-    palm_bias_deg: float = 0.0
     inl_deg: float = 0.6
     gain_frac: float = 0.005
     dot_noise_m: float = 1.5e-4
     dir_noise_deg: float = 0.05
     hardstop_bias_deg: float = 1.0
+    # Occlusion: probability a link is wholly unobserved in a frame, and an
+    # additional per-dot dropout. Real rigs are occlusion-heavy; masking is
+    # exercised by default.
+    link_dropout: float = 0.15
+    dot_dropout: float = 0.10
     # Per-joint gross hardstop-init error (prototype-hand quirks), e.g.
     # {"ring_abd": 20.0}; exercises the de-novo init path.
     gross_init_err: dict = field(default_factory=dict)
@@ -98,26 +108,9 @@ class Truth:
     dots: dict[str, np.ndarray]          # {link: (K,3) local, as-printed}
     dir_bias: dict[str, np.ndarray]      # {link: (3,3)} print-vs-mesh rotation
     tip_bias: dict[str, np.ndarray]      # {finger: (3,)} local
-    palm_bias: np.ndarray                # (3,3)
     scale: float
     field: object                        # callable (N,3)->(N,3)
     hardstop_b0: dict[str, float]        # hardstop-derived offset init (deg)
-
-
-@dataclass
-class Dataset:
-    m: np.ndarray                        # (F, J) encoder readings, deg
-    dot_obs: dict[str, np.ndarray]       # {link: (F, K, 3) world, measured}
-    dir_obs: dict[str, np.ndarray]       # {link: (A, 3)} unit dirs, measured
-    tower_axes_obs: list                 # [(A,3) z-axis obs, (A,3) x-axis obs]
-    dir_frames: np.ndarray               # (A,) frame indices of dir obs
-    palm_normal_obs: np.ndarray          # (W, 3)
-    palm_point_obs: np.ndarray           # (W, 3)
-    palm_frames: np.ndarray              # (W,)
-    plate_obs: list                      # [(frame_idx, finger, (3,) world)]
-    sweep_frames: dict[str, np.ndarray]  # {joint: frame indices}
-    q_true: np.ndarray                   # (F, J) for metrics only
-    joints: list
 
 
 def _smooth_field(rng: np.random.Generator, amp: float):
@@ -164,9 +157,8 @@ def make_truth(nominal: KinematicModel, sc: Scenario, rng: np.random.Generator) 
     return Truth(
         kin=kin, enc=enc, base_R=base_R, base_t=base_t, dots=dots,
         dir_bias={l: _small_rotation(rng, sc.dir_bias_deg)
-                  for l in DIR_LINKS + [TOWER_LINK]},
+                  for l in DIR_LINKS + list(FRAME_ANCHOR_LINKS)},
         tip_bias={f: rng.normal(0, sc.tip_bias_m, size=3) for f in FINGERS},
-        palm_bias=_small_rotation(rng, sc.palm_bias_deg),
         scale=rng.normal(0, sc.scale) if sc.scale > 0 else 0.0,
         field=_smooth_field(rng, sc.field_amp_m) if sc.field_amp_m > 0 else (lambda x: 0.0 * x),
         hardstop_b0=hardstop_b0,
@@ -206,12 +198,12 @@ def generate(nominal: KinematicModel, sc: Scenario, truth: Truth,
         dir_frames.append(len(q_rows))
         q_rows.append(row)
 
-    palm_frames = []
+    # Wrist-variation poses: extra observation frames exercising the wrist
+    # chain (the palm anchor itself rides dir_frames like every frame anchor).
     wrist_lo, wrist_hi = JOINT_ROMS["wrist"]
     for w in np.linspace(wrist_lo + 5, wrist_hi - 5, sc.n_palm):
         row = held.copy()
         row[jidx["wrist"]] = w
-        palm_frames.append(len(q_rows))
         q_rows.append(row)
 
     plate_specs = []  # (frame_idx, finger)
@@ -243,7 +235,13 @@ def generate(nominal: KinematicModel, sc: Scenario, truth: Truth,
     for link in DOT_LINKS:
         R, t = world(link)
         pts = np.einsum("fij,kj->fki", R, truth.dots[link]) + t[:, None, :]
-        dot_obs[link] = _measure_points(pts, truth, rng, sc.dot_noise_m)
+        pts = _measure_points(pts, truth, rng, sc.dot_noise_m)
+        if sc.link_dropout > 0 or sc.dot_dropout > 0:
+            link_gone = rng.random(F) < sc.link_dropout
+            dot_gone = rng.random((F, pts.shape[1])) < sc.dot_dropout
+            gone = link_gone[:, None] | dot_gone
+            pts = np.where(gone[..., None], np.nan, pts)
+        dot_obs[link] = pts
 
     # ---- direction anchors -------------------------------------------------
     dir_obs = {}
@@ -258,27 +256,20 @@ def generate(nominal: KinematicModel, sc: Scenario, truth: Truth,
         d = np.einsum("fij,fj->fi", noise_rot, d)
         dir_obs[link] = d / np.linalg.norm(d, axis=1, keepdims=True)
 
-    # ---- forearm frame anchor ---------------------------------------------
-    # Mesh-referenced orientation of the static base link (two axes = full
-    # frame up to the shared print bias). This is what makes the wrist offset
-    # observable at all; its bias is the wrist's accuracy floor.
-    Rt_, _ = world(TOWER_LINK)
-    tower_axes_obs = []
-    for axis in (np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])):
-        d = np.einsum("fij,j->fi", Rt_[dir_frames], truth.dir_bias[TOWER_LINK] @ axis)
-        noise_rot = np.stack([_small_rotation(rng, sc.dir_noise_deg) for _ in dir_frames])
-        d = np.einsum("fij,fj->fi", noise_rot, d)
-        tower_axes_obs.append(d / np.linalg.norm(d, axis=1, keepdims=True))
-
-    # ---- palm plane --------------------------------------------------------
-    n_local, c_local = palm_plane_local(nominal)
-    Rp, tp = world(PALM_LINK)
-    n_true = np.einsum("fij,j->fi", Rp[palm_frames] @ truth.palm_bias, n_local)
-    noise_rot = np.stack([_small_rotation(rng, sc.dir_noise_deg) for _ in palm_frames])
-    palm_normal_obs = np.einsum("fij,fj->fi", noise_rot, n_true)
-    palm_normal_obs /= np.linalg.norm(palm_normal_obs, axis=1, keepdims=True)
-    centroid_world = np.einsum("fij,j->fi", Rp[palm_frames], c_local) + tp[palm_frames]
-    palm_point_obs = _measure_points(centroid_world, truth, rng, sc.dot_noise_m)
+    # ---- mesh-referenced frame anchors (forearm + palm dorsal shell) ------
+    # Two axes = full orientation up to the link's shared print bias. The
+    # forearm one is what makes the wrist offset observable at all; its bias
+    # class is the wrist's accuracy floor.
+    frame_axes = {}
+    for link in FRAME_ANCHOR_LINKS:
+        Rl, _ = world(link)
+        axes_obs = []
+        for axis in (np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])):
+            d = np.einsum("fij,j->fi", Rl[dir_frames], truth.dir_bias[link] @ axis)
+            noise_rot = np.stack([_small_rotation(rng, sc.dir_noise_deg) for _ in dir_frames])
+            d = np.einsum("fij,fj->fi", noise_rot, d)
+            axes_obs.append(d / np.linalg.norm(d, axis=1, keepdims=True))
+        frame_axes[link] = np.stack(axes_obs)
 
     # ---- plate contacts ----------------------------------------------------
     plate_obs = []
@@ -290,11 +281,8 @@ def generate(nominal: KinematicModel, sc: Scenario, truth: Truth,
         plate_obs.append((frame_idx, finger, obs))
 
     return Dataset(
-        m=m, dot_obs=dot_obs, dir_obs=dir_obs,
-        tower_axes_obs=tower_axes_obs,
-        dir_frames=np.array(dir_frames),
-        palm_normal_obs=palm_normal_obs, palm_point_obs=palm_point_obs,
-        palm_frames=np.array(palm_frames), plate_obs=plate_obs,
+        m=m, dot_obs=dot_obs, dir_obs=dir_obs, frame_axes=frame_axes,
+        dir_frames=np.array(dir_frames), plate_obs=plate_obs,
         sweep_frames={j: np.array(v) for j, v in sweep_frames.items()},
-        q_true=q, joints=joints,
+        joints=joints, q_true=q, meta={"scenario": sc.name},
     )

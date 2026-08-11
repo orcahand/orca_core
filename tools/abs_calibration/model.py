@@ -216,22 +216,3 @@ class EncoderTruth:
         return m
 
 
-def palm_plane_local(model: KinematicModel) -> tuple[np.ndarray, np.ndarray]:
-    """(normal, centroid) of the four finger-abd origins, in the palm frame.
-
-    Defines what "the palm plane" means consistently for truth and estimator.
-    """
-    q0 = {j: 0.0 for j in model.joint_names}
-    poses = model.link_poses(q0)
-    pR, pt = poses[PALM_LINK]
-    pts = []
-    for f in ("index", "middle", "ring", "pinky"):
-        R, t = poses[f + "_abd"]
-        # abd origin = its parent chain point; take frame origin position
-        pts.append(t[0])
-    pts = np.array(pts)
-    local = (pts - pt[0]) @ pR[0]  # rows: points in palm frame
-    centroid = local.mean(axis=0)
-    _, _, vh = np.linalg.svd(local - centroid)
-    normal = vh[2]
-    return normal, centroid
