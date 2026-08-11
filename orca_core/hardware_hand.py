@@ -14,6 +14,7 @@ import threading
 import time
 from threading import RLock
 from typing import Dict, List, Union
+from weakref import WeakValueDictionary
 
 import numpy as np
 
@@ -51,6 +52,12 @@ from .joint_position import OrcaJointPositions
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
 logger = logging.getLogger(__name__)
+
+# realpath(calibration.yaml) -> the hand that holds it. Weak, so a hand
+# dropped without disconnect() releases its claim instead of stranding the
+# file for the life of the process.
+_CALIBRATION_OWNERS: "WeakValueDictionary[str, OrcaHand]" = WeakValueDictionary()
+_CALIBRATION_OWNERS_LOCK = threading.Lock()
 
 
 class OrcaHand(BaseHand):
@@ -111,6 +118,38 @@ class OrcaHand(BaseHand):
         )
         self._sanity_check()
         self.is_calibrated(verbose=True)
+
+    def _claim_calibration_path(self) -> None:
+        """Take exclusive ownership of this hand's ``calibration.yaml``.
+
+        Two hands of the same model resolve to the same packaged file, so the
+        second to calibrate silently overwrites the first and both then run on
+        whichever was written last — one of them with the other's hardstop
+        limits. Give each hand its own ``calibration_path``.
+
+        The claim is held for as long as the hand holds the bus: taken before
+        connect() touches hardware and dropped when it fails or disconnects.
+        It cannot be conditioned on the claimant being connected yet, since
+        that is only true once the connect it guards has already finished.
+        """
+        path = os.path.realpath(self.config.calibration_path)
+        with _CALIBRATION_OWNERS_LOCK:
+            owner = _CALIBRATION_OWNERS.get(path)
+            if owner is not None and owner is not self:
+                raise ValueError(
+                    f"calibration file {path} is already in use by another "
+                    f"hand. Two hands sharing one calibration.yaml overwrite "
+                    f"each other's limits; pass a distinct calibration_path "
+                    f"per hand."
+                )
+            _CALIBRATION_OWNERS[path] = self
+
+    def _release_calibration_path(self) -> None:
+        """Drop this hand's claim, if it still holds one."""
+        path = os.path.realpath(self.config.calibration_path)
+        with _CALIBRATION_OWNERS_LOCK:
+            if _CALIBRATION_OWNERS.get(path) is self:
+                del _CALIBRATION_OWNERS[path]
 
     def __del__(self):
         # Best-effort release of every link the subclass opened; a hand whose
@@ -291,12 +330,23 @@ class OrcaHand(BaseHand):
         if self.is_connected():
             return True, "Already connected"
 
+        if self._persist_calibration:
+            self._claim_calibration_path()
+        try:
+            return self._connect_cascade(interactive)
+        finally:
+            if self._persist_calibration and not self.is_connected():
+                self._release_calibration_path()
+
+    def _connect_cascade(self, interactive: bool) -> tuple[bool, str]:
+        """Try the configured port, then the recovery cascade behind it."""
         existing_config = self.config
 
         # ``port: auto`` keeps the tracked config hardware-agnostic; if no
         # unique adapter is found the normal recovery cascade below runs.
-        first_port = self.config.port
-        if first_port == "auto":
+        configured_port = self.config.port
+        first_port = configured_port
+        if configured_port == "auto":
             detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
             if detected is not None:
                 first_port = detected
@@ -309,13 +359,17 @@ class OrcaHand(BaseHand):
             )
         logger.warning("Connection failed on %s: %s", first_port, error)
 
-        chosen_port = auto_detect_port(self.config.motor_type)
-        if chosen_port and chosen_port != first_port:
-            if self._try_port(chosen_port, existing_config) is None:
-                return (
-                    True,
-                    f"Connection successful with auto-detected port {chosen_port}",
-                )
+        # Only search for another port when none was configured. An explicit
+        # port that fails must not fall back onto whatever else answers —
+        # with more than one hand attached, that is another hand's bus.
+        if configured_port == "auto":
+            chosen_port = auto_detect_port(self.config.motor_type)
+            if chosen_port and chosen_port != first_port:
+                if self._try_port(chosen_port, existing_config) is None:
+                    return (
+                        True,
+                        f"Connection successful with auto-detected port {chosen_port}",
+                    )
 
         if not interactive:
             return False, f"Connection failed on {first_port}: {str(error)}"
@@ -357,6 +411,8 @@ class OrcaHand(BaseHand):
                 failure = f"torque disable failed: {e}"
             finally:
                 self._discard_motor_client()
+        if self._persist_calibration:
+            self._release_calibration_path()
         if failure is not None:
             return False, f"Disconnected, but {failure}"
         return True, "Disconnected successfully"

@@ -409,17 +409,43 @@ def test_connect_takes_advisory_lock_on_port(client, monkeypatch):
     assert client.is_connected
 
 
-def test_connect_succeeds_when_flock_fails(client, monkeypatch):
+def test_connect_succeeds_when_the_port_cannot_be_locked(client, monkeypatch):
+    """A filesystem that cannot lock leaves the advisory lock best-effort."""
+    import errno
+
     fcntl = pytest.importorskip('fcntl')
 
     def failing_flock(fd, op):
-        raise OSError('resource temporarily unavailable')
+        raise OSError(errno.EINVAL, 'locking not supported here')
 
     monkeypatch.setattr(fcntl, 'flock', failing_flock)
     client.port_handler.is_open = False
     client.port_handler.ser.fileno = lambda: 42
     client.connect()
     assert client.is_connected
+
+
+def test_connect_refuses_a_port_another_client_holds(client, monkeypatch):
+    """A held lock means another client is driving this bus. The refusal must
+    close the port again and leave nothing registered for exit cleanup."""
+    import errno
+
+    from orca_core.hardware.motor_client import PortHeldError
+
+    fcntl = pytest.importorskip('fcntl')
+
+    def held_flock(fd, op):
+        raise OSError(errno.EAGAIN, 'resource temporarily unavailable')
+
+    monkeypatch.setattr(fcntl, 'flock', held_flock)
+    client.port_handler.is_open = False
+    client.port_handler.ser.fileno = lambda: 42
+
+    with pytest.raises(PortHeldError, match='already claimed'):
+        client.connect()
+
+    assert not client.port_handler.is_open
+    assert client not in type(client).OPEN_CLIENTS
 
 
 def test_connect_succeeds_without_fileno(client):

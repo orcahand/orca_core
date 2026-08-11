@@ -1,3 +1,4 @@
+import errno
 from typing import Literal
 
 FingerName = Literal["thumb", "index", "middle", "ring", "pinky"]
@@ -109,3 +110,9 @@ MOTOR_BAUD_RATES: dict[str, list[int]] = {
     DYNAMIXEL: [1_000_000, 3_000_000],
     FEETECH: [1_000_000],
 }
+
+# errno values meaning "this port exists but someone else holds it", as
+# reported by an exclusive open or a non-blocking flock.
+# EACCES is deliberately absent: on Linux it means missing device
+# permissions, not a port another process holds.
+PORT_BUSY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY})

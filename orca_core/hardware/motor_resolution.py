@@ -37,9 +37,23 @@ def trial_probe(config: "OrcaHandConfig", port: str) -> "tuple[str | None, int |
     :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
     ``baudrate`` is pinned in ``config``, that dimension is fixed and the
     probe only iterates the other.
+
+    Raises:
+        PortHeldError: another client already holds ``port``. Probing it
+            anyway would put traffic on a bus someone else is driving, and
+            "no motor answered" would be the wrong diagnosis.
     """
     from .dynamixel_client import DynamixelClient
     from .feetech_client import FeetechClient
+    from .motor_client import PortHeldError
+    from .sensing.serial_discovery import port_in_use
+
+    if port_in_use(port):
+        raise PortHeldError(
+            f"{port} is held by another client, so the driver probe was "
+            f"skipped. Close the other hand, script or serial monitor "
+            f"holding it."
+        )
 
     candidates = {
         "dynamixel": DynamixelClient,
@@ -73,18 +87,21 @@ def persist_resolved_driver(
 ) -> None:
     """Best-effort persistence of auto-detected driver fields to config.yaml.
 
-    Each field is only written when it was missing (or, for the port,
-    different) in yaml before this connect. Once written, the next
-    connect short-circuits the probe and uses the yaml values directly.
-    Clear the yaml fields to trigger a fresh probe.
+    Only the motor family and baudrate are written, and only when they were
+    missing in yaml before this connect. Once written, the next connect
+    short-circuits the probe and uses the yaml values directly. Clear the
+    yaml fields to trigger a fresh probe.
+
+    The port is deliberately never written. ``auto`` keeps a config
+    hardware-agnostic, and an explicit port is owned by whoever set it — a
+    connect-time fallback rewriting it would point one hand's config at
+    whatever bus happened to answer, permanently.
 
     All resolved fields are written in a single atomic rewrite. A write
     failure (e.g. a read-only install) is logged and never raised: the
     connect stays valid and the probe simply runs again next time.
     """
     updates = {}
-    if existing.port != resolved.port and existing.port != "auto":
-        updates["port"] = resolved.port
     if existing.motor_type is None and resolved.motor_type is not None:
         updates["motor_type"] = resolved.motor_type
     if existing.baudrate is None and resolved.baudrate is not None:

@@ -13,9 +13,46 @@ from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
 
+from ..constants import PORT_BUSY_ERRNOS
+
 
 class MotorError(Exception):
     """Raised when a motor operation cannot be completed."""
+
+
+class PortHeldError(OSError):
+    """Raised when another motor client already holds the requested port."""
+
+
+def claim_port_lock(port_handler, port_name: str) -> None:
+    """Advisory-lock an open serial handle against other exclusive openers.
+
+    A lock that is already held means another client owns this bus. Two
+    clients interleaving transactions on one bus read each other's replies,
+    so that case raises rather than proceeding. Platforms without ``fcntl``,
+    mocked handles, and filesystems that cannot lock are all no-ops.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return
+
+    ser = getattr(port_handler, "ser", None)
+    try:
+        fd = ser.fileno()
+    except (AttributeError, OSError):
+        return
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in PORT_BUSY_ERRNOS:
+            raise PortHeldError(
+                e.errno,
+                f"{port_name} is already claimed by another motor client. Two "
+                f"clients on one bus corrupt each other's transactions — "
+                f"disconnect the other hand before connecting this one.",
+            ) from e
 
 
 class MotionTimeoutError(MotorError):

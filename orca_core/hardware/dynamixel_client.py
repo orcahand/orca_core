@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL
-from .motor_client import MotorClient, MotorRead
+from .motor_client import MotorClient, MotorRead, claim_port_lock
 
 PROTOCOL_VERSION = 2.0
 
@@ -228,13 +228,7 @@ class DynamixelClient(MotorClient):
                         ('Failed to set the baudrate to {} (Ensure that the device was '
                          'configured for this baudrate).').format(self.baudrate))
 
-                # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
-                try:
-                    import fcntl
-                    fcntl.flock(self.port_handler.ser.fileno(),
-                                fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (ImportError, AttributeError, OSError):
-                    pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
+                claim_port_lock(self.port_handler, self.port_name)
 
                 # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
                 if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):

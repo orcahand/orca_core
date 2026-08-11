@@ -94,6 +94,9 @@ _OH_PROBE_PASSES = 3
 """Passes over the controller board's CDCs (the probe is racy on macOS
 composite CDC devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
 
+_CDCS_PER_BOARD = 2
+"""CDC endpoints one controller board presents: one motor, one sensing."""
+
 
 @dataclass(frozen=True)
 class HandDetection:
@@ -138,6 +141,14 @@ def detect_hand() -> HandDetection:
     identity: Optional[OrcaBoardInfo] = None
 
     candidates = oh_board_ports()
+    if len(candidates) > _CDCS_PER_BOARD:
+        logger.warning(
+            "%d controller-board CDCs are attached (%s) but a hand presents "
+            "%d, so more than one hand is plugged in. This describes a single "
+            "hand and its motor and sensing ports may be claimed from "
+            "different boards; select the hand explicitly instead.",
+            len(candidates), ", ".join(candidates), _CDCS_PER_BOARD,
+        )
     for _ in range(_OH_PROBE_PASSES):
         for port in candidates:
             if port in (motor_port, sensing_port):

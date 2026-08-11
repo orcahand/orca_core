@@ -16,7 +16,12 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from ..constants import FEETECH
-from .motor_client import MotionTimeoutError, MotorClient, MotorRead
+from .motor_client import (
+    MotionTimeoutError,
+    MotorClient,
+    MotorRead,
+    claim_port_lock,
+)
 from .feetech import (
     PortHandler,
     sms_sts,
@@ -196,13 +201,7 @@ class FeetechClient(MotorClient):
             # A failure past this point must not leave the port open (and
             # advisory-locked) with no registered owner to close it.
             try:
-                # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
-                try:
-                    import fcntl
-                    fcntl.flock(self.port_handler.ser.fileno(),
-                                fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (ImportError, AttributeError, OSError):
-                    pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
+                claim_port_lock(self.port_handler, self.port_name)
 
                 # Enable low latency mode for faster communication
                 if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):

@@ -409,11 +409,42 @@ def test_connect_takes_advisory_lock_on_port(monkeypatch):
         FeetechClient.OPEN_CLIENTS.discard(feetech)
 
 
-def test_connect_succeeds_when_flock_unavailable(monkeypatch):
+def test_connect_refuses_a_port_another_client_holds(monkeypatch):
+    """A held lock means another client is driving this bus. The refusal must
+    close the port again and leave nothing registered for exit cleanup."""
+    import errno
+
+    from orca_core.hardware.motor_client import PortHeldError
+
+    fcntl = pytest.importorskip("fcntl")
+
+    def held_flock(fd, op):
+        raise OSError(errno.EAGAIN, "resource temporarily unavailable")
+
+    monkeypatch.setattr(fcntl, "flock", held_flock)
+    monkeypatch.setattr(feetech_client_module, "sms_sts",
+                        lambda port_handler: FakePacketHandler({}))
+
+    feetech = FeetechClient(motor_ids=[], port="/dev/fake")
+    feetech.port_handler = FakeConnectPortHandler()
+    try:
+        with pytest.raises(PortHeldError, match="already claimed"):
+            feetech.connect()
+        assert not feetech.port_handler.is_open
+        assert feetech not in FeetechClient.OPEN_CLIENTS
+    finally:
+        feetech._connected = False
+        FeetechClient.OPEN_CLIENTS.discard(feetech)
+
+
+def test_connect_succeeds_when_the_port_cannot_be_locked(monkeypatch):
+    """A filesystem that cannot lock leaves the advisory lock best-effort."""
+    import errno
+
     fcntl = pytest.importorskip("fcntl")
 
     def failing_flock(fd, op):
-        raise OSError("resource temporarily unavailable")
+        raise OSError(errno.EINVAL, "locking not supported here")
 
     monkeypatch.setattr(fcntl, "flock", failing_flock)
     monkeypatch.setattr(feetech_client_module, "sms_sts",

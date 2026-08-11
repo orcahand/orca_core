@@ -9,7 +9,6 @@ All probes open ports with ``exclusive=True`` and treat a busy port as "not a
 candidate", never stealing bytes from a link another client already holds.
 """
 
-import errno
 import logging
 import time
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ from ...constants import (
     ORCA_INFO_MARKER_MOTOR,
     ORCA_INFO_MARKER_SENSOR,
     ORCA_INFO_QUERY,
+    PORT_BUSY_ERRNOS,
 )
 from .constants import (
     AUTO_FRAME_META_SIZE,
@@ -199,11 +199,6 @@ def _probe_orca_id(
         return None
 
 
-# EACCES is deliberately absent: on Linux it means missing device
-# permissions, not a port another process holds.
-_PORT_BUSY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY})
-
-
 def port_in_use(port: str) -> bool:
     """True when ``port`` exists but another process already holds it.
 
@@ -217,7 +212,7 @@ def port_in_use(port: str) -> bool:
         with serial.Serial(port, timeout=0, exclusive=True):
             return False
     except OSError as exc:
-        return exc.errno in _PORT_BUSY_ERRNOS
+        return exc.errno in PORT_BUSY_ERRNOS
 
 
 def oh_board_ports() -> "list[str]":
