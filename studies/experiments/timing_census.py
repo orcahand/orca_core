@@ -95,8 +95,17 @@ def run_timing_census(
 
     _emit(progress_callback, "census_started", duration_s=duration_s, label=label)
 
-    port = _resolve_port(port)
-    _emit(progress_callback, "port_resolved", port=port)
+    # Resolved once, before anything opens a port: every probe opens
+    # exclusively, so asking again later would find whatever this run is
+    # already holding to be absent.
+    port, tactile_port = _resolve_ports(port)
+    _emit(
+        progress_callback,
+        "port_resolved",
+        port=port,
+        tactile_port=tactile_port,
+        shared=(tactile_port == port),
+    )
 
     # Identity first: the probe opens the port exclusively, so it cannot run
     # once the link holds it.
@@ -114,7 +123,7 @@ def run_timing_census(
         client.start_stream(timeout=FIRST_FRAME_TIMEOUT_S)
 
         if tactile_mode != "off":
-            tactile = _start_tactile(link, port, tactile_mode)
+            tactile = _start_tactile(link, port, tactile_port, tactile_mode)
             _emit(
                 progress_callback,
                 "tactile_started",
@@ -248,7 +257,9 @@ def _listen(
         time.sleep(0.02)
 
 
-def _start_tactile(link: HandSerialLink, port: str, mode: str):
+def _start_tactile(
+    link: HandSerialLink, port: str, tactile_port: Optional[str], mode: str
+):
     """Put a tactile stream on the link alongside the encoder stream.
 
     Only meaningful when both share a port, which is what makes them compete;
@@ -258,12 +269,11 @@ def _start_tactile(link: HandSerialLink, port: str, mode: str):
     if mode not in ("resultant", "taxels"):
         raise ValueError(f"unknown tactile mode {mode!r}")
 
-    ports = discover_sensing_ports()
-    if ports.tactile != port:
+    if tactile_port != port:
         raise PreconditionError(
-            f"tactile is not on the encoder port ({ports.tactile or 'none found'} "
-            f"vs {port}), so a tactile stream would not contend with the encoder "
-            "stream. Run with tactile off."
+            f"tactile is on {tactile_port or 'no discovered port'} while the "
+            f"encoder is on {port}, so a tactile stream would not contend with "
+            "the encoder stream. Run with tactile off."
         )
 
     client = TactileClient(link)
@@ -272,16 +282,18 @@ def _start_tactile(link: HandSerialLink, port: str, mode: str):
     return client
 
 
-def _resolve_port(port: Optional[str]) -> str:
+def _resolve_ports(port: Optional[str]) -> tuple[str, Optional[str]]:
+    """The encoder port and whichever port tactile is on, resolved together."""
+    ports = discover_sensing_ports()
+
     if port is not None:
         if port_in_use(port):
             raise PreconditionError(
                 f"{port} is held by another process. Close whatever is using the "
                 "hand and retry."
             )
-        return port
+        return port, ports.tactile
 
-    ports = discover_sensing_ports()
     if ports.encoder is None:
         # Every probe opens exclusively, so a port another process holds goes
         # silent in exactly the way an absent board does. Saying "not found"
@@ -303,7 +315,7 @@ def _resolve_port(port: Optional[str]) -> str:
             f"the encoder port {ports.encoder} is held by another process. Close "
             "whatever is using the hand and retry."
         )
-    return ports.encoder
+    return ports.encoder, ports.tactile
 
 
 def _identify(port: str) -> Optional[Dict[str, Any]]:

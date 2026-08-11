@@ -23,7 +23,8 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "data"
 def on_progress(event):
     kind = event["event"]
     if kind == "port_resolved":
-        print(f"Encoder port: {event['port']}")
+        shared = " (tactile shares it)" if event["shared"] else ""
+        print(f"Encoder port: {event['port']}{shared}")
     elif kind == "board_identified":
         print(f"Board: {event['board'] or 'did not identify itself'}")
     elif kind == "health_checked":

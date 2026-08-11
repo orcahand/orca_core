@@ -64,4 +64,4 @@ quoted beyond what it establishes is worse than no measurement.
 
 | experiment | status | hands | headline |
 |---|---|---|---|
-| _(none yet)_ | | | |
+| [encoder-stream delivery](findings/encoder-stream-delivery.md) | done 2026-08-11 | ser-9964 (right) | 500 Hz confirmed, no loss on its own; per-taxel tactile costs 40% of frames and reaches the integrator-freeze tier |
