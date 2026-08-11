@@ -218,7 +218,8 @@ class TestOnset:
         assert verdict.state == "censored"
         assert not verdict.oscillating
 
-    def test_a_large_but_unresolvable_swing_is_not_an_onset(self):
+    def test_a_large_swing_that_does_not_come_back_is_not_an_onset(self):
+        """Something knocked the joint. That is not the loop oscillating."""
         rng = np.random.default_rng(5)
         t = np.arange(0.0, 4.0, 1.0 / FRAME_RATE_HZ)
         knock = np.zeros_like(t)
@@ -228,4 +229,37 @@ class TestOnset:
         )
 
         assert verdict.state == "quiet"
-        assert "no frequency" in verdict.reason
+        assert "did not come back" in verdict.reason
+
+    def test_an_untidy_period_costs_the_frequency_not_the_onset(self):
+        """A joint swinging twenty times its noise floor, over and over, is
+        unstable whether or not its half cycles keep good time. Withholding
+        that because the period wandered would report the loop as healthy on
+        the strength of an untidy diagnostic."""
+        # A joint that went unstable partway through a short record: half its
+        # crossings belong to what it was doing before, half to the ringing,
+        # and no single period describes both.
+        t = np.arange(0.0, 0.85, 1.0 / FRAME_RATE_HZ)
+        signal = np.where(
+            t < 0.6,
+            4.0 * np.sin(2 * np.pi * 5.0 * t),
+            4.0 * np.sin(2 * np.pi * 13.0 * t),
+        )
+
+        oscillation = osc.describe(t, signal)
+        verdict = osc.onset_verdict(oscillation, 0.4, 0.0)
+
+        assert not oscillation.resolvable, "this signal is meant to be untidy"
+        assert oscillation.repeats
+        assert verdict.state == "oscillating"
+        assert "about" in verdict.reason
+
+    def test_a_period_at_the_sampling_interval_claims_nothing(self):
+        """Crossings that fast could be an alias of nearly anything, so neither
+        the frequency nor the onset is claimed."""
+        t, x = sampled(48.0, 1.0, rate_hz=LOOP_RATE_HZ, phase=0.3)
+
+        verdict = osc.onset_verdict(osc.describe(t, x), 0.05, 0.0)
+
+        assert verdict.state == "quiet"
+        assert "sampling interval" in verdict.reason

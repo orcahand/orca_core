@@ -75,8 +75,18 @@ class Oscillation:
     irregularity: float
     spectral_peak_hz: float
     resolvable: bool
+    at_sampling_limit: bool = False
     note: str = ""
     half_cycle_s: List[float] = field(default_factory=list, repr=False)
+
+    @property
+    def repeats(self) -> bool:
+        """Whether the signal came back often enough to be something other than
+        a disturbance. Weaker than :attr:`resolvable`, which also asks whether
+        the period it repeats at can be trusted."""
+        return self.half_cycles >= MIN_HALF_CYCLES and bool(
+            np.isfinite(self.frequency_hz)
+        )
 
     def as_dict(self) -> Dict[str, object]:
         return {
@@ -97,6 +107,8 @@ class Oscillation:
                 else None
             ),
             "resolvable": self.resolvable,
+            "repeats": self.repeats,
+            "at_sampling_limit": self.at_sampling_limit,
             "note": self.note,
         }
 
@@ -317,9 +329,11 @@ def describe(
     )
 
     resolvable = True
+    at_sampling_limit = False
     note = ""
     if np.isfinite(rate) and frequency > MAX_RESOLVABLE_RATE_FRACTION * rate:
         resolvable = False
+        at_sampling_limit = True
         note = (
             f"{frequency:.1f} Hz is unresolvable at {rate:.0f} Hz sampling; "
             "the period is a few samples long"
@@ -341,6 +355,7 @@ def describe(
         irregularity=irregularity,
         spectral_peak_hz=spectral_peak_hz(t, residual),
         resolvable=resolvable,
+        at_sampling_limit=at_sampling_limit,
         note=note,
         half_cycle_s=[float(v) for v in half_cycle_s],
     )
@@ -361,11 +376,20 @@ def onset_verdict(
 
     * the swing has to stand above the same joint's quiet baseline, because every
       joint always swings a little;
-    * the crossings have to be periodic and resolvable, because a couple of
-      knocks are not an oscillation;
+    * it has to come back, repeatedly, because one knock is not an oscillation;
     * the correction has to have stayed off its clamp, because a clamped loop
       settles into a bounded limit cycle whose size is the clamp's, and reading
       an onset off that would be reading the safety belt.
+
+    Whether the *frequency* can be trusted is a separate question, and
+    deliberately not part of this one. A joint swinging twenty times its own
+    noise floor, over and over, is unstable whether or not its half cycles keep
+    good time; withholding that because the period wandered would be reporting
+    the loop as healthy on the strength of an untidy diagnostic. Where the
+    period is untidy the verdict says so and the frequency is marked
+    approximate. The one exception is a period down at the sampling interval:
+    there the crossings could be an alias of nearly anything, so nothing is
+    claimed at all.
     """
     ratio = (
         oscillation.peak_to_peak_deg / baseline_p2p_deg
@@ -400,12 +424,13 @@ def onset_verdict(
             clamp_fraction=clamp_fraction,
         )
 
-    if not oscillation.resolvable:
+    if not oscillation.repeats:
         return Verdict(
             state="quiet",
             reason=(
-                f"swing is {ratio:.1f}x baseline but no frequency came out of "
-                f"it: {oscillation.note}"
+                f"swing is {ratio:.1f}x baseline but it did not come back: "
+                f"{oscillation.half_cycles} half cycles is a disturbance, not an "
+                "oscillation"
             ),
             oscillation=oscillation,
             baseline_p2p_deg=baseline_p2p_deg,
@@ -413,12 +438,28 @@ def onset_verdict(
             clamp_fraction=clamp_fraction,
         )
 
+    if oscillation.at_sampling_limit:
+        return Verdict(
+            state="quiet",
+            reason=(
+                f"swing is {ratio:.1f}x baseline but its period is down at the "
+                f"sampling interval, so what it is cannot be said: "
+                f"{oscillation.note}"
+            ),
+            oscillation=oscillation,
+            baseline_p2p_deg=baseline_p2p_deg,
+            amplitude_ratio=ratio,
+            clamp_fraction=clamp_fraction,
+        )
+
+    about = "" if oscillation.resolvable else "about "
     return Verdict(
         state="oscillating",
         reason=(
-            f"{oscillation.peak_to_peak_deg:.3f}° at "
+            f"{oscillation.peak_to_peak_deg:.3f}° at {about}"
             f"{oscillation.frequency_hz:.1f} Hz, {ratio:.1f}x baseline, "
             "with the excitation removed"
+            + ("" if oscillation.resolvable else f" ({oscillation.note})")
         ),
         oscillation=oscillation,
         baseline_p2p_deg=baseline_p2p_deg,
