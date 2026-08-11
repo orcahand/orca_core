@@ -104,17 +104,39 @@ class FrameRecorder:
 
 
 class RecordingJointEncoderClient(JointEncoderClient):
-    """Encoder client that hands every frame to a :class:`FrameRecorder`.
+    """Encoder client that hands every frame on to something that keeps it.
 
-    Behaves exactly like its base class for every other consumer: the frame is
-    decoded once, by the base handler, and the recorder reads the result.
+    Behaves exactly like its base class for the control loop: the frame is
+    decoded once, by the base handler, and each consumer reads the result.
+    Consumers run on the delivery thread and in order, so one that blocks holds
+    up the stream for everything behind it.
     """
 
-    def __init__(self, link, recorder: FrameRecorder):
+    def __init__(self, link, *consumers):
         super().__init__(link)
-        self._recorder = recorder
+        self._consumers = consumers
 
     def _on_encoder_frame(self, frame_bytes: bytes) -> None:
         received_at = time.monotonic()
         super()._on_encoder_frame(frame_bytes)
-        self._recorder.record(received_at, self.get_latest())
+        reading = self.get_latest()
+        for consumer in self._consumers:
+            consumer.record(received_at, reading)
+
+
+def record_frames(hand, *consumers) -> None:
+    """Have ``hand`` hand every encoder frame to ``consumers`` as well.
+
+    Call before ``connect()``: the encoder client is built there and is never
+    replaced afterwards. The seam is bound on the instance rather than by
+    subclassing because which hand class to build is decided by ``load_hand``
+    from the config, and a study should not have to re-derive that.
+    """
+    if not hasattr(hand, "_create_encoder_client"):
+        raise TypeError(
+            f"{type(hand).__name__} has no encoder client to record from; this "
+            "needs a hand with joint feedback."
+        )
+    hand._create_encoder_client = lambda link: RecordingJointEncoderClient(
+        link, *consumers
+    )

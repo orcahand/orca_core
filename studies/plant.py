@@ -242,6 +242,17 @@ class PlantEncoderSource:
         self._timestamp += self._dt_s
         return self._encode(self.angles())
 
+    def current(self) -> EncoderReading:
+        """The plant's angles as a frame, without advancing it.
+
+        A hand emits frames faster than its loop consumes them, and anything
+        watching that faster stream has to be able to look without moving the
+        mechanism on: reading through :meth:`get_latest` would step the plant
+        once per look and drive it at whatever rate the watcher happened to
+        poll.
+        """
+        return self._encode(self.angles())
+
     def _encode(self, angles: Dict[str, float]) -> EncoderReading:
         import time
 

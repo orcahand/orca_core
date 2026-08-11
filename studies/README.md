@@ -25,9 +25,15 @@ record/      capture: rings, sinks, recorders, session, reader
   drain.py        the one thread that writes files
   loop_recorder.py    one row per control cycle
   frame_recorder.py   one row per encoder frame
+  linkstats.py    the serial link's own counters, which no recorder can see
+  window.py       the last few seconds of joint angles, for a running experiment
   metadata.py     what a dataset carries to stay interpretable
   session.py      a dataset directory and its manifest
   reader.py       reading one back
+experiments/ the measurements themselves, driven by callbacks like the
+             maintenance routines so a terminal and a GUI run them the same way
+analysis/    what a recorded run is read for; pure functions over tables
+run_*.py     thin front-ends: argparse, print, and a confirmation
 plant.py     a synthetic joint: second order, backlash, transport delay
 preconditions.py  checks that refuse to start a measurement
 tests/       everything above, against mocks
@@ -65,3 +71,4 @@ quoted beyond what it establishes is worse than no measurement.
 | experiment | status | hands | headline |
 |---|---|---|---|
 | [encoder-stream delivery](findings/encoder-stream-delivery.md) | done 2026-08-11 | ser-9964 (right) | 500 Hz confirmed, no loss on its own; per-taxel tactile costs 40% of frames and reaches the integrator-freeze tier |
+| [gain margin](findings/gain-margin.md) | built, not yet run | — | where each joint's loop starts oscillating, and at what frequency |
