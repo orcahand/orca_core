@@ -53,6 +53,11 @@ class FrameRecorder:
         return self.ring.dropped
 
     @property
+    def frames_recorded(self) -> int:
+        """Frames accepted so far, including any the ring later dropped."""
+        return self._seq
+
+    @property
     def unpublished(self) -> int:
         """Frames that arrived while the client was not publishing readings.
 

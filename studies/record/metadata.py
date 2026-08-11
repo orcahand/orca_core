@@ -94,6 +94,11 @@ def collect_metadata(
 ) -> Dict[str, Any]:
     """Assemble the manifest for one run.
 
+    ``hand`` may be ``None`` for a run that talks to the sensing link directly
+    and never constructs a hand; the hand-specific sections are then absent
+    rather than empty, so a reader can tell "not applicable" from "not
+    recorded".
+
     ``moves_hand`` decides whether tendon history is required: a run that only
     listens has none to declare, and demanding it would train people to type
     something to get past the check.
@@ -105,7 +110,7 @@ def collect_metadata(
             "or declare it absent explicitly if that is really the situation."
         )
 
-    return {
+    manifest = {
         "experiment": experiment,
         "params": dict(params or {}),
         "run_id": _run_id(experiment, hand),
@@ -116,17 +121,21 @@ def collect_metadata(
         },
         "host": _host(),
         "code": _code(),
-        "hand": _hand_identity(hand),
-        "calibration": _calibration(hand),
-        "control": _control(hand),
-        "encoder": _encoder(hand),
         "ritual": (ritual.as_dict() if ritual else {"declared": False}),
     }
+    if hand is not None:
+        manifest.update(
+            hand=_hand_identity(hand),
+            calibration=_calibration(hand),
+            control=_control(hand),
+            encoder=_encoder(hand),
+        )
+    return manifest
 
 
 def _run_id(experiment: str, hand) -> str:
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-    side = getattr(getattr(hand, "config", None), "type", "unknown")
+    side = getattr(getattr(hand, "config", None), "type", None) or "nohand"
     return f"{stamp}_{experiment}_{side}"
 
 
