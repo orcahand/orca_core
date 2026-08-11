@@ -31,6 +31,8 @@ from orca_core.hardware.sensing.serial_discovery import (
 )
 from orca_core.utils.utils import auto_detect_port
 
+from tests._helpers import fake_serial_port
+
 
 PAXINI_VID, OH_VID = 0x28E9, 0x2F5D
 PAXINI_PORT = "/dev/cu.paxini"
@@ -39,11 +41,15 @@ OH_SENSOR_PORT = "/dev/cu.oh_sensor"
 FTDI_PORT = "/dev/cu.ft232"
 DISCOVERY = "orca_core.hardware.sensing.serial_discovery"
 
-paxini = SimpleNamespace(device=PAXINI_PORT, vid=PAXINI_VID)
-motor = SimpleNamespace(device=OH_MOTOR_PORT, vid=OH_VID)
-sensor = SimpleNamespace(device=OH_SENSOR_PORT, vid=OH_VID)
-ftdi = SimpleNamespace(device=FTDI_PORT, vid=FTDI_VID)
-unknown = SimpleNamespace(device="/dev/cu.mystery", vid=0x1234)
+# The motor and sensing CDCs of one board share its USB serial number; that
+# is what groups them into a single hand.
+BOARD_A_SERIAL = "1B46C9E850304C43552E3120FF061305" * 2
+
+paxini = fake_serial_port(PAXINI_PORT, PAXINI_VID)
+motor = fake_serial_port(OH_MOTOR_PORT, OH_VID, serial_number=BOARD_A_SERIAL)
+sensor = fake_serial_port(OH_SENSOR_PORT, OH_VID, serial_number=BOARD_A_SERIAL)
+ftdi = fake_serial_port(FTDI_PORT, FTDI_VID)
+unknown = fake_serial_port("/dev/cu.mystery", 0x1234)
 OH_RESPONSES = {OH_MOTOR_PORT: ORCA_ID_RESP_MOTOR, OH_SENSOR_PORT: ORCA_ID_RESP_SENSOR}
 DISCOVERED = SensingPorts("/auto/t", "/auto/e")
 
@@ -62,7 +68,7 @@ def test_sensing_ports_shared(tactile, encoder, expected):
 @pytest.mark.parametrize("ports,expected", [
     pytest.param([paxini],                                                       PAXINI_PORT, id="single"),
     pytest.param([motor],                                                        None,        id="absent"),
-    pytest.param([paxini, SimpleNamespace(device="/dev/cu.p2", vid=PAXINI_VID)], None,        id="ambiguous"),
+    pytest.param([paxini, fake_serial_port("/dev/cu.p2", PAXINI_VID)],           None,        id="ambiguous"),
     pytest.param([],                                                             None,        id="empty"),
 ])
 def test_find_tactile_port(ports, expected):

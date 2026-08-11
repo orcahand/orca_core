@@ -15,7 +15,7 @@ import contextlib
 import io
 import sys
 
-from orca_core import OrcaHand, detect_hand
+from orca_core import OrcaHand, detect_hand, detect_hands
 
 
 @contextlib.contextmanager
@@ -105,23 +105,34 @@ def _print_notes(detection) -> None:
     print(f"\nNote: {note}")
 
 
-def main() -> None:
-    argparse.ArgumentParser(description=__doc__.split("\n", 1)[0]).parse_args()
-
-    try:
-        detection = detect_hand()
-    except Exception as e:
-        print(f"Detection failed: {e}")
-        sys.exit(1)
-
+def _report(detection) -> None:
     _print_detection(detection)
-
     try:
         _print_calibration(detection)
     except Exception as e:
         print(f"\nCould not read calibration for {detection.model_name}: {e}")
-
     _print_notes(detection)
+
+
+def main() -> None:
+    argparse.ArgumentParser(description=__doc__.split("\n", 1)[0]).parse_args()
+
+    try:
+        detections = detect_hands()
+    except Exception as e:
+        print(f"Detection failed: {e}")
+        sys.exit(1)
+
+    if not detections:
+        _report(detect_hand())
+        return
+
+    for index, detection in enumerate(detections):
+        if len(detections) > 1:
+            name = detection.hand_id or "unidentified"
+            print(f"{'' if index == 0 else chr(10)}=== Hand {index + 1}/"
+                  f"{len(detections)}: {name} ===")
+        _report(detection)
 
 
 if __name__ == "__main__":

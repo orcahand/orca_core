@@ -47,13 +47,12 @@ from .hardware.sensing.constants import (
     JOINT_ENCODER_POLARITY_BY_SIDE,
 )
 from .hardware.sensing.serial_discovery import (
+    BoardProbe,
     OrcaBoardInfo,
     _tactile_responds_at,
     detect_encoder_stream,
     find_tactile_port,
-    oh_board_ports,
-    port_in_use,
-    probe_orca_info,
+    probe_boards,
 )
 from .hardware_hand import MockOrcaHand, OrcaHand
 from .hardware_hand_sensing import (
@@ -90,12 +89,6 @@ _MODEL_BY_CAPS = {
     (True, True): "orcahand-full-{side}",
 }
 
-_OH_PROBE_PASSES = 3
-"""Passes over the controller board's CDCs (the probe is racy on macOS
-composite CDC devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
-
-_CDCS_PER_BOARD = 2
-"""CDC endpoints one controller board presents: one motor, one sensing."""
 
 
 @dataclass(frozen=True)
@@ -119,6 +112,95 @@ class HandDetection:
     tactile_port: Optional[str] = None
     identity: Optional[OrcaBoardInfo] = None
     busy_ports: tuple[str, ...] = ()
+    hand_id: Optional[str] = None
+    """Stable name for this hand: its assigned serial when provisioned, else
+    the board ID. ``None`` only when the board reports neither."""
+    board_id: Optional[str] = None
+    usb_serial: Optional[str] = None
+    side_source: str = "board"
+    """Where :attr:`side` came from — ``"board"`` when the hardware said so,
+    ``"default"`` when nothing did and right-handed was assumed."""
+
+
+def _detection_from_board(
+    board: BoardProbe, tactile_port: Optional[str]
+) -> HandDetection:
+    """Describe one probed board as the bundled model that matches it."""
+    has_encoders = (
+        board.sensing_port is not None and detect_encoder_stream(board.sensing_port)
+    )
+
+    has_tactile = tactile_port is not None
+    if not has_tactile and board.sensing_port is not None:
+        has_tactile = _tactile_responds_at(board.sensing_port, DEFAULT_ENCODER_BAUDRATE)
+
+    identity = board.identity
+    side = identity.side if identity is not None and identity.side else None
+    model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(
+        side=side or "right"
+    )
+
+    return HandDetection(
+        model_name=model_name,
+        side=side or "right",
+        has_tactile=has_tactile,
+        has_encoders=has_encoders,
+        motor_port=board.motor_port,
+        sensing_port=board.sensing_port,
+        tactile_port=tactile_port,
+        identity=identity,
+        busy_ports=board.busy_ports,
+        hand_id=board.hand_id,
+        board_id=board.board_id,
+        usb_serial=board.usb_serial,
+        side_source="board" if side else "default",
+    )
+
+
+def detect_hands() -> "list[HandDetection]":
+    """Describe every hand plugged in, one per controller board.
+
+    Boards are grouped from USB descriptors before anything is opened, so
+    each hand's motor and sensing CDCs always come from the same physical
+    board — the pairing does not depend on enumeration order, and a port
+    another client holds still groups correctly.
+
+    Results are ordered by ``hand_id``, which is stable across replugs
+    (``comports()`` order is not). Returns an empty list when nothing is
+    attached.
+    """
+    boards = probe_boards()
+
+    # A dedicated tactile adapter is a separate USB device with nothing tying
+    # it to a board, so it can only be attributed when there is one hand.
+    adapter_port = find_tactile_port()
+    if adapter_port is not None and len(boards) > 1:
+        logger.warning(
+            "a dedicated tactile adapter is attached (%s) but %d hands are "
+            "plugged in, so it cannot be attributed to one of them. Tactile "
+            "is reported only for hands whose sensing CDC answers.",
+            adapter_port, len(boards),
+        )
+        adapter_port = None
+
+    # A tactile adapter with no controller board behind it is a pre-identity
+    # touch hand, whose motor bus is a plain USB adapter found at connect.
+    if not boards:
+        if adapter_port is None:
+            return []
+        return [_detection_from_board(BoardProbe(ports=()), adapter_port)]
+
+    detections = [_detection_from_board(board, adapter_port) for board in boards]
+    detections.sort(key=lambda d: (d.hand_id is None, d.hand_id or ""))
+
+    unnamed = [d for d in detections if d.side_source == "default"]
+    if len(detections) > 1 and len(unnamed) > 1:
+        logger.warning(
+            "%d attached hands report no side, so all of them default to "
+            "right-handed. Their joint maps and encoder polarities cannot be "
+            "told apart; name each hand's model explicitly.", len(unnamed),
+        )
+    return detections
 
 
 def detect_hand() -> HandDetection:
@@ -135,63 +217,28 @@ def detect_hand() -> HandDetection:
     A CDC another process already holds is silent under probing and so reads
     as absent; those ports are reported in ``busy_ports`` so callers can tell
     an incomplete result from a genuinely simpler hand.
+
+    Describes a single hand. Use :func:`detect_hands` when more than one may
+    be attached.
     """
-    motor_port: Optional[str] = None
-    sensing_port: Optional[str] = None
-    identity: Optional[OrcaBoardInfo] = None
-
-    candidates = oh_board_ports()
-    if len(candidates) > _CDCS_PER_BOARD:
-        logger.warning(
-            "%d controller-board CDCs are attached (%s) but a hand presents "
-            "%d, so more than one hand is plugged in. This describes a single "
-            "hand and its motor and sensing ports may be claimed from "
-            "different boards; select the hand explicitly instead.",
-            len(candidates), ", ".join(candidates), _CDCS_PER_BOARD,
+    detections = detect_hands()
+    if not detections:
+        return HandDetection(
+            model_name=_MODEL_BY_CAPS[(False, False)].format(side="right"),
+            side="right",
+            has_tactile=False,
+            has_encoders=False,
+            side_source="default",
         )
-    for _ in range(_OH_PROBE_PASSES):
-        for port in candidates:
-            if port in (motor_port, sensing_port):
-                continue
-            info = probe_orca_info(port)
-            if info is None:
-                continue
-            if info.role == "motor" and motor_port is None:
-                motor_port = port
-            elif info.role == "sensor" and sensing_port is None:
-                sensing_port = port
-            if identity is None or (identity.side is None and info.side):
-                identity = info
-        if motor_port is not None and sensing_port is not None:
-            break
-
-    has_encoders = sensing_port is not None and detect_encoder_stream(sensing_port)
-
-    tactile_port = find_tactile_port()
-    has_tactile = tactile_port is not None
-    if not has_tactile and sensing_port is not None:
-        has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
-
-    side = identity.side if identity is not None and identity.side else "right"
-    model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
-
-    busy_ports = tuple(
-        port
-        for port in candidates
-        if port not in (motor_port, sensing_port) and port_in_use(port)
-    )
-
-    return HandDetection(
-        model_name=model_name,
-        side=side,
-        has_tactile=has_tactile,
-        has_encoders=has_encoders,
-        motor_port=motor_port,
-        sensing_port=sensing_port,
-        tactile_port=tactile_port,
-        identity=identity,
-        busy_ports=busy_ports,
-    )
+    if len(detections) > 1:
+        logger.warning(
+            "%d hands are plugged in (%s); describing only %s. Use "
+            "detect_hands() to see them all.",
+            len(detections),
+            ", ".join(d.hand_id or "unidentified" for d in detections),
+            detections[0].hand_id or detections[0].model_name,
+        )
+    return detections[0]
 
 
 def _pin_detected_ports(config, detection: HandDetection):

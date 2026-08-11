@@ -18,6 +18,22 @@ def wait_until(predicate, timeout: float = 1.0) -> None:
     raise AssertionError(f"predicate not satisfied within {timeout}s")
 
 
-def fake_serial_port(device: str, vid: int):
-    """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
-    return SimpleNamespace(device=device, vid=vid, description="fake")
+def fake_serial_port(
+    device: str,
+    vid: int,
+    serial_number: str | None = None,
+    location: str | None = None,
+):
+    """Build a fake serial.tools.list_ports.ListPortInfo-like object.
+
+    ``serial_number`` and ``location`` are what group a board's CDCs; real
+    hardware always carries at least one, so pass them whenever a test cares
+    which physical board a port belongs to.
+    """
+    return SimpleNamespace(
+        device=device,
+        vid=vid,
+        description="fake",
+        serial_number=serial_number,
+        location=location,
+    )

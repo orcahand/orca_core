@@ -48,6 +48,7 @@ PACKAGE_EXPORTS = frozenset({
     "Transform",
     "canonical_joint_ids",
     "detect_hand",
+    "detect_hands",
     "frames",
     "load_hand",
 })

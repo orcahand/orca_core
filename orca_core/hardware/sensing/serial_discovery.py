@@ -38,6 +38,19 @@ from .framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
 
+ORCA_ID_PROBE_ATTEMPTS = 3
+"""Passes over the controller-board CDCs when probing ORCA_ID?. The probe is
+racy on macOS composite CDC devices (an occasional empty read), so a few
+passes make detection reliable without masking a genuinely absent or
+silent board."""
+
+_USB_UID_HEX_LEN = 32
+"""Hex characters in the MCU's factory unique ID as the USB descriptor
+carries it. A dual-CDC board repeats it once per interface."""
+
+CDCS_PER_BOARD = 2
+"""CDC endpoints one controller board presents: one motor, one sensing."""
+
 
 @dataclass(frozen=True)
 class OrcaBoardInfo:
@@ -226,6 +239,175 @@ def oh_board_ports() -> "list[str]":
     ]
 
 
+def board_id_from_usb_serial(usb_serial: "str | None") -> Optional[str]:
+    """The board ID the firmware reports, derived from its USB descriptor.
+
+    Both are folded from the same four MCU factory words, so a board can be
+    identified without opening a port — and without the identity firmware
+    that answers ``ORCA_INFO?``. The descriptor repeats the 32-hex unique ID
+    once per CDC; anything not of that shape yields ``None``.
+    """
+    if not usb_serial:
+        return None
+    text = usb_serial.strip().upper()
+    if len(text) == 2 * _USB_UID_HEX_LEN and text[:_USB_UID_HEX_LEN] == text[_USB_UID_HEX_LEN:]:
+        text = text[:_USB_UID_HEX_LEN]
+    if len(text) != _USB_UID_HEX_LEN:
+        return None
+    try:
+        words = [int(text[i:i + 8], 16) for i in range(0, _USB_UID_HEX_LEN, 8)]
+    except ValueError:
+        return None
+    return "%08X%08X" % (words[0] ^ words[1], words[2] ^ words[3])
+
+
+@dataclass(frozen=True)
+class BoardCandidate:
+    """One controller board's CDCs, grouped from USB descriptors alone.
+
+    ``ports`` are that board's device paths in enumeration order; which one
+    is the motor bus and which the sensing link takes a probe
+    (:func:`probe_board`).
+    """
+
+    ports: tuple
+    usb_serial: Optional[str] = None
+    location: Optional[str] = None
+
+    @property
+    def board_id(self) -> Optional[str]:
+        """The board ID implied by the USB descriptor, without probing."""
+        return board_id_from_usb_serial(self.usb_serial)
+
+
+def oh_board_candidates() -> "list[BoardCandidate]":
+    """Group every attached controller board's CDCs by physical board.
+
+    Opens nothing, so this stays accurate while the boards are connected and
+    driving — a port another client holds is still enumerated, unlike a probe.
+    Boards are keyed by USB serial number, falling back to the descriptor's
+    device-level location. CDCs that offer neither are never merged: guessing
+    there pairs a motor bus with a different board's encoders.
+    """
+    import serial.tools.list_ports
+
+    groups: "dict[tuple, list]" = {}
+    unattributable = []
+    for port in serial.tools.list_ports.comports():
+        if port.vid not in KNOWN_VIDS["oh_board"]:
+            continue
+        if port.serial_number:
+            key = ("sn", port.serial_number)
+        elif port.location:
+            # Linux reports a per-interface location (``1-3:1.0``); macOS
+            # reports the device (``2-1``), where the split is a no-op.
+            key = ("loc", port.location.split(":")[0])
+        else:
+            unattributable.append(port)
+            continue
+        groups.setdefault(key, []).append(port)
+
+    candidates = [
+        BoardCandidate(
+            ports=tuple(p.device for p in ports),
+            usb_serial=ports[0].serial_number if kind == "sn" else None,
+            location=ports[0].location,
+        )
+        for (kind, _), ports in groups.items()
+    ]
+
+    # A CDC naming neither a serial nor a location cannot be attributed. Up to
+    # one board's worth of them is still unambiguous — there is nothing to
+    # cross-pair with; beyond that, each stands alone rather than risk pairing
+    # one hand's motor bus with another's encoders.
+    if len(unattributable) > CDCS_PER_BOARD:
+        candidates.extend(BoardCandidate(ports=(p.device,)) for p in unattributable)
+    elif unattributable:
+        candidates.append(
+            BoardCandidate(ports=tuple(p.device for p in unattributable))
+        )
+    return candidates
+
+
+@dataclass(frozen=True)
+class BoardProbe:
+    """What one controller board answered when asked who it is."""
+
+    ports: tuple
+    usb_serial: Optional[str] = None
+    board_id: Optional[str] = None
+    motor_port: Optional[str] = None
+    sensing_port: Optional[str] = None
+    identity: Optional[OrcaBoardInfo] = None
+    busy_ports: tuple = ()
+
+    @property
+    def hand_id(self) -> Optional[str]:
+        """This hand's stable name: its assigned serial when provisioned,
+        else the board ID."""
+        if self.identity is not None and self.identity.hand_id:
+            return self.identity.hand_id
+        return self.board_id
+
+
+def probe_board(
+    candidate: BoardCandidate, attempts: int = ORCA_ID_PROBE_ATTEMPTS
+) -> BoardProbe:
+    """Resolve one board's motor and sensing CDCs, touching only its own ports.
+
+    Both CDCs answer with the same identity block, so a reply whose board ID
+    contradicts the USB descriptor proves the grouping attributed a port to
+    the wrong board; that is reported and the descriptor is believed.
+    """
+    usb_board_id = candidate.board_id
+    motor_port = sensing_port = None
+    identity = None
+
+    for _ in range(attempts):
+        for port in candidate.ports:
+            if port in (motor_port, sensing_port):
+                continue
+            info = probe_orca_info(port)
+            if info is None:
+                continue
+            if info.role == "motor" and motor_port is None:
+                motor_port = port
+            elif info.role == "sensor" and sensing_port is None:
+                sensing_port = port
+            if identity is None or (identity.side is None and info.side):
+                identity = info
+            if (
+                usb_board_id is not None
+                and info.board_id is not None
+                and info.board_id != usb_board_id
+            ):
+                logger.error(
+                    "%s reports board %s but its USB descriptor says %s; these "
+                    "CDCs are not one board and pairing them would cross two "
+                    "hands' buses.", port, info.board_id, usb_board_id,
+                )
+        if motor_port is not None and sensing_port is not None:
+            break
+
+    return BoardProbe(
+        ports=candidate.ports,
+        usb_serial=candidate.usb_serial,
+        board_id=(identity.board_id if identity is not None else None) or usb_board_id,
+        motor_port=motor_port,
+        sensing_port=sensing_port,
+        identity=identity,
+        busy_ports=tuple(
+            port for port in candidate.ports
+            if port not in (motor_port, sensing_port) and port_in_use(port)
+        ),
+    )
+
+
+def probe_boards() -> "list[BoardProbe]":
+    """Probe every attached controller board, one board at a time."""
+    return [probe_board(candidate) for candidate in oh_board_candidates()]
+
+
 def find_tactile_port() -> Optional[str]:
     """Return the dedicated tactile adapter's device path, or None if zero or >1 match."""
     import serial.tools.list_ports
@@ -294,26 +476,28 @@ def _tactile_responds_at(port: str, baud: int) -> bool:
         link.disconnect()
 
 
-ORCA_ID_PROBE_ATTEMPTS = 3
-"""Passes over the controller-board CDCs when probing ORCA_ID?. The probe is
-racy on macOS composite CDC devices (an occasional empty read), so a few
-passes make detection reliable without masking a genuinely absent or
-silent board."""
-
-
 def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
     """Return the controller-board CDC whose ``ORCA_ID?`` reply matches
-    ``expected_resp``."""
-    import serial.tools.list_ports
+    ``expected_resp``, or None when zero or more than one board is attached.
 
-    oh_candidates = [
-        p for p in serial.tools.list_ports.comports()
-        if p.vid in KNOWN_VIDS["oh_board"]
-    ]
+    With two hands plugged in there is no single right answer, and returning
+    either one hands the caller a port belonging to a hand it did not ask
+    for. Callers that must name a board use :func:`probe_boards`.
+    """
+    candidates = oh_board_candidates()
+    if len(candidates) != 1:
+        if len(candidates) > 1:
+            logger.warning(
+                "%d controller boards are attached, so no single motor or "
+                "sensing port can be resolved. Select a hand explicitly.",
+                len(candidates),
+            )
+        return None
+
     for _ in range(ORCA_ID_PROBE_ATTEMPTS):
-        for candidate in oh_candidates:
-            if _probe_orca_id(candidate.device) == expected_resp:
-                return candidate.device
+        for port in candidates[0].ports:
+            if _probe_orca_id(port) == expected_resp:
+                return port
     return None
 
 

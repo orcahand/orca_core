@@ -6,7 +6,11 @@ import pytest
 
 import orca_core.hand_factory as hand_factory
 from orca_core import OrcaHand, OrcaHandTouch, detect_hand, load_hand
+from orca_core.constants import KNOWN_VIDS
+from orca_core.hardware.sensing import serial_discovery
 from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo, parse_orca_info
+
+from tests._helpers import fake_serial_port
 
 
 # ----- identity-line parsing ------------------------------------------------
@@ -45,6 +49,13 @@ def test_parse_rejects_non_identity_lines(line):
 
 # ----- detection ladder -----------------------------------------------------
 
+OH_VID = KNOWN_VIDS["oh_board"][0]
+
+# One board's CDCs share its USB serial number; that is what pairs them.
+BOARD_A = "1B46C9E850304C43552E3120FF061305" * 2
+BOARD_B = "0011223344556677889AABBCCDDEEFF0" * 2
+
+
 def _patch_hardware(
     monkeypatch,
     *,
@@ -55,10 +66,24 @@ def _patch_hardware(
     tactile_register=False,
     busy_ports=(),
 ):
+    """Stand in for the USB bus at the descriptor level, so board grouping
+    runs for real. An entry in ``oh_ports`` is a device path on the default
+    board, or a ``(device, usb_serial)`` pair to place it on another one.
+    """
     infos = infos or {}
-    monkeypatch.setattr(hand_factory, "oh_board_ports", lambda: list(oh_ports))
-    monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: infos.get(port))
-    monkeypatch.setattr(hand_factory, "port_in_use", lambda port: port in busy_ports)
+    ports = []
+    for entry in oh_ports:
+        device, usb_serial = entry if isinstance(entry, tuple) else (entry, BOARD_A)
+        ports.append(fake_serial_port(device, OH_VID, serial_number=usb_serial))
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
+    monkeypatch.setattr(
+        serial_discovery, "probe_orca_info",
+        lambda port, *args, **kwargs: infos.get(port),
+    )
+    monkeypatch.setattr(
+        serial_discovery, "port_in_use", lambda port: port in busy_ports
+    )
     monkeypatch.setattr(
         hand_factory, "detect_encoder_stream", lambda port: encoder_stream
     )

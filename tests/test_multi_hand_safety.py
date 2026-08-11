@@ -6,13 +6,49 @@ probe opening a port another client already owns.
 """
 
 import logging
-import os
 from types import SimpleNamespace
 
 import pytest
 
 from orca_core import MockOrcaHand, OrcaHand
-from orca_core.constants import PORT_BUSY_ERRNOS
+from orca_core.constants import KNOWN_VIDS, PORT_BUSY_ERRNOS
+
+from tests._helpers import fake_serial_port
+
+_OH_VID = KNOWN_VIDS["oh_board"][0]
+_BOARD_A = "1B46C9E850304C43552E3120FF061305" * 2
+_BOARD_B = "0011223344556677889AABBCCDDEEFF0" * 2
+
+
+def _oh_port(device: str, usb_serial: str):
+    return fake_serial_port(device, _OH_VID, serial_number=usb_serial)
+
+
+def _patch_two_boards(monkeypatch, hand_factory):
+    """Two boards whose CDCs interleave in enumeration order, so pairing by
+    first-seen role would cross them."""
+    from orca_core.hardware.sensing import serial_discovery
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    ports = [
+        _oh_port("/dev/cu.a-sensor", _BOARD_A),
+        _oh_port("/dev/cu.b-motor", _BOARD_B),
+        _oh_port("/dev/cu.a-motor", _BOARD_A),
+        _oh_port("/dev/cu.b-sensor", _BOARD_B),
+    ]
+    infos = {
+        "/dev/cu.a-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-0001"),
+        "/dev/cu.a-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
+        "/dev/cu.b-motor": OrcaBoardInfo(role="motor", side="left", serial="ser-0002"),
+        "/dev/cu.b-sensor": OrcaBoardInfo(role="sensor", side="left", serial="ser-0002"),
+    }
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
+    monkeypatch.setattr(
+        serial_discovery, "probe_orca_info", lambda p, *a, **k: infos.get(p)
+    )
+    monkeypatch.setattr(serial_discovery, "port_in_use", lambda p: False)
+    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
+    monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
 
 
 # ----- port claiming -------------------------------------------------------
@@ -364,43 +400,195 @@ def test_mock_hands_do_not_claim_calibration(mock_config_dir):
 
 # ----- detection -----------------------------------------------------------
 
-def test_detect_hand_warns_when_more_than_one_board_is_attached(monkeypatch, caplog):
-    """detect_hand() describes one hand; with two boards its motor and
-    sensing ports can be claimed from different ones."""
+def test_detect_hand_warns_that_it_is_describing_only_one_of_two(monkeypatch, caplog):
+    """detect_hand() describes a single hand, so with two attached it must say
+    which one the caller is getting rather than silently picking."""
     from orca_core import hand_factory
 
-    monkeypatch.setattr(
-        hand_factory, "oh_board_ports",
-        lambda: ["/dev/cu.a1", "/dev/cu.a2", "/dev/cu.b1", "/dev/cu.b2"],
-    )
-    monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: None)
-    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda port: False)
-    monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
-    monkeypatch.setattr(hand_factory, "port_in_use", lambda port: False)
+    _patch_two_boards(monkeypatch, hand_factory)
 
     with caplog.at_level(logging.WARNING):
         detection = hand_factory.detect_hand()
 
-    assert detection.model_name == "orcahand-right"
+    assert detection.hand_id in {"ser-0001", "ser-0002"}
     assert any(
-        "more than one hand is plugged in" in r.getMessage() for r in caplog.records
+        "2 hands are plugged in" in r.getMessage() for r in caplog.records
     )
 
 
 def test_detect_hand_stays_quiet_for_a_single_board(monkeypatch, caplog):
     from orca_core import hand_factory
+    from orca_core.hardware.sensing import serial_discovery
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
 
+    ports = [
+        _oh_port("/dev/cu.a1", _BOARD_A),
+        _oh_port("/dev/cu.a2", _BOARD_A),
+    ]
+    infos = {
+        "/dev/cu.a1": OrcaBoardInfo(role="motor", side="right", serial="ser-0001"),
+        "/dev/cu.a2": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
+    }
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
     monkeypatch.setattr(
-        hand_factory, "oh_board_ports", lambda: ["/dev/cu.a1", "/dev/cu.a2"]
+        serial_discovery, "probe_orca_info", lambda p, *a, **k: infos.get(p)
     )
-    monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: None)
-    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda port: False)
+    monkeypatch.setattr(serial_discovery, "port_in_use", lambda p: False)
+    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
     monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
-    monkeypatch.setattr(hand_factory, "port_in_use", lambda port: False)
 
     with caplog.at_level(logging.WARNING):
         hand_factory.detect_hand()
 
     assert not any(
-        "more than one hand" in r.getMessage() for r in caplog.records
+        "hands are plugged in" in r.getMessage() for r in caplog.records
     )
+
+
+def test_two_boards_pair_their_own_ports_despite_interleaved_enumeration(monkeypatch):
+    """The failure this prevents: claiming the first motor CDC and the first
+    sensing CDC seen, which with two boards drives one hand's motors from the
+    other hand's encoders."""
+    from orca_core import hand_factory
+
+    _patch_two_boards(monkeypatch, hand_factory)
+
+    hands = {d.hand_id: d for d in hand_factory.detect_hands()}
+    assert set(hands) == {"ser-0001", "ser-0002"}
+    assert (hands["ser-0001"].motor_port, hands["ser-0001"].sensing_port) == (
+        "/dev/cu.a-motor", "/dev/cu.a-sensor",
+    )
+    assert (hands["ser-0002"].motor_port, hands["ser-0002"].sensing_port) == (
+        "/dev/cu.b-motor", "/dev/cu.b-sensor",
+    )
+    assert hands["ser-0001"].side == "right"
+    assert hands["ser-0002"].side == "left"
+
+
+# ----- board grouping ------------------------------------------------------
+
+def test_board_id_is_derived_from_the_usb_descriptor():
+    """The firmware folds the same four MCU words into the ID it reports, so
+    a board can be named without opening a port — or having the identity
+    firmware at all. Values measured on a real board."""
+    from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
+
+    assert board_id_from_usb_serial(_BOARD_A) == "4B7685ABAA282225"
+    # A descriptor carrying the ID once folds identically.
+    assert board_id_from_usb_serial(_BOARD_A[:32]) == "4B7685ABAA282225"
+
+
+@pytest.mark.parametrize(
+    "usb_serial",
+    [None, "", "not-hex-at-all", "ABCD", "1B46C9E850304C43552E3120FF0613050000"],
+)
+def test_board_id_is_none_for_a_descriptor_of_the_wrong_shape(usb_serial):
+    from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
+
+    assert board_id_from_usb_serial(usb_serial) is None
+
+
+def test_halves_that_disagree_are_not_folded():
+    """Two different IDs concatenated is not one board repeating itself."""
+    from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
+
+    assert board_id_from_usb_serial(_BOARD_A[:32] + _BOARD_B[:32]) is None
+
+
+def test_cdcs_group_by_usb_serial_not_enumeration_order(monkeypatch):
+    from orca_core.hardware.sensing.serial_discovery import (
+        board_id_from_usb_serial, oh_board_candidates,
+    )
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        _oh_port("/dev/cu.a1", _BOARD_A),
+        _oh_port("/dev/cu.b1", _BOARD_B),
+        _oh_port("/dev/cu.a2", _BOARD_A),
+        _oh_port("/dev/cu.b2", _BOARD_B),
+    ])
+    grouped = {c.board_id: set(c.ports) for c in oh_board_candidates()}
+    assert grouped == {
+        board_id_from_usb_serial(_BOARD_A): {"/dev/cu.a1", "/dev/cu.a2"},
+        board_id_from_usb_serial(_BOARD_B): {"/dev/cu.b1", "/dev/cu.b2"},
+    }
+
+
+def test_cdcs_without_a_serial_group_by_usb_location(monkeypatch):
+    """Linux reports a per-interface location; the device prefix is the board."""
+    from orca_core.hardware.sensing.serial_discovery import oh_board_candidates
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        fake_serial_port("/dev/ttyACM0", _OH_VID, location="1-3:1.0"),
+        fake_serial_port("/dev/ttyACM1", _OH_VID, location="1-3:1.2"),
+        fake_serial_port("/dev/ttyACM2", _OH_VID, location="1-4:1.0"),
+        fake_serial_port("/dev/ttyACM3", _OH_VID, location="1-4:1.2"),
+    ])
+    grouped = [set(c.ports) for c in oh_board_candidates()]
+    assert len(grouped) == 2
+    assert {"/dev/ttyACM0", "/dev/ttyACM1"} in grouped
+    assert {"/dev/ttyACM2", "/dev/ttyACM3"} in grouped
+
+
+def test_unattributable_cdcs_beyond_one_board_are_never_merged(monkeypatch):
+    """Merging CDCs that name neither a serial nor a location would pair one
+    hand's motor bus with another hand's encoders."""
+    from orca_core.hardware.sensing.serial_discovery import oh_board_candidates
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        fake_serial_port(f"/dev/ttyACM{i}", _OH_VID) for i in range(4)
+    ])
+    assert [len(c.ports) for c in oh_board_candidates()] == [1, 1, 1, 1]
+
+
+def test_one_boards_worth_of_unattributable_cdcs_still_pairs(monkeypatch):
+    """There is nothing to cross-pair with, so the legacy single-board case
+    keeps working."""
+    from orca_core.hardware.sensing.serial_discovery import oh_board_candidates
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        fake_serial_port("/dev/ttyACM0", _OH_VID),
+        fake_serial_port("/dev/ttyACM1", _OH_VID),
+    ])
+    candidates = oh_board_candidates()
+    assert len(candidates) == 1
+    assert set(candidates[0].ports) == {"/dev/ttyACM0", "/dev/ttyACM1"}
+
+
+def test_a_board_reply_contradicting_the_descriptor_is_reported(monkeypatch, caplog):
+    """Both CDCs of a board answer with the same identity block, so a
+    disagreement proves the grouping crossed two boards."""
+    from orca_core.hardware.sensing import serial_discovery
+    from orca_core.hardware.sensing.serial_discovery import (
+        BoardCandidate, OrcaBoardInfo, probe_board,
+    )
+
+    monkeypatch.setattr(
+        serial_discovery, "probe_orca_info",
+        lambda p, *a, **k: OrcaBoardInfo(role="motor", board_id="DEADBEEFDEADBEEF"),
+    )
+    monkeypatch.setattr(serial_discovery, "port_in_use", lambda p: False)
+
+    with caplog.at_level(logging.ERROR):
+        probe_board(BoardCandidate(ports=("/dev/cu.x",), usb_serial=_BOARD_A))
+
+    assert any("not one board" in r.getMessage() for r in caplog.records)
+
+
+def test_single_port_resolvers_refuse_to_pick_between_two_boards(monkeypatch):
+    """find_motor_port() has no right answer with two hands attached, and
+    returning either hands the caller a port from a hand it did not ask for."""
+    from orca_core.hardware.sensing import serial_discovery
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        _oh_port("/dev/cu.a1", _BOARD_A),
+        _oh_port("/dev/cu.a2", _BOARD_A),
+        _oh_port("/dev/cu.b1", _BOARD_B),
+        _oh_port("/dev/cu.b2", _BOARD_B),
+    ])
+    probed = []
+    monkeypatch.setattr(
+        serial_discovery, "_probe_orca_id",
+        lambda p, **k: probed.append(p),
+    )
+    assert serial_discovery.find_motor_port() is None
+    assert probed == [], "an ambiguous bus must not be probed at all"
