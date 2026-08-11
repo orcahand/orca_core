@@ -153,6 +153,25 @@ def test_at_loop_rate_the_worst_oscillation_can_look_like_silence():
     assert at_frame_rate.frequency_hz == pytest.approx(50.0, rel=0.02)
 
 
+def test_a_record_that_opens_before_the_oscillation_reports_the_oscillation():
+    """The shape of a dwell that had to be cut short: a slow excitation running
+    throughout, and a fast oscillation that only starts partway in. The record
+    then holds one long half cycle from before, among a hundred short ones. It
+    is a single interval out of a hundred and it must not be allowed to set the
+    answer — averaged, it halves the reported frequency and makes the spread
+    look like noise."""
+    t = np.arange(0.0, 2.0, 1.0 / FRAME_RATE_HZ)
+    excitation = 2.0 * np.sin(2 * np.pi * 0.5 * t)
+    signal = excitation + 5.0 * np.sin(2 * np.pi * 12.0 * t) * (t > 1.0)
+
+    result = osc.describe(t, signal)
+
+    assert result.resolvable
+    assert result.frequency_hz == pytest.approx(12.0, rel=0.1)
+    averaged = 1.0 / (2.0 * np.mean(result.half_cycle_s))
+    assert averaged < 0.75 * result.frequency_hz, "the mean should have been fooled"
+
+
 def test_the_spectrum_agrees_with_the_crossings():
     t, x = sampled(11.0, 0.6)
 

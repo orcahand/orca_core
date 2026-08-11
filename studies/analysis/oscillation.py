@@ -47,7 +47,7 @@ MIN_HALF_CYCLES = 4
 # its length is quantised by the sampling, not measured by it.
 MAX_RESOLVABLE_RATE_FRACTION = 0.4
 
-# Spread of half-cycle durations, relative to their mean, above which the
+# Spread of half-cycle durations, relative to their median, above which the
 # crossings are not periodic. A self-excited oscillation keeps time; noise
 # crossing a band does not.
 MAX_IRREGULARITY = 0.4
@@ -289,9 +289,32 @@ def describe(
             half_cycle_s=[float(v) for v in half_cycle_s],
         )
 
-    mean_half = float(np.mean(half_cycle_s))
-    frequency = 1.0 / (2.0 * mean_half)
-    irregularity = float(np.std(half_cycle_s) / mean_half)
+    # Median rather than mean, for both the period and its spread. A record can
+    # hold a stretch of something else — the tail of a disturbance, the last of
+    # an excitation, the quiet before the oscillation started — and one long
+    # half cycle from it moves a mean-derived frequency by a factor of two and a
+    # standard deviation by far more. The median describes the oscillation that
+    # dominates the record, which is the one being asked about.
+    median_half = float(np.median(half_cycle_s))
+    if median_half <= 0:
+        return Oscillation(
+            samples=int(t.size),
+            duration_s=duration,
+            sample_rate_hz=rate,
+            peak_to_peak_deg=swing,
+            frequency_hz=float("nan"),
+            half_cycles=count,
+            irregularity=float("nan"),
+            spectral_peak_hz=spectral_peak_hz(t, residual),
+            resolvable=False,
+            note="crossings share a timestamp, so they have no duration",
+            half_cycle_s=[float(v) for v in half_cycle_s],
+        )
+    frequency = 1.0 / (2.0 * median_half)
+    # Scaled so it reads on the same scale as a coefficient of variation would.
+    irregularity = float(
+        1.4826 * np.median(np.abs(half_cycle_s - median_half)) / median_half
+    )
 
     resolvable = True
     note = ""
@@ -304,7 +327,7 @@ def describe(
     elif irregularity > MAX_IRREGULARITY:
         resolvable = False
         note = (
-            f"half cycles vary by {irregularity * 100:.0f}% of their mean, so "
+            f"half cycles vary by {irregularity * 100:.0f}% of their median, so "
             "the crossings are not periodic"
         )
 

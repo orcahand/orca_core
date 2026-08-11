@@ -39,7 +39,9 @@ def on_progress(event):
     elif kind == "dwell_done":
         measured = event["measured"] or {}
         verdict = event["verdict"] or {}
-        state = event["aborted"] or verdict.get("state", "?")
+        state = verdict.get("state", "baseline")
+        if event["aborted"]:
+            state += f" (cut short: {event['aborted']})"
         frequency = measured.get("frequency_hz")
         print(
             f"  Kp={event['kp']:<6} Ki={event['ki']:<6} "
@@ -48,9 +50,10 @@ def on_progress(event):
             f"clamped {event['clamp_fraction'] * 100:.0f}% -> {state}"
         )
     elif kind == "onset":
+        low, high = event["bracket"]
         print(
-            f"  ONSET at {event['arm']}={event['value']}, "
-            f"oscillating at {event['frequency_hz']} Hz"
+            f"  ONSET at {event['arm']}={event['value']}, oscillating at "
+            f"{event['frequency_hz']} Hz (last quiet at {low if low is not None else '—'})"
         )
     elif kind == "joint_done":
         print(f"  {event['joint']}: {event['outcome']} — {event['reason']}")
@@ -58,13 +61,16 @@ def on_progress(event):
 
 def report(result):
     print()
-    print(f"{'joint':<12} {'outcome':<10} {'onset':>7} {'Hz':>7} {'baseline':>9}")
+    print(f"{'joint':<12} {'outcome':<10} {'onset in':>14} {'Hz':>7} {'baseline':>9}")
     for margin in result["joints"]:
-        onset = margin["onset_value"]
+        bracket = margin["onset_bracket"]
+        span = (
+            f"{bracket[0]}–{bracket[1]}" if bracket and bracket[0] is not None
+            else (str(margin["onset_value"]) if margin["onset_value"] is not None else "—")
+        )
         frequency = margin["onset_frequency_hz"]
         print(
-            f"{margin['joint']:<12} {margin['outcome']:<10} "
-            f"{onset if onset is not None else '—':>7} "
+            f"{margin['joint']:<12} {margin['outcome']:<10} {span:>14} "
             f"{frequency if frequency is not None else '—':>7} "
             f"{margin['baseline_p2p_deg'] if margin['baseline_p2p_deg'] is not None else '—':>9}"
         )
@@ -149,6 +155,16 @@ def main() -> int:
         stopping = True
         print("\nStopping after this dwell...")
 
+    def watch_for_stop():
+        """Both signals, because a joint left at a raised gain is not something
+        to leave behind on the way out."""
+        signal.signal(signal.SIGINT, on_signal)
+        signal.signal(signal.SIGTERM, on_signal)
+
+    def stop_watching():
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     hand = load_hand(args.config_path)
     frames = FrameRecorder()
     window = JointAngleWindow.for_hand(hand)
@@ -160,7 +176,18 @@ def main() -> int:
     if not connected:
         return 1
 
-    signal.signal(signal.SIGINT, on_signal)
+    # Connecting starts the loop but leaves the motors limp, and a limp joint
+    # measures nothing. Torque stays on afterwards: cutting it drops the
+    # fingers onto whatever is under them.
+    failed = hand.enable_torque()
+    if failed:
+        print(f"Motors that would not take torque: {failed}")
+        hand.disconnect()
+        return 1
+    hand.rebase_loop()
+    print(f"Loop joints: {', '.join(hand.loop_joint_names or [])}")
+
+    watch_for_stop()
     try:
         result = run_gain_margin(
             hand,
@@ -178,7 +205,7 @@ def main() -> int:
         print(f"\nCannot start: {error}")
         return 1
     finally:
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        stop_watching()
         hand.disconnect()
 
     report(result)

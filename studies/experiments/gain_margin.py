@@ -92,6 +92,13 @@ LINK_SAMPLE_INTERVAL_S = 1.0
 ONSET_CHECK_AFTER_S = 1.5
 ONSET_CHECK_INTERVAL_S = 0.5
 
+# How far back to look when a dwell is cut short: the stretch that ended it,
+# not all of it. A dwell aborts while the excitation is still running, so a
+# window covering the whole of it reports a swing that is partly the
+# excitation's — and that swing is what gets compared against the joint's quiet
+# baseline.
+ABORT_MEASURE_S = 1.5
+
 # Geometric, because margin is a ratio: a fifth more gain is the same step
 # whether the gain is 0.5 or 2. The ceilings are well past where the linear
 # analysis puts the limit, so a joint that never oscillates says something.
@@ -177,6 +184,11 @@ class JointMargin:
     baseline_p2p_deg: float = float("nan")
     dwells: List[Dwell] = field(default_factory=list)
     onset_value: Optional[float] = None
+    # The last gain that stayed quiet and the first that did not. The onset is
+    # somewhere between them and the ramp's step size is all that is known
+    # about where — reporting the upper one alone would read as a measurement
+    # of the gain rather than of the interval it was found in.
+    onset_bracket: Optional[List[float]] = None
     onset_frequency_hz: Optional[float] = None
     outcome: str = "not run"
     reason: str = ""
@@ -195,6 +207,7 @@ class JointMargin:
                 else None
             ),
             "onset_value": self.onset_value,
+            "onset_bracket": self.onset_bracket,
             "onset_frequency_hz": (
                 round(self.onset_frequency_hz, 2)
                 if self.onset_frequency_hz is not None
@@ -480,6 +493,7 @@ def _ramp(
     """Walk the gain up until the joint oscillates or the ceiling is reached."""
     joint = margin.joint
     value = float("nan")
+    last_quiet = None
     for index, (kp, ki) in enumerate(_ramp_gains(gains, arm), start=1):
         dwell = _dwell(
             hand,
@@ -513,6 +527,10 @@ def _ramp(
             return
         if verdict.oscillating:
             margin.onset_value = round(value, 4)
+            margin.onset_bracket = [
+                round(last_quiet, 4) if last_quiet is not None else None,
+                round(value, 4),
+            ]
             margin.onset_frequency_hz = verdict.oscillation.frequency_hz
             margin.outcome = "onset"
             margin.reason = verdict.reason
@@ -533,9 +551,11 @@ def _ramp(
                 joint=joint,
                 arm=arm,
                 value=round(value, 4),
+                bracket=margin.onset_bracket,
                 frequency_hz=round(verdict.oscillation.frequency_hz, 2),
             )
             return
+        last_quiet = value
 
     margin.outcome = "no onset"
     margin.reason = (
@@ -605,7 +625,14 @@ def _dwell(
         # to that point is what keeps the safety limit from throwing away the
         # measurement it fired on.
         if not isinstance(abort, StopRequested):
-            _measure(dwell, window, joint, base_pose, guard.since, baseline_p2p)
+            _measure(
+                dwell,
+                window,
+                joint,
+                base_pose,
+                max(guard.since, time.monotonic() - ABORT_MEASURE_S),
+                baseline_p2p,
+            )
         session.record_event(
             "dwell_aborted",
             joint=joint,
