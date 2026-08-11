@@ -1,82 +1,92 @@
 # Gain margin and onset frequency
 
-**Status** built, not yet run on a hand. The protocol below is what the driver
-does; the results section is empty until it has run and stays empty rather than
-being filled with expectations.
+**Hand** `ser-9964`, orcahand-full-right, hw2 / fw2, board 4B7685ABAA282225
+**Date** 2026-08-11 · **Joints** 3 of 16 · **Arm** proportional gain, integrator off
+**Data** `studies/data/20260811T17{4400,4631,5535}_gain_margin_right`
+**Driver** `uv run python studies/run_gain_margin.py <config.yaml> --joints <joint>`
 
-**Driver** `uv run python studies/run_gain_margin.py <config.yaml>`
+> **Shakedown grade.** These runs were made to exercise the probe, and no tendon
+> history was declared for them. Tension state moves everything measured here, so
+> treat the numbers as this hand on this afternoon, and re-run the set with a
+> declared history before anything is tuned against them.
 
 ## Question
 
-The outer loop ships at half the proportional gain the linear analysis calls
-marginally stable, and it does oscillate at that gain. That much is expected and
-is not the question. The question is per joint: **how much margin is actually
-there, and is 0.5 — 0.35 on the two stiffest thumb joints — in the right place
-for each of them?**
+The loop ships at half the proportional gain the linear analysis calls
+marginally stable, and it does oscillate at that gain. How much margin is
+actually there per joint — and at what frequency does it go, which is the number
+that says whether a faster loop would help.
 
-And the more useful half: **at what frequency does it oscillate when it goes?**
-That number, not the gain, says which of the three avenues is worth spending
-effort on.
+## Result
 
-| onset frequency | what is setting the limit | what follows |
-|---|---|---|
-| near half the loop rate | nothing mechanical; the loop is alternating against a plant that has already arrived | a faster loop buys margin roughly in proportion |
-| a tenth to a quarter of the loop rate | real mechanical lag | a faster loop buys little; the gains have to fit the lag, per joint |
-| a few cycles a second | backlash and the integrator hunting across it | neither gain nor loop rate is the cure |
+| joint | shipped Kp | quiet through | oscillated at | margin | frequency |
+|---|---|---|---|---|---|
+| index_mcp | 0.50 | 2.38 | 2.98 | 4.8–6.0× | **11.1 Hz** |
+| index_pip | 0.50 | 2.98 | 3.73 | 6.0–7.5× | **11.1 Hz** |
+| thumb_cmc | 0.35 | 1.67 | 2.09 | 4.8–6.0× | not resolved |
 
-## Method
+Baseline swing, held still at the shipped gains: 0.29–0.57°, or 13–26 encoder
+counts. Every onset was reached with the correction off its clamp (≤3% of
+samples), so none of these is censored.
 
-One joint at a time, every other joint's loop set to zero gain so the motion
-measured belongs to one loop. The wrist is never probed: it runs a position mode
-with no current ceiling.
+**Every joint that gave a frequency gave about 11 Hz.** index_mcp was probed
+three times and blew up at exactly the same ramp step each time, at 10.7, 11.6
+and 11.1 Hz. That is a hundred times slower than the loop's own cycle and
+around a tenth of its rate.
 
-Per joint, at the middle of the travel both the config and the measured ROM
-agree on:
+**With the integrator off, the shipped proportional gain sits at a fifth to a
+seventh of where the joint goes unstable.** The thumb's reduced 0.35 is
+proportionate rather than extra-conservative: its margin ratio matches the
+fingers', it is only its absolute onset that is lower.
 
-1. **A baseline dwell at the configured gains** — 20 s of excitation, then 10 s
-   quiet. The swing over the quiet stretch is that joint's noise floor, and
-   every later dwell is judged against it.
-2. **A ramp**, geometric at ×1.25, dwelling 4 s excited then 5 s quiet at each
-   step. `--arm kp` raises the proportional gain with the integrator off, which
-   is the clean linear measurement; `--arm ki` raises the integral gain at the
-   configured proportional gain, which is where a nonlinear mechanism shows.
-   The integrator is discharged between dwells, so no dwell inherits the
-   previous tuning's stored demand.
-3. Every dwell is **excited at ±2°, 0.5 Hz**, and measured **after** that stops.
-   A marginally stable loop sits still if nothing disturbs it, and an
-   oscillation still running once the excitation has gone is the loop's own.
+**The transition is a cliff, not a slope.** At every gain up to the last, the
+joint swings its noise floor and nothing more — 0.24 to 0.53°, no trend. One
+ramp step later, 25% more gain, it swings 10–11°. Nothing grew on the way. A
+linear loop approaching its stability limit does not do this; something
+threshold-like is involved, and it means the ×1.25 ramp step is the entire
+resolution available on where the margin is.
 
-Onset is declared on a swing that stands well above the joint's own baseline, at
-a frequency that resolves into regular half cycles, with the correction off its
-clamp. All three have to hold; each is there because of a specific way this
-measurement lies (see `studies/analysis/oscillation.py`).
-
-**Everything is measured on the encoder frame stream at 500 Hz, never on the
-loop's own 100 Hz record.** An oscillation near half the loop rate appears there
-as a steady offset — a joint sitting quietly off target — which is the one
-result that would be read as the opposite of what it is.
-
-The probe stops itself: on the detected onset, on the joint reaching the ends of
-its travel, on swinging more than 10° inside 0.4 s, on the loop e-stopping, and
-on request. It returns the joint to its base pose with the gains it found, and
-leaves torque on throughout.
-
-## Results
-
-Not yet run.
+**Consequently every onset here was caught by the amplitude limit, not by the
+growth detector.** The probe's 10°-in-0.4 s abort fired inside the same dwell
+the oscillation started in, and each onset was read from the stretch that
+tripped it.
 
 ## Decisions this unblocks
 
-Pending the run. It is meant to answer: whether the loop-efficiency avenue is
-alive at all, whether the shipped gains are conservative or generous per joint,
-and whether the cure for any joint is Kp, Ki, or neither.
+**The loop-rate avenue looks weak, on this evidence.** An oscillation at 11 Hz
+against a 100 Hz loop is not a loop alternating against a mechanism that has
+already arrived — that would show up near 50 Hz. It is mechanical lag setting
+the limit, and against lag of that scale a faster loop buys little. Three joints
+is not sixteen, but all three agree and none is near the band where raising the
+rate would pay.
+
+**Per-joint retuning is the avenue with room in it**, and Stage 3's step
+responses are what should set the numbers rather than a probe like this one.
 
 ## Decisions this does NOT support
 
-- **Nothing about accuracy.** A margin is not an error.
-- **Nothing about loaded operation.** Every dwell is free-space.
-- **Nothing about a joint's margin at another pose.** Each joint is probed at
-  one pose, in the middle of its travel.
-- **Nothing whose dwell was censored.** A dwell spent against the correction
-  clamp reports the clamp's amplitude, not the loop's, and no onset is read from
-  one.
+- **Nothing about raising Kp on a shipped hand.** These onsets were measured
+  with the integrator switched off. The hand runs Ki=5, which spends margin;
+  the integral arm has not been run. A fivefold margin with no integrator is
+  not a fivefold margin.
+- **Nothing about the other thirteen joints**, or about any hand but this one.
+- **No frequency for thumb_cmc.** Its crossings do not keep time — the estimate
+  moved between 6 and 12 Hz depending on the window — so it is recorded as
+  oscillating without a frequency rather than with a number that would not
+  survive being asked twice.
+- **Nothing about loaded operation.** Free-space, one pose per joint, mid-travel.
+- **Nothing about where the margin is inside a bracket.** The transition is
+  sharp and the ramp step is 25%; the onset is somewhere in that interval and
+  the data says nothing finer.
+
+## Follow-ups
+
+- Run the integral arm. Given the cliff, the interesting question is whether Ki
+  moves the onset gain or changes what happens below it.
+- The remaining thirteen joints, with a declared tendon history.
+- thumb_cmc carries 0.4–0.5° of 28–39 Hz swing in every quiet dwell, at every
+  gain including the shipped one, and the amplitude does not follow the gain.
+  Something is exciting that joint independently of the loop.
+- The cliff itself is worth a look: a threshold that has to be crossed before
+  the joint answers at all would also explain a standing error that never
+  integrates away.
