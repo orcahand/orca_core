@@ -1,0 +1,86 @@
+A-ideal:
+  per_joint_mean_deg:
+    wrist: 0.0050356458152099985
+    thumb_cmc: 0.006461490303370095
+    thumb_abd: 0.026053011113849226
+    thumb_mcp: 0.02054344325364328
+    thumb_dip: 0.06559217842259171
+    index_abd: 0.025474412287616405
+    index_mcp: 0.019205854298078723
+    index_pip: 0.040383714497828585
+    middle_abd: 0.025839294557304444
+    middle_mcp: 0.008854015016882254
+    middle_pip: 0.030597631140630892
+    ring_abd: 0.005519121256574312
+    ring_mcp: 0.020244565761973546
+    ring_pip: 0.03832954884785719
+    pinky_abd: 0.02168517233374212
+    pinky_mcp: 0.008539468148960894
+    pinky_pip: 0.020629656975189516
+  per_joint_max_deg:
+    wrist: 0.015748502365369177
+    thumb_cmc: 0.020053052201447485
+    thumb_abd: 0.06300888975385632
+    thumb_mcp: 0.04538266818761372
+    thumb_dip: 0.26873028579903746
+    index_abd: 0.05171116750723925
+    index_mcp: 0.057189081825697485
+    index_pip: 0.17589796571982674
+    middle_abd: 0.05711029641571841
+    middle_mcp: 0.03710256411430635
+    middle_pip: 0.1250619578420924
+    ring_abd: 0.016463522167615707
+    ring_mcp: 0.07300625779457803
+    ring_pip: 0.14901770087636024
+    pinky_abd: 0.04107171677142318
+    pinky_mcp: 0.015097622371442299
+    pinky_pip: 0.0824787008918264
+  fingertip_mm:
+    mean: 0.05165362434825827
+    p95: 0.10289153153728445
+  axis_diag_deg:
+    wrist: 0.35080836510074953
+    thumb_cmc: 1.3029170562115995
+    thumb_abd: 1.810335920836458
+    thumb_mcp: 0.8180287277028442
+    thumb_dip: 0.7357480020920897
+    index_abd: 1.0631972256500362
+    index_mcp: 0.7010797257170457
+    index_pip: 0.5189283358102444
+    middle_abd: 1.079630176382043
+    middle_mcp: 0.498788586786894
+    middle_pip: 0.4547632118415608
+    ring_abd: 1.5720298994022581
+    ring_mcp: 0.7997600549423436
+    ring_pip: 0.7094434592651515
+    pinky_abd: 0.834919972745165
+    pinky_mcp: 0.2741946756582313
+    pinky_pip: 0.40545691510617066
+  solve_s: 3.747775145515334
+  seeds: 2
+  classes:
+  - class: wrist
+    mean_deg: 0.005
+    worst_deg: 0.016
+    worst_vs_budget: 0.1
+    within: true
+  - class: abd
+    mean_deg: 0.02
+    worst_deg: 0.057
+    worst_vs_budget: 0.21
+    within: true
+  - class: mcp
+    mean_deg: 0.014
+    worst_deg: 0.073
+    worst_vs_budget: 0.21
+    within: true
+  - class: pip
+    mean_deg: 0.032
+    worst_deg: 0.176
+    worst_vs_budget: 0.28
+    within: true
+  - class: thumb
+    mean_deg: 0.03
+    worst_deg: 0.269
+    worst_vs_budget: 0.32
+    within: true
