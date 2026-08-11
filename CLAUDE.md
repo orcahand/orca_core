@@ -169,9 +169,12 @@ Note that `release.yml` publishes to PyPI on every push to `main` carrying a new
 
 ### Common Scripts
 
-Every script takes an optional positional `config_path` pointing at a model's `config.yaml` (defaults to the package's bundled model if omitted). Run `--help` on any script for its full flag list.
+Every script takes an optional positional `config_path` pointing at a model's `config.yaml` (omit it to autodetect the connected hand). Run `--help` on any script for its full flag list.
 
 ```bash
+# What is plugged in? Run this first on a new or misbehaving hand (read-only).
+uv run python scripts/detect.py
+
 # Calibration workflow
 uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml

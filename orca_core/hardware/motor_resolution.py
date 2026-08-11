@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..constants import MOTOR_BAUD_RATES, SUPPORTED_MOTOR_TYPES
+from ..utils.utils import read_yaml
 
 if TYPE_CHECKING:
     from ..hand_config import OrcaHandConfig
@@ -33,70 +34,93 @@ logger = logging.getLogger(__name__)
 def trial_probe(config: "OrcaHandConfig", port: str) -> "tuple[str | None, int | None]":
     """Probe ``port`` until a (motor_type, baudrate) combination responds.
 
-    Iterates each motor family x the baudrates listed in
-    :data:`~orca_core.constants.MOTOR_BAUD_RATES`. If ``motor_type`` or
-    ``baudrate`` is pinned in ``config``, that dimension is fixed and the
-    probe only iterates the other.
-    """
-    from .dynamixel_client import DynamixelClient
-    from .feetech_client import FeetechClient
+    Iterates each motor family x that family's baud rates, fastest path first:
+    the rates listed in :data:`~orca_core.constants.MOTOR_BAUD_RATES`, then any
+    remaining rate the family's client accepts.
 
-    candidates = {
-        "dynamixel": DynamixelClient,
-        "feetech": FeetechClient,
-    }
-    motor_types = (
-        [config.motor_type] if config.motor_type else list(SUPPORTED_MOTOR_TYPES)
-    )
-    for motor_type in motor_types:
-        client_cls = candidates.get(motor_type)
-        if client_cls is None:
-            continue
-        baudrates = (
-            [config.baudrate]
-            if config.baudrate is not None
-            else list(MOTOR_BAUD_RATES.get(motor_type, []))
+    A ``motor_type`` or ``baudrate`` pinned in ``config`` is tried first and
+    alone. When the pinned combination stays silent the probe falls back to the
+    full unpinned sweep, so a hand whose motors were swapped for another family
+    still comes up on its bundled config.
+    """
+    pinned = config.motor_type is not None or config.baudrate is not None
+    if pinned:
+        motor_type, baudrate = _sweep(
+            port,
+            config.motor_ids,
+            [config.motor_type] if config.motor_type else list(SUPPORTED_MOTOR_TYPES),
+            config.baudrate,
         )
-        for baudrate in baudrates:
-            logger.info("Probing %s on %s @ %d baud...", motor_type, port, baudrate)
+        if motor_type is not None:
+            return motor_type, baudrate
+        logger.warning(
+            "Pinned motor driver (%s @ %s baud) did not respond on %s; "
+            "sweeping every supported family and baud rate.",
+            config.motor_type or "any", config.baudrate or "any", port,
+        )
+    return _sweep(port, config.motor_ids, list(SUPPORTED_MOTOR_TYPES), None)
+
+
+def _sweep(
+    port: str,
+    motor_ids: "list[int]",
+    motor_types: "list[str]",
+    baudrate: "int | None",
+) -> "tuple[str | None, int | None]":
+    """Probe ``motor_types`` on ``port``, at ``baudrate`` alone when it is given."""
+    from .motor_factory import motor_client_class
+
+    for motor_type in motor_types:
+        try:
+            client_cls = motor_client_class(motor_type)
+        except ValueError:
+            continue
+        baudrates = [baudrate] if baudrate is not None else _baudrates_for(client_cls, motor_type)
+        for rate in baudrates:
+            logger.info("Probing %s on %s @ %d baud...", motor_type, port, rate)
             try:
-                if client_cls.probe(port, baudrate, config.motor_ids):
-                    logger.info("%s responded on %s at %d baud.", motor_type, port, baudrate)
-                    return motor_type, baudrate
+                if client_cls.probe(port, rate, motor_ids):
+                    logger.info("%s responded on %s at %d baud.", motor_type, port, rate)
+                    return motor_type, rate
             except Exception as e:
-                logger.warning("Probe of %s @ %d baud errored: %s", motor_type, baudrate, e)
+                logger.warning("Probe of %s @ %d baud errored: %s", motor_type, rate, e)
     return None, None
 
 
-def persist_resolved_driver(
-    existing: "OrcaHandConfig", resolved: "OrcaHandConfig"
-) -> None:
+def _baudrates_for(client_cls, motor_type: str) -> "list[int]":
+    """The family's priority rates first, then every other rate it accepts."""
+    rates = list(MOTOR_BAUD_RATES.get(motor_type, []))
+    rates.extend(r for r in client_cls.supported_baudrates() if r not in rates)
+    return rates
+
+
+def persist_resolved_driver(resolved: "OrcaHandConfig") -> None:
     """Best-effort persistence of auto-detected driver fields to config.yaml.
 
-    Each field is only written when it was missing (or, for the port,
-    different) in yaml before this connect. Once written, the next
-    connect short-circuits the probe and uses the yaml values directly.
-    Clear the yaml fields to trigger a fresh probe.
+    Only what the yaml itself leaves unset is filled in, so the next connect
+    short-circuits the probe; clear those fields to trigger a fresh probe. A
+    value the yaml pins is left alone even when another one answered — the file
+    states the operator's intent, and :func:`trial_probe` already warns and
+    sweeps when a pin stays silent. The comparison is against the file rather
+    than the in-memory config, which hand detection may have patched for this
+    connect. Packaged models are never rewritten: one file backs every hand of
+    that model, and this hand's driver is not a property of the model.
 
-    All resolved fields are written in a single atomic rewrite. A write
-    failure (e.g. a read-only install) is logged and never raised: the
-    connect stays valid and the probe simply runs again next time.
+    All fields are written in a single atomic rewrite. A write failure (e.g. a
+    read-only install) is logged and never raised: the connect stays valid and
+    the probe simply runs again next time.
     """
-    updates = {}
-    if existing.port != resolved.port and existing.port != "auto":
-        updates["port"] = resolved.port
-    if existing.motor_type is None and resolved.motor_type is not None:
-        updates["motor_type"] = resolved.motor_type
-    if existing.baudrate is None and resolved.baudrate is not None:
-        updates["baudrate"] = resolved.baudrate
-    if not updates:
+    if _is_packaged_model(resolved.config_path):
         return
     try:
+        updates = _driver_updates(read_yaml(resolved.config_path) or {}, resolved)
+        if not updates:
+            return
         _atomic_yaml_update(resolved.config_path, updates)
     except (OSError, yaml.YAMLError) as e:
         logger.warning(
-            "Could not persist auto-detected %s to %s (%s); the next connect will re-probe.",
-            ", ".join(updates),
+            "Could not persist auto-detected driver fields to %s (%s); "
+            "the next connect will re-probe.",
             resolved.config_path,
             e,
         )
@@ -106,6 +130,26 @@ def persist_resolved_driver(
         ", ".join(updates),
         os.path.basename(resolved.config_path),
     )
+
+
+def _driver_updates(pinned: dict, resolved: "OrcaHandConfig") -> dict:
+    """Driver fields to write back: what yaml left unset, plus a port that
+    yaml pinned to a device the hand is not on."""
+    updates = {}
+    port = pinned.get("port")
+    if port not in (None, "auto") and port != resolved.port:
+        updates["port"] = resolved.port
+    if pinned.get("motor_type") is None and resolved.motor_type is not None:
+        updates["motor_type"] = resolved.motor_type
+    if pinned.get("baudrate") is None and resolved.baudrate is not None:
+        updates["baudrate"] = resolved.baudrate
+    return updates
+
+
+def _is_packaged_model(config_path: str) -> bool:
+    """Whether ``config_path`` is one of the models shipped inside the package."""
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+    return os.path.abspath(config_path).startswith(os.path.abspath(models_dir) + os.sep)
 
 
 def _atomic_yaml_update(path: str, updates: dict) -> None:

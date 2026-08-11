@@ -49,3 +49,35 @@ def create_motor_client(
 ) -> MotorClient:
     """Construct (but do not connect) the client for ``motor_type``."""
     return motor_client_class(motor_type)(motor_ids, port, baudrate)
+
+
+def mock_motor_client_class(motor_type: str) -> type[MotorClient]:
+    """Return the in-memory stand-in for ``motor_type``'s client.
+
+    Mocks carry their family's capability attributes, so a mock hand behaves
+    like the family it stands in for instead of always like a Dynamixel.
+    """
+    if motor_type == DYNAMIXEL:
+        from .mock_dynamixel_client import MockDynamixelClient
+
+        return MockDynamixelClient
+
+    if motor_type == FEETECH:
+        from .mock_feetech_client import MockFeetechClient
+
+        return MockFeetechClient
+
+    raise ValueError(
+        f"Unknown motor_type: {motor_type}. "
+        f"Expected one of [{', '.join(SUPPORTED_MOTOR_TYPES)}]."
+    )
+
+
+def create_mock_motor_client(
+    motor_type: str,
+    motor_ids: Sequence[int],
+    port: str,
+    baudrate: int,
+) -> MotorClient:
+    """Construct (but do not connect) the mock client for ``motor_type``."""
+    return mock_motor_client_class(motor_type)(motor_ids, port, baudrate)

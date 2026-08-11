@@ -1,4 +1,4 @@
-"""Tests for the abduction-sign coherence pass of tools/extract_urdf_kinematics.py."""
+"""Tests for tools/extract_urdf_kinematics.py: config resolution and sign coherence."""
 
 import importlib.util
 from pathlib import Path
@@ -30,6 +30,29 @@ def _make_chains(entries: dict[str, dict]) -> dict:
 
 def _default_entries() -> dict[str, dict]:
     return {finger: _abd_entry(finger) for finger in extractor.ABD_FINGERS}
+
+
+class TestLoadJointRoms:
+    """--config accepts the same model selectors as the rest of orca_core."""
+
+    def test_no_config_yields_no_roms(self):
+        assert extractor.load_joint_roms(None) == {}
+
+    def test_model_name_resolves_through_the_package(self):
+        roms = extractor.load_joint_roms("orcahand-right")
+        assert "wrist" in roms and len(roms["wrist"]) == 2
+
+    def test_config_yaml_path_matches_the_model_name(self):
+        from orca_core.utils.utils import get_model_path
+
+        config_path = Path(get_model_path("orcahand-right")) / "config.yaml"
+        assert extractor.load_joint_roms(str(config_path)) == extractor.load_joint_roms(
+            "orcahand-right"
+        )
+
+    def test_unknown_model_is_fatal_rather_than_an_empty_audit(self):
+        with pytest.raises(FileNotFoundError):
+            extractor.load_joint_roms("orcahand-nonexistent")
 
 
 class TestResolveAbductionSigns:
