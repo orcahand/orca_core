@@ -24,7 +24,7 @@ consecutive cycles slower than 10× target.
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 
 import numpy as np
 
@@ -56,6 +56,61 @@ logger = logging.getLogger(__name__)
 
 
 JointTargets = Union[Dict[str, float], np.ndarray]
+
+# Names of the cycle outcomes a LoopSample can carry. Every exit path of
+# step_once maps to exactly one, plus one for a cycle the thread caught an
+# exception from.
+LOOP_PHASES = (
+    "ok",
+    "hold_base",
+    "paused",
+    "no_reading",
+    "estop",
+    "fallback",
+    "exception",
+)
+
+
+class LoopSample(NamedTuple):
+    """One cycle of the loop, as the loop saw it.
+
+    ``phase`` names which path through :meth:`JointLoopThread.step_once`
+    produced the sample and therefore which fields carry data; fields that path
+    never computed are ``None``. Degraded cycles are reported as well as healthy
+    ones, so a consumer can tell a stalled loop from a quiet one.
+
+    ``dt_s`` is the raw inter-cycle interval, before the controller clamps it,
+    so a cycle long enough to be clamped is visible.
+
+    The arrays are the loop's own buffers and are only valid for the duration of
+    the call — ``raw_counts`` in particular belongs to the encoder client's
+    cached reading and is shared with every other consumer of that frame. An
+    observer that keeps any of them must copy first, and none may be mutated.
+    """
+
+    cycle: int
+    t: float
+    dt_s: float
+    phase: str
+    freshness_ms: float
+    same_frame: bool
+    integral_frozen: bool
+    clamped: bool
+    error_byte: int
+    frame_t: float
+    raw_counts: Optional[np.ndarray]
+    measured_deg: Optional[np.ndarray]
+    target_deg: Optional[np.ndarray]
+    correction_deg: Optional[np.ndarray]
+    ierr_deg_s: Optional[np.ndarray]
+    motor_cmd_rad: Optional[np.ndarray]
+
+
+LoopObserver = Callable[[LoopSample], None]
+
+# An observer that keeps raising is dropped rather than allowed to log once per
+# cycle forever.
+OBSERVER_MAX_CONSECUTIVE_FAILURES = 5
 
 
 class JointLoopThread:
@@ -126,11 +181,96 @@ class JointLoopThread:
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
 
+        self._observer: Optional[LoopObserver] = None
+        self._observer_failures: int = 0
+        self._cycle: int = 0
+        self._last_frame_t: float = float("nan")
+
     @property
     def joint_names(self) -> List[str]:
         """The joints this loop closes on (snapshot order)."""
         with self._lock:
             return list(self._joint_names)
+
+    def attach_observer(self, observer: LoopObserver) -> None:
+        """Install a callable invoked once per cycle with a :class:`LoopSample`.
+
+        Called on the loop thread inside the cycle budget, so it must be fast
+        and must not block: a slow observer delays the motor write and will
+        eventually trip the jitter monitor. It must not retain or mutate the
+        sample's arrays (see :class:`LoopSample`).
+
+        Attaching replaces any previous observer and clears the failure count.
+        One that raises on
+        :data:`OBSERVER_MAX_CONSECUTIVE_FAILURES` consecutive cycles is detached.
+        """
+        if observer is None:
+            raise ValueError("observer must be callable; use detach_observer()")
+        with self._lock:
+            self._observer = observer
+            self._observer_failures = 0
+
+    def detach_observer(self) -> None:
+        """Remove the installed observer. Idempotent."""
+        with self._lock:
+            self._observer = None
+            self._observer_failures = 0
+
+    def _emit(
+        self,
+        phase: str,
+        t: float,
+        dt: float,
+        *,
+        freshness_ms: float = float("nan"),
+        same_frame: bool = False,
+        clamped: bool = False,
+        error_byte: int = 0,
+        frame_t: float = float("nan"),
+        raw_counts: Optional[np.ndarray] = None,
+        measured: Optional[np.ndarray] = None,
+        target: Optional[np.ndarray] = None,
+        correction: Optional[np.ndarray] = None,
+        motor_cmd: Optional[np.ndarray] = None,
+    ) -> None:
+        """Hand one cycle to the observer, if one is installed."""
+        observer = self._observer
+        if observer is None:
+            return
+        # Read without the controller lock: a torn read costs one diagnostic
+        # sample, while contending the lock would stall the cycle behind a
+        # concurrent set_gains().
+        ierr = self._controller._ierr
+        sample = LoopSample(
+            cycle=self._cycle,
+            t=t,
+            dt_s=float(dt),
+            phase=phase,
+            freshness_ms=freshness_ms,
+            same_frame=same_frame,
+            integral_frozen=self._controller.integral_frozen,
+            clamped=clamped,
+            error_byte=int(error_byte),
+            frame_t=frame_t,
+            raw_counts=raw_counts,
+            measured_deg=measured,
+            target_deg=target,
+            correction_deg=correction,
+            ierr_deg_s=ierr,
+            motor_cmd_rad=motor_cmd,
+        )
+        try:
+            observer(sample)
+        except Exception:
+            self._observer_failures += 1
+            if self._observer_failures >= OBSERVER_MAX_CONSECUTIVE_FAILURES:
+                self._observer = None
+                logger.exception(
+                    "loop observer raised %d consecutive times; detached",
+                    self._observer_failures,
+                )
+            return
+        self._observer_failures = 0
 
     def prime_for_step(self) -> None:
         """Snapshot calibration, latch the target to the measured pose for
@@ -187,7 +327,11 @@ class JointLoopThread:
 
     def step_once(self, dt: float) -> None:
         """One cycle: encoder read → watchdog → PI → motor-pos write."""
+        self._cycle += 1
+        t = time.monotonic() if self._observer is not None else float("nan")
+
         if self._stats["fallback_active"]:
+            self._emit("fallback", t, dt)
             return
 
         self._stats["last_dt_s"] = float(dt)
@@ -195,7 +339,16 @@ class JointLoopThread:
         reading = self._encoder_client.get_latest()
         if reading is None:
             self._stats["cycles_no_reading"] += 1
+            self._emit("no_reading", t, dt)
             return
+
+        # One freshness read per cycle: the property recomputes against the
+        # clock on every access, so re-reading it would report a different age
+        # to the watchdog than to the caller.
+        freshness_ms = float(reading.freshness_ms)
+        frame_t = float(reading.timestamp)
+        same_frame = frame_t == self._last_frame_t
+        self._last_frame_t = frame_t
 
         if self._writes_paused.is_set():
             # Motor op in flight (see pause_writes): keep measurements live
@@ -205,20 +358,30 @@ class JointLoopThread:
                 self._latest_measured = measured.copy()
             self._controller.freeze_integral()
             self._stats["cycles_paused"] += 1
+            self._emit(
+                "paused", t, dt,
+                freshness_ms=freshness_ms, same_frame=same_frame,
+                error_byte=reading.error_byte, frame_t=frame_t,
+                raw_counts=reading.raw_counts, measured=measured,
+            )
             # A dead encoder must still trip the e-stop while paused —
             # otherwise a leaked pause silently disables the watchdog.
-            if float(reading.freshness_ms) > WATCHDOG_STOP_LOOP_MS:
+            if freshness_ms > WATCHDOG_STOP_LOOP_MS:
                 self._trigger_estop(
-                    f"encoder freshness {reading.freshness_ms:.0f} ms exceeds "
+                    f"encoder freshness {freshness_ms:.0f} ms exceeds "
                     "stop threshold (while writes paused)"
                 )
             return
 
-        freshness_ms = float(reading.freshness_ms)
-
         if freshness_ms > WATCHDOG_STOP_LOOP_MS:
             self._trigger_estop(
                 f"encoder freshness {freshness_ms:.0f} ms exceeds stop threshold"
+            )
+            self._emit(
+                "estop", t, dt,
+                freshness_ms=freshness_ms, same_frame=same_frame,
+                error_byte=reading.error_byte, frame_t=frame_t,
+                raw_counts=reading.raw_counts,
             )
             return
 
@@ -230,9 +393,16 @@ class JointLoopThread:
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
             motor_targets = self._joint_to_motor_pos(target) + motor_bias
-            self._write_motor_targets(motor_targets)
+            clamped = self._write_motor_targets(motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
+            self._emit(
+                "hold_base", t, dt,
+                freshness_ms=freshness_ms, same_frame=same_frame, clamped=clamped,
+                error_byte=reading.error_byte, frame_t=frame_t,
+                raw_counts=reading.raw_counts, target=target,
+                motor_cmd=motor_targets,
+            )
             return
 
         if freshness_ms > WATCHDOG_HOLD_MS:
@@ -248,7 +418,7 @@ class JointLoopThread:
 
         correction = self._controller.step(target, measured, dt)
         motor_targets = self._joint_to_motor_pos(target + correction) + motor_bias
-        self._write_motor_targets(motor_targets)
+        clamped = self._write_motor_targets(motor_targets)
 
         with self._lock:
             self._latest_measured = measured.copy()
@@ -256,6 +426,13 @@ class JointLoopThread:
 
         self._stats["cycles_ok"] += 1
         self._stats["commands_sent"] += 1
+        self._emit(
+            "ok", t, dt,
+            freshness_ms=freshness_ms, same_frame=same_frame, clamped=clamped,
+            error_byte=reading.error_byte, frame_t=frame_t,
+            raw_counts=reading.raw_counts, measured=measured, target=target,
+            correction=correction, motor_cmd=motor_targets,
+        )
 
     def set_target(self, joint_targets: JointTargets) -> None:
         """Update the joint setpoint. Accepts a ``{joint_name: angle_deg}``
@@ -470,13 +647,15 @@ class JointLoopThread:
         motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
         return motor_pos + self._wrap_offsets
 
-    def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
+    def _write_motor_targets(self, motor_targets: np.ndarray) -> bool:
         """Write motor targets, clamping joints with a bounded travel
-        (currently the wrist) to their snapshot limits."""
-        if np.any(
+        (currently the wrist) to their snapshot limits. Returns whether this
+        write clamped anything."""
+        clamped = bool(np.any(
             (motor_targets < self._motor_target_lower)
             | (motor_targets > self._motor_target_upper)
-        ):
+        ))
+        if clamped:
             self._stats["cycles_clamped"] += 1
         np.clip(
             motor_targets,
@@ -485,6 +664,7 @@ class JointLoopThread:
             out=motor_targets,
         )
         self._hand.write_motor_pos(self._motor_ids, motor_targets)
+        return clamped
 
     def _measure_joint_angles_for_anchor(
         self, retries: int = 5, retry_interval: float = 0.05
@@ -617,6 +797,7 @@ class JointLoopThread:
                 # cycles_exception, kept distinct from jitter overruns.
                 self._stats["cycles_exception"] += 1
                 self._maybe_log_step_exception()
+                self._emit("exception", now, dt)
             self._record_loop_period(dt)
             prev_time = now
             # Clamp the schedule to now so a long stall doesn't flood the bus

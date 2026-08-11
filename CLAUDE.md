@@ -47,6 +47,7 @@ orca_core/
 ├── version.py                      # LATEST_VERSION: default hand model version
 └── constants.py                    # Control modes, protocol constants
 
+studies/              # Measurement tooling + findings for the controller/hand. Does not ship.
 scripts/              # Thin CLI front-ends. argparse + print + input(); no logic.
 examples/             # Demo and record/replay scripts built on the public API
 tools/                # Maintainer-only tools (regenerate packaged data)

@@ -139,3 +139,7 @@ soak_logs/
 
 # Personal Claude Code instructions (see CLAUDE.local.md)
 CLAUDE.local.md
+
+# Characterization working notes and raw captures (not repo artifacts)
+studies/PLAN.md
+studies/data/

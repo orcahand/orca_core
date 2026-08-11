@@ -43,3 +43,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["orca_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "studies/tests"]
