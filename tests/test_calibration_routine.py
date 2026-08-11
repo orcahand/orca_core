@@ -34,6 +34,58 @@ def connected_hand(calib_dir):
         hand.disconnect()
 
 
+def test_traverse_telemetry_is_emitted_per_motor_per_step(connected_hand):
+    """Every driven motor must report the positions and currents it logged on
+    the way to its hardstop; tendon friction is only measurable from those."""
+    events = []
+    result = calibration_routine.run_calibration(
+        connected_hand, progress_callback=events.append, persist=False
+    )
+    assert result is not None
+
+    traverses = [e for e in events if e["event"] == "traverse_recorded"]
+    steps = [e for e in events if e["event"] == "step_started"]
+    driven = [
+        (e["index"], connected_hand.config.joint_to_motor_map[joint])
+        for e in steps
+        for joint in e["joints"]
+    ]
+    assert sorted((e["index"], e["motor"]) for e in traverses) == sorted(driven)
+
+    for event in traverses:
+        assert event["joint"] == connected_hand.config.motor_to_joint_dict[event["motor"]]
+        assert event["direction"] in (-1, 1)
+        assert event["reached_limit"] is True
+        assert event["positions"]
+        assert len(event["positions"]) == len(event["currents"])
+        assert all(isinstance(p, float) for p in event["positions"])
+        assert all(isinstance(c, float) for c in event["currents"])
+
+
+def test_traverse_telemetry_omits_a_motor_skipped_by_offset_failure(
+    connected_hand, monkeypatch
+):
+    """A motor dropped before the drive logs nothing, so it must not appear as
+    a traverse with an empty log."""
+    monkeypatch.setattr(
+        type(connected_hand.motor_client), "requires_offset_calibration", True
+    )
+    skipped = connected_hand.config.motor_ids[0]
+    monkeypatch.setattr(
+        connected_hand.motor_client,
+        "calibrate_offset",
+        lambda motor_id, upper: motor_id != skipped,
+    )
+
+    events = []
+    calibration_routine.run_calibration(
+        connected_hand, progress_callback=events.append, persist=False
+    )
+    traverses = [e for e in events if e["event"] == "traverse_recorded"]
+    assert traverses
+    assert skipped not in {e["motor"] for e in traverses}
+
+
 # ---------------------------------------------------------------------------
 # _read_motor_pos_checked
 # ---------------------------------------------------------------------------

@@ -69,6 +69,72 @@ def test_tension_emits_phase_events(connected_mock_hand):
     assert any(e["event"] == "winding_progress" for e in events)
 
 
+def test_tension_emits_stall_position_per_motor_per_direction(connected_mock_hand):
+    """Each wind direction must report where every commanded motor ended up,
+    so the tendon wind per motor is recoverable from the events alone."""
+    from orca_core.maintenance.tensioning import run_tension
+
+    hand = connected_mock_hand
+    events = []
+    run_tension(
+        hand,
+        move_motors=True,
+        progress_callback=events.append,
+        should_stop=lambda: True,
+    )
+
+    stalls = [e for e in events if e["event"] == "stall_recorded"]
+    wound = {
+        motor_id
+        for joint, motor_id in hand.config.joint_to_motor_map.items()
+        if "wrist" not in joint.lower() and motor_id in hand.config.motor_ids
+    }
+    assert {e["motor"] for e in stalls} == wound
+    for motor_id in wound:
+        per_motor = [e for e in stalls if e["motor"] == motor_id]
+        assert {e["direction"] for e in per_motor} == {-1, 1}
+        assert {e["stage"] for e in per_motor} == {1, 2}
+        for event in per_motor:
+            assert event["joint"] == hand.config.motor_to_joint_dict[motor_id]
+            assert isinstance(event["position"], float)
+            # should_stop fired before any winding, so nothing reached a stall.
+            assert event["stalled"] is False
+
+
+def test_tension_stall_position_is_the_position_at_stall(connected_mock_hand):
+    """A motor that stops moving must report the position it stalled at, with
+    the stall flagged."""
+    import numpy as np
+
+    from orca_core.maintenance.tensioning import run_tension
+
+    hand = connected_mock_hand
+    held = np.full(len(hand.config.motor_ids), 0.75)
+    hand.get_motor_pos = lambda *a, **kw: held.copy()
+
+    events = []
+
+    def should_stop():
+        return any(
+            e["event"] == "stall_recorded" and e["stage"] == 2 for e in events
+        )
+
+    try:
+        run_tension(
+            hand,
+            move_motors=True,
+            progress_callback=events.append,
+            should_stop=should_stop,
+        )
+    finally:
+        del hand.get_motor_pos
+
+    stalls = [e for e in events if e["event"] == "stall_recorded"]
+    assert stalls
+    assert all(e["stalled"] is True for e in stalls)
+    assert all(e["position"] == 0.75 for e in stalls)
+
+
 def test_run_tension_exception_restores_hand_state(tmp_path):
     """An exception mid-winding must disable torque and restore the configured
     control mode and current limit, not leave the hand straining."""

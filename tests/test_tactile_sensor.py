@@ -322,6 +322,30 @@ def test_capture_zeroes_resultant_from_its_own_stream(tactile_mock_factory):
         client.stop_stream()
 
 
+def test_zero_baseline_records_means_std_and_max_fz(tactile_mock_factory):
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 2})
+    assert client.get_zero_baseline() is None
+    client.start_stream(resultant=False, taxels=True)
+    stop, thread = _start_taxel_pump(
+        link, {"thumb": [[1.0, 2.0, 4.0], [0.0, 0.0, 7.0]]}, state.active_sensors
+    )
+    try:
+        client.capture_taxel_offsets(num_samples=3)
+        baseline = client.get_zero_baseline()
+        assert baseline.num_samples == 3
+        assert baseline.means == {"thumb": [[1.0, 2.0, 4.0], [0.0, 0.0, 7.0]]}
+        assert baseline.std == {"thumb": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]}
+        assert baseline.max_abs_fz == {"thumb": 7.0}
+
+        # The baseline is a measurement, not a view of the applied offsets.
+        client.clear_taxel_offsets()
+        assert client.get_zero_baseline() is baseline
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        client.stop_stream()
+
+
 # ---------------------------------------------------------------------------
 # Per-taxel noise gates
 # ---------------------------------------------------------------------------
@@ -419,6 +443,40 @@ def test_capture_can_skip_the_noise_gate(tactile_mock_factory):
     try:
         client.capture_taxel_offsets(num_samples=12, gate_noise=False)
         assert client.taxel_noise_gates is None
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        client.stop_stream()
+
+
+def test_zero_baseline_std_reports_a_noisy_taxel(tactile_mock_factory):
+    """A taxel whose rest reading swings must show a non-zero standard
+    deviation while a steady one stays at zero."""
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 2})
+    client.start_stream(resultant=False, taxels=True)
+
+    stop = threading.Event()
+
+    def _run():
+        noisy = 2.0
+        while not stop.is_set():
+            feed_taxels_frame(
+                link,
+                {"thumb": [[0.0, 0.0, noisy], [0.0, 0.0, 3.0]]},
+                state.active_sensors,
+            )
+            noisy = 6.0 if noisy == 2.0 else 2.0
+            time.sleep(0.005)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    try:
+        client.capture_taxel_offsets(num_samples=20)
+        baseline = client.get_zero_baseline()
+        noisy_std, steady_std = baseline.std["thumb"]
+        assert noisy_std[2] > 0.5
+        assert steady_std == [0.0, 0.0, 0.0]
+        assert 2.0 <= baseline.means["thumb"][0][2] <= 6.0
     finally:
         stop.set()
         thread.join(timeout=1.0)

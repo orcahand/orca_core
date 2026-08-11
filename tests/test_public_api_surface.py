@@ -106,6 +106,7 @@ TACTILE_SURFACE = frozenset({
     "get_tactile_link_health",
     "get_tactile_stats",
     "get_tactile_taxels",
+    "get_tactile_zero_baseline",
     "get_taxel_data",
     "get_taxel_geometry",
     "kinematics",

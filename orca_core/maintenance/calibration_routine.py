@@ -133,7 +133,8 @@ def run_calibration(
             ``joint_encoder_calibration:`` block.
         progress_callback: Optional ``callable(dict)`` invoked with
             structured progress events (``calibration_started``,
-            ``step_started``, ``limit_recorded``, ``joint_calibrated``,
+            ``step_started``, ``limit_recorded``, ``traverse_recorded``,
+            ``joint_calibrated``,
             ``encoder_anchor_recorded``, ``encoder_anchor_failed``,
             ``offset_calibration_failed``, ``torque_release_failed``,
             ``wrist_skipped``, ``step_done``, ``calibration_done``,
@@ -547,6 +548,22 @@ def _drive_calibration(
         if should_stop():
             _emit(progress_callback, "calibration_aborted")
             return None
+
+        # The traverse each motor drove to reach its hardstop, sample-aligned
+        # positions (rad) and currents (mA). Tendon friction is a property of
+        # the movement, so it is only measurable from here.
+        for motor_id, positions in position_logs.items():
+            _emit(
+                progress_callback,
+                "traverse_recorded",
+                motor=motor_id,
+                joint=hand.config.motor_to_joint_dict[motor_id],
+                index=step_index,
+                direction=directions[motor_id],
+                reached_limit=motor_reached_limit[motor_id],
+                positions=list(positions),
+                currents=list(current_log[motor_id]),
+            )
 
         # Motors are still pressing their hardstops with calibration current:
         # sample encoder anchors before the release so counts match that pose.

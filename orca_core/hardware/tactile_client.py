@@ -11,6 +11,8 @@ import threading
 import time
 import logging
 
+import numpy as np
+
 from orca_core.constants import FINGER_NAMES
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.sensing.constants import (
@@ -27,6 +29,7 @@ from orca_core.hardware.sensing.constants import (
     ADDR_AUTO_ENABLE,
     REGISTER_ENABLE,
     REGISTER_DISABLE,
+    BASELINE_STD_DECIMALS,
     FORCE_ROUND_DECIMALS,
     NOISE_GATE_MARGIN_N,
     NOISE_GATE_SCALE,
@@ -45,6 +48,7 @@ from orca_core.hardware.sensing.types import (
     ResultantForces,
     ResultantReading,
     TactileReading,
+    TactileZeroBaseline,
     TaxelReading,
 )
 from orca_core.hardware.sensing.tactile_protocol import (
@@ -160,6 +164,25 @@ def _average_resultants(frames: list[dict]) -> dict:
     return out
 
 
+def _measure_zero_baseline(frames: list[dict], offsets: dict) -> TactileZeroBaseline:
+    """Rest statistics of the frames a zeroing capture averaged.
+
+    Reports the raw readings, not the gated ones: a noise gate suppresses
+    exactly the dither this is meant to quantify, so measuring after it would
+    report a clean sensor whatever the wiring is like.
+    """
+    std, max_abs_fz = {}, {}
+    for finger, finger_offsets in offsets.items():
+        samples = np.array([f[finger] for f in frames], dtype=float)
+        std[finger] = np.round(samples.std(axis=0), BASELINE_STD_DECIMALS).tolist()
+        max_abs_fz[finger] = max(
+            (abs(off[2]) for off in finger_offsets), default=0.0
+        )
+    return TactileZeroBaseline(
+        num_samples=len(frames), means=offsets, std=std, max_abs_fz=max_abs_fz
+    )
+
+
 class TactileClient:
     """ORCA tactile sensor client over a :class:`HandSerialLink`.
 
@@ -222,6 +245,7 @@ class TactileClient:
         # {finger: [gate_n, ...], ...} per-taxel noise floors, measured during
         # zeroing. A post-offset reading under its own gate reads exactly zero.
         self._taxel_noise_gates: dict | None = None
+        self._zero_baseline: TactileZeroBaseline | None = None
 
     # ----- Lifecycle --------------------------------------------------------
 
@@ -649,6 +673,13 @@ class TactileClient:
         self._resultant_offsets = None
         self._taxel_noise_gates = None
 
+    def get_zero_baseline(self) -> TactileZeroBaseline | None:
+        """Rest statistics of the most recent :meth:`capture_taxel_offsets`,
+        or ``None`` if none has succeeded. Survives
+        :meth:`clear_taxel_offsets`: it records what was measured, not what is
+        currently applied."""
+        return self._zero_baseline
+
     def capture_taxel_offsets(
         self,
         num_samples: int = 100,
@@ -673,7 +704,8 @@ class TactileClient:
         restored if the capture fails. ``timeout_s`` bounds the wait for
         frames (derived from ``num_samples`` when ``None``); a stream that is
         dead at entry or stalls mid-capture raises ``TimeoutError`` instead
-        of blocking forever.
+        of blocking forever. The captured frames' full rest statistics stay
+        available from :meth:`get_zero_baseline`.
         """
         if not self._auto_running or not self._auto_mode_taxels:
             raise RuntimeError("Auto-stream with taxels must be active to capture offsets")
@@ -755,6 +787,7 @@ class TactileClient:
                     "taxel noise gates measured over %d frames (widest %.2f N)",
                     len(frames), widest,
                 )
+            self._zero_baseline = _measure_zero_baseline(frames, offsets)
             succeeded = True
             return offsets
         finally:

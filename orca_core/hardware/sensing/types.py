@@ -94,6 +94,22 @@ class TactileReading:
 
 
 @dataclass(frozen=True)
+class TactileZeroBaseline:
+    """Per-taxel rest statistics from the frames a zeroing capture averaged.
+
+    ``means`` are the raw pre-zero readings that were applied as offsets, and
+    ``std`` the spread of the same frames — a noisy taxel is a bad connection.
+    ``max_abs_fz`` is the largest ``|mean fz|`` on each finger: a standing
+    force at rest, consuming part of the sensor's usable range.
+    """
+
+    num_samples: int
+    means: TaxelForces
+    std: TaxelForces
+    max_abs_fz: dict[FingerName, float]
+
+
+@dataclass(frozen=True)
 class EncoderReading:
     """Decoded encoder auto-stream frame plus a ``time.monotonic()`` receive timestamp.
 

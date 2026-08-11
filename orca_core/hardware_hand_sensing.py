@@ -50,6 +50,7 @@ from .hardware.sensing.types import (
     LinkHealth,
     ResultantReading,
     TactileReading,
+    TactileZeroBaseline,
     TaxelData,
     TaxelReading,
 )
@@ -293,11 +294,25 @@ class OrcaHandTouch(OrcaHand):
 
         ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
         deadline from ``num_samples``. ``gate_noise`` also measures each
-        taxel's dither from the same frames and gates readings below it.
+        taxel's dither from the same frames and gates readings below it. The
+        rest statistics of those frames stay available from
+        :meth:`get_tactile_zero_baseline`.
         """
         return self._require_tactile_client().capture_taxel_offsets(
             num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise,
         )
+
+    def get_tactile_zero_baseline(self) -> TactileZeroBaseline | None:
+        """Return the ``TactileZeroBaseline`` measured by the most recent
+        :meth:`zero_tactile_sensors`, or ``None`` if none has succeeded.
+
+        Carries the per-taxel standard deviation of the rest frames and each
+        finger's largest raw ``|fz|`` before zeroing — the noise floor and the
+        standing force zeroing removed.
+        """
+        if self._tactile_client is None:
+            return None
+        return self._tactile_client.get_zero_baseline()
 
     def clear_tactile_zero(self) -> None:
         self._require_tactile_client().clear_taxel_offsets()

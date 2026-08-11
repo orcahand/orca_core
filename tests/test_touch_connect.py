@@ -180,6 +180,22 @@ def test_zero_tactile_sensors_forwards_timeout():
         hand.disconnect()
 
 
+def test_tactile_zero_baseline_accessor():
+    """The baseline accessor must tolerate a hand with no tactile client and
+    otherwise forward the client's record."""
+    hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
+    assert hand.get_tactile_zero_baseline() is None
+    ok, _ = hand.connect_sensors_only()
+    assert ok
+    try:
+        assert hand.get_tactile_zero_baseline() is None
+        sentinel = object()
+        hand._tactile_client.get_zero_baseline = lambda: sentinel
+        assert hand.get_tactile_zero_baseline() is sentinel
+    finally:
+        hand.disconnect()
+
+
 def test_touch_disconnect_returns_lifecycle_tuple():
     hand = MockOrcaHandTouch(config_path=TOUCH_CONFIG)
     success, msg = hand.connect()

@@ -65,8 +65,8 @@ def run_tension(
         progress_callback: Optional ``callable(dict)`` invoked with
             structured progress events (``phase`` with
             winding/ramp/holding/released, ``winding_progress``,
-            ``cleanup_failed``). Must be fast and non-blocking; exceptions
-            it raises are swallowed.
+            ``stall_recorded``, ``cleanup_failed``). Must be fast and
+            non-blocking; exceptions it raises are swallowed.
         should_stop: Optional ``callable() -> bool`` polled between motor
             commands; return ``True`` to leave the hold cooperatively.
     """
@@ -108,11 +108,15 @@ def run_tension(
                 [hand.config.motor_ids.index(mid) for mid in motors_to_move]
             )
 
+            motor_to_joint = hand.config.motor_to_joint_dict
+            motor_id_to_idx = hand.config.motor_id_to_idx_dict
+
             for wind_pass, increments in enumerate(
                 (motor_increments_left, motor_increments_right)
             ):
                 _emit(progress_callback, "winding_progress", stage=wind_pass + 1, stages=2)
                 stall_start = None
+                stalled = False
                 phase_start = time.time()
                 prev_pos = hand.get_motor_pos()
                 while not should_stop() and time.time() - phase_start < max_wind_s:
@@ -124,10 +128,27 @@ def run_tension(
                         if stall_start is None:
                             stall_start = time.time()
                         elif time.time() - stall_start >= stall_hold:
-                            break
+                            stalled = True
                     else:
                         stall_start = None
                     prev_pos = cur_pos
+                    if stalled:
+                        break
+
+                # The taut position (motor rad) each motor wound to. The travel
+                # between the two directions is that motor's tendon wind.
+                direction = 1 if wind_pass else -1
+                for motor_id in motors_to_move:
+                    _emit(
+                        progress_callback,
+                        "stall_recorded",
+                        motor=motor_id,
+                        joint=motor_to_joint[motor_id],
+                        stage=wind_pass + 1,
+                        direction=direction,
+                        position=float(prev_pos[motor_id_to_idx[motor_id]]),
+                        stalled=stalled,
+                    )
 
         max_cur = hand.config.max_current
         if move_motors:

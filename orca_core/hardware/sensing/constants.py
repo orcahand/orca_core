@@ -102,6 +102,10 @@ OFFSET_CAPTURE_DECIMALS = 2
 NOISE_GATE_SCALE = 1.5
 NOISE_GATE_MARGIN_N = RESOLUTION_N_PER_LSB
 
+# Decimal places for the zeroing capture's per-taxel standard deviation. A
+# noise floor sits well below the offsets' resolution, so it is kept finer.
+BASELINE_STD_DECIMALS = 4
+
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
 BYTES_PER_TAXEL = 3      # fx(int8) + fy(int8) + fz(uint8)
