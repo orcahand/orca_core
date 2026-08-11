@@ -78,6 +78,7 @@ ORCA_HAND = BASE_HAND | {
     "get_motor_current",
     "get_motor_pos",
     "get_motor_temp",
+    "get_motor_voltage",
     "init_joints",
     "is_calibrated",
     "is_connected",

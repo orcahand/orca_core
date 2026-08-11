@@ -326,6 +326,28 @@ def test_partial_fallback_failure_marks_read_not_ok(client, bus):
     assert positions[0] > 0  # motor 1 refreshed even though the read is flagged
 
 
+def test_read_voltage_scales_raw_counts_to_volts(client):
+    """The control table reports 0.1 V per count; callers get volts."""
+    reader = client._voltage_reader
+    reader.operation.getData = lambda motor_id, address, size: 121
+    assert np.allclose(client.read_voltage(), [12.1, 12.1])
+
+
+def test_read_voltage_falls_back_per_motor(client, bus):
+    from orca_core.hardware.dynamixel_client import ADDR_PRESENT_INPUT_VOLTAGE
+
+    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    addresses = []
+
+    def read2(motor_id, address):
+        addresses.append(address)
+        return 118, COMM_SUCCESS, 0
+
+    bus.read2_hook = read2
+    assert np.allclose(client._voltage_reader.read(retries=1), [11.8, 11.8])
+    assert addresses == [ADDR_PRESENT_INPUT_VOLTAGE] * 2
+
+
 def test_set_torque_enabled_does_not_sleep_on_immediate_success(
         client, bus, monkeypatch):
     sleeps = _patch_sleep(monkeypatch)

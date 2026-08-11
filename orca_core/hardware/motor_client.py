@@ -240,6 +240,15 @@ class MotorClient(ABC):
         ...
 
     @abstractmethod
+    def read_voltage(self) -> np.ndarray:
+        """Reads the present supply voltage at each motor.
+
+        Returns:
+            An array of voltages in volts.
+        """
+        ...
+
+    @abstractmethod
     def write_desired_pos(
         self,
         motor_ids: Sequence[int],

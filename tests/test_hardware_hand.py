@@ -64,6 +64,14 @@ def test_set_max_current_supports_scalar_and_list(mock_hand):
         assert mock_hand._motor_client._cur[motor_id] == desired
 
 
+def test_get_motor_voltage_keys_by_motor_id(mock_hand):
+    voltages = mock_hand.get_motor_voltage(as_dict=True)
+    assert list(voltages) == list(mock_hand.config.motor_ids)
+    assert np.allclose(
+        mock_hand.get_motor_voltage(), list(voltages.values())
+    )
+
+
 def test_disconnect_disables_torque_and_discards_client(mock_hand):
     client = mock_hand._motor_client
     mock_hand.disconnect()

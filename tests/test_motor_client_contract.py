@@ -52,6 +52,7 @@ def connected_mock():
         pytest.param(lambda c: c.write_desired_current([1], np.zeros(1)), id="write_desired_current"),
         pytest.param(lambda c: c.write_profile_velocity([1], np.zeros(1)), id="write_profile_velocity"),
         pytest.param(lambda c: c.read_temperature(), id="read_temperature"),
+        pytest.param(lambda c: c.read_voltage(), id="read_voltage"),
         pytest.param(lambda c: c.read_status_is_done_moving(), id="read_status_is_done_moving"),
         pytest.param(lambda c: c.sync_write([1], [0], 116, 4), id="sync_write"),
         pytest.param(lambda c: c.write_byte([1], 0, 64), id="write_byte"),
@@ -169,6 +170,20 @@ def test_mock_cleanup_handler_survives_a_failing_client(mock_registry):
 
     assert not good.is_connected, "good client must still be disconnected"
     assert good not in mock_registry
+
+
+def test_every_family_reads_supply_voltage():
+    """Voltage is part of the contract, not a Dynamixel extra: a family that
+    cannot report it must say so by failing to implement, not by shipping."""
+    assert "read_voltage" in MotorClient.__abstractmethods__
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient):
+        assert "read_voltage" not in cls.__abstractmethods__, cls.__name__
+
+
+def test_mock_voltage_is_one_reading_per_motor(connected_mock):
+    voltage = connected_mock.read_voltage()
+    assert voltage.shape == (2,)
+    assert np.all(voltage > 0)
 
 
 def test_set_torque_enabled_signature_is_uniform_across_family():

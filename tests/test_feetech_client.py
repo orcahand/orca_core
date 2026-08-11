@@ -26,6 +26,7 @@ from orca_core.hardware.feetech import (
     SMS_STS_PRESENT_CURRENT_L,
     SMS_STS_PRESENT_POSITION_L,
     SMS_STS_PRESENT_SPEED_L,
+    SMS_STS_PRESENT_VOLTAGE,
     SMS_STS_TORQUE_ENABLE,
 )
 
@@ -63,6 +64,7 @@ class FakePacketHandler:
 
     def __init__(self, positions: dict[int, int]):
         self.positions = dict(positions)
+        self.voltage_raw = 118  # 0.1 V per count
         self.unavailable_ids: set[int] = set()
         self.sync_fails = False
         self.log: list[str] = []
@@ -87,6 +89,14 @@ class FakePacketHandler:
             return 0, 1, 0
         if address == SMS_STS_PRESENT_POSITION_L:
             return self.positions[motor_id], COMM_SUCCESS, 0
+        return 0, COMM_SUCCESS, 0
+
+    def read1ByteTxRx(self, motor_id, address):
+        self._record("read1")
+        if motor_id in self.unavailable_ids:
+            return 0, 1, 0
+        if address == SMS_STS_PRESENT_VOLTAGE:
+            return self.voltage_raw, COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
     def write1ByteTxRx(self, motor_id, address, value):
@@ -119,6 +129,8 @@ class FakeGroupSyncRead:
     def getData(self, motor_id, address, size):
         if address == SMS_STS_PRESENT_POSITION_L:
             return self.handler.positions[motor_id]
+        if address == SMS_STS_PRESENT_VOLTAGE:
+            return self.handler.voltage_raw
         assert address in (
             SMS_STS_PRESENT_SPEED_L, SMS_STS_PRESENT_CURRENT_L, SMS_STS_MOVING)
         return 0
@@ -155,6 +167,19 @@ def test_full_sync_read_reports_ok(client):
         [_expected_pos(feetech, raw) for raw in (100, 200, 300)],
         rtol=1e-6,
     )
+
+
+def test_read_voltage_scales_raw_counts_to_volts(client):
+    """The control table reports 0.1 V per count; callers get volts."""
+    feetech, _ = client
+    np.testing.assert_allclose(feetech.read_voltage(), [11.8, 11.8, 11.8])
+
+
+def test_read_voltage_falls_back_per_motor(client):
+    feetech, handler = client
+    handler.sync_fails = True
+    np.testing.assert_allclose(feetech.read_voltage(), [11.8, 11.8, 11.8])
+    assert handler.log.count("read1") == 3
 
 
 def test_partial_sync_read_keeps_cache_and_flags_not_ok(client):

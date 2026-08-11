@@ -575,6 +575,26 @@ class OrcaHand(BaseHand):
 
             return motor_temp
 
+    def get_motor_voltage(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
+        """Read the supply voltage present at each motor.
+
+        Args:
+            as_dict: When ``True`` returns a ``dict`` keyed by motor ID.
+
+        Returns:
+            Motor supply voltages in V as an array or dict.
+        """
+        with self._motor_lock:
+            motor_voltage = self._motor_client.read_voltage()
+
+            if as_dict:
+                return {
+                    motor_id: voltage
+                    for motor_id, voltage in zip(self.config.motor_ids, motor_voltage)
+                }
+
+            return motor_voltage
+
     def _get_joint_positions(self) -> OrcaJointPositions:
         motor_pos = self.get_motor_pos()
         return OrcaJointPositions.from_dict(self._motor_to_joint_pos(motor_pos))

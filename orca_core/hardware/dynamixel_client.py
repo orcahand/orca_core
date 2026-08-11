@@ -48,6 +48,7 @@ ADDR_PRESENT_POS_VEL_CUR = 126
 ADDR_MOVING_STATUS = 123
 ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_PRESENT_TEMPERATURE = 146
+ADDR_PRESENT_INPUT_VOLTAGE = 144
 
 # Data Byte Length
 LEN_OPERATING_MODE = 1
@@ -61,6 +62,10 @@ LEN_GOAL_CURRENT = 2
 LEN_PROFILE_VELOCITY = 4
 LEN_MOVING_STATUS = 1
 LEN_PRESENT_TEMPERATURE = 1
+LEN_PRESENT_INPUT_VOLTAGE = 2
+
+# Present Input Voltage is reported in units of 0.1 V.
+VOLTAGE_UNITS_PER_V = 10.0
 
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 # See http://emanual.robotis.com/docs/en/dxl/x/xh430-v210/#goal-velocity
@@ -197,6 +202,13 @@ class DynamixelClient(MotorClient):
             size=LEN_PRESENT_TEMPERATURE,
         )
         
+        self._voltage_reader = DynamixelVoltageReader(
+            self,
+            self.motor_ids,
+            address=ADDR_PRESENT_INPUT_VOLTAGE,
+            size=LEN_PRESENT_INPUT_VOLTAGE,
+        )
+
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
         self._operating_modes = {}
@@ -396,6 +408,10 @@ class DynamixelClient(MotorClient):
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the present temperature for each motor (in deg C)."""
         return self._temp_reader.read()
+
+    def read_voltage(self) -> np.ndarray:
+        """Reads and returns the present supply voltage at each motor (in V)."""
+        return self._voltage_reader.read()
 
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):
@@ -1004,6 +1020,46 @@ class DynamixelTempReader(DynamixelReader):
 
     def _get_data(self):
         return self._temp_data.copy()
+
+
+class DynamixelVoltageReader(DynamixelReader):
+    """Reads present input voltage (2 bytes) for each Dynamixel motor."""
+
+    def _initialize_data(self):
+        # float64 so a 0.1 V count does not pick up a float32 rounding tail.
+        self._voltage_data = np.zeros(len(self.motor_ids), dtype=np.float64)
+
+    def _update_data(self, index: int, motor_id: int):
+        raw_val = self.operation.getData(motor_id, self.address, self.size)
+        self._voltage_data[index] = raw_val / VOLTAGE_UNITS_PER_V
+
+    def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
+        """Per-motor voltage reads; returns IDs that still failed."""
+        port = self.client.port_handler
+        packet = self.client.packet_handler
+        comm_success = self.client.dxl.COMM_SUCCESS
+        still_failed = []
+        for motor_id in motor_ids:
+            try:
+                idx = self.motor_ids.index(motor_id)
+            except ValueError:
+                continue
+            try:
+                raw, comm, _ = packet.read2ByteTxRx(
+                    port, motor_id, ADDR_PRESENT_INPUT_VOLTAGE)
+                if comm == comm_success:
+                    self._voltage_data[idx] = raw / VOLTAGE_UNITS_PER_V
+                else:
+                    still_failed.append(motor_id)
+            except Exception as e:
+                logging.warning('Per-motor voltage read failed for motor %d: %s',
+                                motor_id, e)
+                still_failed.append(motor_id)
+        return still_failed
+
+    def _get_data(self):
+        return self._voltage_data.copy()
+
 
 atexit.register(dynamixel_cleanup_handler)
 

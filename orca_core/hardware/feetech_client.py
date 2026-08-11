@@ -29,6 +29,7 @@ from .feetech import (
     SMS_STS_PRESENT_SPEED_L,
     SMS_STS_PRESENT_CURRENT_L,
     SMS_STS_PRESENT_TEMPERATURE,
+    SMS_STS_PRESENT_VOLTAGE,
     SMS_STS_MOVING,
     SMS_STS_ACC,
     SMS_STS_GOAL_POSITION_L,
@@ -61,6 +62,7 @@ FEETECH_MODELS: dict[int, str] = {
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
 DEFAULT_VEL_SCALE = 0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
 DEFAULT_CUR_SCALE = 6.5  # mA per unit
+VOLTAGE_UNITS_PER_V = 10.0  # Present Voltage counts per volt
 
 # Position limits for STS servo mode (0-4095, one full rotation)
 POS_MIN = 0
@@ -575,6 +577,53 @@ class FeetechClient(MotorClient):
                     )
 
         return temperatures
+
+    def read_voltage(self) -> np.ndarray:
+        """Reads the supply voltage at all motors via a single sync-read packet."""
+        self._check_connected()
+
+        with self._bus_lock:
+            # float64 so a 0.1 V count does not pick up a float32 rounding tail.
+            voltages = np.zeros(len(self.motor_ids), dtype=np.float64)
+
+            sync_read = GroupSyncRead(self.packet_handler, SMS_STS_PRESENT_VOLTAGE, 1)
+            for motor_id in self.motor_ids:
+                sync_read.addParam(motor_id)
+
+            if sync_read.txRxPacket() != COMM_SUCCESS:
+                self._flush_input_buffer()
+                logging.warning('Sync voltage read failed, falling back to individual reads')
+                return self._read_voltage_per_motor_fallback()
+
+            for i, motor_id in enumerate(self.motor_ids):
+                available, _ = sync_read.isAvailable(motor_id, SMS_STS_PRESENT_VOLTAGE, 1)
+                if available:
+                    raw = sync_read.getData(motor_id, SMS_STS_PRESENT_VOLTAGE, 1)
+                    voltages[i] = raw / VOLTAGE_UNITS_PER_V
+                else:
+                    self._flush_input_buffer()
+                    logging.warning('Motor %d not available in sync voltage read', motor_id)
+
+            return voltages
+
+    def _read_voltage_per_motor_fallback(self) -> np.ndarray:
+        """Per-motor read of supply voltage; used only when sync read fails."""
+        voltages = np.zeros(len(self.motor_ids), dtype=np.float64)
+        with self._bus_lock:
+            for i, motor_id in enumerate(self.motor_ids):
+                raw, result, error = self.packet_handler.read1ByteTxRx(
+                    motor_id, SMS_STS_PRESENT_VOLTAGE
+                )
+                if result == COMM_SUCCESS and error == 0:
+                    voltages[i] = raw / VOLTAGE_UNITS_PER_V
+                else:
+                    self._flush_input_buffer()
+                    logging.warning(
+                        'Failed to read voltage for motor %d: result=%d, error=%d',
+                        motor_id, result, error
+                    )
+
+        return voltages
 
     def wait_for_motion_complete(
         self,

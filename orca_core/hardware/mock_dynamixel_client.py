@@ -32,6 +32,10 @@ ADDR_PRESENT_CURRENT = 126
 ADDR_PRESENT_POS_VEL_CUR = 126
 ADDR_MOVING_STATUS = 123
 ADDR_PRESENT_TEMPERATURE = 146
+ADDR_PRESENT_INPUT_VOLTAGE = 144
+
+# Nominal bus supply the simulated motors report.
+MOCK_SUPPLY_VOLTAGE = 12.0
 
 # Data Byte Length
 LEN_OPERATING_MODE = 1
@@ -45,6 +49,7 @@ LEN_GOAL_CURRENT = 2
 LEN_PROFILE_VELOCITY = 4
 LEN_MOVING_STATUS = 1
 LEN_PRESENT_TEMPERATURE = 1
+LEN_PRESENT_INPUT_VOLTAGE = 2
 
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 # See http://emanual.robotis.com/docs/en/dxl/x/xh430-v210/#goal-velocity
@@ -257,6 +262,11 @@ class MockDynamixelClient(MotorClient):
         self.check_connected()
         temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
         return temp_array
+
+    def read_voltage(self) -> np.ndarray:
+        """Reads and returns the simulated supply voltages."""
+        self.check_connected()
+        return np.full(len(self.motor_ids), MOCK_SUPPLY_VOLTAGE)
 
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):
