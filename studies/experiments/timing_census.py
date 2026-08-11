@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from orca_core.hardware.hand_serial_link import HandSerialLink
+from orca_core.hardware.tactile_client import TactileClient
 from orca_core.hardware.sensing.constants import DEFAULT_ENCODER_BAUDRATE
 from orca_core.hardware.sensing.serial_discovery import (
     discover_sensing_ports,
@@ -61,6 +62,7 @@ def run_timing_census(
     baudrate: int = DEFAULT_ENCODER_BAUDRATE,
     duration_s: float = DEFAULT_DURATION_S,
     label: str = "loop_off",
+    tactile_mode: str = "off",
     check_health: bool = True,
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
@@ -77,6 +79,10 @@ def run_timing_census(
         baudrate: Link baud.
         duration_s: How long to listen.
         label: Recorded in the manifest to distinguish otherwise identical runs.
+        tactile_mode: ``"off"``, ``"resultant"`` (what a hand runs by default)
+            or ``"taxels"`` (the heaviest payload the link carries). Anything
+            but ``"off"`` puts a second stream on the link and measures the
+            encoder stream under it.
         check_health: Refuse to start while a slot is reporting a fault.
         progress_callback: Receives ``census_started``, ``port_resolved``,
             ``board_identified``, ``health_checked``, ``recording``,
@@ -100,11 +106,21 @@ def run_timing_census(
     link = HandSerialLink(port, baudrate=baudrate)
     recorder = FrameRecorder()
     client = RecordingJointEncoderClient(link, recorder)
+    tactile = None
 
     try:
         link.connect()
         client.connect()
         client.start_stream(timeout=FIRST_FRAME_TIMEOUT_S)
+
+        if tactile_mode != "off":
+            tactile = _start_tactile(link, port, tactile_mode)
+            _emit(
+                progress_callback,
+                "tactile_started",
+                mode=tactile_mode,
+                port_shared=True,
+            )
 
         if check_health:
             report = require_healthy_encoders(client)
@@ -126,6 +142,7 @@ def run_timing_census(
                 "label": label,
                 "port": port,
                 "baudrate": baudrate,
+                "tactile_mode": tactile_mode,
             },
             moves_hand=False,
         )
@@ -168,6 +185,12 @@ def run_timing_census(
         _emit(progress_callback, "census_aborted", error=str(error))
         raise
     finally:
+        if tactile is not None:
+            try:
+                tactile.stop_stream()
+                tactile.disconnect()
+            except Exception:
+                logger.exception("failed to stop the tactile stream")
         # The link owns the port exclusively; leaving it open would block the
         # next run with a message about the port being busy.
         try:
@@ -223,6 +246,30 @@ def _listen(
             link_recorder.sample(time.monotonic())
             return False
         time.sleep(0.02)
+
+
+def _start_tactile(link: HandSerialLink, port: str, mode: str):
+    """Put a tactile stream on the link alongside the encoder stream.
+
+    Only meaningful when both share a port, which is what makes them compete;
+    on a hand with a dedicated tactile adapter the encoder link is untouched
+    and the comparison would show nothing.
+    """
+    if mode not in ("resultant", "taxels"):
+        raise ValueError(f"unknown tactile mode {mode!r}")
+
+    ports = discover_sensing_ports()
+    if ports.tactile != port:
+        raise PreconditionError(
+            f"tactile is not on the encoder port ({ports.tactile or 'none found'} "
+            f"vs {port}), so a tactile stream would not contend with the encoder "
+            "stream. Run with tactile off."
+        )
+
+    client = TactileClient(link)
+    client.connect()
+    client.start_stream(resultant=True, taxels=(mode == "taxels"))
+    return client
 
 
 def _resolve_port(port: Optional[str]) -> str:

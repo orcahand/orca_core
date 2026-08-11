@@ -278,6 +278,23 @@ class JointLoopThread:
         self._snapshot_calibration()
         self._anchor_to_current_pose()
 
+    def reset_integral(self) -> None:
+        """Discharge the controller's integrator without re-anchoring.
+
+        The integrator can otherwise only be discharged by spending time on the
+        far side of the target, so whatever it banked under one set of gains is
+        still there under the next. Retuning mid-run therefore carries the
+        previous tuning's stored demand into the new one unless it is cleared.
+
+        Deliberately not :meth:`rebase`: that re-reads the motors and re-latches
+        the target and the feed-forward bias, which is a different and much
+        larger intervention. This touches the controller only.
+
+        The correction steps by whatever the integral was contributing, so call
+        it while the joint is at rest.
+        """
+        self._controller.reset()
+
     def rebase(self) -> None:
         """Re-anchor a running loop to the current pose without a full restart:
         latch the target to the live measured pose, recapture the feed-forward

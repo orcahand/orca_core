@@ -30,6 +30,8 @@ def on_progress(event):
         print(f"Encoder slots healthy over {event['frames']} frames.")
         if event["constant_slots"]:
             print(f"  Not moving (expected at rest): {', '.join(event['constant_slots'])}")
+    elif kind == "tactile_started":
+        print(f"Tactile streaming on the same link: mode={event['mode']}")
     elif kind == "recording":
         print(f"Recording to {event['directory']}")
     elif kind == "progress":
@@ -114,6 +116,14 @@ def main() -> int:
     parser.add_argument(
         "--label", default="loop_off", help="Recorded in the manifest to tell runs apart."
     )
+    parser.add_argument(
+        "--tactile",
+        choices=("off", "resultant", "taxels"),
+        default="off",
+        help="Also stream tactile on the same link and measure the encoder "
+        "stream under it. 'resultant' is what a hand runs by default; "
+        "'taxels' is the heaviest payload the link carries.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--skip-health-check",
@@ -138,6 +148,7 @@ def main() -> int:
             port=args.port,
             duration_s=args.duration,
             label=args.label,
+            tactile_mode=args.tactile,
             check_health=not args.skip_health_check,
             progress_callback=on_progress,
         )

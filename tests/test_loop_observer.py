@@ -442,3 +442,51 @@ def test_running_thread_delivers_samples(calibrated_hand):
     assert all(s.phase == "ok" for s in collector.samples)
     cycles = [s.cycle for s in collector.samples]
     assert cycles == sorted(cycles)
+
+
+# ----- Integrator reset ----------------------------------------------------
+
+
+def test_reset_integral_discharges_banked_demand(calibrated_hand):
+    """Stored integral survives a gain change, so retuning mid-run inherits the
+    previous tuning's demand unless it is cleared."""
+    loop = _make_loop(calibrated_hand, _source_at_zero(calibrated_hand), Ki=5.0)
+    loop.prime_for_step()
+    collector = Collector()
+    loop.attach_observer(collector)
+
+    loop.set_target({j: 5.0 for j in loop.joint_names})
+    for _ in range(20):
+        loop.step_once(dt=0.01)
+    assert float(np.max(np.abs(collector.samples[-1].ierr_deg_s))) > 0.0
+
+    loop.reset_integral()
+    loop.step_once(dt=0.01)
+
+    banked = float(np.max(np.abs(collector.samples[-1].ierr_deg_s)))
+    assert banked == pytest.approx(0.0, abs=0.06)
+
+
+def test_reset_integral_leaves_the_target_and_bias_alone(calibrated_hand):
+    """Re-anchoring would re-read the motors and re-latch both; this must not."""
+    loop = _make_loop(calibrated_hand, _source_at_zero(calibrated_hand), Ki=5.0)
+    loop.prime_for_step()
+    loop.set_target({j: 4.0 for j in loop.joint_names})
+    for _ in range(10):
+        loop.step_once(dt=0.01)
+
+    target_before = loop._target_deg.copy()
+    bias_before = loop._motor_bias.copy()
+    loop.reset_integral()
+
+    assert np.array_equal(loop._target_deg, target_before)
+    assert np.array_equal(loop._motor_bias, bias_before)
+
+
+def test_reset_integral_unfreezes_a_frozen_integrator(calibrated_hand):
+    loop = _make_loop(calibrated_hand, _source_at_zero(calibrated_hand), Ki=5.0)
+    loop.prime_for_step()
+    loop._controller.freeze_integral()
+
+    loop.reset_integral()
+    assert not loop._controller.integral_frozen
