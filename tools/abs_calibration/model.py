@@ -83,6 +83,9 @@ class KinematicModel:
 
     nodes: list[JointNode]
     index: dict[str, int] = field(init=False)
+    # {finger: T_distal_sensor} — the tactile pad's fixed pose in its distal
+    # link, from the packaged kinematics (populated by load()).
+    sensor_mounts: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self):
         self.index = {n.name: i for i, n in enumerate(self.nodes) if n.axis is not None}
@@ -91,7 +94,8 @@ class KinematicModel:
     def load(cls, side: str = "right") -> "KinematicModel":
         path = os.path.join(DATA_DIR, "v2_kinematics.yaml")
         with open(path) as f:
-            chains = yaml.safe_load(f)[side]["chains"]
+            side_doc = yaml.safe_load(f)[side]
+        chains = side_doc["chains"]
 
         nodes: list[JointNode] = []
 
@@ -116,7 +120,12 @@ class KinematicModel:
             parent = wrist_idx
             for entry in chains["fingers"][finger]:
                 parent = add(entry, parent)
-        return cls(nodes)
+        model = cls(nodes)
+        model.sensor_mounts = {
+            finger: Transform.from_xyz_rpy(m["xyz"], m["rpy"])
+            for finger, m in (side_doc.get("sensor_mounts") or {}).items()
+        }
+        return model
 
     @property
     def joint_names(self) -> list[str]:

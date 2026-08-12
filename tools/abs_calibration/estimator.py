@@ -47,6 +47,15 @@ SIGMA_PRIOR = {"normal": 1.0, "wide": 4.0}  # deg
 # polynomial. Far wider than any real INL, so data-rich joints ignore it.
 SIGMA_CURVE = 2.0  # deg per curve coefficient
 
+# Tactile tip-press location sigma vs resultant force (pre-characterisation
+# placeholders per design doc section 6: grazing touches centroid to
+# ~1-1.5 mm, firm multi-taxel blobs to sub-mm; the Phase-3 flat-reference
+# characterisation replaces these).
+SIGMA_TIP_MAX = 0.0018   # m, at threshold force
+SIGMA_TIP_MIN = 0.0008   # m, firm press
+SIGMA_TIP_SLOPE = 0.0007  # m per newton of the weaker side's force
+SIGMA_BASE_PIN = 1e-4    # pins the base when no world-frame class is present
+
 MIN_DOT_FRAMES = 3     # a dot seen fewer times than this is dropped
 
 
@@ -83,11 +92,18 @@ def _rodrigues(rvec: np.ndarray) -> np.ndarray:
 
 class Estimator:
     def __init__(self, nominal: KinematicModel, *, offsets_only: bool = False,
-                 prior: PriorConfig | None = None):
+                 prior: PriorConfig | None = None,
+                 manifolds: list | None = None):
+        """``manifolds``: precomputed abd-block contact manifolds — a list of
+        ``{pair: [jointA, jointB], arg, out, poly, sigma_deg, arg_range,
+        posture: {joint: deg}}`` entries (see build_contact_manifold.py),
+        one per pair and flexion posture; events with no matching entry are
+        skipped with a warning rather than guessed."""
         self.nominal = nominal
         self.joints = nominal.joint_names
         self.K = 1 if offsets_only else 3
         self.prior = prior or PriorConfig()
+        self.manifolds = manifolds or []
         self.rom_mid = np.array([np.mean(JOINT_ROMS[j]) for j in self.joints])
         self._ctx = None
 
@@ -132,6 +148,11 @@ class Estimator:
             for link, obs in ds.dir_obs.items()
         }
         self._ctx = (masks, dir_masks)
+        # Contact residuals are base-invariant (both sides share the base),
+        # so with no world-frame class the base pose is pure gauge — pin it.
+        self._pin_base = not (any(k[1].any() for k in masks.values())
+                              or ds.dir_obs or ds.frame_axes or ds.plate_obs)
+        self.skipped_contacts = []
 
     # ---- residuals ---------------------------------------------------------
 
@@ -202,6 +223,11 @@ class Estimator:
             pred = R[frame_idx] @ TIP_POINT_LOCAL[finger] + t[frame_idx]
             res.append((pred - obs) / SIGMA_PLATE)
 
+        res.extend(self._contact_residuals(ds, world, b))
+
+        if self._pin_base:
+            res.append(x[:6] / SIGMA_BASE_PIN)
+
         for i, j in enumerate(self.joints):
             sigma = self.prior.sigma(j)
             if sigma is not None:
@@ -210,6 +236,74 @@ class Estimator:
             res.append((b[:, 1:] / SIGMA_CURVE).ravel())
 
         return np.concatenate(res)
+
+    def _contact_residuals(self, ds: Dataset, world, b) -> list:
+        """Contact classes — base-invariant, so they constrain offsets with
+        no camera at all (and cannot constrain the wrist or base: no
+        self-contact crosses the wrist).
+
+        tip_press: the two pads' contact centroids are one physical point;
+        predicted through each finger's chain they must coincide, with a
+        force-dependent sigma (grazing touches localise worse and indent
+        less — both regimes are wanted).
+
+        abd_block: at first contact between adjacent fingers the pair sits
+        on the precomputed mesh-contact manifold ``q_out = poly(q_arg)``.
+        Both encoders were READ at the event, so no hardstop value is
+        assumed anywhere — the parked finger's stop only provided
+        mechanical stiffness. Events without a matching manifold (or
+        outside its fitted range/posture) are skipped and reported, never
+        guessed.
+        """
+        out = []
+        self.skipped_contacts = []  # rewritten every call; read after solve
+        q = self.apply_cal(ds.m, b)
+        jidx = {j: i for i, j in enumerate(self.joints)}
+        for e in ds.contact_obs:
+            f = e.frame
+            if e.kind == "tip_press":
+                mounts = self.nominal.sensor_mounts
+                if e.body_a not in mounts or e.body_b not in mounts:
+                    self.skipped_contacts.append((e.kind, e.body_a, e.body_b,
+                                                  "no sensor mount"))
+                    continue
+                pts = []
+                for finger, p_local in ((e.body_a, e.p_a), (e.body_b, e.p_b)):
+                    mnt = mounts[finger]
+                    R, t = world[DISTAL_LINK[finger]]
+                    p_link = mnt.rotation @ p_local + mnt.translation
+                    pts.append(R[f] @ p_link + t[f])
+                f_min = min(e.force_a or 0.0, e.force_b or 0.0)
+                sigma = max(SIGMA_TIP_MIN, SIGMA_TIP_MAX - SIGMA_TIP_SLOPE * f_min)
+                out.append((pts[0] - pts[1]) / sigma)
+            elif e.kind == "abd_block":
+                pair = sorted((e.body_a, e.body_b))
+                man, why = self._match_manifold(pair, ds.m[f], jidx)
+                if man is None:
+                    self.skipped_contacts.append((e.kind, e.body_a, e.body_b, why))
+                    continue
+                q_arg = q[f, jidx[man["arg"]]]
+                pred = float(np.polyval(man["poly"], q_arg))
+                q_out = q[f, jidx[man["out"]]]
+                out.append(np.atleast_1d((q_out - pred) / man["sigma_deg"]))
+        return out
+
+    def _match_manifold(self, pair: list, m_row: np.ndarray, jidx: dict):
+        why = "no manifold"
+        for man in self.manifolds:
+            if sorted(man["pair"]) != pair:
+                continue
+            tol = man.get("posture_tol_deg", 3.0)
+            if not all(abs(m_row[jidx[j]] - v) <= tol
+                       for j, v in man.get("posture", {}).items() if j in jidx):
+                why = "posture mismatch"
+                continue
+            lo, hi = man["arg_range"]
+            if not (lo <= m_row[jidx[man["arg"]]] <= hi):
+                why = "outside manifold range"
+                continue
+            return man, ""
+        return None, why
 
     # ---- initialisation ----------------------------------------------------
 

@@ -49,10 +49,26 @@ def main() -> int:
     ap.add_argument("--offsets-only", action="store_true")
     ap.add_argument("--priors", default=None, help="Per-joint prior config YAML")
     ap.add_argument("--side", default="right", choices=("right", "left"))
+    ap.add_argument("--manifolds", default=None,
+                    help="Contact-manifold YAML for abd-block events "
+                         "(build_contact_manifold.py)")
     args = ap.parse_args()
 
     ds = load_session(args.session_dir)
     out_dir = args.out or args.session_dir
+    n_dots = sum(a.shape[1] for a in ds.dot_obs.values())
+    print("Observation classes: "
+          f"dots {n_dots} cols / {sum(int(np.isfinite(a[:, :, 0]).sum()) for a in ds.dot_obs.values())} pts, "
+          f"dirs {len(ds.dir_obs)}, frame anchors {len(ds.frame_axes)}, "
+          f"plate {len(ds.plate_obs)}, contacts {len(ds.contact_obs)}")
+
+    manifolds = []
+    if args.manifolds:
+        with open(args.manifolds) as f:
+            manifolds = yaml.safe_load(f) or []
+    elif any(e.kind == "abd_block" for e in ds.contact_obs):
+        print("NOTE: session has abd-block events but no --manifolds file; "
+              "they will be skipped.")
 
     prior = PriorConfig()
     denovo = []
@@ -69,7 +85,8 @@ def main() -> int:
                 denovo.append(joint)
 
     nominal = KinematicModel.load(args.side)
-    est = Estimator(nominal, offsets_only=args.offsets_only, prior=prior)
+    est = Estimator(nominal, offsets_only=args.offsets_only, prior=prior,
+                    manifolds=manifolds)
 
     x0 = est.initial_x(dict(prior.mean))
     if denovo:
@@ -80,9 +97,16 @@ def main() -> int:
     print(f"Solving {len(ds.joints)} joints over {len(ds.m)} frames...")
     result = est.solve(ds, x0)
     axis_diag = est.axis_diagnostic(result.x, ds)
+    if est.skipped_contacts:
+        from collections import Counter
+        for (kind, a, bdy, why), n in Counter(est.skipped_contacts).items():
+            print(f"WARNING: skipped {n} {kind} event(s) {a}/{bdy}: {why}")
 
+    has_vision = bool(ds.dot_obs or ds.dir_obs or ds.frame_axes)
+    has_contact = bool(ds.contact_obs)
     calibration = {
-        "source": "vision",
+        "source": ("vision+contact" if has_vision and has_contact
+                   else "contact" if has_contact else "vision"),
         "format": 1,
         "joints": {
             j: {

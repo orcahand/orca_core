@@ -1,0 +1,209 @@
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: pinky_abd
+  out: ring_abd
+  poly:
+  - -0.01767365264633384
+  - 1.4678466282454623
+  - -18.846935449327738
+  arg_range:
+  - 0.0
+  - 29.0
+  sigma_deg: 1.8322204922160996
+  posture:
+    pinky_mcp: 15.0
+    ring_mcp: 15.0
+    pinky_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: pinky_abd
+  out: ring_abd
+  poly:
+  - -0.0020619504658702264
+  - 1.0475653220867287
+  - -20.500643229484556
+  arg_range:
+  - 0.0
+  - 29.0
+  sigma_deg: 1.5894165070247248
+  posture:
+    pinky_mcp: 40.0
+    ring_mcp: 40.0
+    pinky_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: ring_abd
+  out: pinky_abd
+  poly:
+  - 0.0017443788693165397
+  - 0.8390327782639658
+  - 16.341126263141643
+  arg_range:
+  - -26.0
+  - 13.0
+  sigma_deg: 3.4169507584680514
+  posture:
+    ring_mcp: 15.0
+    pinky_mcp: 15.0
+    ring_pip: 8.0
+    pinky_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: ring_abd
+  out: pinky_abd
+  poly:
+  - 0.007388929870304002
+  - 1.064168230092133
+  - 19.749834234799646
+  arg_range:
+  - -26.0
+  - 6.5
+  sigma_deg: 2.3112644002267424
+  posture:
+    ring_mcp: 40.0
+    pinky_mcp: 40.0
+    ring_pip: 8.0
+    pinky_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: ring_abd
+  out: middle_abd
+  poly:
+  - -0.02003238751338072
+  - 1.8099797487258893
+  - -21.82581720352173
+  arg_range:
+  - 0.0
+  - 26.0
+  sigma_deg: 3.074092068453974
+  posture:
+    ring_mcp: 15.0
+    middle_mcp: 15.0
+    ring_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: middle_abd
+  out: ring_abd
+  poly:
+  - -0.014135824455009749
+  - 0.39314921583448137
+  - 23.21181758471899
+  arg_range:
+  - -26.0
+  - 0.0
+  sigma_deg: 1.7272494724214364
+  posture:
+    middle_mcp: 15.0
+    ring_mcp: 15.0
+    middle_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: middle_abd
+  out: ring_abd
+  poly:
+  - -0.013675157840435362
+  - 0.434894013404846
+  - 23.445463848114024
+  arg_range:
+  - -26.0
+  - 0.0
+  sigma_deg: 1.623150677549592
+  posture:
+    middle_mcp: 40.0
+    ring_mcp: 40.0
+    middle_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: middle_abd
+  out: index_abd
+  poly:
+  - 0.0017537940183334321
+  - 0.5489643908463983
+  - -19.828509622812266
+  arg_range:
+  - -6.5
+  - 13.0
+  sigma_deg: 1.588238017426859
+  posture:
+    middle_mcp: 15.0
+    index_mcp: 15.0
+    middle_pip: 8.0
+    index_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: middle_abd
+  out: index_abd
+  poly:
+  - 0.024577304456360895
+  - 0.7394399789663456
+  - -21.829602050781244
+  arg_range:
+  - -6.5
+  - 13.0
+  sigma_deg: 1.8614236478921902
+  posture:
+    middle_mcp: 40.0
+    index_mcp: 40.0
+    middle_pip: 8.0
+    index_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: index_abd
+  out: middle_abd
+  poly:
+  - 0.01632189899811826
+  - 1.5335426149366826
+  - 20.023920561460603
+  arg_range:
+  - -29.0
+  - 4.125
+  sigma_deg: 1.7860370554998004
+  posture:
+    index_mcp: 15.0
+    middle_mcp: 15.0
+    index_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: index_abd
+  out: middle_abd
+  poly:
+  - -0.011160572195547155
+  - 0.7773922426615909
+  - 12.819226785662098
+  arg_range:
+  - -29.0
+  - 24.0
+  sigma_deg: 2.362632604267864
+  posture:
+    index_mcp: 40.0
+    middle_mcp: 40.0
+    index_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
