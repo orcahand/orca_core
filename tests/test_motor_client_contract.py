@@ -173,11 +173,18 @@ def test_mock_cleanup_handler_survives_a_failing_client(mock_registry):
 
 
 def test_every_family_reads_supply_voltage():
-    """Voltage is part of the contract, not a Dynamixel extra: a family that
-    cannot report it must say so by failing to implement, not by shipping."""
-    assert "read_voltage" in MotorClient.__abstractmethods__
+    """Voltage is optional in the contract, like the provisioning methods, so
+    a new family is never blocked from instantiating over telemetry. Every
+    family we ship still reports it."""
+    assert "read_voltage" not in MotorClient.__abstractmethods__
     for cls in (DynamixelClient, FeetechClient, MockDynamixelClient):
-        assert "read_voltage" not in cls.__abstractmethods__, cls.__name__
+        assert cls.read_voltage is not MotorClient.read_voltage, cls.__name__
+
+
+def test_unsupported_voltage_read_names_the_client():
+    client = MockDynamixelClient([1], port="mock")
+    with pytest.raises(NotImplementedError, match="MockDynamixelClient cannot read"):
+        MotorClient.read_voltage(client)
 
 
 def test_mock_voltage_is_one_reading_per_motor(connected_mock):

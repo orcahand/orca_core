@@ -128,10 +128,39 @@ def test_all_flagged_samples_raise_calibration_error(encoder_link_and_client):
     stop, thread = _start_pump(link, flagged)
     try:
         client.start_stream(timeout=1.0)
-        with pytest.raises(JointEncoderCalibrationError, match="chip-flagged"):
+        with pytest.raises(JointEncoderCalibrationError) as excinfo:
             sample_anchor_count_from_client(
                 client, slot=0, num_samples=5, timeout_s=0.2
             )
+        message = str(excinfo.value)
+        assert "0/5 usable samples" in message
+        assert "failed the parity check" in message
+        # Nothing to power-cycle: this slot's words are corrupt in transit,
+        # not flagged by the chip.
+        assert "power-cycle" not in message
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
+def test_chip_flagged_slot_points_at_the_power_cycle(encoder_link_and_client):
+    """A slot whose words arrive intact but carry the chip's angle-error bit
+    is the state a power cycle clears, so the message must say so."""
+    link, client = encoder_link_and_client
+    flagged = np.zeros(17, dtype=np.uint16)
+    flagged[0] = _sensor_word(1234, angle_error=True)
+
+    stop, thread = _start_pump(link, flagged)
+    try:
+        client.start_stream(timeout=1.0)
+        with pytest.raises(JointEncoderCalibrationError) as excinfo:
+            sample_anchor_count_from_client(
+                client, slot=0, num_samples=5, timeout_s=0.2
+            )
+        message = str(excinfo.value)
+        assert "flagged by the encoder chip" in message
+        assert "0 failed the parity check" in message
+        assert "power-cycle the hand and re-run" in message
     finally:
         stop.set()
         thread.join(timeout=1.0)

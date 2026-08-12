@@ -239,14 +239,17 @@ class MotorClient(ABC):
         """
         ...
 
-    @abstractmethod
     def read_voltage(self) -> np.ndarray:
         """Reads the present supply voltage at each motor.
+
+        Optional, like the provisioning methods above: telemetry rather than
+        something driving a hand needs, so a family that cannot report it says
+        so here instead of every family being forced to implement it.
 
         Returns:
             An array of voltages in volts.
         """
-        ...
+        raise NotImplementedError(f"{type(self).__name__} cannot read supply voltage")
 
     @abstractmethod
     def write_desired_pos(

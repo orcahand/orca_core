@@ -319,21 +319,34 @@ def sample_anchor_count_from_client(
     last_ts: float | None = None
     deadline = time.monotonic() + timeout_s
     collected = 0
-    rejected = 0
+    bad_parity = 0
+    angle_flagged = 0
     while collected < num_samples:
         reading = client.get_latest_unfiltered()
         if reading is not None and reading.timestamp != last_ts:
             last_ts = reading.timestamp
-            if bool(reading.parity_ok[slot]) and not bool(reading.angle_error[slot]):
+            parity_ok = bool(reading.parity_ok[slot])
+            angle_error = bool(reading.angle_error[slot])
+            if parity_ok and not angle_error:
                 counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
                 collected += 1
                 continue
-            rejected += 1
+            # Counted apart: parity covers the transmitted word, the chip's
+            # angle-error bit covers the measurement behind it.
+            bad_parity += not parity_ok
+            angle_flagged += angle_error
         if time.monotonic() > deadline:
+            remedy = ""
+            if angle_flagged and not bad_parity:
+                remedy = (
+                    ". A power cycle clears the chip's angle-error flag; "
+                    "power-cycle the hand and re-run"
+                )
             raise JointEncoderCalibrationError(
-                f"timed out waiting for encoder samples on slot {slot} "
-                f"(got {collected}/{num_samples} in {timeout_s}s, "
-                f"{rejected} chip-flagged samples rejected)"
+                f"timed out waiting for encoder samples on slot {slot}: got "
+                f"{collected}/{num_samples} usable samples in {timeout_s}s "
+                f"({angle_flagged} flagged by the encoder chip, {bad_parity} "
+                f"failed the parity check){remedy}"
             )
         time.sleep(sample_period_s)
     return average_anchor_count(counts)
