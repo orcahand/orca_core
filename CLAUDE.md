@@ -116,6 +116,40 @@ so a terminal and a GUI drive the identical routine.
 
 ---
 
+## Never hardcode what the package can resolve
+
+Every hand differs in motor family, serial ports, side, and which sensors it carries. All of that is
+discovered at runtime. Code that assumes any of it works on one bench and fails on the next, and the
+failure is usually silent - the wrong model loads, or a probe searches the wrong vendor IDs.
+
+**Motors.** Never import or instantiate a concrete client (`DynamixelClient`, `FeetechClient`). Go
+through `motor_factory.motor_client_class()` / `load_hand()`, and program against the `MotorClient`
+ABC in `hardware/motor_client.py`. Family differences belong behind a class attribute on the client
+(`supported_modes`, `supports_multi_turn`, `waits_for_motion`, `position_range_rad`,
+`baud_rate_map`, ...) - never behind an `if motor_type == ...` in generic code. Adding a capability
+means adding it to the ABC and implementing it on *every* client, mocks included. Control-mode
+values, current units, and position ranges are family-specific: read them from the client, don't
+assume Dynamixel's.
+
+**Ports and baud.** Never hardcode a device path or baud rate, and never default one. Use the
+auto-discovery in `hardware/sensing/serial_discovery.py` and `utils.auto_detect_port()`, with
+connect-time probing (`hardware/motor_resolution.py`) resolving the driver. A `--port` flag is an
+override for bring-up, not the normal path.
+
+**Hand identity.** Never assume a side, model directory, joint list, or that sensors exist.
+`detect_hand()` / `load_hand()` decide which class and model a connected hand gets; `config.yaml` is
+the source of truth for everything else. Detection overrides what the yaml pins - and connecting a
+hand must never rewrite a packaged model config.
+
+**Front-ends.** Scripts and examples carry no logic. Use the shared argparse and lifecycle helpers in
+`utils/cli.py`; a flag it advertises must actually be forwarded to `load_hand()`. If a front-end
+needs something new, add it to `utils/cli.py` so every front-end gets it.
+
+The test for any change here: would this still work on a Feetech left hand with no tactile sensors,
+plugged into a port nobody told it about? If not, it is hardcoding something the package can resolve.
+
+---
+
 ## Development
 
 ### Virtual Environment
