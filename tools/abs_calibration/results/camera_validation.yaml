@@ -1,7 +1,7 @@
 config:
   quick: false
   seed: 0
-  n_cameras: 4
+  n_cameras: 5
   step_scale: 1.0
   image_size:
   - 1280
@@ -9,108 +9,113 @@ config:
 rig:
   cam0:
     intrinsic_rms_px: 0.0642
-    focal_err_pct: 0.01948720277305532
-    extrinsic_rot_deg: 0.0648375367375454
-    extrinsic_t_mm: 0.43702333958175127
+    focal_err_pct: 0.019487202726368363
+    extrinsic_rot_deg: 0.07843301518546335
+    extrinsic_t_mm: 0.7207036130198793
   cam1:
     intrinsic_rms_px: 0.0853
-    focal_err_pct: 0.06862194989416834
-    extrinsic_rot_deg: 0.055658588998847444
-    extrinsic_t_mm: 0.5422049811983193
+    focal_err_pct: 0.06862194989393684
+    extrinsic_rot_deg: 0.019266221043785836
+    extrinsic_t_mm: 0.4209065405013579
   cam2:
     intrinsic_rms_px: 0.0877
-    focal_err_pct: 0.0711262930999371
-    extrinsic_rot_deg: 0.10269101669540523
-    extrinsic_t_mm: 0.7887699360840864
+    focal_err_pct: 0.07112631155251632
+    extrinsic_rot_deg: 0.08617793734421324
+    extrinsic_t_mm: 0.7095079601628186
   cam3:
     intrinsic_rms_px: 0.0824
-    focal_err_pct: 0.021749242193970807
-    extrinsic_rot_deg: 0.2500643424945222
-    extrinsic_t_mm: 3.2153763486171734
+    focal_err_pct: 0.02174924069901701
+    extrinsic_rot_deg: 0.19431650483452384
+    extrinsic_t_mm: 1.4880872768461757
+  cam4:
+    intrinsic_rms_px: 0.0945
+    focal_err_pct: 0.06685105707209917
+    extrinsic_rot_deg: 0.035703135805811886
+    extrinsic_t_mm: 0.2767268009275222
 dots:
-  n_columns: 100
-  n_matched: 78
-  unmatched_tracks: 2
-  unmatched_static: 20
-  proximal_parks: 40
-  duplicates: 18
-  triang_rms_mm: 0.988509485766827
-  triang_p95_mm: 0.8713671646451028
-  coverage: 0.541929466109976
-  misassigned: 0
+  n_columns: 86
+  n_matched: 54
+  unmatched_tracks: 4
+  unmatched_static: 28
+  proximal_parks: 21
+  duplicates: 16
+  triang_rms_mm: 1.3778220654109008
+  triang_p95_mm: 1.5505557195038426
+  coverage: 0.38694438479707965
+  misassigned: 1
 solve:
-  offset_mean_deg: 0.13529103111354326
-  offset_max_deg: 0.31185436546003187
+  offset_mean_deg: 0.9210225147796058
+  offset_max_deg: 12.69555745446842
   solver_status: 2
 solve_per_joint:
   wrist:
-    mapping_err_deg: 0.1264069827842228
-    b0_err_deg: 0.5692197287738958
-    sigma_deg: 0.0332
+    mapping_err_deg: 0.03664529020739632
+    b0_err_deg: 0.7407118320151831
+    sigma_deg: 0.0335
   thumb_cmc:
-    mapping_err_deg: 0.11016217453862702
-    b0_err_deg: 0.8216730219376567
-    sigma_deg: 0.0193
+    mapping_err_deg: 0.1783890206728002
+    b0_err_deg: 0.7416976294310995
+    sigma_deg: 0.0297
   thumb_abd:
-    mapping_err_deg: 0.1254325841201299
-    b0_err_deg: 0.48732792850416595
-    sigma_deg: 0.0257
+    mapping_err_deg: 0.23928708565461057
+    b0_err_deg: 0.1871342373536844
+    sigma_deg: 0.0425
   thumb_mcp:
-    mapping_err_deg: 0.08617281003718923
-    b0_err_deg: 0.19532880006551695
-    sigma_deg: 0.0458
+    mapping_err_deg: 0.24609737874299178
+    b0_err_deg: 0.36382698020508764
+    sigma_deg: 0.0518
   thumb_dip:
-    mapping_err_deg: 0.08209208826262054
-    b0_err_deg: 0.08759678351079392
-    sigma_deg: 0.0642
+    mapping_err_deg: 0.09774922373635658
+    b0_err_deg: 0.009650665758748511
+    sigma_deg: 0.0656
   index_abd:
-    mapping_err_deg: 0.08692886287589857
-    b0_err_deg: 0.5423533900661965
-    sigma_deg: 0.0281
+    mapping_err_deg: 0.32305449697345606
+    b0_err_deg: 0.195710602318921
+    sigma_deg: 0.0484
   index_mcp:
-    mapping_err_deg: 0.12359242283107008
-    b0_err_deg: 1.367008031324685
-    sigma_deg: 0.0416
+    mapping_err_deg: 0.039555119589504
+    b0_err_deg: 1.2838969108750795
+    sigma_deg: 0.0511
   index_pip:
-    mapping_err_deg: 0.2151749009314527
-    b0_err_deg: 0.3859128660908011
-    sigma_deg: 0.0678
+    mapping_err_deg: 0.060957499879105106
+    b0_err_deg: 0.36518018238180927
+    sigma_deg: 0.0871
   middle_abd:
-    mapping_err_deg: 0.14753650769215318
-    b0_err_deg: 0.05383072345534767
-    sigma_deg: 0.0555
+    mapping_err_deg: 0.1300589949992916
+    b0_err_deg: 0.3296925835002549
+    sigma_deg: 0.0394
   middle_mcp:
-    mapping_err_deg: 0.24446522113902908
-    b0_err_deg: 0.09506129345003389
-    sigma_deg: 0.0515
+    mapping_err_deg: 0.10215828068364663
+    b0_err_deg: 0.30801705828909287
+    sigma_deg: 0.0456
   middle_pip:
-    mapping_err_deg: 0.18035973964824706
-    b0_err_deg: 0.02136499579318657
-    sigma_deg: 0.0976
+    mapping_err_deg: 0.22586439635690286
+    b0_err_deg: 0.025353055885582954
+    sigma_deg: 0.0847
   ring_abd:
-    mapping_err_deg: 0.038955391471627604
-    b0_err_deg: 0.1735803756116363
-    sigma_deg: 0.0177
+    mapping_err_deg: 0.15969616812804593
+    b0_err_deg: 0.39478655158860043
+    sigma_deg: 0.025
   ring_mcp:
-    mapping_err_deg: 0.1083799449442302
-    b0_err_deg: 1.1036574236456707
-    sigma_deg: 0.0364
+    mapping_err_deg: 0.13776453855204313
+    b0_err_deg: 0.8612735633849793
+    sigma_deg: 0.0482
   ring_pip:
-    mapping_err_deg: 0.041773894020865614
-    b0_err_deg: 0.09006373298944781
-    sigma_deg: 0.0575
+    mapping_err_deg: 0.1615038093288552
+    b0_err_deg: 0.019262516515597294
+    sigma_deg: 0.0665
   pinky_abd:
-    mapping_err_deg: 0.31185436546003187
-    b0_err_deg: 1.0416691499740125
-    sigma_deg: 0.0277
+    mapping_err_deg: 0.2344608412820217
+    b0_err_deg: 0.9724548099276071
+    sigma_deg: 0.068
   pinky_mcp:
-    mapping_err_deg: 0.12071140346151359
-    b0_err_deg: 0.2800956905700924
-    sigma_deg: 0.0418
+    mapping_err_deg: 0.5885831519978533
+    b0_err_deg: 0.11773578607237312
+    sigma_deg: 0.0652
   pinky_pip:
-    mapping_err_deg: 0.14994823471132646
-    b0_err_deg: 0.8319644924360823
-    sigma_deg: 0.0649
+    mapping_err_deg: 12.69555745446842
+    b0_err_deg: 3.5361174342678336
+    sigma_deg: 0.2047
 gates:
   intrinsic_rms_px: 0.6
   focal_err_pct: 1.5
@@ -123,5 +128,12 @@ gates:
   unmatched_tracks: 3
   offset_mean_deg: 0.3
   offset_max_deg: 0.8
-failures: []
-pass: true
+failures:
+- triang_rms_mm=1.378 > 1.2
+- triang_p95_mm=1.551 > 1.5
+- coverage=0.39 < 0.45
+- 'misassigned=1: [{''column'': 58, ''assigned'': ''pinky_pip'', ''truth'': ''pinky_mcp''}]'
+- unmatched_tracks=4
+- offset_mean_deg=0.921 > 0.3
+- offset_max_deg=12.696 > 0.8
+pass: false

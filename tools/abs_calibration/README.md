@@ -189,8 +189,13 @@ determine:
   = fit + print + skin compliance ≈ 1.6–3.4°). Pairwise both directions
   at TWO flexion postures — one contact curve pins only an offset
   combination; the second posture's differing slope separates the pair
-  (pinned in tests). Coarse next to the camera tier, and exactly enough
-  to catch the known +25° `ring_abd` hardstop error.
+  (pinned in tests). Coarse next to the camera tier — and coarser than a
+  healthy hardstop anchor (~1° bias class), so its role is
+  **verification, not replacement**: it independently measures
+  encoder-reported angle against mechanical truth and flags anything in
+  the multi-degree class, e.g. a misplaced encoder magnet/board (the
+  `ring_abd` +25° reading on ser-9964 is believed to be exactly that —
+  a sensor-placement issue, to be fixed at the source).
 - **tip-press** — full hands: torque off, press the prompted fingertip
   pair together by hand; auto-captures when both pads localise >0.35 N
   with still encoders (per-pad contact centroid + forces). Pad-point
@@ -223,25 +228,38 @@ truth-derived Phase-2 anchors standing in). `--quick` runs a reduced
 wrist+index+thumb scene and gates only pipeline mechanics — 1-2 surviving
 dots per link make its solve statistically thin by construction.
 
-**Findings (2026-08-12, full run at the physical rig geometry — PASS):**
-intrinsics 0.10-0.14 px rms, focal < 0.4%; extrinsics within 0.25 deg /
-3.3 mm (the farthest camera carries a small systematic at its 0.65 m board
-distance — the end-to-end solve absorbs it, and the solve gates carry the
-requirement); triangulated dots 0.99 mm rms / 0.87 mm p95 vs truth at
-0.54 coverage with **zero misassigned columns**; end-to-end estimator
-recovery (truth anchors) **0.135 deg mean / 0.31 deg max** — camera-only
-error sits below the Phase-0.7 webcam-tier model-error band (E-class
-means 0.24-0.84 deg), as budgeted. Rig-design lessons the failures
-forced, now baked into the protocol, the scene, and the design doc: the
-board stands 28 cm behind the hand (the wrist sweep swings fingertips
-~15 cm backward), one camera must look from below-front (a curling finger
-turns its dots floor-ward during exactly its own sweep), dots are ~6 mm
-and 6-8 per link (density is what gives the rigidity voting its quorum —
-identity theft concentrates on links with 1-2 surviving columns), dots go
-on the phalanx sides (an axis-parallel normal is flexion-invariant), and
-the capture held pose parks the thumb clear of the fingers (at the
-natural neutral, thumb and finger dots pass within ~2 mm and steal
-identities). Hardware guide with rendered expected views:
+**Findings (2026-08-12, two validation tiers).** The scene renders the
+hand from the REAL URDF meshes (skin zones excluded from dot placement)
+with z-buffered self-occlusion — finger-over-finger, palm-over-thumb, the
+works.
+
+*Tier A — heuristic visibility (dot normals only): PASS.* At the physical
+rig geometry: intrinsics 0.10-0.14 px, extrinsics within 0.25 deg/3.3 mm,
+dots 0.99 mm rms / 0.87 mm p95 at 0.54 coverage, zero misassigned,
+end-to-end estimator recovery **0.135 deg mean / 0.31 deg max** — the
+camera-only error budget holds with margin.
+
+*Tier B — true mesh self-occlusion: geometry and identity hold, coverage
+does not (OPEN).* Dot geometry stays at 0.6 mm rms with at most one
+misassigned column, but deep flexion hides each finger's dots from every
+static camera in turn: tracks fragment at every occlusion blink, distal
+joints starve, and their solve degrades (per-joint coverage is the
+binding constraint, not accuracy). Probe-driven search over camera sets
+showed **no 4-camera arrangement keeps flexed fingertips covered; a fifth
+camera nearly under the hand looking up is decisive** (mean own-sweep
+coverage 0.51 vs <=0.34 for every 4-camera set) and is now the prescribed
+rig. 7 dots/link is the measured optimum (10 crowds the image). Remaining
+mitigations, in order: a hand-held assist camera during flexion sweeps
+(per-frame board self-localisation — pipeline extension), model-informed
+gap-bridging in association, and assist postures (repeat pip sweeps at a
+second wrist angle to change the occlusion geometry).
+
+Rig-design lessons baked into the protocol, the scene, and the design
+doc: board 28 cm behind the hand (the wrist sweep swings fingertips
+~15 cm backward), **five** cameras including the under camera, ~6 mm dots
+6-8 per link on the phalanx sides as well as dorsal (axis-parallel
+normals are flexion-invariant), thumb parked clear of the fingers.
+Hardware guide with mesh-rendered expected views:
 https://claude.ai/code/artifact/e5d349ab-e3cf-4ed6-ab9a-56dc0a354656
 
 Results: `results/camera_validation.yaml` (gates included; regenerate with

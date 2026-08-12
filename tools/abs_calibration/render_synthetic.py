@@ -37,7 +37,7 @@ import yaml
 from board import BoardSpec, detect_board
 from cameras import Camera, Rig
 from model import HELD_POSE, JOINT_ROMS, EncoderTruth, KinematicModel
-from sim import DOT_LINKS, LINK_SPAN
+from sim import DOT_LINKS
 from sweep_plan import build_plan
 
 CAPTURE_FORMAT = 1
@@ -45,16 +45,17 @@ CAPTURE_FORMAT = 1
 
 @dataclass
 class SynthConfig:
-    n_cameras: int = 4
+    n_cameras: int = 5
+    camera_indices: tuple | None = None  # subset of the placement specs
     image_size: tuple[int, int] = (1280, 960)
     focal_px: float = 1050.0
     step_scale: float = 1.0         # multiplies the per-joint sweep step sizes
     sweep_joints: tuple | None = None   # None = all joints
     dot_links: tuple | None = None      # None = all standard dot links
     n_anchor: int = 8
-    # 7 per link: identity-theft chimeras concentrate on links with 1-2
-    # surviving columns, where rigidity voting has no quorum. Density is the
-    # cheapest physical defence — the guide prescribes 6-8 per link.
+    # 7 per link, measured optimum at this working distance: fewer starves
+    # the rigidity-voting quorum, more (10 tried) crowds the image and
+    # feeds tracking confusion. The guide prescribes 6-8 per link.
     dots_per_link: int = 7
     # 6 mm dots: at the 55-60 cm working distance the board standoff forces,
     # 5 mm dots drop to ~4 px radius and detection SNR with them.
@@ -63,7 +64,9 @@ class SynthConfig:
     n_clutter: int = 4              # static bright spots near the mount
     n_intrinsic: int = 14
     n_extrinsic: int = 3
-    grazing_cos: float = 0.15       # dot visible if normal . view dir exceeds this
+    mesh_points_per_body: int = 7000  # URDF-mesh splat density per body
+    grazing_cos: float = 0.05       # surfaces seen edge-on render no disk
+    zbuf_tol_m: float = 0.004       # dot-vs-body depth test tolerance
     dot_dropout: float = 0.02
     abd_flexion_fracs: tuple | None = None  # hardware uses several; see sweep_plan
     # Capture held pose: the natural neutral opposes the thumb ACROSS the
@@ -93,6 +96,7 @@ class SynthScene:
     sweep_frames: dict[str, list[int]]
     anchor_frames: list[int]
     hardstop_b0: dict[str, float]
+    mesh: object = field(init=False, default=None)  # urdf_scene.MeshScene
     dots_world: np.ndarray = field(init=False)    # (F, D, 3) all dots + clutter
     normals_world: np.ndarray = field(init=False)  # (F, D, 3), NaN = always visible
     dot_links: list[str] = field(init=False)       # per column; clutter -> "clutter"
@@ -169,71 +173,133 @@ def build_scene(cfg: SynthConfig, board: BoardSpec | None = None) -> SynthScene:
         sweep_frames=sweep_frames, anchor_frames=anchor_frames,
         hardstop_b0=hardstop_b0,
     )
+    from urdf_scene import MeshScene
+    scene.mesh = MeshScene(n_per_body=cfg.mesh_points_per_body)
     _place_cameras(scene, rng)
     _place_dots(scene, rng)
     return scene
 
 
 def _place_dots(scene: SynthScene, rng: np.random.Generator) -> None:
-    """Dots on cylinder surfaces of the dot-bearing links, plus static clutter;
-    world positions and outward normals for every frame.
+    """Dots on the ACTUAL mesh surfaces of the dot-bearing links (URDF
+    visuals, silicone-skin zones excluded), plus static clutter; world
+    positions and mesh normals for every frame.
 
-    Angular placement mixes a camera-facing band with the phalanx sides
-    (the design doc's "3-6 per phalanx side"). The sides are not cosmetic:
-    a dot whose normal is parallel to a joint's axis keeps that normal
+    Placement mixes a camera-facing band with the phalanx sides (the
+    design doc's "3-6 per phalanx side"). The sides are not cosmetic: a
+    dot whose normal is parallel to a joint's axis keeps that normal
     fixed while the joint flexes, so axis-aligned side dots are the only
     ones guaranteed visible during their own link's sweep — which is when
     the calibration curve is measured. Distal links get mostly side dots;
     dots on the fully hidden face would never triangulate.
     """
+    from scipy.spatial import cKDTree
     cfg = scene.cfg
     dot_links = list(cfg.dot_links) if cfg.dot_links else list(DOT_LINKS)
-    cam_mid = np.mean([c.center for c in scene.rig_truth.cameras.values()], axis=0)
+    cam_list = list(scene.rig_truth.cameras.values())
+    cam_centers = [c.center for c in cam_list]
+    cam_mid = np.mean(cam_centers, axis=0)
     held_poses = scene.kin.link_poses(
         {j: scene.cfg.held[j] for j in scene.joints})
+
+    # Occlusion-aware candidate filter: a dot only counts as visible to a
+    # camera if, at the held pose, it faces it AND no other body covers it
+    # (z-buffer over all mesh bodies). This is the stick-where-you-can-see
+    # rule a person applies — without it, "side" dots land in the 2-4 mm
+    # gaps between fingers where neither stickers nor cameras reach.
+    body_w, body_z = [], {}
+    for link, (p, n) in scene.mesh.bodies.items():
+        if link == "world":
+            Rw, tw = scene.base_R, scene.base_t
+        else:
+            R0, t0 = held_poses[link]
+            Rw = scene.base_R @ R0[0]
+            tw = scene.base_R @ t0[0] + scene.base_t
+        body_w.append(p @ Rw.T + tw)
+    body_w = np.vstack(body_w)
+    S = 2
+    w_px, h_px = cfg.image_size
+    for cam in cam_list:
+        pc = body_w @ cam.R.T + cam.t
+        front = pc[:, 2] > 0.12
+        uv = cam.project(body_w[front])
+        z = pc[front, 2]
+        inb = ((uv[:, 0] >= 0) & (uv[:, 0] < w_px)
+               & (uv[:, 1] >= 0) & (uv[:, 1] < h_px))
+        uvi = np.round(uv[inb]).astype(int)
+        zi = z[inb]
+        order = np.argsort(-zi)
+        zb = np.full((h_px // S + 1, w_px // S + 1), np.inf)
+        zb[uvi[order, 1] // S, uvi[order, 0] // S] = zi[order]
+        body_z[cam.name] = zb
+
+    def cams_seeing(p_w, n_w):
+        """(N,) count of cameras with a clear, facing view of each point."""
+        count = np.zeros(len(p_w), int)
+        for cam in cam_list:
+            view = cam.center - p_w
+            view = view / np.linalg.norm(view, axis=1, keepdims=True)
+            facing = np.einsum("nk,nk->n", n_w, view) > 0.1
+            pc = p_w @ cam.R.T + cam.t
+            ok = facing & (pc[:, 2] > 0.12)
+            if not ok.any():
+                continue
+            uv = cam.project(p_w[ok])
+            inb = ((uv[:, 0] >= 0) & (uv[:, 0] < w_px)
+                   & (uv[:, 1] >= 0) & (uv[:, 1] < h_px))
+            zb = body_z[cam.name]
+            uvi = np.round(uv[inb]).astype(int)
+            clear = pc[ok][inb][:, 2] <= zb[uvi[:, 1] // S, uvi[:, 0] // S] \
+                + cfg.zbuf_tol_m
+            idx = np.flatnonzero(ok)[inb][clear]
+            count[idx] += 1
+        return count
 
     dot_local, normal_local, links = [], [], []
     for link in dot_links:
         R0, t0 = held_poses[link]
         Rw = scene.base_R @ R0[0]
         tw = scene.base_R @ t0[0] + scene.base_t
-        d_local = Rw.T @ (cam_mid - tw)
-        phi0 = float(np.arctan2(d_local[1], d_local[0]))
-        axis = scene.kin.nodes[scene.kin.index[link]].axis
-        phi_axis = float(np.arctan2(axis[1], axis[0]))
-        side_frac = 0.7 if link.endswith(("_pip", "_dip")) else 0.45
-        # Prefer the side that cameras actually support at the held pose —
-        # on a real rig the operator sticks dots where cameras look.
-        support = []
-        for s in (0.0, np.pi):
-            n_w = Rw @ np.array([np.cos(phi_axis + s), np.sin(phi_axis + s), 0.0])
-            support.append(sum(
-                float(np.dot(n_w, (c.center - tw)
-                             / np.linalg.norm(c.center - tw))) > 0.2
-                for c in scene.rig_truth.cameras.values()))
-        p_side0 = 0.5 if support[0] == support[1] else \
-            (0.8 if support[0] > support[1] else 0.2)
+        surf, surf_n = scene.mesh.bodies[link]
+        if link in scene.mesh.skin:
+            d, _ = cKDTree(scene.mesh.skin[link]).query(surf, k=1)
+            keep = d > 0.002
+            surf, surf_n = surf[keep], surf_n[keep]
 
-        pts, nrms = [], []
+        n_w = surf_n @ Rw.T
+        p_w = surf @ Rw.T + tw
+        n_seen = cams_seeing(p_w, n_w)
+        axis = scene.kin.nodes[scene.kin.index[link]].axis
+        axis = axis / np.linalg.norm(axis)
+        side_score = np.abs(surf_n @ axis)
+
+        # Side band: normal parallel to the flexion axis (flexion-invariant
+        # visibility), with a clear view from at least one camera at held.
+        # Camera band: squarely facing the cluster with two clear views.
+        side_pool = np.flatnonzero((side_score > 0.7) & (n_seen >= 1))
+        cam_facing = np.einsum("nk,nk->n", n_w,
+                               (cam_mid - p_w)
+                               / np.linalg.norm(cam_mid - p_w, axis=1,
+                                                keepdims=True))
+        cam_pool = np.flatnonzero((cam_facing > 0.3) & (n_seen >= 2))
+        side_frac = 0.7 if link.endswith(("_pip", "_dip")) else 0.45
+
+        chosen: list[int] = []
         sep = cfg.min_dot_sep_m
         attempts = 0
-        while len(pts) < cfg.dots_per_link:
+        while len(chosen) < cfg.dots_per_link:
             attempts += 1
-            if attempts % 200 == 0:
+            if attempts % 300 == 0:
                 sep *= 0.8  # small links can't always hold the full spacing
-            z = rng.uniform(0.005, max(LINK_SPAN[link], 0.012))
-            if rng.random() < side_frac:
-                side = 0.0 if rng.random() < p_side0 else np.pi
-                ang = phi_axis + side + rng.uniform(-0.35, 0.35)
-            else:
-                ang = phi0 + rng.uniform(-1.1, 1.1)          # camera-facing band
-            r = rng.uniform(0.007, 0.011)
-            cand = np.array([r * np.cos(ang), r * np.sin(ang), z])
-            if all(np.linalg.norm(cand - p) >= sep for p in pts):
-                pts.append(cand)
-                nrms.append(np.array([np.cos(ang), np.sin(ang), 0.0]))
-        dot_local.append(np.stack(pts))
-        normal_local.append(np.stack(nrms))
+            pool = side_pool if (rng.random() < side_frac and len(side_pool)) \
+                else cam_pool
+            if not len(pool):
+                pool = np.arange(len(surf))
+            i = int(rng.choice(pool))
+            if all(np.linalg.norm(surf[i] - surf[j]) >= sep for j in chosen):
+                chosen.append(i)
+        dot_local.append(surf[chosen])
+        normal_local.append(surf_n[chosen])
         links.extend([link] * cfg.dots_per_link)
 
     F = len(scene.q)
@@ -273,16 +339,20 @@ def _place_cameras(scene: SynthScene, rng: np.random.Generator) -> None:
     w, h = cfg.image_size
 
     cams = {}
-    # Three cameras above the hand plus one below-front: a curling finger
-    # rotates its dots' normals toward world +y ("down"), so without a low
-    # camera every finger goes invisible during exactly its own flexion
-    # sweep — the frames its calibration curve needs most.
-    azimuths = (-165, 70, -20, -85, -115, 25)
-    polars = (42, 55, 50, 20, 30, 45)
-    for i in range(cfg.n_cameras):
-        th = np.deg2rad(polars[i % len(polars)] + rng.normal(0, 2))
-        ph = np.deg2rad(azimuths[i % len(azimuths)] + rng.normal(0, 3))
-        r = rng.uniform(0.52, 0.60)
+    # Probe-optimised under true mesh self-occlusion (mean own-sweep dot
+    # coverage 0.51 vs <=0.34 for every 4-camera set tried): left,
+    # below-front, right, high-front, and — decisive for flexed
+    # fingertips — one camera nearly UNDER the hand looking up. A curling
+    # finger folds its dots toward the palm plane; only the under camera
+    # keeps them through deep flexion.
+    specs = ((-165, 42, 0.50), (70, 55, 0.46), (-20, 50, 0.50),
+             (-85, 20, 0.50), (60, 78, 0.42))
+    indices = cfg.camera_indices or tuple(range(cfg.n_cameras))
+    for i, spec_i in enumerate(indices):
+        az, pol, r0 = specs[spec_i % len(specs)]
+        th = np.deg2rad(pol + rng.normal(0, 2))
+        ph = np.deg2rad(az + rng.normal(0, 3))
+        r = r0 + rng.normal(0, 0.015)
         center = target + r * np.array([
             np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), -np.cos(th)])
         R, t = _look_at(center, target, up=np.array([0.0, -1.0, 0.0]))
@@ -398,20 +468,108 @@ def render_calibration(scene: SynthScene, calib_dir: str,
               f"{scene.cfg.n_extrinsic} extrinsic images")
 
 
-def _hand_body_segments(scene: SynthScene) -> list[tuple[np.ndarray, np.ndarray, float]]:
-    """Crude dark hand body per frame: a capsule along each dot link, so dots
-    sit on hand-colored background and the board behind is partly occluded,
-    as on the real rig. Returns per link (p0 (F,3), p1 (F,3), width_m)."""
-    poses = scene.kin.link_poses(
-        {j: scene.q[:, i] for i, j in enumerate(scene.joints)})
-    segs = []
-    for link in DOT_LINKS:
-        R, t = poses[link]
-        Rw = np.einsum("ij,fjk->fik", scene.base_R, R)
-        tw = np.einsum("ij,fj->fi", scene.base_R, t) + scene.base_t
-        tip = tw + Rw[:, :, 2] * (LINK_SPAN[link] + 0.008)
-        segs.append((tw, tip, 0.07 if link == "wrist" else 0.022))
-    return segs
+class SceneRenderer:
+    """Renders session frames with the real URDF meshes: bodies are drawn by
+    z-buffered point splatting (Lambert-shaded dark print), the board layer
+    sits behind, and dot visibility comes from the z-buffer — genuine
+    self-occlusion, finger-over-finger included, replaces the old
+    normal-only heuristic."""
+
+    ZBUF_SCALE = 2  # occlusion buffer at half resolution
+
+    def __init__(self, scene: SynthScene):
+        self.scene = scene
+        cfg = scene.cfg
+        self.w, self.h = cfg.image_size
+        tex, H_tex = _board_texture(scene.board)
+        self.cam_assets = {}
+        for cam in scene.rig_truth.cameras.values():
+            remap_xy = _distortion_remap(cam)
+            board_ud = _warp_board(cam, cam.R, cam.t, tex, H_tex,
+                                   np.full((self.h, self.w), 22, np.uint8))
+            layer = cv2.remap(board_ud, remap_xy[0], remap_xy[1],
+                              cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+                              borderValue=22)
+            self.cam_assets[cam.name] = (cam, layer)
+        poses = scene.kin.link_poses(
+            {j: scene.q[:, i] for i, j in enumerate(scene.joints)})
+        self.world_Rt = {}
+        for link, (R, t) in poses.items():
+            Rw = np.einsum("ij,fjk->fik", scene.base_R, R)
+            tw = np.einsum("ij,fj->fi", scene.base_R, t) + scene.base_t
+            self.world_Rt[link] = (Rw, tw)
+        F = len(scene.q)
+        self.world_Rt["world"] = (
+            np.broadcast_to(scene.base_R, (F, 3, 3)),
+            np.broadcast_to(scene.base_t, (F, 3)))
+
+    def body_points(self, f: int) -> tuple[np.ndarray, np.ndarray]:
+        """All body-surface points + normals in scene world at frame ``f``."""
+        pts, nrm = [], []
+        for link, (p, n) in self.scene.mesh.bodies.items():
+            R, t = self.world_Rt[link]
+            pts.append(p @ R[f].T + t[f])
+            nrm.append(n @ R[f].T)
+        return np.vstack(pts), np.vstack(nrm)
+
+    def render(self, cam_name: str, f: int, body_pts, body_nrm,
+               rng: np.random.Generator):
+        """One frame for one camera: ``(image_uint8, visible_dot_mask)``."""
+        scene, cfg = self.scene, self.scene.cfg
+        cam, board_layer = self.cam_assets[cam_name]
+        w, h, S = self.w, self.h, self.ZBUF_SCALE
+        canvas = board_layer.copy()
+
+        pc = body_pts @ cam.R.T + cam.t
+        front = pc[:, 2] > 0.12
+        uv = cam.project(body_pts[front])
+        z = pc[front, 2]
+        inb = ((uv[:, 0] >= 1) & (uv[:, 0] < w - 1)
+               & (uv[:, 1] >= 1) & (uv[:, 1] < h - 1))
+        uvi = np.round(uv[inb]).astype(int)
+        z_in = z[inb]
+        view = cam.center - body_pts[front][inb]
+        view /= np.linalg.norm(view, axis=1, keepdims=True)
+        lam = np.clip(np.einsum("ij,ij->i", body_nrm[front][inb], view), 0, 1)
+        shade = (42 + 55 * lam).astype(np.uint8)
+
+        order = np.argsort(-z_in)          # far to near; near overwrites
+        ux, vy = uvi[order, 0], uvi[order, 1]
+        sh = shade[order]
+        zbuf = np.full((h // S + 1, w // S + 1), np.inf)
+        zbuf[vy // S, ux // S] = z_in[order]
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                canvas[np.clip(vy + dy, 0, h - 1), np.clip(ux + dx, 0, w - 1)] = sh
+
+        pts = scene.dots_world[f]
+        nrm = scene.normals_world[f]
+        D = len(pts)
+        pcd = pts @ cam.R.T + cam.t
+        viewd = cam.center - pts
+        viewd = viewd / np.maximum(np.linalg.norm(viewd, axis=1, keepdims=True), 1e-9)
+        facing = np.einsum("ij,ij->i", nrm, viewd)
+        visible = (pcd[:, 2] > 0.15) & (np.isnan(facing) | (facing > cfg.grazing_cos))
+        visible &= rng.random(D) >= cfg.dot_dropout
+        f_px = 0.5 * (cam.K[0, 0] + cam.K[1, 1])
+        if visible.any():
+            vis_idx = np.flatnonzero(visible)
+            px = cam.project(pts[vis_idx])
+            radii = f_px * cfg.dot_radius_m / pcd[vis_idx, 2]
+            for k, (uvp, r) in enumerate(zip(px, radii)):
+                if not (r + 2 <= uvp[0] < w - r - 2 and r + 2 <= uvp[1] < h - r - 2):
+                    visible[vis_idx[k]] = False
+                    continue
+                zq = zbuf[int(uvp[1]) // S, int(uvp[0]) // S]
+                if np.isfinite(zq) and pcd[vis_idx[k], 2] > zq + cfg.zbuf_tol_m:
+                    visible[vis_idx[k]] = False   # behind another body
+                    continue
+                cv2.circle(canvas,
+                           (int(round(uvp[0] * 16)), int(round(uvp[1] * 16))),
+                           int(round(r * 16)), 235, -1, cv2.LINE_AA, shift=4)
+        canvas = cv2.GaussianBlur(canvas, (0, 0), 0.6)
+        noisy = canvas.astype(np.float32) + rng.normal(0, 3.0, canvas.shape)
+        return np.clip(noisy, 0, 255).astype(np.uint8), visible
 
 
 def render_capture(scene: SynthScene, capture_dir: str,
@@ -419,58 +577,21 @@ def render_capture(scene: SynthScene, capture_dir: str,
     """Dot sweep frames for every camera; returns per-dot view counts (F, D)."""
     cfg = scene.cfg
     F, D, _ = scene.dots_world.shape
-    w, h = cfg.image_size
     n_views = np.zeros((F, D), int)
-    tex, H_tex = _board_texture(scene.board)
-    segments = _hand_body_segments(scene)
-
-    for cam in scene.rig_truth.cameras.values():
-        cam_dir = os.path.join(capture_dir, "frames", cam.name)
-        os.makedirs(cam_dir, exist_ok=True)
-        f_px = 0.5 * (cam.K[0, 0] + cam.K[1, 1])
-        remap_xy = _distortion_remap(cam)
-        board_ud = _warp_board(cam, cam.R, cam.t, tex, H_tex,
-                               np.full((h, w), 22, np.uint8))
-        board_layer = cv2.remap(board_ud, remap_xy[0], remap_xy[1],
-                                cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=22)
-        for f in range(F):
-            pts = scene.dots_world[f]
-            nrm = scene.normals_world[f]
-            pc = (cam.R @ pts.T).T + cam.t
-            view = cam.center - pts
-            view = view / np.maximum(np.linalg.norm(view, axis=1, keepdims=True), 1e-9)
-            facing = np.einsum("ij,ij->i", nrm, view)
-            visible = (pc[:, 2] > 0.15) & (np.isnan(facing) | (facing > cfg.grazing_cos))
-            visible &= rng.random(D) >= cfg.dot_dropout
-
-            canvas = board_layer.copy()
-            for p0, p1, width in segments:
-                a, b = p0[f], p1[f]
-                za = (cam.R @ a + cam.t)[2]
-                zb = (cam.R @ b + cam.t)[2]
-                if za < 0.15 or zb < 0.15:
-                    continue
-                uv = cam.project(np.stack([a, b]))
-                thick = max(int(round(f_px * width / (0.5 * (za + zb)))), 1)
-                cv2.line(canvas, tuple(np.round(uv[0]).astype(int)),
-                         tuple(np.round(uv[1]).astype(int)), 55, thick, cv2.LINE_AA)
-            if visible.any():
-                vis_idx = np.flatnonzero(visible)
-                px = cam.project(pts[vis_idx])
-                radii = f_px * cfg.dot_radius_m / pc[vis_idx, 2]
-                for k, (uv, r) in enumerate(zip(px, radii)):
-                    if not (r + 2 <= uv[0] < w - r - 2 and r + 2 <= uv[1] < h - r - 2):
-                        visible[vis_idx[k]] = False
-                        continue
-                    cv2.circle(canvas, (int(round(uv[0] * 16)), int(round(uv[1] * 16))),
-                               int(round(r * 16)), 235, -1, cv2.LINE_AA, shift=4)
-            canvas = cv2.GaussianBlur(canvas, (0, 0), 0.6)
-            noisy = canvas.astype(np.float32) + rng.normal(0, 3.0, canvas.shape)
-            cv2.imwrite(os.path.join(cam_dir, f"frame_{f:05d}.png"),
-                        np.clip(noisy, 0, 255).astype(np.uint8))
+    renderer = SceneRenderer(scene)
+    cam_names = sorted(scene.rig_truth.cameras)
+    for name in cam_names:
+        os.makedirs(os.path.join(capture_dir, "frames", name), exist_ok=True)
+    for f in range(F):
+        body_pts, body_nrm = renderer.body_points(f)
+        for name in cam_names:
+            img, visible = renderer.render(name, f, body_pts, body_nrm, rng)
+            cv2.imwrite(os.path.join(capture_dir, "frames", name,
+                                     f"frame_{f:05d}.png"), img)
             n_views[f] += visible.astype(int)
-        print(f"  {cam.name}: {F} frames")
+        if f % 300 == 0:
+            print(f"  frame {f}/{F}")
+    print(f"  {F} frames x {len(cam_names)} cameras")
 
     m = np.stack([scene.enc.measure(j, scene.q[:, i], rng)
                   for i, j in enumerate(scene.joints)], axis=1)
@@ -515,7 +636,8 @@ def quick_config(seed: int = 0) -> SynthConfig:
     what the pipeline is built for.
     """
     return SynthConfig(
-        seed=seed, n_cameras=3, image_size=(960, 720), focal_px=790.0,
+        seed=seed, n_cameras=3, camera_indices=(0, 1, 4),
+        image_size=(960, 720), focal_px=790.0,
         n_intrinsic=10,
         sweep_joints=("wrist", "index_abd", "index_mcp", "index_pip",
                       "thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"),
