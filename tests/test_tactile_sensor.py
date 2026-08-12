@@ -23,7 +23,11 @@ from orca_core.hardware.sensing.tactile_mock import (
     feed_taxels_frame,
 )
 from orca_core.hardware.sensing.tactile_protocol import compute_distal_module_index
-from orca_core.hardware.tactile_client import TactileClient, TactileSensorConfiguration
+from orca_core.hardware.tactile_client import (
+    TactileClient,
+    TactileSensorConfiguration,
+    _measure_taxel_noise,
+)
 
 from tests._helpers import wait_until
 
@@ -316,6 +320,100 @@ def test_capture_zeroes_resultant_from_its_own_stream(tactile_mock_factory):
         stop.set()
         thread.join(timeout=1.0)
         client.stop_stream()
+
+
+# ---------------------------------------------------------------------------
+# Per-taxel noise gates
+# ---------------------------------------------------------------------------
+
+def test_measure_taxel_noise_uses_worst_post_offset_magnitude():
+    frames = [
+        {"thumb": [[0.2, 0.0, 0.0]]},
+        {"thumb": [[-0.2, 0.0, 0.0]]},
+        {"thumb": [[0.1, 0.0, 0.0]]},
+    ]
+    gates = _measure_taxel_noise(frames, {"thumb": [[0.0, 0.0, 0.0]]})
+    # Worst residual 0.2 N, plus one LSB of headroom.
+    assert gates == {"thumb": [0.3]}
+
+
+def test_measure_taxel_noise_matches_the_fz_clamp():
+    """fz is clamped at zero when applied, so the gate must be measured clamped.
+
+    Measuring the raw deviation instead would size the gate off a negative
+    excursion that never reaches a consumer.
+    """
+    frames = [{"thumb": [[0.0, 0.0, 0.0]]}, {"thumb": [[0.0, 0.0, 0.4]]}]
+    gates = _measure_taxel_noise(frames, {"thumb": [[0.0, 0.0, 0.2]]})
+    # -0.2 clamps to 0, so the worst reported residual is +0.2, not 0.2 either side.
+    assert gates == {"thumb": [0.3]}
+
+
+def _start_cycling_pump(link, sequence, active_sensors, period_s=0.005):
+    """Background thread cycling a list of taxel frames, i.e. a dithering sensor."""
+    stop = threading.Event()
+
+    def _run():
+        i = 0
+        while not stop.is_set():
+            feed_taxels_frame(link, sequence[i % len(sequence)], active_sensors)
+            i += 1
+            time.sleep(period_s)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return stop, thread
+
+
+DITHER = [
+    {"thumb": [[0.2, 0.0, 0.2]]},
+    {"thumb": [[-0.2, 0.2, 0.0]]},
+    {"thumb": [[0.0, -0.2, 0.1]]},
+]
+
+
+def test_capture_gates_the_dither_it_measured(tactile_mock_factory):
+    """Zeroing removes the mean; the gate removes what dithers around it."""
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+    stop, thread = _start_cycling_pump(link, DITHER, state.active_sensors)
+    try:
+        client.capture_taxel_offsets(num_samples=12)
+        gate = client.taxel_noise_gates["thumb"][0]
+        assert 0.1 < gate < 1.0
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+    # Every frame the sensor produced at rest now reports as exactly zero.
+    for frame in DITHER:
+        feed_taxels_frame(link, frame, state.active_sensors)
+        wait_until(lambda: client.get_latest_taxels()["thumb"] == [[0.0, 0.0, 0.0]])
+
+    # A real press still reports, undiminished.
+    feed_taxels_frame(link, {"thumb": [[1.0, 0.0, 8.0]]}, state.active_sensors)
+    wait_until(lambda: client.get_latest_taxels()["thumb"][0][2] > 7.0)
+    client.stop_stream()
+
+
+def test_capture_can_skip_the_noise_gate(tactile_mock_factory):
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+    stop, thread = _start_cycling_pump(link, DITHER, state.active_sensors)
+    try:
+        client.capture_taxel_offsets(num_samples=12, gate_noise=False)
+        assert client.taxel_noise_gates is None
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        client.stop_stream()
+
+
+def test_clear_offsets_drops_the_noise_gates(tactile_mock_factory):
+    _, client, _ = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.set_taxel_noise_gates({"thumb": [0.3]})
+    client.clear_taxel_offsets()
+    assert client.taxel_noise_gates is None
 
 
 def test_capture_taxel_offsets_times_out_when_stream_stalls(tactile_mock_factory):

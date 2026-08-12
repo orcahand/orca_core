@@ -93,6 +93,11 @@ FORCE_ROUND_DECIMALS = 1
 # resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
+# Headroom added to each taxel's measured dither when it becomes a noise gate.
+# One LSB, because a few seconds of frames will not have caught the rarest
+# excursion, and a gate set exactly at the observed worst case still flickers.
+NOISE_GATE_MARGIN_N = RESOLUTION_N_PER_LSB
+
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
 BYTES_PER_TAXEL = 3      # fx(int8) + fy(int8) + fz(uint8)
