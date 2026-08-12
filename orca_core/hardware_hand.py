@@ -296,12 +296,21 @@ class OrcaHand(BaseHand):
         # ``port: auto`` keeps the tracked config hardware-agnostic; if no
         # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
+        unresolved = None
         if first_port == "auto":
             detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
-            if detected is not None:
+            if detected is None:
+                # Opening the literal "auto" reports a missing-file error that
+                # reads like a config typo; name the real failure instead.
+                unresolved = (
+                    "no motor bus detected: no controller board answered "
+                    "ORCA_ID? and no single known USB adapter is attached "
+                    "(a port held open by another process cannot be probed)"
+                )
+            else:
                 first_port = detected
 
-        error = self._try_port(first_port, existing_config)
+        error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "

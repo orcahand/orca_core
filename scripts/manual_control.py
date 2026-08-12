@@ -498,9 +498,13 @@ class JointFeedbackSliderUI:
 
 
 def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> int:
-    if args.max_current is not None:
-        hand.set_max_current(args.max_current)
-        print(f"  → max_current = {args.max_current} mA")
+    # connect() starts the loop but leaves the motors unpowered. The loop
+    # latches its target to the measured pose, so powering up holds, not yanks.
+    hand.enable_torque()
+    hand.set_control_mode(hand.config.control_mode)
+    hand.set_max_current(hand.config.max_current)
+    print(f"  → torque on, {hand.config.control_mode}, "
+          f"max_current = {int(hand.config.max_current)} mA")
 
     slider_joints = _resolve_joint_set(args, hand)
     # Unset flags leave config.yaml's per-joint gains alone; any flag given
