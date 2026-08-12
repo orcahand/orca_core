@@ -62,17 +62,26 @@ both hardstops and measures free travel rather than a stall."""
 SETTLE_S = 0.5
 NUM_SAMPLES = 100
 
-RESPONSE_LIMIT_DEG = 2.0
-"""Below this the driven slot counts as not having moved at all."""
+RESPONSE_LIMIT_DEG = 1.0
+"""Below this the driven slot counts as not having moved at all. Sits between
+the worst coupling and the weakest real response measured on one hand — the
+abduction joints, which travel far less than they are commanded."""
 
 MAGNITUDE_TOLERANCE = 0.5
-"""Allowed fractional deviation from the commanded travel. Wide because
-tendon compliance makes the joint undershoot the motor; set from fleet data."""
+"""Allowed fractional deviation from the commanded travel.
 
-CROSSTALK_LIMIT_DEG = 3.0
+Provisional, and the widest gap between this package's defaults and the
+hardware: on one hand the flexion joints and the wrist tracked their command
+to within 11%, while every abduction joint reached 20-53% of it. One
+tolerance cannot serve both populations, so this wants per-joint bands from
+fleet data. Until then it is a coarse gate, and ``measured_deg`` is what
+those bands get built from."""
+
+CROSSTALK_LIMIT_DEG = 1.5
 """Motion on a slot other than the driven joint's. Antagonistic routing
-through each joint's centre of rotation keeps real coupling small, but not
-zero; set from fleet data."""
+through each joint's centre of rotation keeps real coupling small: on one
+hand the worst was 0.4° across 272 joint/slot pairs, against the ~15° a
+cross-wired slot would show."""
 
 
 def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
