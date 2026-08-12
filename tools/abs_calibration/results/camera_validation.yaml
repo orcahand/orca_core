@@ -1,0 +1,127 @@
+config:
+  quick: false
+  seed: 0
+  n_cameras: 4
+  step_scale: 1.0
+  image_size:
+  - 1280
+  - 960
+rig:
+  cam0:
+    intrinsic_rms_px: 0.0642
+    focal_err_pct: 0.019487202772992228
+    extrinsic_rot_deg: 0.0891761030557317
+    extrinsic_t_mm: 1.0843996522267323
+  cam1:
+    intrinsic_rms_px: 0.0853
+    focal_err_pct: 0.06862194989404206
+    extrinsic_rot_deg: 0.029556519039743347
+    extrinsic_t_mm: 0.4856949423983387
+  cam2:
+    intrinsic_rms_px: 0.0877
+    focal_err_pct: 0.07112629312963537
+    extrinsic_rot_deg: 0.0995915825269647
+    extrinsic_t_mm: 0.6921294614966592
+  cam3:
+    intrinsic_rms_px: 0.0824
+    focal_err_pct: 0.021749242209843398
+    extrinsic_rot_deg: 0.13279056235791553
+    extrinsic_t_mm: 1.7338446298257797
+dots:
+  n_columns: 111
+  n_matched: 85
+  unmatched_tracks: 1
+  unmatched_static: 25
+  proximal_parks: 42
+  duplicates: 24
+  triang_rms_mm: 0.49658786291258117
+  triang_p95_mm: 0.4082638561762682
+  coverage: 0.6671811656190724
+  misassigned: 0
+solve:
+  offset_mean_deg: 0.14002331169705715
+  offset_max_deg: 0.665675177932171
+  solver_status: 2
+solve_per_joint:
+  wrist:
+    mapping_err_deg: 0.029031038478366064
+    b0_err_deg: 0.7281635249722012
+    sigma_deg: 0.0494
+  thumb_cmc:
+    mapping_err_deg: 0.020554429222896537
+    b0_err_deg: 0.9090926340381302
+    sigma_deg: 0.0275
+  thumb_abd:
+    mapping_err_deg: 0.04039160542066138
+    b0_err_deg: 0.4038617113154568
+    sigma_deg: 0.0376
+  thumb_mcp:
+    mapping_err_deg: 0.06095901422314928
+    b0_err_deg: 0.19930246496396004
+    sigma_deg: 0.0619
+  thumb_dip:
+    mapping_err_deg: 0.06292103253130192
+    b0_err_deg: 0.04797006153999894
+    sigma_deg: 0.0896
+  index_abd:
+    mapping_err_deg: 0.27119001502655404
+    b0_err_deg: 0.6536688564901834
+    sigma_deg: 0.0517
+  index_mcp:
+    mapping_err_deg: 0.0448802942017604
+    b0_err_deg: 1.310462024268261
+    sigma_deg: 0.0701
+  index_pip:
+    mapping_err_deg: 0.20766593176253345
+    b0_err_deg: 0.38911364235761514
+    sigma_deg: 0.1323
+  middle_abd:
+    mapping_err_deg: 0.3804596353292322
+    b0_err_deg: 0.2061605037349441
+    sigma_deg: 0.0278
+  middle_mcp:
+    mapping_err_deg: 0.032266028536595125
+    b0_err_deg: 0.26532356917764455
+    sigma_deg: 0.0585
+  middle_pip:
+    mapping_err_deg: 0.04006371890320623
+    b0_err_deg: 0.00173688690957724
+    sigma_deg: 0.1026
+  ring_abd:
+    mapping_err_deg: 0.07413316164671734
+    b0_err_deg: 0.23549352779412747
+    sigma_deg: 0.0287
+  ring_mcp:
+    mapping_err_deg: 0.07567781948338057
+    b0_err_deg: 0.8742084471982228
+    sigma_deg: 0.0533
+  ring_pip:
+    mapping_err_deg: 0.2339625711148958
+    b0_err_deg: 0.04830966761792754
+    sigma_deg: 0.0867
+  pinky_abd:
+    mapping_err_deg: 0.10560262264129286
+    b0_err_deg: 0.9305671662446509
+    sigma_deg: 0.0381
+  pinky_mcp:
+    mapping_err_deg: 0.034962202395257394
+    b0_err_deg: 0.1552334986765871
+    sigma_deg: 0.0702
+  pinky_pip:
+    mapping_err_deg: 0.665675177932171
+    b0_err_deg: 1.0026008914310447
+    sigma_deg: 0.1813
+gates:
+  intrinsic_rms_px: 0.6
+  focal_err_pct: 1.5
+  extrinsic_rot_deg: 0.25
+  extrinsic_t_mm: 3.0
+  triang_rms_mm: 0.7
+  triang_p95_mm: 1.5
+  coverage: 0.45
+  misassigned: 0
+  unmatched_tracks: 3
+  offset_mean_deg: 0.3
+  offset_max_deg: 0.8
+failures: []
+pass: true
