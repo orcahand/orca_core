@@ -228,17 +228,6 @@ def port_in_use(port: str) -> bool:
         return exc.errno in PORT_BUSY_ERRNOS
 
 
-def oh_board_ports() -> "list[str]":
-    """Device paths of every CDC presented by a hand's controller board, in
-    enumeration order."""
-    import serial.tools.list_ports
-
-    return [
-        p.device for p in serial.tools.list_ports.comports()
-        if p.vid in KNOWN_VIDS["oh_board"]
-    ]
-
-
 def board_id_from_usb_serial(usb_serial: "str | None") -> Optional[str]:
     """The board ID the firmware reports, derived from its USB descriptor.
 
@@ -270,7 +259,7 @@ class BoardCandidate:
     (:func:`probe_board`).
     """
 
-    ports: tuple
+    ports: tuple[str, ...]
     usb_serial: Optional[str] = None
     location: Optional[str] = None
 
@@ -286,8 +275,10 @@ def oh_board_candidates() -> "list[BoardCandidate]":
     Opens nothing, so this stays accurate while the boards are connected and
     driving — a port another client holds is still enumerated, unlike a probe.
     Boards are keyed by USB serial number, falling back to the descriptor's
-    device-level location. CDCs that offer neither are never merged: guessing
-    there pairs a motor bus with a different board's encoders.
+    device-level location. CDCs offering neither are merged only while there
+    are no more of them than one board presents; beyond that each stands
+    alone, since guessing would pair a motor bus with another board's
+    encoders.
     """
     import serial.tools.list_ports
 
@@ -333,13 +324,13 @@ def oh_board_candidates() -> "list[BoardCandidate]":
 class BoardProbe:
     """What one controller board answered when asked who it is."""
 
-    ports: tuple
+    ports: tuple[str, ...]
     usb_serial: Optional[str] = None
     board_id: Optional[str] = None
     motor_port: Optional[str] = None
     sensing_port: Optional[str] = None
     identity: Optional[OrcaBoardInfo] = None
-    busy_ports: tuple = ()
+    busy_ports: tuple[str, ...] = ()
 
     @property
     def hand_id(self) -> Optional[str]:
@@ -355,13 +346,16 @@ def probe_board(
 ) -> BoardProbe:
     """Resolve one board's motor and sensing CDCs, touching only its own ports.
 
-    Both CDCs answer with the same identity block, so a reply whose board ID
-    contradicts the USB descriptor proves the grouping attributed a port to
-    the wrong board; that is reported and the descriptor is believed.
+    Both CDCs of a board answer with the same identity block, so board IDs
+    that disagree across a candidate prove it holds more than one board and
+    its ports are left unpaired. The descriptor's ID wins over a reply,
+    because it reads the same whether or not the board answers — a hand
+    already driving holds its ports and cannot be probed at all.
     """
     usb_board_id = candidate.board_id
     motor_port = sensing_port = None
     identity = None
+    reported: "dict[str, str]" = {}
 
     for _ in range(attempts):
         for port in candidate.ports:
@@ -370,29 +364,40 @@ def probe_board(
             info = probe_orca_info(port)
             if info is None:
                 continue
+            if info.board_id is not None:
+                reported[port] = info.board_id
             if info.role == "motor" and motor_port is None:
                 motor_port = port
             elif info.role == "sensor" and sensing_port is None:
                 sensing_port = port
             if identity is None or (identity.side is None and info.side):
                 identity = info
-            if (
-                usb_board_id is not None
-                and info.board_id is not None
-                and info.board_id != usb_board_id
-            ):
-                logger.error(
-                    "%s reports board %s but its USB descriptor says %s; these "
-                    "CDCs are not one board and pairing them would cross two "
-                    "hands' buses.", port, info.board_id, usb_board_id,
-                )
         if motor_port is not None and sensing_port is not None:
             break
+
+    distinct = set(reported.values())
+    if usb_board_id is not None:
+        # One USB serial is one device, so a disagreement here is the fold
+        # and the firmware differing, not a grouping that crossed boards.
+        for mismatch in sorted(distinct - {usb_board_id}):
+            logger.warning(
+                "a CDC of board %s reports board ID %s; trusting the USB "
+                "descriptor, which reads the same whether or not the board "
+                "answers.", usb_board_id, mismatch,
+            )
+    elif len(distinct) > 1:
+        logger.error(
+            "CDCs grouped as one board report different board IDs (%s), so "
+            "they are separate boards. Leaving them unpaired rather than "
+            "driving one hand's motors from another hand's encoders.",
+            ", ".join(f"{p}={b}" for p, b in sorted(reported.items())),
+        )
+        motor_port = sensing_port = identity = None
 
     return BoardProbe(
         ports=candidate.ports,
         usb_serial=candidate.usb_serial,
-        board_id=(identity.board_id if identity is not None else None) or usb_board_id,
+        board_id=usb_board_id or (identity.board_id if identity is not None else None),
         motor_port=motor_port,
         sensing_port=sensing_port,
         identity=identity,
@@ -478,26 +483,33 @@ def _tactile_responds_at(port: str, baud: int) -> bool:
 
 def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
     """Return the controller-board CDC whose ``ORCA_ID?`` reply matches
-    ``expected_resp``, or None when zero or more than one board is attached.
+    ``expected_resp``, or None unless exactly one board answers.
 
-    With two hands plugged in there is no single right answer, and returning
-    either one hands the caller a port belonging to a hand it did not ask
-    for. Callers that must name a board use :func:`probe_boards`.
+    Boards are counted by what replies, not by what enumerates: the vendor ID
+    is shared with the bare controller module, so a spare board on the bench
+    must not stop a lone hand resolving its ports. When two hands do answer
+    there is no single right answer, and returning either hands the caller a
+    port belonging to a hand it did not ask for — those callers use
+    :func:`probe_boards`.
     """
-    candidates = oh_board_candidates()
-    if len(candidates) != 1:
-        if len(candidates) > 1:
-            logger.warning(
-                "%d controller boards are attached, so no single motor or "
-                "sensing port can be resolved. Select a hand explicitly.",
-                len(candidates),
+    matches = []
+    for candidate in oh_board_candidates():
+        for _ in range(ORCA_ID_PROBE_ATTEMPTS):
+            found = next(
+                (p for p in candidate.ports if _probe_orca_id(p) == expected_resp),
+                None,
             )
-        return None
+            if found is not None:
+                matches.append(found)
+                break
 
-    for _ in range(ORCA_ID_PROBE_ATTEMPTS):
-        for port in candidates[0].ports:
-            if _probe_orca_id(port) == expected_resp:
-                return port
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        logger.warning(
+            "%d controller boards answered, so no single motor or sensing "
+            "port can be resolved. Select a hand explicitly.", len(matches),
+        )
     return None
 
 

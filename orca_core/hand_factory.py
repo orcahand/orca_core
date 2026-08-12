@@ -117,9 +117,10 @@ class HandDetection:
     the board ID. ``None`` only when the board reports neither."""
     board_id: Optional[str] = None
     usb_serial: Optional[str] = None
-    side_source: str = "board"
+    side_source: Optional[str] = None
     """Where :attr:`side` came from — ``"board"`` when the hardware said so,
-    ``"default"`` when nothing did and right-handed was assumed."""
+    ``"default"`` when nothing did and right-handed was assumed, ``None``
+    when the detection was built by hand and says nothing either way."""
 
 
 def _detection_from_board(
@@ -169,7 +170,14 @@ def detect_hands() -> "list[HandDetection]":
     (``comports()`` order is not). Returns an empty list when nothing is
     attached.
     """
-    boards = probe_boards()
+    # The controller board shares its vendor ID with the bare module it is
+    # built on, so a board that answered on neither CDC is a spare on the
+    # bench, not a hand. One held by another client is silent for that reason
+    # alone and stays.
+    boards = [
+        board for board in probe_boards()
+        if board.motor_port or board.sensing_port or board.busy_ports
+    ]
 
     # A dedicated tactile adapter is a separate USB device with nothing tying
     # it to a board, so it can only be attributed when there is one hand.
@@ -191,14 +199,20 @@ def detect_hands() -> "list[HandDetection]":
         return [_detection_from_board(BoardProbe(ports=()), adapter_port)]
 
     detections = [_detection_from_board(board, adapter_port) for board in boards]
-    detections.sort(key=lambda d: (d.hand_id is None, d.hand_id or ""))
+    # Ordered by board ID because it comes from the USB descriptor: a hand
+    # that is connected holds its ports and cannot be probed, so anything
+    # taken from a reply would reorder the list the moment a hand engages.
+    detections.sort(key=lambda d: (d.board_id is None, d.board_id or ""))
 
     unnamed = [d for d in detections if d.side_source == "default"]
-    if len(detections) > 1 and len(unnamed) > 1:
+    if len(detections) > 1 and unnamed:
         logger.warning(
-            "%d attached hands report no side, so all of them default to "
-            "right-handed. Their joint maps and encoder polarities cannot be "
-            "told apart; name each hand's model explicitly.", len(unnamed),
+            "%d of %d attached hands report no side and default to "
+            "right-handed (%s). A hand modelled as the wrong side gets the "
+            "wrong joint map and encoder polarities; name its model "
+            "explicitly.",
+            len(unnamed), len(detections),
+            ", ".join(d.hand_id or "unidentified" for d in unnamed),
         )
     return detections
 

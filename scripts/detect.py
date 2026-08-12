@@ -39,13 +39,16 @@ def _print_detection(detection) -> None:
     print(f"Model:       {detection.model_name}  ({_capabilities(detection)})")
 
     identity = detection.identity
-    if identity is None:
-        print("Identity:    not reported")
-    else:
+    if identity is not None:
         print(
             f"Identity:    {identity.hand_id or 'unprovisioned'} "
             f"(hw {identity.hw_version}, fw {identity.fw_version})"
         )
+    elif detection.board_id is not None:
+        print(f"Identity:    {detection.board_id} (from USB descriptor; "
+              "the board did not answer)")
+    else:
+        print("Identity:    not reported")
 
     print(f"Motor bus:   {detection.motor_port or 'not detected'}")
     print(f"Sensing:     {detection.sensing_port or 'not detected'}")
@@ -129,9 +132,10 @@ def main() -> None:
 
     for index, detection in enumerate(detections):
         if len(detections) > 1:
+            if index:
+                print()
             name = detection.hand_id or "unidentified"
-            print(f"{'' if index == 0 else chr(10)}=== Hand {index + 1}/"
-                  f"{len(detections)}: {name} ===")
+            print(f"=== Hand {index + 1}/{len(detections)}: {name} ===")
         _report(detection)
 
 
