@@ -110,6 +110,19 @@ class TactileSensorConfiguration:
         return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
 
 
+def _average_resultants(frames: list[dict]) -> dict:
+    """Average ``[{finger: [fx, fy, fz]}, ...]`` into one ``{finger: [fx, fy, fz]}``."""
+    out = {}
+    for finger in frames[0]:
+        present = [f[finger] for f in frames if finger in f]
+        n = len(present)
+        out[finger] = [
+            round(sum(f[axis] for f in present) / n, OFFSET_CAPTURE_DECIMALS)
+            for axis in range(3)
+        ]
+    return out
+
+
 class TactileClient:
     """ORCA tactile sensor client over a :class:`HandSerialLink`.
 
@@ -165,7 +178,9 @@ class TactileClient:
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
-        # {finger: [fx, fy, fz], ...} sum of taxel offsets per finger.
+        # {finger: [fx, fy, fz], ...} resultant zeroing offsets. Independent of
+        # the taxel offsets: the device reports the resultant on a single-byte
+        # per-axis scale, not as the sum of its taxels.
         self._resultant_offsets: dict | None = None
 
     # ----- Lifecycle --------------------------------------------------------
@@ -541,23 +556,48 @@ class TactileClient:
     # ----- Offsets ----------------------------------------------------------
 
     def set_taxel_offsets(self, offsets: dict) -> None:
-        """Store per-taxel zeroing offsets and derive matching resultant offsets."""
+        """Store per-taxel zeroing offsets ``{finger: [[fx, fy, fz], ...]}``.
+
+        Resultant offsets are independent (see :meth:`set_resultant_offsets`)
+        and are left untouched here.
+        """
         self._taxel_offsets = offsets
-        self._resultant_offsets = {}
-        for finger, taxel_list in offsets.items():
-            sum_fx = sum(t[0] for t in taxel_list)
-            sum_fy = sum(t[1] for t in taxel_list)
-            sum_fz = sum(t[2] for t in taxel_list)
-            self._resultant_offsets[finger] = [sum_fx, sum_fy, sum_fz]
+
+    def set_resultant_offsets(self, offsets: dict | None) -> None:
+        """Store per-finger resultant zeroing offsets ``{finger: [fx, fy, fz]}``.
+
+        The device reports the resultant on the same scale as a single taxel
+        (one data byte per axis at ``RESOLUTION_N_PER_LSB``), *not* as the sum
+        of its taxels — so a resultant baseline can only come from the
+        resultant stream itself.
+        """
+        self._resultant_offsets = offsets
+
+    @property
+    def resultant_offsets(self) -> dict | None:
+        """The applied resultant offsets, or ``None`` if the resultant is unzeroed."""
+        return self._resultant_offsets
+
+    @property
+    def taxel_offsets(self) -> dict | None:
+        """The applied per-taxel offsets, or ``None`` if the taxels are unzeroed."""
+        return self._taxel_offsets
 
     def clear_taxel_offsets(self) -> None:
+        """Drop both the taxel and the resultant zero baselines."""
         self._taxel_offsets = None
         self._resultant_offsets = None
 
     def capture_taxel_offsets(
         self, num_samples: int = 100, timeout_s: float | None = None
     ) -> dict:
-        """Average ``num_samples`` taxel frames and apply the result as zeroing offsets.
+        """Average ``num_samples`` frames and apply the result as zeroing offsets.
+
+        Returns the per-taxel offsets; when the resultant is also armed, the
+        resultant baseline is averaged from the same frames and applied too
+        (read it back via :attr:`resultant_offsets`). On a taxels-only stream
+        there is nothing to average the resultant against, so it is left
+        unzeroed rather than guessed at.
 
         Requires an active auto-stream with taxels enabled. Existing offsets
         are temporarily cleared so the average reflects raw readings, and are
@@ -584,12 +624,22 @@ class TactileClient:
         succeeded = False
         try:
             frames = []
+            resultant_frames = []
             last_ts = None
             deadline = time.monotonic() + timeout_s
             while len(frames) < num_samples:
-                reading = self.get_latest_taxels()
-                if reading is not None and reading.timestamp != last_ts:
-                    frames.append(reading.taxels)
+                self._maybe_rearm_stream()
+                reading = self.get_latest()
+                if (
+                    reading is not None
+                    and reading.taxels is not None
+                    and reading.timestamp != last_ts
+                ):
+                    frames.append(reading.taxels.taxels)
+                    # Same locked snapshot, so this resultant belongs to the
+                    # frame whose taxels were just recorded.
+                    if reading.forces is not None:
+                        resultant_frames.append(reading.forces.forces)
                     last_ts = reading.timestamp
                     continue
                 if time.monotonic() > deadline:
@@ -616,6 +666,14 @@ class TactileClient:
                 offsets[finger] = avg
 
             self.set_taxel_offsets(offsets)
+            self.set_resultant_offsets(
+                _average_resultants(resultant_frames) if resultant_frames else None
+            )
+            if not resultant_frames:
+                logger.info(
+                    "resultant not streaming during offset capture — taxels "
+                    "zeroed, resultant left unzeroed"
+                )
             succeeded = True
             return offsets
         finally:

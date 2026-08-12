@@ -162,17 +162,32 @@ def test_custom_provider_is_used(tactile_mock_factory, kind):
 def test_resultant_offsets_applied(tactile_mock_factory, finger):
     _, client, state = tactile_mock_factory([finger])
     state.resultant_forces = {finger: [5.0, 3.0, 10.0]}
-    client.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
+    client.set_resultant_offsets({finger: [1.0, 0.5, 2.0]})
 
     result = client.read_resultant_force()
     assert result[finger] == [4.0, 2.5, 8.0]
+
+
+def test_taxel_offsets_do_not_bias_the_resultant(tactile_mock_factory):
+    """The resultant is its own single-byte-per-axis reading, not a taxel sum.
+
+    Deriving a resultant offset by summing 60-odd taxel offsets used to
+    subtract tens of newtons from a reading whose full scale is 25.5 N,
+    pinning fz at the clamp and dragging fx/fy off zero.
+    """
+    _, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 60})
+    state.resultant_forces = {"thumb": [5.0, 3.0, 10.0]}
+    client.set_taxel_offsets({"thumb": [[0.2, 0.1, 0.3]] * 60})
+
+    result = client.read_resultant_force()
+    assert result["thumb"] == [5.0, 3.0, 10.0]
 
 
 @pytest.mark.parametrize("finger", ALL_FINGERS)
 def test_fz_clamped_to_zero(tactile_mock_factory, finger):
     _, client, state = tactile_mock_factory([finger])
     state.resultant_forces = {finger: [0.0, 0.0, 1.0]}
-    client.set_taxel_offsets({finger: [[0.0, 0.0, 5.0]]})
+    client.set_resultant_offsets({finger: [0.0, 0.0, 5.0]})
 
     result = client.read_resultant_force()
     assert result[finger][2] == 0.0
@@ -182,8 +197,11 @@ def test_clear_offsets(tactile_mock_factory):
     _, client, state = tactile_mock_factory(["thumb"])
     state.resultant_forces = {"thumb": [5.0, 3.0, 10.0]}
     client.set_taxel_offsets({"thumb": [[1.0, 0.5, 2.0]]})
+    client.set_resultant_offsets({"thumb": [1.0, 0.5, 2.0]})
     client.clear_taxel_offsets()
 
+    assert client.taxel_offsets is None
+    assert client.resultant_offsets is None
     result = client.read_resultant_force()
     assert result["thumb"] == [5.0, 3.0, 10.0]
 
@@ -195,7 +213,7 @@ def test_clear_offsets(tactile_mock_factory):
 @pytest.mark.parametrize("finger", ALL_FINGERS)
 def test_stream_offsets_applied(tactile_mock_factory, finger):
     link, client, state = tactile_mock_factory([finger])
-    client.set_taxel_offsets({finger: [[1.0, 0.5, 2.0]]})
+    client.set_resultant_offsets({finger: [1.0, 0.5, 2.0]})
     client.start_stream(resultant=True, taxels=False)
     feed_resultant_frame(link, {finger: [5.0, 3.0, 10.0]}, state.active_sensors)
     client.wait_for_first_frame()
@@ -239,6 +257,20 @@ def _start_taxel_pump(link, taxels, active_sensors, period_s=0.005):
     return stop, thread
 
 
+def _start_combined_pump(link, resultants, taxels, active_sensors, period_s=0.005):
+    """Background thread feeding combined resultant+taxel frames at a steady rate."""
+    stop = threading.Event()
+
+    def _run():
+        while not stop.is_set():
+            feed_combined_frame(link, resultants, taxels, active_sensors)
+            time.sleep(period_s)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def test_capture_taxel_offsets_averages_and_applies(tactile_mock_factory):
     link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
     client.start_stream(resultant=False, taxels=True)
@@ -252,6 +284,33 @@ def test_capture_taxel_offsets_averages_and_applies(tactile_mock_factory):
         # Offsets are live: frames decoded after the capture come back zeroed.
         wait_until(
             lambda: client.get_latest_taxels()["thumb"] == [[0.0, 0.0, 0.0]]
+        )
+        # Nothing to average the resultant against on a taxels-only stream, so
+        # it is left unzeroed rather than derived from the taxel offsets.
+        assert client.resultant_offsets is None
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        client.stop_stream()
+
+
+def test_capture_zeroes_resultant_from_its_own_stream(tactile_mock_factory):
+    """Combined mode zeroes the resultant against the resultant, not the taxels."""
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 4})
+    client.start_stream(resultant=True, taxels=True)
+    stop, thread = _start_combined_pump(
+        link,
+        {"thumb": [1.5, -2.0, 3.0]},
+        {"thumb": [[1.0, 2.0, 4.0]] * 4},
+        state.active_sensors,
+    )
+    try:
+        client.capture_taxel_offsets(num_samples=3)
+        assert client.resultant_offsets == {"thumb": [1.5, -2.0, 3.0]}
+
+        wait_until(lambda: client.get_latest_forces()["thumb"] == [0.0, 0.0, 0.0])
+        wait_until(
+            lambda: client.get_latest_taxels()["thumb"] == [[0.0, 0.0, 0.0]] * 4
         )
     finally:
         stop.set()
