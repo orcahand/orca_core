@@ -1,11 +1,12 @@
 """Hand autodetection: identity parsing, the detection ladder, and load_hand()."""
 
+import dataclasses
 import logging
 
 import pytest
 
 import orca_core.hand_factory as hand_factory
-from orca_core import OrcaHand, OrcaHandTouch, detect_hand, load_hand
+from orca_core import OrcaHand, OrcaHandFull, OrcaHandTouch, detect_hand, load_hand
 from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo, parse_orca_info
 
 
@@ -20,6 +21,22 @@ def test_parse_full_identity_line():
         serial="OH2-L-2628-0047", board_id="0123456789ABCDEF",
     )
     assert info.hand_id == "OH2-L-2628-0047"
+
+
+def test_parse_reads_sensing_config():
+    info = parse_orca_info(
+        b"ORCA:SENSOR;SIDE=R;HW=2;FW=2;CFG=2500;SN=ser-9964;BID=4B7685ABAA282225"
+    )
+    assert info.config == 2500
+
+
+@pytest.mark.parametrize("line", [
+    b"ORCA:MOTOR;SIDE=R;CFG=0",  # firmware reports 0 for "no sensing config set"
+    b"ORCA:MOTOR;SIDE=R",        # field absent entirely (pre-CFG firmware)
+    b"ORCA:MOTOR;SIDE=R;CFG=x",  # unparseable
+])
+def test_parse_treats_unset_config_as_none(line):
+    assert parse_orca_info(line).config is None
 
 
 def test_parse_unprovisioned_line_has_no_side():
@@ -119,6 +136,124 @@ def test_nothing_plugged_in_yields_plain_right_hand(monkeypatch):
     assert d.sensing_port is None
     assert d.identity is None
     assert d.busy_ports == ()
+
+
+# ----- the declared sensing config is ground truth ---------------------------
+
+def test_sensing_config_caps_table_is_pinned():
+    """This mapping is recorded nowhere else — the firmware only validates the
+    set of codes, so a silent edit here would mis-load hands with no other
+    source to check against."""
+    assert hand_factory.SENSING_CONFIG_CAPS == {
+        1000: (False, False),
+        1500: (False, True),
+        2000: (True, False),
+        2500: (True, True),
+    }
+
+
+def test_every_declarable_config_names_a_bundled_model():
+    """Guards the (tactile, encoders) tuple order: a swapped pair would still
+    be a valid dict but would resolve to the wrong model."""
+    for caps in hand_factory.SENSING_CONFIG_CAPS.values():
+        assert caps in hand_factory._MODEL_BY_CAPS
+
+def _declaring(config, **kwargs):
+    """Patch args for a board declaring ``config`` on both its CDCs."""
+    info = OrcaBoardInfo(role="sensor", side="right", serial="ser-9964",
+                         config=config)
+    return dict(
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={
+            "/dev/cu.m": dataclasses.replace(info, role="motor"),
+            "/dev/cu.s": info,
+        },
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("config,model,caps", [
+    (1000, "orcahand-right", (False, False)),
+    (1500, "orcahand-joint-right", (False, True)),
+    (2000, "orcahand-touch-right", (True, False)),
+    (2500, "orcahand-full-right", (True, True)),
+])
+def test_declared_config_picks_the_model(monkeypatch, config, model, caps):
+    """Every CFG code maps to its model even with all sensors responding, so a
+    wrong mapping can't hide behind agreeing probe results."""
+    _patch_hardware(monkeypatch, **_declaring(
+        config, encoder_stream=True, tactile_register=True,
+    ))
+    d = detect_hand()
+    assert d.model_name == model
+    assert (d.has_tactile, d.has_encoders) == caps
+    assert d.declared_config == config
+
+
+def test_declared_sensing_wins_over_silent_hardware(monkeypatch):
+    """The reported failure: a full hand whose sensing link is down must stay a
+    full hand rather than silently degrading to the motor-only model."""
+    _patch_hardware(monkeypatch, **_declaring(2500))
+    d = detect_hand()
+    assert d.model_name == "orcahand-full-right"
+    assert (d.has_tactile, d.has_encoders) == (True, True)
+    assert (d.probed_tactile, d.probed_encoders) == (False, False)
+    assert set(d.missing_capabilities) == {"tactile", "encoders"}
+    assert d.undeclared_capabilities == ()
+
+
+def test_partial_sensing_failure_names_only_the_dead_capability(monkeypatch):
+    _patch_hardware(monkeypatch, **_declaring(2500, encoder_stream=True))
+    d = detect_hand()
+    assert d.missing_capabilities == ("tactile",)
+    assert d.probed_encoders is True
+
+
+def test_undeclared_sensors_are_flagged_and_stay_unused(monkeypatch):
+    """A board provisioned as motor-only but wired with encoders: CFG still
+    wins, so the extra sensing is reported rather than silently adopted."""
+    _patch_hardware(monkeypatch, **_declaring(1000, encoder_stream=True))
+    d = detect_hand()
+    assert d.model_name == "orcahand-right"
+    assert d.has_encoders is False
+    assert d.undeclared_capabilities == ("encoders",)
+    assert d.missing_capabilities == ()
+
+
+def test_unrecognised_config_falls_back_to_probing_with_a_warning(monkeypatch, caplog):
+    _patch_hardware(monkeypatch, **_declaring(1234, encoder_stream=True))
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        d = detect_hand()
+    assert d.model_name == "orcahand-joint-right"
+    assert d.declared_config == 1234
+    assert "1234" in caplog.text
+
+
+def test_undeclared_config_still_detects_by_probing(monkeypatch):
+    """Older or unprovisioned boards keep the pre-CFG behaviour exactly."""
+    _patch_hardware(monkeypatch, **_declaring(None, encoder_stream=True,
+                                              tactile_register=True))
+    d = detect_hand()
+    assert d.model_name == "orcahand-full-right"
+    assert d.declared_config is None
+    assert (d.missing_capabilities, d.undeclared_capabilities) == ((), ())
+
+
+def test_load_hand_warns_loudly_when_declared_sensing_is_dead(monkeypatch, caplog):
+    _patch_hardware(monkeypatch, **_declaring(2500))
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        hand = load_hand()
+    assert type(hand) is OrcaHandFull
+    assert "CFG=2500" in caplog.text
+    assert "ser-9964" in caplog.text
+
+
+def test_load_hand_pins_the_sensing_port_of_a_declared_but_dead_link(monkeypatch):
+    """connect() must fail against the real port, not against 'auto' finding
+    nothing — that is what makes the error name the actual fault."""
+    _patch_hardware(monkeypatch, **_declaring(2500))
+    hand = load_hand()
+    assert hand.config.encoder_serial_port == "/dev/cu.s"
 
 
 # ----- ports held by another client ------------------------------------------

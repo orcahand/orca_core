@@ -333,8 +333,8 @@ def test_measure_taxel_noise_uses_worst_post_offset_magnitude():
         {"thumb": [[0.1, 0.0, 0.0]]},
     ]
     gates = _measure_taxel_noise(frames, {"thumb": [[0.0, 0.0, 0.0]]})
-    # Worst residual 0.2 N, plus one LSB of headroom.
-    assert gates == {"thumb": [0.3]}
+    # Worst residual 0.2 N, scaled 1.5x, plus one LSB of headroom.
+    assert gates == {"thumb": [0.4]}
 
 
 def test_measure_taxel_noise_matches_the_fz_clamp():
@@ -346,7 +346,23 @@ def test_measure_taxel_noise_matches_the_fz_clamp():
     frames = [{"thumb": [[0.0, 0.0, 0.0]]}, {"thumb": [[0.0, 0.0, 0.4]]}]
     gates = _measure_taxel_noise(frames, {"thumb": [[0.0, 0.0, 0.2]]})
     # -0.2 clamps to 0, so the worst reported residual is +0.2, not 0.2 either side.
-    assert gates == {"thumb": [0.3]}
+    assert gates == {"thumb": [0.4]}
+
+
+def test_measure_taxel_noise_gates_above_the_observed_worst_case():
+    """A few seconds of capture underestimates a noisy taxel's tail.
+
+    The gate must clear the worst excursion the window happened to catch, or
+    the noisiest taxels keep flickering — the same ones all run, since it is
+    their own dither that outran their own gate.
+    """
+    frames = [{"thumb": [[0.2, 0.0, 0.0]]}, {"thumb": [[-0.2, 0.0, 0.0]]}]
+    gate = _measure_taxel_noise(frames, {"thumb": [[0.0, 0.0, 0.0]]})["thumb"][0]
+
+    observed_worst = 0.2
+    assert gate > observed_worst
+    # An excursion one LSB past anything the window saw is still gated.
+    assert gate > observed_worst + 0.1
 
 
 def _start_cycling_pump(link, sequence, active_sensors, period_s=0.005):

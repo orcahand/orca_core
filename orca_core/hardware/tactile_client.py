@@ -29,6 +29,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
     NOISE_GATE_MARGIN_N,
+    NOISE_GATE_SCALE,
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
     TACTILE_REGISTER_ATTEMPTS,
     OFFSET_CAPTURE_DECIMALS,
@@ -116,8 +117,9 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
 
     For each taxel this is the worst post-offset magnitude seen across the
     capture window — i.e. the largest reading the taxel produced while nothing
-    was touching it — plus one LSB of headroom, since a few seconds of frames
-    will not have caught its rarest excursion.
+    was touching it — scaled up by ``NOISE_GATE_SCALE`` and offset by one LSB,
+    since a few seconds of frames will not have caught its rarest excursion.
+    The scale is what separates a noisy taxel's gate from a quiet one's.
 
     Applies the offsets exactly the way :meth:`_apply_taxel_offsets` does,
     same rounding and same fz clamp, so a gate is expressed in the units it
@@ -138,7 +140,8 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
                 if squared > worst:
                     worst = squared
             per_taxel.append(round(
-                worst ** 0.5 + NOISE_GATE_MARGIN_N, OFFSET_CAPTURE_DECIMALS,
+                worst ** 0.5 * NOISE_GATE_SCALE + NOISE_GATE_MARGIN_N,
+                OFFSET_CAPTURE_DECIMALS,
             ))
         gates[finger] = per_taxel
     return gates
