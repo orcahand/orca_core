@@ -9,114 +9,114 @@ config:
 rig:
   cam0:
     intrinsic_rms_px: 0.0642
-    focal_err_pct: 0.019487202772992228
-    extrinsic_rot_deg: 0.0891761030557317
-    extrinsic_t_mm: 1.0843996522267323
+    focal_err_pct: 0.01948720277305532
+    extrinsic_rot_deg: 0.0648375367375454
+    extrinsic_t_mm: 0.43702333958175127
   cam1:
     intrinsic_rms_px: 0.0853
-    focal_err_pct: 0.06862194989404206
-    extrinsic_rot_deg: 0.029556519039743347
-    extrinsic_t_mm: 0.4856949423983387
+    focal_err_pct: 0.06862194989416834
+    extrinsic_rot_deg: 0.055658588998847444
+    extrinsic_t_mm: 0.5422049811983193
   cam2:
     intrinsic_rms_px: 0.0877
-    focal_err_pct: 0.07112629312963537
-    extrinsic_rot_deg: 0.0995915825269647
-    extrinsic_t_mm: 0.6921294614966592
+    focal_err_pct: 0.0711262930999371
+    extrinsic_rot_deg: 0.10269101669540523
+    extrinsic_t_mm: 0.7887699360840864
   cam3:
     intrinsic_rms_px: 0.0824
-    focal_err_pct: 0.021749242209843398
-    extrinsic_rot_deg: 0.13279056235791553
-    extrinsic_t_mm: 1.7338446298257797
+    focal_err_pct: 0.021749242193970807
+    extrinsic_rot_deg: 0.2500643424945222
+    extrinsic_t_mm: 3.2153763486171734
 dots:
-  n_columns: 111
-  n_matched: 85
-  unmatched_tracks: 1
-  unmatched_static: 25
-  proximal_parks: 42
-  duplicates: 24
-  triang_rms_mm: 0.49658786291258117
-  triang_p95_mm: 0.4082638561762682
-  coverage: 0.6671811656190724
+  n_columns: 100
+  n_matched: 78
+  unmatched_tracks: 2
+  unmatched_static: 20
+  proximal_parks: 40
+  duplicates: 18
+  triang_rms_mm: 0.988509485766827
+  triang_p95_mm: 0.8713671646451028
+  coverage: 0.541929466109976
   misassigned: 0
 solve:
-  offset_mean_deg: 0.14002331169705715
-  offset_max_deg: 0.665675177932171
+  offset_mean_deg: 0.13529103111354326
+  offset_max_deg: 0.31185436546003187
   solver_status: 2
 solve_per_joint:
   wrist:
-    mapping_err_deg: 0.029031038478366064
-    b0_err_deg: 0.7281635249722012
-    sigma_deg: 0.0494
+    mapping_err_deg: 0.1264069827842228
+    b0_err_deg: 0.5692197287738958
+    sigma_deg: 0.0332
   thumb_cmc:
-    mapping_err_deg: 0.020554429222896537
-    b0_err_deg: 0.9090926340381302
-    sigma_deg: 0.0275
+    mapping_err_deg: 0.11016217453862702
+    b0_err_deg: 0.8216730219376567
+    sigma_deg: 0.0193
   thumb_abd:
-    mapping_err_deg: 0.04039160542066138
-    b0_err_deg: 0.4038617113154568
-    sigma_deg: 0.0376
+    mapping_err_deg: 0.1254325841201299
+    b0_err_deg: 0.48732792850416595
+    sigma_deg: 0.0257
   thumb_mcp:
-    mapping_err_deg: 0.06095901422314928
-    b0_err_deg: 0.19930246496396004
-    sigma_deg: 0.0619
+    mapping_err_deg: 0.08617281003718923
+    b0_err_deg: 0.19532880006551695
+    sigma_deg: 0.0458
   thumb_dip:
-    mapping_err_deg: 0.06292103253130192
-    b0_err_deg: 0.04797006153999894
-    sigma_deg: 0.0896
+    mapping_err_deg: 0.08209208826262054
+    b0_err_deg: 0.08759678351079392
+    sigma_deg: 0.0642
   index_abd:
-    mapping_err_deg: 0.27119001502655404
-    b0_err_deg: 0.6536688564901834
-    sigma_deg: 0.0517
+    mapping_err_deg: 0.08692886287589857
+    b0_err_deg: 0.5423533900661965
+    sigma_deg: 0.0281
   index_mcp:
-    mapping_err_deg: 0.0448802942017604
-    b0_err_deg: 1.310462024268261
-    sigma_deg: 0.0701
+    mapping_err_deg: 0.12359242283107008
+    b0_err_deg: 1.367008031324685
+    sigma_deg: 0.0416
   index_pip:
-    mapping_err_deg: 0.20766593176253345
-    b0_err_deg: 0.38911364235761514
-    sigma_deg: 0.1323
+    mapping_err_deg: 0.2151749009314527
+    b0_err_deg: 0.3859128660908011
+    sigma_deg: 0.0678
   middle_abd:
-    mapping_err_deg: 0.3804596353292322
-    b0_err_deg: 0.2061605037349441
-    sigma_deg: 0.0278
+    mapping_err_deg: 0.14753650769215318
+    b0_err_deg: 0.05383072345534767
+    sigma_deg: 0.0555
   middle_mcp:
-    mapping_err_deg: 0.032266028536595125
-    b0_err_deg: 0.26532356917764455
-    sigma_deg: 0.0585
+    mapping_err_deg: 0.24446522113902908
+    b0_err_deg: 0.09506129345003389
+    sigma_deg: 0.0515
   middle_pip:
-    mapping_err_deg: 0.04006371890320623
-    b0_err_deg: 0.00173688690957724
-    sigma_deg: 0.1026
+    mapping_err_deg: 0.18035973964824706
+    b0_err_deg: 0.02136499579318657
+    sigma_deg: 0.0976
   ring_abd:
-    mapping_err_deg: 0.07413316164671734
-    b0_err_deg: 0.23549352779412747
-    sigma_deg: 0.0287
+    mapping_err_deg: 0.038955391471627604
+    b0_err_deg: 0.1735803756116363
+    sigma_deg: 0.0177
   ring_mcp:
-    mapping_err_deg: 0.07567781948338057
-    b0_err_deg: 0.8742084471982228
-    sigma_deg: 0.0533
+    mapping_err_deg: 0.1083799449442302
+    b0_err_deg: 1.1036574236456707
+    sigma_deg: 0.0364
   ring_pip:
-    mapping_err_deg: 0.2339625711148958
-    b0_err_deg: 0.04830966761792754
-    sigma_deg: 0.0867
+    mapping_err_deg: 0.041773894020865614
+    b0_err_deg: 0.09006373298944781
+    sigma_deg: 0.0575
   pinky_abd:
-    mapping_err_deg: 0.10560262264129286
-    b0_err_deg: 0.9305671662446509
-    sigma_deg: 0.0381
+    mapping_err_deg: 0.31185436546003187
+    b0_err_deg: 1.0416691499740125
+    sigma_deg: 0.0277
   pinky_mcp:
-    mapping_err_deg: 0.034962202395257394
-    b0_err_deg: 0.1552334986765871
-    sigma_deg: 0.0702
+    mapping_err_deg: 0.12071140346151359
+    b0_err_deg: 0.2800956905700924
+    sigma_deg: 0.0418
   pinky_pip:
-    mapping_err_deg: 0.665675177932171
-    b0_err_deg: 1.0026008914310447
-    sigma_deg: 0.1813
+    mapping_err_deg: 0.14994823471132646
+    b0_err_deg: 0.8319644924360823
+    sigma_deg: 0.0649
 gates:
   intrinsic_rms_px: 0.6
   focal_err_pct: 1.5
-  extrinsic_rot_deg: 0.25
-  extrinsic_t_mm: 3.0
-  triang_rms_mm: 0.7
+  extrinsic_rot_deg: 0.35
+  extrinsic_t_mm: 4.5
+  triang_rms_mm: 1.2
   triang_p95_mm: 1.5
   coverage: 0.45
   misassigned: 0

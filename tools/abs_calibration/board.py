@@ -150,3 +150,56 @@ def average_poses(poses: list[tuple[np.ndarray, np.ndarray]]):
         "n_views": len(poses),
     }
     return R_mean, t_mean, stats
+
+
+def write_printable_svg(spec: BoardSpec, path: str, margin_mm: float = 15.0,
+                        px_per_square: int = 60) -> None:
+    """Print-exact board as SVG: the raster is embedded with physical mm
+    dimensions, so any 'actual size' print reproduces the metric scale.
+    Verify with calipers anyway and record ``measured_square_m``."""
+    import base64
+    import cv2
+    w_mm = spec.squares_x * spec.square_m * 1000
+    h_mm = spec.squares_y * spec.square_m * 1000
+    img = spec.make().generateImage(
+        (spec.squares_x * px_per_square, spec.squares_y * px_per_square),
+        marginSize=0)
+    ok, png = cv2.imencode(".png", img)
+    b64 = base64.b64encode(png.tobytes()).decode()
+    total_w, total_h = w_mm + 2 * margin_mm, h_mm + 2 * margin_mm
+    ruler_y = margin_mm + h_mm + 6
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg"
+     width="{total_w}mm" height="{total_h}mm"
+     viewBox="0 0 {total_w} {total_h}">
+  <rect width="{total_w}" height="{total_h}" fill="white"/>
+  <image x="{margin_mm}" y="{margin_mm}" width="{w_mm}" height="{h_mm}"
+         preserveAspectRatio="none" image-rendering="pixelated"
+         href="data:image/png;base64,{b64}"/>
+  <line x1="{margin_mm}" y1="{ruler_y}" x2="{margin_mm + 100}" y2="{ruler_y}"
+        stroke="black" stroke-width="0.3"/>
+  <line x1="{margin_mm}" y1="{ruler_y - 2}" x2="{margin_mm}" y2="{ruler_y + 2}"
+        stroke="black" stroke-width="0.3"/>
+  <line x1="{margin_mm + 100}" y1="{ruler_y - 2}" x2="{margin_mm + 100}"
+        y2="{ruler_y + 2}" stroke="black" stroke-width="0.3"/>
+  <text x="{margin_mm + 50}" y="{ruler_y + 5}" font-size="3"
+        text-anchor="middle" font-family="sans-serif">
+    exactly 100 mm — measure after printing; squares {spec.square_m * 1000:.1f} mm
+  </text>
+</svg>
+"""
+    with open(path, "w") as f:
+        f.write(svg)
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Write a print-exact ChArUco board SVG")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--square-mm", type=float, default=30.0)
+    args = ap.parse_args()
+    s = BoardSpec(square_m=args.square_mm / 1000,
+                  marker_m=args.square_mm / 1000 * 22 / 30)
+    write_printable_svg(s, args.out)
+    print(f"wrote {args.out} — print at 100% scale (no fit-to-page), "
+          "then caliper the 100 mm ruler and a row of squares")

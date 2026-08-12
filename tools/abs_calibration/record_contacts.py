@@ -254,10 +254,12 @@ def main() -> int:
                          "(the encoders are the whole measurement)")
 
     if args.dry_run:
-        n_abd = len(ABD_PAIRS) * 2 * len(ABD_POSTURES)
+        currents = [v for v in args.push_current.split(",") if v]
+        n_abd = len(ABD_PAIRS) * 2 * len(ABD_POSTURES) * len(currents)
         n_tip = len(TIP_PAIRS) * TIP_EVENTS_PER_PAIR
         print(f"abd-block: {n_abd} approaches "
-              f"({[p for p in ABD_PAIRS]} x 2 dir x {list(ABD_POSTURES)})")
+              f"({[p for p in ABD_PAIRS]} x 2 dir x {list(ABD_POSTURES)} "
+              f"x {currents} mA)")
         print(f"tip-press: up to {n_tip} events over {len(TIP_PAIRS)} pairs")
         print("wrist: not constrained by either class (kept on hardstop cal)")
         return 0

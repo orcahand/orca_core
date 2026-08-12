@@ -149,6 +149,8 @@ Design points, each load-bearing:
 
 - `board.py` / `cameras.py` — ChArUco spec/detection/intrinsics/pose;
   camera + rig model, YAML persistence, triangulation, epipolar geometry
+  (`python board.py --out board.svg` writes a print-exact board with a
+  caliper ruler)
 - `dots.py` — blob detection, per-camera tracking, association,
   triangulation, rigidity/despike filters
 - `assign.py` — motion-signature link assignment
@@ -158,6 +160,56 @@ Design points, each load-bearing:
   (**written against the public hand API, not yet run on hardware**)
 - `render_synthetic.py`, `validate_camera_layer.py` — image-level synthetic
   validation (below)
+
+### Rig geometry (validated in the synthetic scene)
+
+Board upright BEHIND the hand facing the cameras (world frame + metric
+scale; the printed face must face them — ArUco is not mirror-invariant),
+hand ~28 cm in front so the wrist sweep clears it. Four cameras 52–60 cm
+from the hand on a wide arc, one of them **below-front looking up** —
+curling fingers turn their dots floor-ward during exactly their own
+sweeps. Dots on phalanx sides as well as dorsal (an axis-parallel normal
+is flexion-invariant), none on skin. Capture held pose parks the thumb
+clear of the fingers (`record_session.py --park`): at the natural neutral
+thumb and finger dots pass within ~2 mm and steal identities.
+
+## Camera-free contact mode (no webcams at all)
+
+Every session observation class is optional; `record_contacts.py` fills a
+session with **contact events** instead of dots — same solver, same
+outputs, per-joint `sigma_deg` reporting honestly what the data could
+determine:
+
+- **abd-block** — park one finger at its abduction stop (the stop is
+  stiffness, nothing more: both encoders are READ at contact, no hardstop
+  angle is assumed), drive the neighbour in under a weak current limit
+  until its encoder stalls; the pair then sits on a mesh contact manifold
+  precomputed from the description URDF (`build_contact_manifold.py`,
+  table committed as `contact_manifolds_right.yaml`; skin surfaces, sigma
+  = fit + print + skin compliance ≈ 1.6–3.4°). Pairwise both directions
+  at TWO flexion postures — one contact curve pins only an offset
+  combination; the second posture's differing slope separates the pair
+  (pinned in tests). Coarse next to the camera tier, and exactly enough
+  to catch the known +25° `ring_abd` hardstop error.
+- **tip-press** — full hands: torque off, press the prompted fingertip
+  pair together by hand; auto-captures when both pads localise >0.35 N
+  with still encoders (per-pad contact centroid + forces). Pad-point
+  coincidence residual with force-dependent sigma — the Phase-3 residual
+  pulled forward, hand-guided.
+- **The wrist is constrained by neither** (no self-contact crosses it);
+  it keeps the hardstop calibration and its sigma says so. Only the
+  camera tier's forearm anchor reaches the wrist.
+
+```bash
+uv run python tools/abs_calibration/record_contacts.py CONFIG --out SESSION \
+    --modes abd,tip        # verify ABD_TOWARD_PINKY_SIGN once on hardware
+uv run python tools/abs_calibration/solve_session.py SESSION \
+    --manifolds tools/abs_calibration/contact_manifolds_right.yaml
+```
+
+Also **not yet run on hardware**; the stall thresholds and the
+approach-sign table are the expected first-session tweaks (single
+constants, loud failures).
 
 ### Validation on rendered images (`validate_camera_layer.py`)
 
@@ -171,18 +223,26 @@ truth-derived Phase-2 anchors standing in). `--quick` runs a reduced
 wrist+index+thumb scene and gates only pipeline mechanics — 1-2 surviving
 dots per link make its solve statistically thin by construction.
 
-**Findings (2026-08-12, full run — PASS):** intrinsics 0.10-0.13 px rms,
-focal < 0.35%; extrinsics < 0.13 deg / < 1.3 mm; triangulated dots
-0.50 mm rms / 0.41 mm p95 vs truth at 0.67 coverage with **zero
-misassigned columns**; end-to-end estimator recovery (truth anchors)
-0.14 deg mean / 0.67 deg max — camera-only error sits below the Phase-0.7
-webcam-tier model-error band (E-class means 0.24-0.84 deg), as budgeted.
-Rig-design lessons the run forced, now baked into the protocol and the
-design doc: one camera must look from below-front (a curling finger turns
-its dots floor-ward during exactly its own sweep), dots go on the phalanx
-sides (an axis-parallel normal is flexion-invariant), and the capture held
-pose parks the thumb clear of the fingers (at the natural neutral, thumb
-and finger dots pass within ~2 mm and steal identities).
+**Findings (2026-08-12, full run at the physical rig geometry — PASS):**
+intrinsics 0.10-0.14 px rms, focal < 0.4%; extrinsics within 0.25 deg /
+3.3 mm (the farthest camera carries a small systematic at its 0.65 m board
+distance — the end-to-end solve absorbs it, and the solve gates carry the
+requirement); triangulated dots 0.99 mm rms / 0.87 mm p95 vs truth at
+0.54 coverage with **zero misassigned columns**; end-to-end estimator
+recovery (truth anchors) **0.135 deg mean / 0.31 deg max** — camera-only
+error sits below the Phase-0.7 webcam-tier model-error band (E-class
+means 0.24-0.84 deg), as budgeted. Rig-design lessons the failures
+forced, now baked into the protocol, the scene, and the design doc: the
+board stands 28 cm behind the hand (the wrist sweep swings fingertips
+~15 cm backward), one camera must look from below-front (a curling finger
+turns its dots floor-ward during exactly its own sweep), dots are ~6 mm
+and 6-8 per link (density is what gives the rigidity voting its quorum —
+identity theft concentrates on links with 1-2 surviving columns), dots go
+on the phalanx sides (an axis-parallel normal is flexion-invariant), and
+the capture held pose parks the thumb clear of the fingers (at the
+natural neutral, thumb and finger dots pass within ~2 mm and steal
+identities). Hardware guide with rendered expected views:
+https://claude.ai/code/artifact/e5d349ab-e3cf-4ed6-ab9a-56dc0a354656
 
 Results: `results/camera_validation.yaml` (gates included; regenerate with
 `uv run python tools/abs_calibration/validate_camera_layer.py`).

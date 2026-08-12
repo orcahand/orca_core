@@ -52,9 +52,14 @@ class SynthConfig:
     sweep_joints: tuple | None = None   # None = all joints
     dot_links: tuple | None = None      # None = all standard dot links
     n_anchor: int = 8
-    dots_per_link: int = 6
-    dot_radius_m: float = 0.0025
-    min_dot_sep_m: float = 0.009    # physical dots don't touch; helps tracking
+    # 7 per link: identity-theft chimeras concentrate on links with 1-2
+    # surviving columns, where rigidity voting has no quorum. Density is the
+    # cheapest physical defence — the guide prescribes 6-8 per link.
+    dots_per_link: int = 7
+    # 6 mm dots: at the 55-60 cm working distance the board standoff forces,
+    # 5 mm dots drop to ~4 px radius and detection SNR with them.
+    dot_radius_m: float = 0.003
+    min_dot_sep_m: float = 0.010    # physical dots don't touch; helps tracking
     n_clutter: int = 4              # static bright spots near the mount
     n_intrinsic: int = 14
     n_extrinsic: int = 3
@@ -142,7 +147,9 @@ def build_scene(cfg: SynthConfig, board: BoardSpec | None = None) -> SynthScene:
 
     board_center = np.array([board.squares_x, board.squares_y, 0.0]) \
         * board.effective_square_m / 2.0
-    base_t = board_center + np.array([0.0, 0.055, -0.13]) + rng.normal(0, 0.005, 3)
+    # Board standoff: the wrist sweep swings the fingertips ~15 cm toward
+    # the board — the hand mounts well in front so the sweep clears it.
+    base_t = board_center + np.array([0.0, 0.055, -0.28]) + rng.normal(0, 0.005, 3)
     # Fingers up: base z -> world -y, plus a small random tilt.
     flip = np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])
     axis = rng.normal(size=3)
@@ -275,7 +282,7 @@ def _place_cameras(scene: SynthScene, rng: np.random.Generator) -> None:
     for i in range(cfg.n_cameras):
         th = np.deg2rad(polars[i % len(polars)] + rng.normal(0, 2))
         ph = np.deg2rad(azimuths[i % len(azimuths)] + rng.normal(0, 3))
-        r = rng.uniform(0.50, 0.58)
+        r = rng.uniform(0.52, 0.60)
         center = target + r * np.array([
             np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), -np.cos(th)])
         R, t = _look_at(center, target, up=np.array([0.0, -1.0, 0.0]))
