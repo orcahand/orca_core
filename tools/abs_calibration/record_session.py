@@ -105,6 +105,12 @@ def main() -> int:
     ap.add_argument("--step-scale", type=float, default=1.0)
     ap.add_argument("--abd-postures", default="0.15,0.5,0.8",
                     help="Flexion fractions for abd sweeps ('' = held only)")
+    ap.add_argument("--clear-fingers", default="",
+                    help="One-finger-at-a-time: park the other fingers' "
+                         "mcp/pip at these values during each finger's "
+                         "flexion sweeps, e.g. 'mcp=80,pip=85'. Measured "
+                         "net-negative in simulation (parked fists block "
+                         "the under camera); off by default")
     ap.add_argument("--park", default="thumb_abd=0,thumb_mcp=-20,thumb_cmc=-35",
                     help="Held-pose overrides (joint=deg,...). The natural "
                          "neutral opposes the thumb across the fingers; parked "
@@ -148,9 +154,15 @@ def main() -> int:
             for j in joints
         }
 
+        clear = {}
+        for item in args.clear_fingers.split(","):
+            if item:
+                k, _, v = item.partition("=")
+                clear[k.strip()] = float(v)
         q, sweep_frames = build_plan(
             joints, roms, held, step_scale=args.step_scale,
-            margin_deg=ROM_MARGIN_DEG, abd_flexion_fracs=fracs)
+            margin_deg=ROM_MARGIN_DEG, abd_flexion_fracs=fracs,
+            clear_flexion=clear or None)
         rng = np.random.default_rng(0)
         anchors = np.array([
             [rng.uniform(lo + 0.3 * (hi - lo), lo + 0.7 * (hi - lo))

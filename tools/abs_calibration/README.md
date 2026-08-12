@@ -254,12 +254,24 @@ mitigations, in order: a hand-held assist camera during flexion sweeps
 gap-bridging in association, and assist postures (repeat pip sweeps at a
 second wrist angle to change the occlusion geometry).
 
+**Camera count is a dial, best-effort by construction** (probe-measured
+own-sweep coverage / dead joints): 2 cams 0.15/9 (use contact mode
+instead), 3 cams [side-profile + under + below-front] 0.30/0 — the
+sensible minimum, 4 (+thumb-side) 0.34/0, 5 (full arc, the benchmark
+layout) 0.44/0. A side-profile camera earns its place in every small
+set. Measured negative: the one-finger-at-a-time protocol
+(`record_session.py --clear-fingers`, park other fingers curled) sounds
+right but is net-worse — parked fists block the under camera and no side
+camera sees through the finger row; the held spread already separates
+the fingers. Kept as a flag, off by default.
+
 Rig-design lessons baked into the protocol, the scene, and the design
 doc: board 28 cm behind the hand (the wrist sweep swings fingertips
-~15 cm backward), **five** cameras including the under camera, ~6 mm dots
-6-8 per link on the phalanx sides as well as dorsal (axis-parallel
-normals are flexion-invariant), thumb parked clear of the fingers.
-Hardware guide with mesh-rendered expected views:
+~15 cm backward), cameras per the dial above, ~6 mm dots 6-8 per link on
+the phalanx sides as well as dorsal (axis-parallel normals are
+flexion-invariant), thumb parked clear of the fingers, clutter test
+points on the actual mount surfaces. Hardware guide with mesh-rendered
+expected views:
 https://claude.ai/code/artifact/e5d349ab-e3cf-4ed6-ab9a-56dc0a354656
 
 Results: `results/camera_validation.yaml` (gates included; regenerate with

@@ -67,22 +67,33 @@ def _paired_mcp(abd_joint: str) -> str:
     return abd_joint.replace("_abd", "_mcp")
 
 
+def _finger_of(joint: str) -> str:
+    return joint.rsplit("_", 1)[0]
+
+
 def build_plan(joints: list[str], roms: dict[str, tuple[float, float]],
                held: dict[str, float], *, step_scale: float = 1.0,
                margin_deg: float = 2.0,
                abd_flexion_fracs: tuple[float, ...] | None = None,
+               clear_flexion: dict[str, float] | None = None,
                ) -> tuple[np.ndarray, dict[str, list[int]]]:
     """Commanded pose rows for a full capture: ``(q (F, J), sweep_frames)``.
 
     ``sweep_frames[j]`` lists the frames of j's sweep legs (what the circle
-    fit and link assignment consume); flexion-posture transit frames are
-    captured but belong to no sweep. All rows start from and return to the
-    held pose.
+    fit and link assignment consume); transit frames are captured but
+    belong to no sweep. All rows start from and return to the held pose.
+
+    ``clear_flexion`` enables the one-finger-at-a-time protocol: while one
+    finger's flexion joints sweep, every OTHER finger's mcp/pip park at the
+    given values (e.g. ``{"mcp": 80, "pip": 85}`` — curled out of a side
+    camera's line of sight), reached and left through eased transits so
+    dot-tracking continuity survives. Wrist and abduction sweeps run from
+    the plain held pose.
     """
     jidx = {j: i for i, j in enumerate(joints)}
     held_row = np.array([held[j] for j in joints], float)
     rows: list[np.ndarray] = []
-    sweep_frames: dict[str, list[int]] = {}
+    sweep_frames: dict[str, list[int]] = {j: [] for j in joints}
 
     def emit(base: np.ndarray, joint: str, value: float, in_sweep: bool):
         row = base.copy()
@@ -91,32 +102,92 @@ def build_plan(joints: list[str], roms: dict[str, tuple[float, float]],
             sweep_frames[joint].append(len(rows))
         rows.append(row)
 
-    for j in joints:
+    def rom_of(j):
         lo, hi = roms[j]
-        lo, hi = lo + margin_deg, hi - margin_deg
+        return lo + margin_deg, hi - margin_deg
+
+    def transit(base: np.ndarray, targets: dict[str, float]) -> np.ndarray:
+        """Ease every listed joint from base to its target SIMULTANEOUSLY —
+        each dot's per-frame motion stays bounded by its own joint's step,
+        so tracking continuity holds while the transit stays short. Returns
+        the new base."""
+        legs = {}
+        for j, v in targets.items():
+            step = sweep_step_deg(j) * step_scale
+            legs[j] = eased_leg(base[jidx[j]], v, step)
+        n = max((len(l) for l in legs.values()), default=0)
+        out = base.copy()
+        for k in range(n):
+            row = out.copy()
+            for j, leg in legs.items():
+                row[jidx[j]] = leg[k] if k < len(leg) else targets[j]
+            rows.append(row)
+        for j, v in targets.items():
+            out[jidx[j]] = v
+        rows.append(out.copy())
+        return out
+
+    flexion_stages = ("_mcp", "_pip", "_dip")
+    fingers = []
+    for j in joints:
+        f = _finger_of(j)
+        if j.endswith(flexion_stages) and f not in fingers:
+            fingers.append(f)
+
+    def clear_targets(active: str) -> dict[str, float]:
+        t = {}
+        for f in fingers:
+            if f == active:
+                continue
+            for stage, key in (("_mcp", "mcp"), ("_pip", "pip"), ("_dip", "pip")):
+                j = f + stage
+                if j in jidx and key in (clear_flexion or {}):
+                    lo, hi = rom_of(j)
+                    t[j] = float(np.clip(clear_flexion[key], lo, hi))
+        return t
+
+    def sweep(j: str, base: np.ndarray):
+        lo, hi = rom_of(j)
         step = sweep_step_deg(j) * step_scale
-        sweep_frames[j] = []
-        mcp = _paired_mcp(j) if j.endswith("_abd") else None
-        if abd_flexion_fracs and mcp in jidx:
-            m_lo, m_hi = roms[mcp]
-            m_lo, m_hi = m_lo + margin_deg, m_hi - margin_deg
+        for v in triangle_path(base[jidx[j]], lo, hi, step):
+            emit(base, j, v, in_sweep=True)
+
+    # Wrist, cmc, and abduction sweeps from the plain held pose.
+    for j in joints:
+        if j.endswith(flexion_stages):
+            continue
+        if j.endswith("_abd") and abd_flexion_fracs \
+                and _paired_mcp(j) in jidx:
+            mcp = _paired_mcp(j)
+            m_lo, m_hi = rom_of(mcp)
             m_step = sweep_step_deg(mcp) * step_scale
             m_prev = held[mcp]
-            base = held_row.copy()
             for frac in abd_flexion_fracs:
                 m_target = m_lo + frac * (m_hi - m_lo)
                 for v in eased_leg(m_prev, m_target, m_step):
                     emit(held_row, mcp, v, in_sweep=False)
                 base = held_row.copy()
                 base[jidx[mcp]] = m_target
-                for v in triangle_path(held[j], lo, hi, step):
+                for v in triangle_path(held[j], *rom_of(j),
+                                       sweep_step_deg(j) * step_scale):
                     emit(base, j, v, in_sweep=True)
                 m_prev = m_target
             for v in eased_leg(m_prev, held[mcp], m_step):
                 emit(held_row, mcp, v, in_sweep=False)
             rows.append(held_row.copy())
         else:
-            for v in triangle_path(held[j], lo, hi, step):
-                emit(held_row, j, v, in_sweep=True)
+            sweep(j, held_row)
+
+    # Flexion sweeps, one finger at a time.
+    for f in fingers:
+        own = [f + s for s in flexion_stages if f + s in jidx]
+        if clear_flexion:
+            base = transit(held_row, clear_targets(f))
+        else:
+            base = held_row
+        for j in own:
+            sweep(j, base)
+        if clear_flexion:
+            transit(base, {j: held[j] for j in clear_targets(f)})
 
     return np.asarray(rows), sweep_frames

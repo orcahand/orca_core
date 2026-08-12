@@ -9,113 +9,113 @@ config:
 rig:
   cam0:
     intrinsic_rms_px: 0.0642
-    focal_err_pct: 0.019487202726368363
-    extrinsic_rot_deg: 0.07843301518546335
-    extrinsic_t_mm: 0.7207036130198793
+    focal_err_pct: 0.019487202675307135
+    extrinsic_rot_deg: 0.07843310884689886
+    extrinsic_t_mm: 0.7207046743627832
   cam1:
     intrinsic_rms_px: 0.0853
-    focal_err_pct: 0.06862194989393684
-    extrinsic_rot_deg: 0.019266221043785836
-    extrinsic_t_mm: 0.4209065405013579
+    focal_err_pct: 0.06862194989378952
+    extrinsic_rot_deg: 0.019266054987082323
+    extrinsic_t_mm: 0.4209070297143095
   cam2:
     intrinsic_rms_px: 0.0877
-    focal_err_pct: 0.07112631155251632
-    extrinsic_rot_deg: 0.08617793734421324
-    extrinsic_t_mm: 0.7095079601628186
+    focal_err_pct: 0.07112629237535156
+    extrinsic_rot_deg: 0.08617786341753748
+    extrinsic_t_mm: 0.709508754177839
   cam3:
     intrinsic_rms_px: 0.0824
-    focal_err_pct: 0.02174924069901701
-    extrinsic_rot_deg: 0.19431650483452384
-    extrinsic_t_mm: 1.4880872768461757
+    focal_err_pct: 0.021749241345978023
+    extrinsic_rot_deg: 0.19431785303478577
+    extrinsic_t_mm: 1.4880993874183348
   cam4:
     intrinsic_rms_px: 0.0945
-    focal_err_pct: 0.06685105707209917
-    extrinsic_rot_deg: 0.035703135805811886
-    extrinsic_t_mm: 0.2767268009275222
+    focal_err_pct: 0.0668510570712546
+    extrinsic_rot_deg: 0.035703301035351215
+    extrinsic_t_mm: 0.27673208234961144
 dots:
-  n_columns: 86
+  n_columns: 85
   n_matched: 54
-  unmatched_tracks: 4
-  unmatched_static: 28
-  proximal_parks: 21
-  duplicates: 16
-  triang_rms_mm: 1.3778220654109008
-  triang_p95_mm: 1.5505557195038426
-  coverage: 0.38694438479707965
-  misassigned: 1
+  unmatched_tracks: 2
+  unmatched_static: 29
+  proximal_parks: 23
+  duplicates: 15
+  triang_rms_mm: 1.1990773287267236
+  triang_p95_mm: 1.126989483804463
+  coverage: 0.4277770822901018
+  misassigned: 3
 solve:
-  offset_mean_deg: 0.9210225147796058
-  offset_max_deg: 12.69555745446842
+  offset_mean_deg: 5.625700181871956
+  offset_max_deg: 48.01795380635862
   solver_status: 2
 solve_per_joint:
   wrist:
-    mapping_err_deg: 0.03664529020739632
-    b0_err_deg: 0.7407118320151831
-    sigma_deg: 0.0335
+    mapping_err_deg: 0.14023856621638495
+    b0_err_deg: 0.8177318526851449
+    sigma_deg: 0.0281
   thumb_cmc:
-    mapping_err_deg: 0.1783890206728002
-    b0_err_deg: 0.7416976294310995
-    sigma_deg: 0.0297
+    mapping_err_deg: 0.05368950454879313
+    b0_err_deg: 0.9725183975826015
+    sigma_deg: 0.0253
   thumb_abd:
-    mapping_err_deg: 0.23928708565461057
-    b0_err_deg: 0.1871342373536844
-    sigma_deg: 0.0425
+    mapping_err_deg: 0.24715194537722232
+    b0_err_deg: 0.1456352836455166
+    sigma_deg: 0.04
   thumb_mcp:
-    mapping_err_deg: 0.24609737874299178
-    b0_err_deg: 0.36382698020508764
-    sigma_deg: 0.0518
+    mapping_err_deg: 0.20336896133465615
+    b0_err_deg: 0.287839288665083
+    sigma_deg: 0.0481
   thumb_dip:
-    mapping_err_deg: 0.09774922373635658
-    b0_err_deg: 0.009650665758748511
-    sigma_deg: 0.0656
+    mapping_err_deg: 0.052436638198247267
+    b0_err_deg: 0.05059991698906341
+    sigma_deg: 0.0585
   index_abd:
-    mapping_err_deg: 0.32305449697345606
-    b0_err_deg: 0.195710602318921
-    sigma_deg: 0.0484
+    mapping_err_deg: 0.08339377917777739
+    b0_err_deg: 0.3320290203120173
+    sigma_deg: 0.0174
   index_mcp:
-    mapping_err_deg: 0.039555119589504
-    b0_err_deg: 1.2838969108750795
-    sigma_deg: 0.0511
+    mapping_err_deg: 0.13144119789787972
+    b0_err_deg: 1.1344617418174225
+    sigma_deg: 0.035
   index_pip:
-    mapping_err_deg: 0.060957499879105106
-    b0_err_deg: 0.36518018238180927
-    sigma_deg: 0.0871
+    mapping_err_deg: 0.11740132721616409
+    b0_err_deg: 0.407155874948546
+    sigma_deg: 0.0508
   middle_abd:
-    mapping_err_deg: 0.1300589949992916
-    b0_err_deg: 0.3296925835002549
-    sigma_deg: 0.0394
+    mapping_err_deg: 0.13168702364284626
+    b0_err_deg: 0.12158828464727112
+    sigma_deg: 0.0429
   middle_mcp:
-    mapping_err_deg: 0.10215828068364663
-    b0_err_deg: 0.30801705828909287
-    sigma_deg: 0.0456
+    mapping_err_deg: 0.7158286628172883
+    b0_err_deg: 0.45122541407156236
+    sigma_deg: 0.0465
   middle_pip:
-    mapping_err_deg: 0.22586439635690286
-    b0_err_deg: 0.025353055885582954
-    sigma_deg: 0.0847
+    mapping_err_deg: 0.16840495444232942
+    b0_err_deg: 0.07704766439283506
+    sigma_deg: 0.0948
   ring_abd:
-    mapping_err_deg: 0.15969616812804593
-    b0_err_deg: 0.39478655158860043
-    sigma_deg: 0.025
+    mapping_err_deg: 0.11372418188353466
+    b0_err_deg: 0.1326264224375162
+    sigma_deg: 0.0205
   ring_mcp:
-    mapping_err_deg: 0.13776453855204313
-    b0_err_deg: 0.8612735633849793
-    sigma_deg: 0.0482
+    mapping_err_deg: 0.1081497775264279
+    b0_err_deg: 0.8821806817791114
+    sigma_deg: 0.0332
   ring_pip:
-    mapping_err_deg: 0.1615038093288552
-    b0_err_deg: 0.019262516515597294
-    sigma_deg: 0.0665
+    mapping_err_deg: 0.053110152022577725
+    b0_err_deg: 0.08713016142412444
+    sigma_deg: 0.0493
   pinky_abd:
-    mapping_err_deg: 0.2344608412820217
-    b0_err_deg: 0.9724548099276071
-    sigma_deg: 0.068
+    mapping_err_deg: 48.01795380635862
+    b0_err_deg: 36.378831029662024
+    sigma_deg: 0.2746
   pinky_mcp:
-    mapping_err_deg: 0.5885831519978533
-    b0_err_deg: 0.11773578607237312
-    sigma_deg: 0.0652
+    mapping_err_deg: 16.09440481874892
+    b0_err_deg: 19.93486706734908
+    sigma_deg: 0.1862
   pinky_pip:
-    mapping_err_deg: 12.69555745446842
-    b0_err_deg: 3.5361174342678336
-    sigma_deg: 0.2047
+    mapping_err_deg: 29.204517794413583
+    b0_err_deg: 27.23023408718274
+    sigma_deg: 0.4186
 gates:
   intrinsic_rms_px: 0.6
   focal_err_pct: 1.5
@@ -129,11 +129,10 @@ gates:
   offset_mean_deg: 0.3
   offset_max_deg: 0.8
 failures:
-- triang_rms_mm=1.378 > 1.2
-- triang_p95_mm=1.551 > 1.5
-- coverage=0.39 < 0.45
-- 'misassigned=1: [{''column'': 58, ''assigned'': ''pinky_pip'', ''truth'': ''pinky_mcp''}]'
-- unmatched_tracks=4
-- offset_mean_deg=0.921 > 0.3
-- offset_max_deg=12.696 > 0.8
+- coverage=0.43 < 0.45
+- 'misassigned=3: [{''column'': 55, ''assigned'': ''pinky_abd'', ''truth'': ''ring_mcp''},
+  {''column'': 58, ''assigned'': ''pinky_mcp'', ''truth'': ''ring_mcp''}, {''column'':
+  81, ''assigned'': ''thumb_mcp'', ''truth'': ''thumb_abd''}]'
+- offset_mean_deg=5.626 > 0.3
+- offset_max_deg=48.018 > 0.8
 pass: false

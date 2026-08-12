@@ -69,6 +69,13 @@ class SynthConfig:
     zbuf_tol_m: float = 0.004       # dot-vs-body depth test tolerance
     dot_dropout: float = 0.02
     abd_flexion_fracs: tuple | None = None  # hardware uses several; see sweep_plan
+    # One-finger-at-a-time (park other fingers curled during each finger's
+    # flexion sweeps). MEASURED NET-NEGATIVE under mesh occlusion: parked
+    # fists block the under camera and no side camera sees through the
+    # finger row regardless — the natural held spread already separates
+    # the fingers (held min0=0 at >=3 cameras vs 3-4 dead joints cleared).
+    # Kept as an option; off by default.
+    clear_flexion: tuple | None = None
     # Capture held pose: the natural neutral opposes the thumb ACROSS the
     # fingers — thumb and finger dots pass within ~2 mm (below dot spacing)
     # and steal each other's identities. Parking the thumb clear of the
@@ -121,7 +128,8 @@ def _pose_plan(joints: list[str], cfg: SynthConfig, rng: np.random.Generator):
     plan_q, plan_sweeps = build_plan(
         swept, {j: JOINT_ROMS[j] for j in swept},
         {j: cfg.held[j] for j in swept},
-        step_scale=cfg.step_scale, abd_flexion_fracs=cfg.abd_flexion_fracs)
+        step_scale=cfg.step_scale, abd_flexion_fracs=cfg.abd_flexion_fracs,
+        clear_flexion=dict(cfg.clear_flexion) if cfg.clear_flexion else None)
 
     jidx = {j: i for i, j in enumerate(joints)}
     held = np.array([cfg.held[j] for j in joints], float)
@@ -312,12 +320,31 @@ def _place_dots(scene: SynthScene, rng: np.random.Generator) -> None:
         pts_all.append(np.einsum("fij,kj->fki", Rw, pl) + tw[:, None, :])
         nrm_all.append(np.einsum("fij,kj->fki", Rw, nl))
 
-    # Static bright spots on the mount below the hand (world +y is down).
-    clutter = scene.base_t + rng.uniform(
-        [-0.06, 0.01, -0.04], [0.06, 0.07, 0.04], size=(cfg.n_clutter, 3))
-    pts_all.append(np.broadcast_to(clutter, (F, cfg.n_clutter, 3)))
-    nrm_all.append(np.full((F, cfg.n_clutter, 3), np.nan))
-    links.extend(["clutter"] * cfg.n_clutter)
+    # Static bright spots ON the mount surfaces (screws, glints) — sampled
+    # from the tower/forearm meshes so they sit on real geometry.
+    mount_pts, mount_nrm = [], []
+    for body in ("fixed0", "world"):
+        p, n = scene.mesh.bodies[body]
+        if body == "fixed0":
+            R0, t0 = held_poses[body]
+            Rw = scene.base_R @ R0[0]
+            tw = scene.base_R @ t0[0] + scene.base_t
+        else:
+            Rw, tw = scene.base_R, scene.base_t
+        mount_pts.append(p @ Rw.T + tw)
+        mount_nrm.append(n @ Rw.T)
+    mount_pts = np.vstack(mount_pts)
+    mount_nrm = np.vstack(mount_nrm)
+    facing = np.einsum("nk,nk->n", mount_nrm,
+                       (cam_mid - mount_pts)
+                       / np.linalg.norm(cam_mid - mount_pts, axis=1,
+                                        keepdims=True))
+    pool = np.flatnonzero(facing > 0.3)
+    pick = rng.choice(pool, size=min(cfg.n_clutter, len(pool)), replace=False)
+    clutter = mount_pts[pick]
+    pts_all.append(np.broadcast_to(clutter, (F, len(pick), 3)))
+    nrm_all.append(np.broadcast_to(mount_nrm[pick], (F, len(pick), 3)))
+    links.extend(["clutter"] * len(pick))
 
     scene.dots_world = np.concatenate(pts_all, axis=1)
     scene.normals_world = np.concatenate(nrm_all, axis=1)
@@ -345,8 +372,11 @@ def _place_cameras(scene: SynthScene, rng: np.random.Generator) -> None:
     # fingertips — one camera nearly UNDER the hand looking up. A curling
     # finger folds its dots toward the palm plane; only the under camera
     # keeps them through deep flexion.
+    # 0 left, 1 below-front, 2 right, 3 high-front, 4 under, 5 side-profile
+    # (pinky side, sees every one-at-a-time curl edge-on), 6 side-thumb.
     specs = ((-165, 42, 0.50), (70, 55, 0.46), (-20, 50, 0.50),
-             (-85, 20, 0.50), (60, 78, 0.42))
+             (-85, 20, 0.50), (60, 78, 0.42), (0, 72, 0.46),
+             (180, 72, 0.46))
     indices = cfg.camera_indices or tuple(range(cfg.n_cameras))
     for i, spec_i in enumerate(indices):
         az, pol, r0 = specs[spec_i % len(specs)]
