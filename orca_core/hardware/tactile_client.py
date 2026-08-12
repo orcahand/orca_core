@@ -28,6 +28,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_ENABLE,
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
+    NOISE_GATE_MARGIN_N,
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
     TACTILE_REGISTER_ATTEMPTS,
     OFFSET_CAPTURE_DECIMALS,
@@ -110,6 +111,39 @@ class TactileSensorConfiguration:
         return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
 
 
+def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
+    """Per-taxel dither about its own mean, as ``{finger: [gate_n, ...]}``.
+
+    For each taxel this is the worst post-offset magnitude seen across the
+    capture window — i.e. the largest reading the taxel produced while nothing
+    was touching it — plus one LSB of headroom, since a few seconds of frames
+    will not have caught its rarest excursion.
+
+    Applies the offsets exactly the way :meth:`_apply_taxel_offsets` does,
+    same rounding and same fz clamp, so a gate is expressed in the units it
+    will be compared against. Deriving it any other way leaves the gate
+    subtly off from the values actually reported.
+    """
+    gates = {}
+    for finger, finger_offsets in offsets.items():
+        per_taxel = []
+        for t_idx, off in enumerate(finger_offsets):
+            worst = 0.0
+            for frame in frames:
+                taxel = frame[finger][t_idx]
+                dx = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
+                dy = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
+                dz = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                squared = dx * dx + dy * dy + dz * dz
+                if squared > worst:
+                    worst = squared
+            per_taxel.append(round(
+                worst ** 0.5 + NOISE_GATE_MARGIN_N, OFFSET_CAPTURE_DECIMALS,
+            ))
+        gates[finger] = per_taxel
+    return gates
+
+
 def _average_resultants(frames: list[dict]) -> dict:
     """Average ``[{finger: [fx, fy, fz]}, ...]`` into one ``{finger: [fx, fy, fz]}``."""
     out = {}
@@ -182,6 +216,9 @@ class TactileClient:
         # the taxel offsets: the device reports the resultant on a single-byte
         # per-axis scale, not as the sum of its taxels.
         self._resultant_offsets: dict | None = None
+        # {finger: [gate_n, ...], ...} per-taxel noise floors, measured during
+        # zeroing. A post-offset reading under its own gate reads exactly zero.
+        self._taxel_noise_gates: dict | None = None
 
     # ----- Lifecycle --------------------------------------------------------
 
@@ -583,13 +620,37 @@ class TactileClient:
         """The applied per-taxel offsets, or ``None`` if the taxels are unzeroed."""
         return self._taxel_offsets
 
+    def set_taxel_noise_gates(self, gates: dict | None) -> None:
+        """Store per-taxel noise floors ``{finger: [gate_n, ...]}``.
+
+        Subtracting a mean baseline removes a taxel's *constant* bias but not
+        its frame-to-frame dither, which keeps single-LSB readings flickering
+        across an idle sensor. A taxel whose post-offset magnitude falls below
+        its own measured dither is therefore reported as exactly zero: below
+        the noise floor there is no force reading to report, only noise.
+
+        The cost is deliberate — a real force smaller than a taxel's dither
+        does not register until it clears the gate. Pass ``None`` to report
+        post-offset readings ungated.
+        """
+        self._taxel_noise_gates = gates
+
+    @property
+    def taxel_noise_gates(self) -> dict | None:
+        """The applied per-taxel noise floors, or ``None`` if reporting ungated."""
+        return self._taxel_noise_gates
+
     def clear_taxel_offsets(self) -> None:
-        """Drop both the taxel and the resultant zero baselines."""
+        """Drop the taxel and resultant zero baselines and the noise gates."""
         self._taxel_offsets = None
         self._resultant_offsets = None
+        self._taxel_noise_gates = None
 
     def capture_taxel_offsets(
-        self, num_samples: int = 100, timeout_s: float | None = None
+        self,
+        num_samples: int = 100,
+        timeout_s: float | None = None,
+        gate_noise: bool = True,
     ) -> dict:
         """Average ``num_samples`` frames and apply the result as zeroing offsets.
 
@@ -598,6 +659,11 @@ class TactileClient:
         (read it back via :attr:`resultant_offsets`). On a taxels-only stream
         there is nothing to average the resultant against, so it is left
         unzeroed rather than guessed at.
+
+        The same frames also measure each taxel's dither about its own mean,
+        applied as a per-taxel noise gate (see :meth:`set_taxel_noise_gates`)
+        unless ``gate_noise`` is false. The capture window doubles as the
+        noise sample, so the gates cost no extra time.
 
         Requires an active auto-stream with taxels enabled. Existing offsets
         are temporarily cleared so the average reflects raw readings, and are
@@ -616,8 +682,10 @@ class TactileClient:
 
         prev_taxel = self._taxel_offsets
         prev_resultant = self._resultant_offsets
+        prev_gates = self._taxel_noise_gates
         self._taxel_offsets = None
         self._resultant_offsets = None
+        self._taxel_noise_gates = None
 
         time.sleep(OFFSET_CLEAR_SETTLE_S)
 
@@ -674,18 +742,32 @@ class TactileClient:
                     "resultant not streaming during offset capture — taxels "
                     "zeroed, resultant left unzeroed"
                 )
+            if gate_noise:
+                gates = _measure_taxel_noise(frames, offsets)
+                self.set_taxel_noise_gates(gates)
+                widest = max(
+                    (max(g) for g in gates.values() if g), default=0.0
+                )
+                logger.info(
+                    "taxel noise gates measured over %d frames (widest %.2f N)",
+                    len(frames), widest,
+                )
             succeeded = True
             return offsets
         finally:
             if not succeeded:
                 self._taxel_offsets = prev_taxel
                 self._resultant_offsets = prev_resultant
+                self._taxel_noise_gates = prev_gates
 
-    def _apply_taxel_offsets(self, taxels: dict, offsets: dict) -> None:
+    def _apply_taxel_offsets(
+        self, taxels: dict, offsets: dict, gates: dict | None = None
+    ) -> None:
         for finger, taxel_list in taxels.items():
             finger_offsets = offsets.get(finger)
             if not finger_offsets:
                 continue
+            finger_gates = gates.get(finger) if gates else None
             for i, taxel in enumerate(taxel_list):
                 if i >= len(finger_offsets):
                     break
@@ -693,6 +775,17 @@ class TactileClient:
                 taxel[0] = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
                 taxel[1] = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
                 taxel[2] = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                # Below this taxel's own measured dither, the reading is noise,
+                # not force — squared compare to keep the sqrt out of a path
+                # that runs on every taxel of every frame.
+                if finger_gates is not None and i < len(finger_gates):
+                    gate = finger_gates[i]
+                    if (
+                        taxel[0] * taxel[0]
+                        + taxel[1] * taxel[1]
+                        + taxel[2] * taxel[2]
+                    ) < gate * gate:
+                        taxel[0] = taxel[1] = taxel[2] = 0.0
 
     def _apply_resultant_offsets(self, forces: dict, offsets: dict) -> None:
         for finger, fvec in forces.items():
@@ -708,8 +801,9 @@ class TactileClient:
         # thread can't turn the dicts into None mid-iteration.
         taxel_offsets = self._taxel_offsets
         resultant_offsets = self._resultant_offsets
+        noise_gates = self._taxel_noise_gates
         if taxel_offsets and parsed_taxels:
-            self._apply_taxel_offsets(parsed_taxels, taxel_offsets)
+            self._apply_taxel_offsets(parsed_taxels, taxel_offsets, noise_gates)
         if resultant_offsets and parsed_resultant:
             self._apply_resultant_offsets(parsed_resultant, resultant_offsets)
 

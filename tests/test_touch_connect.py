@@ -166,14 +166,16 @@ def test_zero_tactile_sensors_forwards_timeout():
     assert ok
     captured = {}
 
-    def fake_capture(num_samples=100, timeout_s=None):
-        captured.update(num_samples=num_samples, timeout_s=timeout_s)
+    def fake_capture(num_samples=100, timeout_s=None, gate_noise=True):
+        captured.update(
+            num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise)
         return {}
 
     hand._tactile_client.capture_taxel_offsets = fake_capture
     try:
-        hand.zero_tactile_sensors(num_samples=7, timeout_s=1.5)
-        assert captured == {"num_samples": 7, "timeout_s": 1.5}
+        hand.zero_tactile_sensors(num_samples=7, timeout_s=1.5, gate_noise=False)
+        assert captured == {
+            "num_samples": 7, "timeout_s": 1.5, "gate_noise": False}
     finally:
         hand.disconnect()
 
