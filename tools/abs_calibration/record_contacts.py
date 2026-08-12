@@ -31,10 +31,10 @@ The wrist is constrained by NEITHER class (no self-contact crosses the
 wrist) and keeps its hardstop calibration; the solver's sigma gate reports
 this honestly.
 
-CAUTION before first hardware use: verify the per-pair approach directions
-in APPROACH below with manual_control.py sliders — abduction sign
-conventions decide which way "toward the neighbour" is, and driving the
-wrong way just visits the far hardstop.
+Approach directions are derived from the packaged kinematic model per
+pair (motor/encoder orientation is already baked into the joint
+convention); the dry-run prints them for a one-time eyeball check against
+what the hardstop calibration does on your hand.
 
 Usage:
     uv run python tools/abs_calibration/record_contacts.py CONFIG_PATH \
@@ -69,15 +69,12 @@ ABD_PAIRS = [
 ABD_POSTURES = (15.0, 40.0)
 ABD_PIP_DEG = 8.0
 
-# Approach directions, VERIFY ON HARDWARE: for each abd joint, +1 means
-# "toward larger angle is toward the pinky side of the hand". Derived from
-# the v2 neutral spread (index -14, middle -4, ring +10, pinky +22): larger
-# abd = toward the pinky. Flip here if the first --dry-run-on-hardware
-# check disagrees.
-ABD_TOWARD_PINKY_SIGN = {
-    "index_abd": +1, "middle_abd": +1, "ring_abd": +1, "pinky_abd": +1,
-}
-FINGER_ORDER = ["index", "middle", "ring", "pinky"]  # thumb side -> pinky side
+# Approach directions are DERIVED FROM THE KINEMATICS, not assumed: for
+# each (pusher, target) pair the packaged model answers "does increasing
+# the pusher's abduction bring its fingertip toward the target finger?".
+# Motor and encoder orientation are already baked into the joint-angle
+# convention the model shares, so this holds for either hand side. The
+# dry-run prints every derived direction for a one-time eyeball check.
 
 TIP_PAIRS = [
     ("thumb", "index"), ("thumb", "middle"), ("thumb", "ring"),
@@ -91,12 +88,29 @@ def _finger(joint: str) -> str:
     return joint.rsplit("_", 1)[0]
 
 
-def _toward(joint_from: str, joint_to: str) -> float:
-    """Sign of motion of ``joint_from`` that approaches ``joint_to``'s finger."""
-    a = FINGER_ORDER.index(_finger(joint_from))
-    b = FINGER_ORDER.index(_finger(joint_to))
-    toward_pinky = 1.0 if b > a else -1.0
-    return toward_pinky * ABD_TOWARD_PINKY_SIGN[joint_from]
+def compute_approach_signs(side: str, held: dict) -> dict:
+    """``{(joint_from, joint_to): +-1}`` — the sign of ``joint_from``
+    motion that brings its fingertip toward ``joint_to``'s finger,
+    answered by the packaged kinematic model at the held pose."""
+    from model import DISTAL_LINK, KinematicModel
+    kin = KinematicModel.load(side)
+
+    def tip(link, q):
+        poses = kin.link_poses({j: np.array([v]) for j, v in q.items()})
+        return poses[link][1][0]
+
+    signs = {}
+    for a, b in ABD_PAIRS:
+        for j_from, j_to in ((a, b), (b, a)):
+            lf, lt = DISTAL_LINK[_finger(j_from)], DISTAL_LINK[_finger(j_to)]
+            base = dict(held)
+            d = {}
+            for s in (+1.0, -1.0):
+                q = dict(base)
+                q[j_from] = base.get(j_from, 0.0) + s * 5.0
+                d[s] = np.linalg.norm(tip(lf, q) - tip(lt, q))
+            signs[(j_from, j_to)] = 1.0 if d[1.0] < d[-1.0] else -1.0
+    return signs
 
 
 class SessionRecorder:
@@ -131,7 +145,8 @@ def read_m(hand, samples: int = 3, interval: float = 0.03) -> dict:
 
 
 def run_abd_block(hand, rec: SessionRecorder, roms: dict, held: dict,
-                  push_currents_ma: list, hold_current_ma: float) -> None:
+                  signs: dict, push_currents_ma: list,
+                  hold_current_ma: float) -> None:
     jidx = {j: i for i, j in enumerate(hand.config.motor_ids)}
     joint_motor = hand.config.joint_ids
 
@@ -157,11 +172,11 @@ def run_abd_block(hand, rec: SessionRecorder, roms: dict, held: dict,
                                                   roms[pip][1] - 2))
                 # Park at the stop FACING the pusher: contact then wedges
                 # nothing (we read encoders, stiffness is all we need).
-                sign_p = _toward(parked, pusher)
+                sign_p = signs[(parked, pusher)]
                 lo, hi = roms[parked]
                 pose[parked] = (hi - ROM_MARGIN_DEG if sign_p > 0
                                 else lo + ROM_MARGIN_DEG)
-                sign_b = _toward(pusher, parked)
+                sign_b = signs[(pusher, parked)]
                 blo, bhi = roms[pusher]
                 start = held[pusher] - sign_b * 5.0
                 pose[pusher] = float(np.clip(start, blo + 1, bhi - 1))
@@ -189,7 +204,8 @@ def run_abd_block(hand, rec: SessionRecorder, roms: dict, held: dict,
                         break
                 if not contact:
                     print(f"  WARNING: no contact {pusher} -> {parked} @ "
-                          f"{posture:.0f} — check ABD_TOWARD_PINKY_SIGN")
+                          f"{posture:.0f} — stall thresholds or an obstruction; "
+                          f"the approach direction came from the model")
                 hand.set_joint_positions(
                     {pusher: float(target - sign_b * 6.0)})
                 time.sleep(0.4)
@@ -260,6 +276,15 @@ def main() -> int:
         print(f"abd-block: {n_abd} approaches "
               f"({[p for p in ABD_PAIRS]} x 2 dir x {list(ABD_POSTURES)} "
               f"x {currents} mA)")
+        side = getattr(hand.config, "type", "right")
+        held0 = {j: PARK.get(j, hand.config.neutral_position.get(j, 0.0))
+                 for j in hand.config.joint_roms_dict}
+        signs = compute_approach_signs(side, held0)
+        print(f"approach directions from the {side}-hand model "
+              "(sanity-check once against your hardstop calibration):")
+        for (jf, jt), sgn in signs.items():
+            word = "increasing" if sgn > 0 else "decreasing"
+            print(f"  {jf:>11} -> toward {_finger(jt):<7}: {word} angle")
         print(f"tip-press: up to {n_tip} events over {len(TIP_PAIRS)} pairs")
         print("wrist: not constrained by either class (kept on hardstop cal)")
         return 0
@@ -281,7 +306,10 @@ def main() -> int:
         hand.init_joints()
         if "abd" in modes:
             push_ma = [float(v) for v in args.push_current.split(",") if v]
-            run_abd_block(hand, rec, roms, held, push_ma, args.hold_current)
+            signs = compute_approach_signs(
+                getattr(hand.config, "type", "right"), held)
+            run_abd_block(hand, rec, roms, held, signs, push_ma,
+                          args.hold_current)
         if "tip" in modes:
             run_tip_press(hand, rec)
         rec.save(args.out, meta={

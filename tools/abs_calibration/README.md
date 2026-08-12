@@ -207,14 +207,17 @@ determine:
 
 ```bash
 uv run python tools/abs_calibration/record_contacts.py CONFIG --out SESSION \
-    --modes abd,tip        # verify ABD_TOWARD_PINKY_SIGN once on hardware
+    --modes abd,tip        # --dry-run first: prints the derived directions
 uv run python tools/abs_calibration/solve_session.py SESSION \
     --manifolds tools/abs_calibration/contact_manifolds_right.yaml
 ```
 
-Also **not yet run on hardware**; the stall thresholds and the
-approach-sign table are the expected first-session tweaks (single
-constants, loud failures).
+Approach directions are derived from the packaged kinematic model per
+pair (the dry-run prints them; on the right hand, toward-the-thumb is
+the decreasing-angle direction for every finger, matching the hardstop
+calibration's first drive). Also **not yet run on hardware**; the stall
+thresholds are the expected first-session tweak (single constants, loud
+failures).
 
 ### Validation on rendered images (`validate_camera_layer.py`)
 
