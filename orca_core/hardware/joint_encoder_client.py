@@ -267,16 +267,32 @@ class JointEncoderClient:
 # ----- Anchor sampling for the joint-encoder calibration sweep --------------
 
 
-def average_anchor_count(samples: np.ndarray) -> int:
-    """Cosine-mean of 14-bit encoder counts; correct across the 16383→0 wrap."""
+def circular_mean_count(samples: np.ndarray) -> float:
+    """Cosine-mean of 14-bit encoder counts; correct across the 16383→0 wrap.
+
+    Returned unrounded, in ``[0, ENCODER_COUNTS_PER_REV)``, so residuals
+    against it keep sub-count resolution.
+    """
     if samples.size == 0:
         raise JointEncoderCalibrationError("cannot average empty sample buffer")
     angles = samples.astype(np.float64) * (2.0 * math.pi / ENCODER_COUNTS_PER_REV)
     mean_angle = math.atan2(float(np.mean(np.sin(angles))), float(np.mean(np.cos(angles))))
     if mean_angle < 0:
         mean_angle += 2.0 * math.pi
-    count = int(round(mean_angle * ENCODER_COUNTS_PER_REV / (2.0 * math.pi)))
-    return count % ENCODER_COUNTS_PER_REV
+    return mean_angle * ENCODER_COUNTS_PER_REV / (2.0 * math.pi)
+
+
+def average_anchor_count(samples: np.ndarray) -> int:
+    """Cosine-mean of 14-bit encoder counts, rounded to a whole count."""
+    return int(round(circular_mean_count(samples))) % ENCODER_COUNTS_PER_REV
+
+
+def signed_count_delta(before: float, after: float) -> float:
+    """Wrap-aware signed distance between two 14-bit encoder counts."""
+    delta = (after - before) % ENCODER_COUNTS_PER_REV
+    if delta > ENCODER_COUNTS_PER_REV / 2:
+        delta -= ENCODER_COUNTS_PER_REV
+    return float(delta)
 
 
 def sample_anchor_count_from_client(
