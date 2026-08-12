@@ -27,6 +27,11 @@ Ordinary hand users do not need any of this; nothing here is exported from
 the top-level ``orca_core`` namespace.
 """
 
+from .anchor_repeatability import (
+    AnchorRepeatabilityResult,
+    JointAnchorStats,
+    run_anchor_repeatability,
+)
 from .encoder_mapping import (
     EncoderMappingResult,
     JointSweep,
@@ -35,8 +40,11 @@ from .encoder_mapping import (
 )
 
 __all__ = [
+    "AnchorRepeatabilityResult",
     "EncoderMappingResult",
+    "JointAnchorStats",
     "JointSweep",
     "SlotCrosstalk",
+    "run_anchor_repeatability",
     "run_encoder_mapping_sweep",
 ]

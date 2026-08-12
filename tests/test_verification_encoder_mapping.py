@@ -306,9 +306,12 @@ def test_verification_is_not_exported_from_the_top_level():
 
 
 _VERIFICATION_SURFACE = frozenset({
+    "AnchorRepeatabilityResult",
     "EncoderMappingResult",
+    "JointAnchorStats",
     "JointSweep",
     "SlotCrosstalk",
+    "run_anchor_repeatability",
     "run_encoder_mapping_sweep",
 })
 
