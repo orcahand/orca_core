@@ -21,6 +21,7 @@ separate 3D track (the estimator's per-dot masking absorbs the split).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import cv2
@@ -260,7 +261,7 @@ def triangulate_components(components: list[dict[str, list[int]]],
     """
     K = len(components)
     pts = np.full((n_frames, K, 3), np.nan)
-    rms_all, rejected = [], 0
+    rms_all, rejected, salvaged = [], 0, 0
     for k, comp in enumerate(components):
         for f in range(n_frames):
             obs = {}
@@ -273,8 +274,26 @@ def triangulate_components(components: list[dict[str, list[int]]],
                 continue
             X, rms = triangulate(obs, rig.cameras)
             if not np.isfinite(rms) or rms > reproj_gate_px:
-                rejected += 1
-                continue
+                # With >= 4 views the consensus can identify one bad camera
+                # (a track that swapped identity) instead of losing the
+                # frame; at 3 views the survivor would be an unverifiable
+                # pair, which is how depth-wrong points sneak in.
+                if len(obs) >= 4:
+                    best = None
+                    for skip in obs:
+                        sub = {c: p for c, p in obs.items() if c != skip}
+                        Xs, rs = triangulate(sub, rig.cameras)
+                        if np.isfinite(rs) and (best is None or rs < best[1]):
+                            best = (Xs, rs)
+                    if best is not None and best[1] <= reproj_gate_px:
+                        X, rms = best
+                        salvaged += 1
+                    else:
+                        rejected += 1
+                        continue
+                else:
+                    rejected += 1
+                    continue
             pts[f, k] = X
             rms_all.append(rms)
     n_spikes = _despike_tracks(pts)
@@ -282,10 +301,73 @@ def triangulate_components(components: list[dict[str, list[int]]],
         "n_components": K,
         "n_points": int(np.isfinite(pts[:, :, 0]).sum()),
         "n_rejected": rejected,
+        "n_salvaged": salvaged,
         "n_despiked": n_spikes,
         "mean_reproj_px": float(np.mean(rms_all)) if rms_all else float("nan"),
     }
     return pts, stats
+
+
+def merge_components(components: list[dict[str, list[int]]],
+                     tracks: dict[str, np.ndarray], pts: np.ndarray,
+                     gate_m: float = 0.0015, min_shared: int = 8,
+                     overlap_tol: int = 2) -> list[dict[str, list[int]]]:
+    """Merge components that are the same physical dot, by 3D agreement.
+
+    Association under-merges by design (its vetoes prefer a split to a
+    chimera), leaving one dot as several components seen by different
+    camera subsets. Merging matters twice: duplicate columns vote for each
+    other in the rigidity filter (they are copies, not independent peers),
+    and a merged component sees >= 3 views where the splits saw 2, which is
+    what lets the reprojection consensus actually reject bad pairings. The
+    same-camera exclusivity veto still applies: two tracks of one camera
+    disagreeing at the same instant are not the same dot.
+    """
+    fin = np.isfinite(pts[:, :, 0])
+    parent = list(range(len(components)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def occupancy(comp):
+        occ = {}
+        for cam, idxs in comp.items():
+            mask = np.zeros(pts.shape[0], bool)
+            for ti in idxs:
+                mask |= np.isfinite(tracks[cam][ti, :, 0])
+            occ[cam] = mask
+        return occ
+
+    occ = [occupancy(c) for c in components]
+    for i in range(len(components)):
+        for j in range(i + 1, len(components)):
+            shared = fin[:, i] & fin[:, j]
+            if shared.sum() < min_shared:
+                continue
+            d = np.linalg.norm(pts[shared, i] - pts[shared, j], axis=1)
+            if np.median(d) > gate_m:
+                continue
+            ri, rj = find(i), find(j)
+            if ri == rj:
+                continue
+            oi, oj = occ[ri], occ[rj]
+            if any((oi[c] & oj[c]).sum() > overlap_tol for c in oi if c in oj):
+                continue
+            parent[rj] = ri
+            merged = dict(oi)
+            for c, m in oj.items():
+                merged[c] = merged[c] | m if c in merged else m
+            occ[ri] = merged
+
+    groups: dict[int, dict[str, list[int]]] = {}
+    for i, comp in enumerate(components):
+        g = groups.setdefault(find(i), {})
+        for cam, idxs in comp.items():
+            g.setdefault(cam, []).extend(idxs)
+    return list(groups.values())
 
 
 def rigidity_filter(dot_obs: dict[str, np.ndarray],
@@ -330,10 +412,11 @@ def rigidity_filter(dot_obs: dict[str, np.ndarray],
                 continue
             arr = cols[frames][:, group, :]
             d = np.linalg.norm(arr[:, :, None, :] - arr[:, None, :, :], axis=3)
-            with np.errstate(invalid="ignore"):
-                enough = np.isfinite(d).sum(axis=0) >= min_pair_obs
+            enough = np.isfinite(d).sum(axis=0) >= min_pair_obs
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pairs
                 med = np.where(enough, np.nanmedian(d, axis=0), np.nan)
-                dev = np.abs(d - med[None, :, :])
+            dev = np.abs(d - med[None, :, :])
             finite = np.isfinite(dev)
             bad = ((dev > tol_m) & finite).sum(axis=2)
             good = ((dev <= tol_m) & finite).sum(axis=2) - 1

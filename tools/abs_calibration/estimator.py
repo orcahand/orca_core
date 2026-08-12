@@ -42,6 +42,10 @@ SIGMA_DOT = 1.5e-4    # m
 SIGMA_DIR = np.deg2rad(0.1)
 SIGMA_PLATE = 1.5e-4  # m
 SIGMA_PRIOR = {"normal": 1.0, "wide": 4.0}  # deg
+# Weak zero-centred prior on the curve terms: a joint whose sweep went
+# unobserved (occlusion) must degrade to "no correction", not to a runaway
+# polynomial. Far wider than any real INL, so data-rich joints ignore it.
+SIGMA_CURVE = 2.0  # deg per curve coefficient
 
 MIN_DOT_FRAMES = 3     # a dot seen fewer times than this is dropped
 
@@ -202,6 +206,8 @@ class Estimator:
             sigma = self.prior.sigma(j)
             if sigma is not None:
                 res.append(np.atleast_1d((b[i, 0] - self.prior.mean.get(j, 0.0)) / sigma))
+        if self.K > 1:
+            res.append((b[:, 1:] / SIGMA_CURVE).ravel())
 
         return np.concatenate(res)
 

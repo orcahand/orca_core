@@ -24,6 +24,10 @@ from model import JOINT_ROMS, KinematicModel
 
 STATIC_LINK = "fixed0"  # forearm/base shell: the only fixed node in the tree
 MOVE_THRESH_M = 0.004   # smallest true sweep motion ~8 mm; held-joint creep ~1 mm
+STILL_THRESH_M = 0.0012  # below this a track is confidently still; between the
+                         # thresholds it is UNKNOWN — a dot lying near a joint's
+                         # axis moves millimetres under that joint and cannot
+                         # testify about it either way
 MIN_SWEEP_OBS = 4       # finite frames needed to judge a track against a sweep
 
 
@@ -95,8 +99,15 @@ def assign_links(pts: np.ndarray, sweep_frames: dict[str, np.ndarray],
                 continue
             p = pts[frames[fin], k, :]
             d = np.linalg.norm(p - np.median(p, axis=0), axis=1)
-            thresh = max(0.0015, move_thresh_m * span_frac)
-            moving[joint] = bool(np.percentile(d, 95) > thresh)
+            motion = float(np.percentile(d, 95))
+            thresh = max(STILL_THRESH_M, move_thresh_m * span_frac)
+            if motion > thresh and (d > thresh / 2).mean() >= 0.25:
+                # A genuine mover deviates on a quarter of its frames at
+                # least; one stray triangulation on a thin fragment doesn't.
+                moving[joint] = True
+            elif motion < STILL_THRESH_M:
+                moving[joint] = False
+            # else: near-axis ambiguity or a lone spike — stays unknown
 
         if not moving:
             report.append({"track": k, "link": None, "reason": "no sweep coverage"})

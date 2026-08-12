@@ -39,7 +39,8 @@ from assign import assign_links, link_signatures, STATIC_LINK
 from cameras import Rig
 from dataset import Dataset, save_session
 from dots import (DetectorConfig, associate_tracks, detect_dots,
-                  rigidity_filter, track_2d, triangulate_components)
+                  merge_components, rigidity_filter, track_2d,
+                  triangulate_components)
 from model import KinematicModel
 
 CAPTURE_FORMAT = 1
@@ -106,21 +107,44 @@ def build_session(capture_dir: str, rig: Rig, out_dir: str, *,
     components = associate_tracks(tracks, rig, gate_px=gate_px)
     pts, tri_stats = triangulate_components(
         components, tracks, rig, n_frames, reproj_gate_px=reproj_gate_px)
+    merged = merge_components(components, tracks, pts)
+    if len(merged) < len(components):
+        print(f"  merged {len(components)} components into {len(merged)}")
+        components = merged
+        pts, tri_stats = triangulate_components(
+            components, tracks, rig, n_frames, reproj_gate_px=reproj_gate_px)
     print(f"  {tri_stats['n_components']} dot tracks, "
           f"{tri_stats['n_points']} 3D points "
           f"(mean reproj {tri_stats['mean_reproj_px']:.2f} px, "
-          f"{tri_stats['n_rejected']} rejected)")
+          f"{tri_stats['n_rejected']} rejected, "
+          f"{tri_stats['n_salvaged']} salvaged)")
 
     print("Assigning tracks to links...")
     model = KinematicModel.load(side)
+    sigs = link_signatures(model)
+    # Two passes: signatures judged on corrupted points misassign (a swap
+    # segment fakes motion under the wrong sweep), the rigidity filter then
+    # removes exactly those segments — so signatures are re-judged on the
+    # cleaned points, where the corrupt sweep becomes unknown and the chain
+    # rules take over.
+    assignment, report = assign_links(pts, sweep_frames, model, m, joints)
+    scratch = {link: pts[:, idxs, :].copy() for link, idxs in assignment.items()}
+    n_rigid = rigidity_filter(scratch, sweep_frames, sigs)
+    for link, idxs in assignment.items():
+        pts[:, idxs, :] = scratch[link]
     assignment, report = assign_links(pts, sweep_frames, model, m, joints)
     unassigned = [r for r in report if r["link"] is None]
     for r in unassigned:
         print(f"  track {r['track']}: UNASSIGNED ({r['reason']})")
     dot_obs = {link: pts[:, idxs, :].copy() for link, idxs in assignment.items()}
-    n_rigid = rigidity_filter(dot_obs, sweep_frames, link_signatures(model))
+    n_rigid += rigidity_filter(dot_obs, sweep_frames, sigs)
     if n_rigid:
         print(f"  rigidity filter dropped {n_rigid} points")
+    chain_tracks = {r["track"] for r in report if r.get("chain")}
+    chain_columns = [
+        [link, pos] for link, idxs in assignment.items()
+        for pos, t in enumerate(idxs) if t in chain_tracks
+    ]
     for link in sorted(dot_obs):
         n_obs = int(np.isfinite(dot_obs[link][:, :, 0]).sum())
         tag = " (static: forearm/background)" if link == STATIC_LINK else ""
@@ -139,6 +163,7 @@ def build_session(capture_dir: str, rig: Rig, out_dir: str, *,
             "triangulation": tri_stats,
             "n_tracks_2d": {cam: int(len(trs)) for cam, trs in tracks.items()},
             "n_unassigned": len(unassigned),
+            "chain_columns": chain_columns,
         },
     )
     save_session(ds, out_dir)

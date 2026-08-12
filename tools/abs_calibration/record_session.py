@@ -105,6 +105,11 @@ def main() -> int:
     ap.add_argument("--step-scale", type=float, default=1.0)
     ap.add_argument("--abd-postures", default="0.15,0.5,0.8",
                     help="Flexion fractions for abd sweeps ('' = held only)")
+    ap.add_argument("--park", default="thumb_abd=0,thumb_mcp=-20,thumb_cmc=-35",
+                    help="Held-pose overrides (joint=deg,...). The natural "
+                         "neutral opposes the thumb across the fingers; parked "
+                         "clear, thumb and finger dots stop crossing in image "
+                         "space and stealing identities ('' = config neutral)")
     ap.add_argument("--anchor-poses", type=int, default=8)
     ap.add_argument("--dry-run", action="store_true",
                     help="Plan and report only; no hardware, no cameras")
@@ -131,8 +136,13 @@ def main() -> int:
             if not args.dry_run:
                 raise SystemExit("joint loop not running after connect()")
         roms = {j: tuple(hand.config.joint_roms_dict[j]) for j in joints}
+        park = {}
+        for item in args.park.split(","):
+            if item:
+                j, _, v = item.partition("=")
+                park[j.strip()] = float(v)
         held = {
-            j: float(np.clip(hand.config.neutral_position.get(j, 0.0),
+            j: float(np.clip(park.get(j, hand.config.neutral_position.get(j, 0.0)),
                              roms[j][0] + ROM_MARGIN_DEG,
                              roms[j][1] - ROM_MARGIN_DEG))
             for j in joints
@@ -211,7 +221,7 @@ def main() -> int:
     finally:
         if not args.dry_run:
             try:
-                hand.set_joint_positions(dict(hand.config.neutral_position))
+                hand.set_neutral_position()
                 time.sleep(1.0)
             except Exception as e:
                 print(f"WARNING: could not return to neutral: {e}")
