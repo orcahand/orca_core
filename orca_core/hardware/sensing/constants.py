@@ -258,6 +258,11 @@ ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
 """How long ``JointEncoderClient.start_stream`` waits for the first valid
 AA A9 frame before raising ``EncodersNotAvailableError``."""
 
+ENCODER_FILTER_CUTOFF_HZ = 5.0
+"""Cutoff of the low-pass ``JointEncoderClient`` applies to the count stream.
+Only display and monitoring consumers see this — the control loop and the
+calibration sweep read the unfiltered stream."""
+
 # ---------------------------------------------------------------------------
 # Auto-stream timing
 # ---------------------------------------------------------------------------

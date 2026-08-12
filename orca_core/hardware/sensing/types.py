@@ -97,9 +97,10 @@ class TactileReading:
 class EncoderReading:
     """Decoded encoder auto-stream frame plus a ``time.monotonic()`` receive timestamp.
 
-    ``raw_counts`` is the unmodified u16 from the wire (parity + err bits
-    not stripped). ``parity_ok`` is the result of the AS5048A even-parity
-    check across the full 16-bit word. ``angle_error`` is bit 14 (the chip's own error flag).
+    ``raw_counts`` is the u16 per slot with the parity + err bits still on it.
+    ``parity_ok`` is the AS5048A even-parity check over the word as received
+    and ``angle_error`` is bit 14; use these rather than re-deriving them from
+    ``raw_counts``, which is smoothed on a ``get_latest()`` reading.
     """
 
     raw_counts: np.ndarray

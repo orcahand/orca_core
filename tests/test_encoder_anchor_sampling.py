@@ -171,7 +171,7 @@ def test_sampling_counts_frames_that_share_a_coarse_timestamp(monkeypatch):
     class Source:
         calls = 0
 
-        def get_latest(self):
+        def get_latest_unfiltered(self):
             self.calls += 1
             raw = np.full(AUTO_ENC_NUM_JOINTS, 1000 + self.calls, dtype=np.uint16)
             return EncoderReading(

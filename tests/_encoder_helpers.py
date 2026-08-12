@@ -8,6 +8,7 @@ import numpy as np
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
+    AUTO_ENC_PARITY_BIT,
     ENCODER_COUNTS_PER_REV,
     ENCODER_LSB_DEG,
     JOINT_TO_ENCODER_SLOT,
@@ -64,6 +65,18 @@ def feed_encoder_frame(
     )
 
 
+def with_even_parity(counts) -> np.ndarray:
+    """Set bit 15 so each word passes the chip's even-parity check."""
+    counts = np.asarray(counts, dtype=np.uint16) & ~np.uint16(AUTO_ENC_PARITY_BIT)
+    odd = np.array([bin(int(c)).count("1") & 1 for c in counts.ravel()], dtype=bool)
+    return counts | (odd.reshape(counts.shape) * np.uint16(AUTO_ENC_PARITY_BIT))
+
+
+def full_counts(value: int) -> np.ndarray:
+    """A parity-clean, full-width count array with every slot at ``value``."""
+    return with_even_parity(np.full(AUTO_ENC_NUM_JOINTS, value, dtype=np.uint16))
+
+
 # ---------------------------------------------------------------------------
 # Mock joint-encoder source for calibration integration tests
 # ---------------------------------------------------------------------------
@@ -104,7 +117,7 @@ def rom_consistent_counts_per_rad(
 class MockJointEncoderSource:
     """Synthesise per-joint encoder counts from mock motor positions.
 
-    Implements ``get_latest`` (the only method the
+    Implements ``get_latest_unfiltered`` (the only method the
     calibration sweep calls on its encoder client). Counts wrap into the
     14-bit range so feeding them back through ``_raw_to_joint_angle``
     yields the joint-space the mock motor is in.
@@ -145,7 +158,7 @@ class MockJointEncoderSource:
         count = int(round(polarity * (motor_pos - offset) * rate))
         return count % ENCODER_COUNTS_PER_REV
 
-    def get_latest(self) -> EncoderReading:
+    def get_latest_unfiltered(self) -> EncoderReading:
         raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
         for joint, slot in JOINT_TO_ENCODER_SLOT.items():
             if slot in self._dead_slots:
@@ -158,3 +171,5 @@ class MockJointEncoderSource:
             error_byte=0,
             timestamp=time.monotonic(),
         )
+
+    get_latest = get_latest_unfiltered
