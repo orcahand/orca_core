@@ -147,8 +147,8 @@ def read_m(hand, samples: int = 3, interval: float = 0.03) -> dict:
 def run_abd_block(hand, rec: SessionRecorder, roms: dict, held: dict,
                   signs: dict, push_currents_ma: list,
                   hold_current_ma: float) -> None:
-    jidx = {j: i for i, j in enumerate(hand.config.motor_ids)}
-    joint_motor = hand.config.joint_ids
+    jidx = hand.config.motor_id_to_idx_dict
+    joint_motor = hand.config.joint_to_motor_map
 
     def currents(weak_joint=None, ma=None):
         base = [hold_current_ma] * len(hand.config.motor_ids)
