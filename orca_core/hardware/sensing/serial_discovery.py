@@ -35,6 +35,7 @@ from .constants import (
     PROTOCOL_HEADER_AUTO_ENC,
 )
 from .framing import calculate_checksum
+from .. import port_registry
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +337,10 @@ class BoardProbe:
     sensing_port: Optional[str] = None
     identity: Optional[OrcaBoardInfo] = None
     busy_ports: tuple[str, ...] = ()
+    """Ports held by some other program, which stay silent under probing."""
+    owned_ports: tuple[str, ...] = ()
+    """Ports this process is already driving. Also silent under probing, but
+    the caller is the one holding them — usually another hand it connected."""
 
     @property
     def hand_id(self) -> Optional[str]:
@@ -399,6 +404,7 @@ def probe_board(
         )
         motor_port = sensing_port = identity = None
 
+    unresolved = [p for p in candidate.ports if p not in (motor_port, sensing_port)]
     return BoardProbe(
         ports=candidate.ports,
         usb_serial=candidate.usb_serial,
@@ -407,8 +413,11 @@ def probe_board(
         sensing_port=sensing_port,
         identity=identity,
         busy_ports=tuple(
-            port for port in candidate.ports
-            if port not in (motor_port, sensing_port) and port_in_use(port)
+            port for port in unresolved
+            if port_registry.owner_of(port) is None and port_in_use(port)
+        ),
+        owned_ports=tuple(
+            port for port in unresolved if port_registry.owner_of(port) is not None
         ),
     )
 

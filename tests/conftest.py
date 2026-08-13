@@ -45,6 +45,20 @@ def _no_settle_sleeps():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _release_port_claims():
+    """Drop port claims between tests.
+
+    Clients built on fake ports here are usually abandoned rather than
+    disconnected, and one still referenced keeps its claim — which would
+    refuse the next test's connect on the same fake port.
+    """
+    from orca_core.hardware import port_registry
+
+    yield
+    port_registry.clear()
+
+
 @pytest.fixture
 def tactile_mock():
     """Default tactile setup: connected client on a mock link, all 5 fingers."""

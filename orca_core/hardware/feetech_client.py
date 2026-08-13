@@ -16,6 +16,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from ..constants import FEETECH
+from . import port_registry
 from .motor_client import (
     MotionTimeoutError,
     MotorClient,
@@ -188,52 +189,63 @@ class FeetechClient(MotorClient):
             raise RuntimeError('Client is already connected.')
 
         with self._bus_lock:
-            self.port_handler.baudrate = self.baudrate
-
-            if self.port_handler.openPort():
-                logging.info('Succeeded to open port: %s', self.port_name)
-            else:
-                raise OSError(
-                    f'Failed to open port at {self.port_name} (Check that the device is '
-                    'powered on and connected to your computer).'
-                )
-
-            # A failure past this point must not leave the port open (and
-            # advisory-locked) with no registered owner to close it.
+            # Claimed before the port is opened: a bus another client in this
+            # process is driving must not be touched at all.
+            port_registry.claim(self.port_name, self)
             try:
-                claim_port_lock(self.port_handler, self.port_name)
-
-                # Enable low latency mode for faster communication
-                if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
-                    try:
-                        self.port_handler.ser.set_low_latency_mode(True)
-                        logging.info('Enabled low latency mode for USB serial')
-                    except Exception:
-                        pass  # Not critical if it fails
-
-                self.packet_handler = sms_sts(self.port_handler)
-                self._connected = True
-
-                # Ensure motors are in servo mode (not wheel mode)
-                # This prevents issues if motors were left in wheel mode from a previous session
-                for motor_id in self.motor_ids:
-                    result, error = self.packet_handler.write1ByteTxRx(
-                        motor_id, SMS_STS_MODE, 0
-                    )
-                    if result != COMM_SUCCESS or error != 0:
-                        self._flush_input_buffer()
-
-                # Torque is left as-is: connecting must never make the hand
-                # stiffen or move. Callers opt in via enable_torque()/init_joints().
-
-                self.OPEN_CLIENTS.add(self)
+                self._open_and_configure()
             except Exception:
-                self._connected = False
-                try:
-                    self.port_handler.closePort()
-                except Exception:
-                    pass
+                port_registry.release(self.port_name, self)
                 raise
+
+    def _open_and_configure(self):
+        """Open the port and bring the bus up, closing it again on failure."""
+        self.port_handler.baudrate = self.baudrate
+
+        if self.port_handler.openPort():
+            logging.info('Succeeded to open port: %s', self.port_name)
+        else:
+            raise OSError(
+                f'Failed to open port at {self.port_name} (Check that the device is '
+                'powered on and connected to your computer).'
+            )
+
+        # A failure past this point must not leave the port open (and
+        # advisory-locked) with no registered owner to close it.
+        try:
+            claim_port_lock(self.port_handler, self.port_name)
+
+            # Enable low latency mode for faster communication
+            if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+                try:
+                    self.port_handler.ser.set_low_latency_mode(True)
+                    logging.info('Enabled low latency mode for USB serial')
+                except Exception:
+                    pass  # Not critical if it fails
+
+            self.packet_handler = sms_sts(self.port_handler)
+            self._connected = True
+
+            # Ensure motors are in servo mode (not wheel mode)
+            # This prevents issues if motors were left in wheel mode from a previous session
+            for motor_id in self.motor_ids:
+                result, error = self.packet_handler.write1ByteTxRx(
+                    motor_id, SMS_STS_MODE, 0
+                )
+                if result != COMM_SUCCESS or error != 0:
+                    self._flush_input_buffer()
+
+            # Torque is left as-is: connecting must never make the hand
+            # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+            self.OPEN_CLIENTS.add(self)
+        except Exception:
+            self._connected = False
+            try:
+                self.port_handler.closePort()
+            except Exception:
+                pass
+            raise
 
     def disconnect(self) -> None:
         """Disconnects from the Feetech motors.
@@ -257,6 +269,7 @@ class FeetechClient(MotorClient):
                 self.port_handler.closePort()
                 self._connected = False
                 self.OPEN_CLIENTS.discard(self)
+                port_registry.release(self.port_name, self)
 
     @staticmethod
     def scan_for_motors(

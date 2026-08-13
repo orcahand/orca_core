@@ -741,3 +741,112 @@ def test_single_port_resolvers_refuse_to_pick_between_two_boards(monkeypatch):
     )
     assert serial_discovery.find_motor_port() is None
     assert serial_discovery._find_oh_sensor_port() is None
+
+
+# ----- the in-process port registry ----------------------------------------
+
+class _Client:
+    """Stand-in owner. Claims are weak, so an owner must be weakref-able —
+    a bare object() is not."""
+
+
+def test_a_second_client_cannot_claim_a_port_this_process_drives():
+    """Advisory file locks catch another process. Inside one process the
+    second open succeeds, and both clients then read each other's replies."""
+    from orca_core.hardware import port_registry
+
+    first, second = _Client(), _Client()
+    port_registry.claim("/dev/cu.bus", first)
+    with pytest.raises(port_registry.PortAlreadyClaimed, match="already open"):
+        port_registry.claim("/dev/cu.bus", second)
+
+    port_registry.release("/dev/cu.bus", first)
+    port_registry.claim("/dev/cu.bus", second)
+
+
+def test_reclaiming_the_same_port_is_idempotent():
+    from orca_core.hardware import port_registry
+
+    owner = _Client()
+    port_registry.claim("/dev/cu.bus", owner)
+    port_registry.claim("/dev/cu.bus", owner)
+    assert port_registry.owner_of("/dev/cu.bus") is owner
+
+
+def test_releasing_a_port_you_do_not_hold_is_harmless():
+    from orca_core.hardware import port_registry
+
+    owner, other = _Client(), _Client()
+    port_registry.claim("/dev/cu.bus", owner)
+    port_registry.release("/dev/cu.bus", other)
+    assert port_registry.owner_of("/dev/cu.bus") is owner
+
+
+def test_a_dropped_client_releases_its_port():
+    """A client abandoned without disconnecting must not strand its bus for
+    the life of the process."""
+    import gc
+
+    from orca_core.hardware import port_registry
+
+    owner = _Client()
+    port_registry.claim("/dev/cu.bus", owner)
+    del owner
+    gc.collect()
+    assert port_registry.owner_of("/dev/cu.bus") is None
+
+
+def test_two_names_for_one_device_are_the_same_claim(tmp_path):
+    """Linux ships /dev/serial/by-id symlinks beside the ttyACM they point at,
+    and a config may pin either."""
+    from orca_core.hardware import port_registry
+
+    real = tmp_path / "ttyACM0"
+    real.write_bytes(b"")
+    link = tmp_path / "by-id-orca"
+    link.symlink_to(real)
+
+    first, second = _Client(), _Client()
+    port_registry.claim(str(real), first)
+    with pytest.raises(port_registry.PortAlreadyClaimed):
+        port_registry.claim(str(link), second)
+
+
+def test_a_motor_client_releases_its_port_on_a_failed_connect(monkeypatch):
+    """A refused connect must not leave the bus claimed against the retry."""
+    from orca_core.hardware import port_registry
+    from orca_core.hardware.dynamixel_client import DynamixelClient
+
+    client = DynamixelClient([1], port="/dev/cu.nope", baudrate=1_000_000)
+    monkeypatch.setattr(client.port_handler, "openPort", lambda: False)
+
+    with pytest.raises(OSError):
+        client.connect()
+    assert port_registry.owner_of("/dev/cu.nope") is None
+
+
+def test_detection_tells_this_process_apart_from_a_foreign_client(monkeypatch):
+    """A hand this process already connected is silent under probing for a
+    reason the caller can act on, unlike a port some other program holds."""
+    from orca_core import hand_factory
+    from orca_core.hardware import port_registry
+    from orca_core.hardware.sensing import serial_discovery
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        _oh_port("/dev/cu.mine", _BOARD_A),
+        _oh_port("/dev/cu.theirs", _BOARD_A),
+    ])
+    monkeypatch.setattr(serial_discovery, "probe_orca_info", lambda p, *a, **k: None)
+    monkeypatch.setattr(
+        serial_discovery, "port_in_use", lambda p: p == "/dev/cu.theirs"
+    )
+    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
+    monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
+
+    holder = _Client()
+    port_registry.claim("/dev/cu.mine", holder)
+
+    detections = hand_factory.detect_hands()
+    assert len(detections) == 1
+    assert detections[0].owned_ports == ("/dev/cu.mine",)
+    assert detections[0].busy_ports == ("/dev/cu.theirs",)

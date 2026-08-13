@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL
+from . import port_registry
 from .motor_client import MotorClient, MotorRead, claim_port_lock
 
 PROTOCOL_VERSION = 2.0
@@ -211,46 +212,57 @@ class DynamixelClient(MotorClient):
         assert not self.is_connected, 'Client is already connected.'
 
         with self._bus_lock:
-            if self.port_handler.openPort():
-                logging.info('Succeeded to open port: %s', self.port_name)
+            # Claimed before the port is opened: a bus another client in this
+            # process is driving must not be touched at all.
+            port_registry.claim(self.port_name, self)
+            try:
+                self._open_and_configure()
+            except Exception:
+                port_registry.release(self.port_name, self)
+                raise
+
+    def _open_and_configure(self):
+        """Open the port and bring the bus up, closing it again on failure."""
+        if self.port_handler.openPort():
+            logging.info('Succeeded to open port: %s', self.port_name)
+        else:
+            raise OSError(
+                ('Failed to open port at {} (Check that the device is powered '
+                 'on and connected to your computer).').format(self.port_name))
+
+        # A failure past this point must not leave the port open (and
+        # advisory-locked) with no registered owner to close it.
+        try:
+            if self.port_handler.setBaudRate(self.baudrate):
+                logging.info('Succeeded to set baudrate to %d', self.baudrate)
             else:
                 raise OSError(
-                    ('Failed to open port at {} (Check that the device is powered '
-                     'on and connected to your computer).').format(self.port_name))
+                    ('Failed to set the baudrate to {} (Ensure that the device was '
+                     'configured for this baudrate).').format(self.baudrate))
 
-            # A failure past this point must not leave the port open (and
-            # advisory-locked) with no registered owner to close it.
-            try:
-                if self.port_handler.setBaudRate(self.baudrate):
-                    logging.info('Succeeded to set baudrate to %d', self.baudrate)
-                else:
-                    raise OSError(
-                        ('Failed to set the baudrate to {} (Ensure that the device was '
-                         'configured for this baudrate).').format(self.baudrate))
+            claim_port_lock(self.port_handler, self.port_name)
 
-                claim_port_lock(self.port_handler, self.port_name)
-
-                # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
-                if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
-                    try:
-                        self.port_handler.ser.set_low_latency_mode(True)
-                        logging.info('Enabled low latency mode for USB serial')
-                    except Exception:
-                        pass  # Not critical if it fails
-
-                # Clear any pre-existing hardware errors.
-                self.check_overload_and_reboot(self.motor_ids)
-
-                # Torque is left as-is: connecting must never make the hand
-                # stiffen or move. Callers opt in via enable_torque()/init_joints().
-
-                self.OPEN_CLIENTS.add(self)
-            except Exception:
+            # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
+            if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
                 try:
-                    self.port_handler.closePort()
+                    self.port_handler.ser.set_low_latency_mode(True)
+                    logging.info('Enabled low latency mode for USB serial')
                 except Exception:
-                    pass
-                raise
+                    pass  # Not critical if it fails
+
+            # Clear any pre-existing hardware errors.
+            self.check_overload_and_reboot(self.motor_ids)
+
+            # Torque is left as-is: connecting must never make the hand
+            # stiffen or move. Callers opt in via enable_torque()/init_joints().
+
+            self.OPEN_CLIENTS.add(self)
+        except Exception:
+            try:
+                self.port_handler.closePort()
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -304,6 +316,7 @@ class DynamixelClient(MotorClient):
             finally:
                 self.port_handler.closePort()
                 self.OPEN_CLIENTS.discard(self)
+                port_registry.release(self.port_name, self)
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

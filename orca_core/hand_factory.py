@@ -132,6 +132,9 @@ class HandDetection:
     tactile_port: Optional[str] = None
     identity: Optional[OrcaBoardInfo] = None
     busy_ports: tuple[str, ...] = ()
+    owned_ports: tuple[str, ...] = ()
+    """Ports this process is already driving, usually another hand it
+    connected. Silent under probing for that reason, not a foreign client."""
     declared_config: Optional[int] = None
     probed_tactile: bool = False
     probed_encoders: bool = False
@@ -201,6 +204,7 @@ def _detection_from_board(
         tactile_port=tactile_port,
         identity=identity,
         busy_ports=board.busy_ports,
+        owned_ports=board.owned_ports,
         declared_config=declared_config,
         probed_tactile=probed_tactile,
         probed_encoders=probed_encoders,
@@ -231,7 +235,8 @@ def detect_hands() -> "list[HandDetection]":
     # alone and stays.
     boards = [
         board for board in probe_boards()
-        if board.motor_port or board.sensing_port or board.busy_ports
+        if board.motor_port or board.sensing_port
+        or board.busy_ports or board.owned_ports
     ]
 
     # A dedicated tactile adapter is a separate USB device with nothing tying
@@ -419,6 +424,14 @@ def load_hand(
                 "this hand. Close the other client (a running UI, script or "
                 "serial monitor), or name the model explicitly.",
                 ", ".join(detection.busy_ports), model_name,
+            )
+        if detection.owned_ports:
+            logger.warning(
+                "controller-board port(s) %s are already connected in this "
+                "process, so they could not be probed and %r may understate "
+                "this hand. Detect before connecting, or name the model "
+                "explicitly.",
+                ", ".join(detection.owned_ports), model_name,
             )
         _warn_on_capability_mismatch(detection)
 

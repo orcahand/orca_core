@@ -41,6 +41,7 @@ from orca_core.hardware.sensing.constants import (
     RESPONSE_META_SIZE,
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
+from orca_core.hardware import port_registry
 
 logger = logging.getLogger(__name__)
 FrameHandler = Callable[[bytes], None]
@@ -155,7 +156,15 @@ class HandSerialLink:
         if self._disconnected:
             raise RuntimeError("hand serial link already disconnected; cannot reconnect")
 
-        self._open_serial()
+        # Bookkeeping only: the open below is already exclusive. The claim is
+        # what lets discovery tell this process's own link apart from a port
+        # some other program is holding.
+        port_registry.claim(self._port, self)
+        try:
+            self._open_serial()
+        except Exception:
+            port_registry.release(self._port, self)
+            raise
         self._demux_running = True
         self._connected = True
         self._demux_thread = threading.Thread(
@@ -183,6 +192,7 @@ class HandSerialLink:
             pass
 
         self._close_serial()
+        port_registry.release(self._port, self)
         self._connected = False
         self._disconnected = True
 
