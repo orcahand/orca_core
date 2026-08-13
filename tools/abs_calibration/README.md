@@ -86,28 +86,45 @@ the tangents and would bring abd floors down to the flexion class.
 convergence gate); the synthetic study is what quantifies model-error bias,
 which dominates it.
 
-## Phase-1 camera layer
+## Phase-1 camera layer + Phase-2 anchors
 
-Turns raw camera data into the session format. The full hardware flow:
+Turns raw camera data into the session format and measures the absolute
+anchors. The full hardware flow:
 
 ```bash
-# 1. shoot ChArUco calibration images (interactive; board fixed for extrinsics)
+# 1. shoot ChArUco calibration images (interactive; board fixed for
+#    extrinsics; a hand-held assist camera gets an intrinsic-only dir)
 uv run python tools/abs_calibration/record_calibration.py CALIB_DIR \
     --camera cam0=0 --camera cam1=1 --camera cam2=2
 
-# 2. calibrate the rig (world frame = the fixed board)
+# 2. calibrate the rig (world frame = the fixed board; camera dirs without
+#    extrinsic/ become assist cameras: per-shot board self-localisation)
 uv run python tools/abs_calibration/calibrate_rig.py CALIB_DIR --out rig.yaml
 
-# 3. capture a session: sweeps + frames + encoders  [NOT yet hardware-tested]
+# 3. capture a session: sweeps + anchor poses + encoders; --assist-camera
+#    prompts hand-held shots at each anchor pose  [NOT yet hardware-tested]
 uv run python tools/abs_calibration/record_session.py CONFIG --rig rig.yaml \
     --out CAPTURE_DIR --camera cam0=0 --camera cam1=1 --camera cam2=2
 
-# 4. detect/track/triangulate/assign -> session dir
+# 4. detect/track/triangulate/assign -> session dir (dots only)
 uv run python tools/abs_calibration/build_session.py CAPTURE_DIR \
     --rig rig.yaml --out SESSION_DIR
 
-# 5. solve
-uv run python tools/abs_calibration/solve_session.py SESSION_DIR
+# 5. detect the Phase-2 anchors into the session (dir_obs + frame_axes,
+#    with per-anchor sigmas; preliminary dots-only solve for prediction)
+uv run python tools/abs_calibration/detect_anchors.py SESSION_DIR \
+    --rig rig.yaml [--assist-camera assist0] [--priors priors.yaml]
+
+# 6. (optional) plate contacts at several wrist angles [NOT yet hardware-tested]
+uv run python tools/abs_calibration/record_plate.py CONFIG --rig rig.yaml \
+    --plate plate.yaml --out PLATE_SESSION --camera cam0=0
+#    (print the plate: python plate.py --scad plate.scad --yaml plate.yaml)
+
+# 7. merge whatever sessions exist (camera + contact + plate) and solve
+uv run python tools/abs_calibration/merge_sessions.py MERGED \
+    SESSION_DIR PLATE_SESSION CONTACT_SESSION --same-mount
+uv run python tools/abs_calibration/solve_session.py MERGED \
+    --plate-holdout 0.3
 ```
 
 Design points, each load-bearing:
@@ -154,12 +171,63 @@ Design points, each load-bearing:
 - `dots.py` — blob detection, per-camera tracking, association,
   triangulation, rigidity/despike filters
 - `assign.py` — motion-signature link assignment
-- `sweep_plan.py` — the shared sweep protocol (renderer + hardware)
+- `sweep_plan.py` — the shared sweep protocol + anchor-pose plan
+  (renderer + hardware)
+- `anchors.py` — Phase-2 anchor detection: mesh-guided contour refinement
+  (below)
+- `detect_anchors.py` — anchors into a session: preliminary solve,
+  detection, de-novo wide scan, assist-shot self-localisation
+- `plate.py`, `record_plate.py` — dimple plate: printable geometry, tag
+  pose, contact capture (hardware capture untested, like its siblings)
+- `merge_sessions.py` — contact + camera + plate sessions into one dataset
 - `calibrate_rig.py`, `build_session.py` — offline CLIs
 - `record_calibration.py`, `record_session.py` — hardware capture
   (**written against the public hand API, not yet run on hardware**)
 - `render_synthetic.py`, `validate_camera_layer.py` — image-level synthetic
   validation (below)
+
+## Phase-2 anchor detection (`anchors.py`)
+
+Dots alone leave every per-joint offset as pure gauge (a constant joint
+shift is absorbed exactly by the unknown dot layout). The anchors pin them
+against the printed surface itself: the URDF mesh, posed by a preliminary
+dots-only solve (offsets held by priors — all a prediction needs), is
+aligned to the observed silhouette edges. One mechanism serves every
+anchor class — model-guided sparse-contour pose refinement:
+
+- **Rim extraction**: mesh points with view-grazing normals, z-buffer
+  visible, on the actual occluding contour (stepping outward must leave
+  the body's own projected footprint — a flat face seen edge-on passes
+  the grazing band but is not contour), backdrop far enough behind
+  (another body within ~12 mm makes the edge ambiguous), silicone-skin
+  zones excluded.
+- **Edge search** along each contour normal, sub-pixel, polarity-free,
+  with an ambiguity veto — and with the board's checker/marker gradients
+  masked out: the hand stands in front of the board, but the board pose
+  is exactly known (it IS the world frame), so its texture transitions
+  are predictable clutter.
+- **Damped multi-view Gauss-Newton** over the group pose with three
+  nuisance classes: radial inflation (print oversize / blooming — one
+  scalar, else the solver converts it into depth drift along the weakest
+  direction), per-view 2D offsets (assist shots carry the planar-target
+  tilt ambiguity of board self-localisation; fixed cameras get a tight
+  prior), and priors that hold the directions contour cannot see
+  (cylinder roll, axis slide when the end edges are occluded).
+- **Honest failure**: edge-count, fit-rms and rotation-information gates
+  fail an anchor into NaN with a reason — never a silent prediction. Each
+  surviving anchor ships its own sigma (`dirs_sigma_*.npy`), which the
+  estimator uses as the residual weight (floored at the 0.1 deg class
+  default), so a marginal anchor informs instead of dominating.
+- **De-novo wide scan** (priors `mode: off`): a grossly wrong offset —
+  e.g. a misplaced encoder sensor — puts the predicted contour outside
+  the search window or onto a neighbour's edges; a 1-D scan of the offset
+  against edge support finds the basin before refinement.
+
+Anchor classes produced: `dir_obs` (phalanx link z directions, all anchor
+poses), palm dorsal-shell frame anchor (per anchor pose), and the forearm
+tower frame anchor (mandatory — the only observation that splits the wrist
+offset from base pose; static, so measured once over views pooled across
+anchor frames).
 
 ### Rig geometry (validated in the synthetic scene)
 
@@ -279,6 +347,58 @@ https://claude.ai/code/artifact/e5d349ab-e3cf-4ed6-ab9a-56dc0a354656
 
 Results: `results/camera_validation.yaml` (gates included; regenerate with
 `uv run python tools/abs_calibration/validate_camera_layer.py`).
+
+### Phase-2 findings on rendered images (2026-08-13, splat tier, seeds 0-2)
+
+The validator now runs REAL anchor detection (no truth stand-ins) and
+scores it against truth. Ranges below span three full-scene seeds —
+mesh-tier realizations vary substantially and one roll is never the
+number:
+
+- **The anchors transformed the open coverage problem's solve**: with
+  detected anchors + per-anchor sigma weighting the full-tier solve
+  lands at **0.49-1.1 deg mean / 1.4-5.0 deg max** on clean-assignment
+  realizations (seeds 0, 2), against 5.6 / 48 recorded with the old
+  truth stand-ins on the same open misassignment/coverage issue.
+  Misassigned columns are 0-1 with the solid-splat renders (was 0-3),
+  always the adjacent-finger class. The degree-class joints are exactly
+  the sigma-flagged ones (pips with 1-3 dot columns and no surviving
+  anchors; starved abds), which the solve_session sigma gate refuses to
+  persist. **The remaining bite of the open association item, measured**
+  (seed 1): a stolen column on a chain whose dir anchors ALSO starved
+  (index got 0 this realization) still blows that chain up (index_abd
+  30 deg at overconfident sigma — a wrong local minimum's Jacobian
+  says nothing) — anchors rescue misassignment where anchor coverage
+  exists (seed 0's pinky recovered exactly so), which sharpens the
+  queued mitigations (gap-bridging, assist postures) as the remaining
+  coverage work.
+- **Splat-tier detection floors** (the render's ragged, background-
+  dependent silhouette bounds edge detection at the degree class; real
+  optics are sub-pixel): dir anchors 2.8-4.1 deg mean at ~0.25
+  availability (mid-flexion frames lose distal links to occlusion —
+  extended anchor rows carry most survivors); palm frame anchor 0.5-2.4
+  deg over 8-10 frames; assist self-localisation 0.31-0.54 deg /
+  1.0-1.9 mm max over 30/30 shots at full resolution (the quick tier's
+  1.1 deg was a resolution artifact).
+- **The tower anchor inherits the preliminary base-wrist split at this
+  tier**: seed 0 measured 1.32 deg error about an axis at |cos| 0.997 to
+  the wrist axis — identically across every view-pooling variant; seed 1
+  split 1.9 deg, seed 2 only 0.3 deg (and its solve hit 0.49/1.4 — the
+  doc's target class, proving the mechanism delivers when the split is
+  small). Mechanism: dots leave base∘wrist gauge, the prelim splits it
+  arbitrarily within priors, and the contour signal of a rotation about
+  the tower's own long axis (~2-3 px) sits below this tier's edge noise
+  (~4 px rms, correlated), so the refinement holds its prior. When the
+  tower anchor is MISSING entirely the solve degrades to 3.3/30 (seed 1
+  before the rms-gate fix) — the doc's "forearm anchor is mandatory"
+  measured directly. Sub-pixel hardware edges resolve the about-axis
+  component 4-8x better; the 0.2-0.4 deg tower class stands as the
+  hardware expectation. Detected sigmas remain STATISTICAL (doc §12) —
+  the truth-comparison is what measures bias, and at this tier bias
+  dominates sigma for the tower.
+- Detection runs on CPU in ~2-4 min per session on top of the dot
+  pipeline; the de-novo wide scan is exercised in unit tests (20 deg
+  gross-offset recovery) and stands ready for the ring_abd-class faults.
 
 ## Production-facing pieces
 
