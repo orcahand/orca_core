@@ -136,3 +136,6 @@ soak_logs/
 
 # Scratch worktrees created by agent sessions
 .claude/
+
+# Personal Claude Code instructions (see CLAUDE.local.md)
+CLAUDE.local.md

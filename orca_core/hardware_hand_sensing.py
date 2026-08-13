@@ -38,15 +38,9 @@ if TYPE_CHECKING:
 import numpy as np
 
 from .calibration import JointEncoderCal
-from .control.constants import (
-    DEFAULT_CORRECTION_MAX_DEG,
-    DEFAULT_I_CLAMP_DEG,
-    DEFAULT_KI,
-    DEFAULT_KP,
-)
 from .control.joint_controller import JointController
 from .control.joint_loop import JointLoopThread
-from .hand_config import OrcaHandTouchConfig
+from .hand_config import JointGains, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
 from .hardware.sensing.constants import JOINT_ENCODER_POLARITY_BY_SIDE
@@ -292,15 +286,17 @@ class OrcaHandTouch(OrcaHand):
         self._require_tactile_client().stop_stream()
 
     def zero_tactile_sensors(
-        self, num_samples: int = 100, timeout_s: float | None = None
+        self, num_samples: int = 100, timeout_s: float | None = None,
+        gate_noise: bool = True,
     ) -> dict:
         """Capture current readings as zero baseline and return offsets.
 
         ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
-        deadline from ``num_samples``.
+        deadline from ``num_samples``. ``gate_noise`` also measures each
+        taxel's dither from the same frames and gates readings below it.
         """
         return self._require_tactile_client().capture_taxel_offsets(
-            num_samples=num_samples, timeout_s=timeout_s
+            num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise,
         )
 
     def clear_tactile_zero(self) -> None:
@@ -460,16 +456,19 @@ class OrcaHandJointFeedback(OrcaHand):
 
     ``connect()`` opens the motor bus, the encoder serial link, and starts a
     :class:`~orca_core.control.JointLoopThread` running a vectorised PI on
-    joint-encoder error. The motors stay in ``current_based_position``: the
-    host writes ``Goal_Position`` per cycle and the motor's internal position
-    PID handles the fast tracking against the motor encoder, while the host
-    trims the residual offset between motor angle and joint angle. The wrist
-    is not part of the loop and is driven through the inherited synchronous
-    path.
+    joint-encoder error. The finger motors stay in ``current_based_position``
+    and the wrist motor in ``multi_turn_position``: the host writes
+    ``Goal_Position`` per cycle and the motor's internal position PID handles
+    the fast tracking against the motor encoder, while the host trims the
+    residual offset between motor angle and joint angle. Because the wrist's
+    mode has no current cap, the loop clamps its commanded motor position to
+    the calibrated travel plus a small margin. A wrist without an encoder
+    anchor is skipped at connect and driven through the inherited synchronous
+    path instead.
 
-    Connect-time preconditions raise: an unsupported hand side (closed-loop
-    control is validated on right-hand assemblies only), a missing encoder
-    port, an absent ``joint_encoder_calibration`` block, or an encoder-stream
+    Connect-time preconditions raise: a hand side with no measured encoder
+    polarity table, a missing encoder port, an absent
+    ``joint_encoder_calibration`` block, or an encoder-stream
     timeout each surface as a :class:`JointFeedbackConnectError`. The motor
     bus opened by ``super().connect()`` is rolled back before the exception
     escapes, so a caller that catches the error sees the hand in the same
@@ -551,12 +550,17 @@ class OrcaHandJointFeedback(OrcaHand):
         self._compute_wrap_offsets_dict()
 
         self._controller = JointController(num_joints=len(ready))
+        gains = [self.config.joint_gains_for(joint) for joint in ready]
         self._controller.set_gains(
-            Kp=DEFAULT_KP,
-            Ki=DEFAULT_KI,
-            correction_max_deg=DEFAULT_CORRECTION_MAX_DEG,
-            i_clamp_deg=DEFAULT_I_CLAMP_DEG,
+            Kp=np.array([g.kp for g in gains]),
+            Ki=np.array([g.ki for g in gains]),
+            correction_max_deg=np.array([g.correction_max_deg for g in gains]),
         )
+        tuned = [j for j in ready if j in self.config.joint_gains_overrides]
+        if tuned:
+            logger.info(
+                "per-joint gain override(s) applied: %s", ", ".join(tuned)
+            )
         self._loop = JointLoopThread(
             self, self._encoder_client, self._controller, joints=ready
         )
@@ -571,21 +575,15 @@ class OrcaHandJointFeedback(OrcaHand):
 
     def _require_validated_feedback_side(self) -> None:
         """Closed-loop control needs the per-side encoder polarity table;
-        refuse sides (e.g. left-hand assemblies) without a validated one."""
+        refuse sides without a measured one."""
         side = self.config.type
         if side not in JOINT_ENCODER_POLARITY_BY_SIDE:
-            alternative = (
-                f"load a feedback-free model such as orcahand-{side} / "
-                f"orcahand-touch-{side} (load_hand(..., engage_feedback=False) "
-                "does the same)"
-                if side in ("left", "right")
-                else "set 'type:' in config.yaml to a validated side"
-            )
             raise JointFeedbackConnectError(
-                f"Closed-loop joint feedback is unvalidated for {side!r} hand "
+                f"Closed-loop joint feedback is unavailable for {side!r} hand "
                 "assemblies: no encoder polarity table exists for that side. "
                 "Call connect(engage_feedback=False) to drive this hand "
-                f"open-loop (tactile still works), or {alternative}."
+                "open-loop (tactile still works), or set 'type:' in "
+                f"config.yaml to one of {sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}."
             )
 
     def _loop_ready_joints(self) -> List[str]:
@@ -842,8 +840,8 @@ class OrcaHandJointFeedback(OrcaHand):
         if not self._loop_engaged():
             return super()._get_joint_positions()
 
-        # Motor-path angles cover the wrist and joints the loop doesn't
-        # measure (e.g. skipped at connect); encoder angles win where present.
+        # Motor-path angles cover joints the loop doesn't measure (skipped
+        # at connect); encoder angles win where present.
         joint_dict: Dict[str, float] = super()._get_joint_positions().as_dict()
         joint_dict.update(self._loop.get_measured_joints())
         return OrcaJointPositions.from_dict(joint_dict)
@@ -852,26 +850,79 @@ class OrcaHandJointFeedback(OrcaHand):
 
     def set_pid_gains(
         self,
-        Kp,
-        Ki,
-        correction_max_deg: float,
-        i_clamp_deg: Optional[float] = None,
+        Kp: "float | Dict[str, float] | None" = None,
+        Ki: "float | Dict[str, float] | None" = None,
+        correction_max_deg: "float | Dict[str, float] | None" = None,
     ) -> None:
         """Retune the outer-loop PI gains while the loop is running.
 
-        ``i_clamp_deg`` defaults to ``correction_max_deg`` (the anti-windup
-        clamp matches the output clamp).
+        Each argument is a scalar applied to every loop-controlled joint, a
+        ``{joint_name: value}`` dict changing only the joints it names, an
+        array in ``loop_joint_names`` order, or ``None`` to leave that gain
+        untouched. Changes are transient — write them to
+        ``joint_control_gains`` in config.yaml to persist them.
+
+        Raises :class:`RuntimeError` when the joint loop isn't active and
+        :class:`ValueError` on a joint the loop isn't controlling.
+        """
+        if self._controller is None:
+            raise RuntimeError("joint loop not running; call connect() first")
+        current = self._controller.get_gains()
+        self._controller.set_gains(
+            Kp=self._resolve_gain(Kp, current["Kp"], "Kp"),
+            Ki=self._resolve_gain(Ki, current["Ki"], "Ki"),
+            correction_max_deg=self._resolve_gain(
+                correction_max_deg,
+                current["correction_max_deg"],
+                "correction_max_deg",
+            ),
+        )
+
+    def _resolve_gain(self, value, current: np.ndarray, name: str) -> np.ndarray:
+        """Fold a scalar / per-joint dict / array / None into a full gain
+        vector laid out in the loop's joint order."""
+        if value is None:
+            return current
+        if isinstance(value, dict):
+            joint_names = self._loop.joint_names
+            unknown = set(value) - set(joint_names)
+            if unknown:
+                raise ValueError(
+                    f"{name} names joint(s) the loop does not control: "
+                    f"{sorted(unknown)}. Controlled joints: {joint_names}"
+                )
+            updated = current.copy()
+            index = {joint: i for i, joint in enumerate(joint_names)}
+            for joint, gain in value.items():
+                updated[index[joint]] = float(gain)
+            return updated
+
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim == 0:
+            return np.full(current.shape, float(arr))
+        if arr.shape != current.shape:
+            raise ValueError(
+                f"{name} must be a scalar, a {{joint: value}} dict, or an "
+                f"array of shape {current.shape}; got shape {arr.shape}"
+            )
+        return arr.copy()
+
+    def get_pid_gains(self) -> Dict[str, JointGains]:
+        """Outer-loop PI gains currently in force, per loop-controlled joint.
+
         Raises :class:`RuntimeError` when the joint loop isn't active.
         """
         if self._controller is None:
             raise RuntimeError("joint loop not running; call connect() first")
-        clamp = correction_max_deg if i_clamp_deg is None else i_clamp_deg
-        self._controller.set_gains(
-            Kp=Kp,
-            Ki=Ki,
-            correction_max_deg=correction_max_deg,
-            i_clamp_deg=clamp,
-        )
+        gains = self._controller.get_gains()
+        return {
+            joint: JointGains(
+                kp=float(gains["Kp"][i]),
+                ki=float(gains["Ki"][i]),
+                correction_max_deg=float(gains["correction_max_deg"][i]),
+            )
+            for i, joint in enumerate(self._loop.joint_names)
+        }
 
     def rebase_loop(self) -> None:
         """Re-anchor the running loop to the current pose (target=measured,
@@ -945,10 +996,10 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
         """Connect motors, tactile sensing, and the joint-feedback loop.
 
         ``engage_feedback=False`` connects motors + tactile only — no
-        encoder link, no loop, and no validated-side gate — so e.g. a
-        left-hand assembly still gets open-loop control with tactile. It
-        fails on a hand whose loop already runs rather than reporting an
-        open-loop hand that isn't one.
+        encoder link, no loop, and no validated-side gate — so an
+        uncalibrated or unrecognised-side hand still gets open-loop control
+        with tactile. It fails on a hand whose loop already runs rather than
+        reporting an open-loop hand that isn't one.
         """
         if not engage_feedback:
             return self._connect_without_feedback(interactive)

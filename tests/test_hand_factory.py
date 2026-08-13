@@ -61,23 +61,28 @@ def test_load_hand_engage_feedback_false_returns_motor_only(model, expected):
 
 
 @pytest.mark.parametrize(
-    ("model", "expected", "fallback_model"),
+    ("model", "expected"),
     [
-        ("orcahand-joint-left", MockOrcaHandJointFeedback, "orcahand-left"),
-        ("orcahand-full-left", MockOrcaHandFull, "orcahand-touch-left"),
+        ("orcahand-joint-left", MockOrcaHandJointFeedback),
+        ("orcahand-full-left", MockOrcaHandFull),
     ],
 )
-def test_load_hand_warns_on_left_feedback_config(
-    caplog, model, expected, fallback_model
+def test_load_hand_warns_on_side_without_a_polarity_table(
+    caplog, tmp_path, model, expected
 ):
-    """Left feedback configs still map to the feedback classes (connect()
-    gates the loop), but the factory must warn and name the escape hatches."""
+    """A side with no measured table still maps to the feedback classes
+    (connect() gates the loop), but the factory must warn and name the escape
+    hatch."""
+    config_path = tmp_path / "config.yaml"
+    with open(_config(model)) as f:
+        config_path.write_text(f.read().replace("type: left", "type: middle"))
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
-        hand = load_hand(config_path=_config(model), mock=True)
+        hand = load_hand(config_path=str(config_path), mock=True)
     assert type(hand) is expected
     messages = [r.getMessage() for r in caplog.records]
     assert any(
-        "engage_feedback=False" in m and fallback_model in m for m in messages
+        "engage_feedback=False" in m and "left" in m and "right" in m
+        for m in messages
     )
 
 
@@ -85,6 +90,7 @@ def test_load_hand_warns_on_left_feedback_config(
     "kwargs",
     [
         {"config_path": _config("orcahand-joint-right")},
+        {"config_path": _config("orcahand-joint-left")},
         {"config_path": _config("orcahand-joint-left"), "engage_feedback": False},
     ],
 )
@@ -93,7 +99,7 @@ def test_load_hand_does_not_warn_when_loop_can_engage_or_is_suppressed(
 ):
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
         load_hand(mock=True, **kwargs)
-    assert not [r for r in caplog.records if "unvalidated" in r.getMessage()]
+    assert not [r for r in caplog.records if "unavailable" in r.getMessage()]
 
 
 def test_load_hand_carries_full_config_when_feedback_suppressed(tmp_path):

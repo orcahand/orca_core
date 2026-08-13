@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import dataclasses
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal
@@ -21,6 +22,12 @@ from .constants import (
     MOTOR_IDS,
     SUPPORTED_MOTOR_TYPES,
 )
+from .control.constants import (
+    DEFAULT_CORRECTION_MAX_DEG,
+    DEFAULT_JOINT_GAIN_OVERRIDES,
+    DEFAULT_KI,
+    DEFAULT_KP,
+)
 from .hardware.sensing.constants import (
     VALID_SENSOR_IDS,
     DEFAULT_ENCODER_BAUDRATE,
@@ -33,6 +40,80 @@ from .utils.utils import get_model_path, read_yaml
 
 class HandConfigValidationError(ValueError):
     """Raised when a hand configuration is structurally invalid."""
+
+
+@dataclass(frozen=True)
+class JointGains:
+    """Outer-loop PI gains for one joint of the closed-loop joint controller.
+
+    ``kp`` is dimensionless: the correction is mapped to motor space through
+    the calibrated joint-to-motor ratio, so one degree of correction nominally
+    produces one degree of joint motion. Joints that respond fast (a small
+    motor move producing a large joint move) have the least stability margin
+    and want a lower ``kp`` than the rest.
+    """
+
+    kp: float = DEFAULT_KP
+    ki: float = DEFAULT_KI
+    correction_max_deg: float = DEFAULT_CORRECTION_MAX_DEG
+
+    def __post_init__(self) -> None:
+        for name in ("kp", "ki", "correction_max_deg"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise HandConfigValidationError(
+                    f"JointGains.{name} must be a number, got {value!r}"
+                )
+            if not math.isfinite(value):
+                raise HandConfigValidationError(
+                    f"JointGains.{name} must be finite, got {value}"
+                )
+            if value < 0:
+                raise HandConfigValidationError(
+                    f"JointGains.{name} must be non-negative, got {value}"
+                )
+
+    @classmethod
+    def from_dict(
+        cls, raw: Dict[str, float], base: "JointGains | None" = None
+    ) -> "JointGains":
+        """Build from a YAML mapping, inheriting unspecified fields from
+        ``base`` (or the package defaults). Lets a per-joint override name
+        only the gain it changes."""
+        base = base or cls()
+        if not isinstance(raw, dict):
+            raise HandConfigValidationError(
+                f"joint gain entry must be a mapping, got {raw!r}"
+            )
+        unknown = set(raw) - {"kp", "ki", "correction_max_deg"}
+        if unknown:
+            raise HandConfigValidationError(
+                f"unknown joint gain key(s) {sorted(unknown)}; "
+                "expected kp, ki, or correction_max_deg"
+            )
+
+        # float() would silently coerce bools and crash on None; reject both
+        # here so __post_init__ only ever sees genuine numbers.
+        def _coerce(key: str) -> float:
+            value = raw[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HandConfigValidationError(
+                    f"JointGains.{key} must be a number, got {value!r}"
+                )
+            return float(value)
+
+        return cls(
+            kp=_coerce("kp") if "kp" in raw else base.kp,
+            ki=_coerce("ki") if "ki" in raw else base.ki,
+            correction_max_deg=(
+                _coerce("correction_max_deg")
+                if "correction_max_deg" in raw
+                else base.correction_max_deg
+            ),
+        )
+
+    def as_dict(self) -> Dict[str, float]:
+        return dataclasses.asdict(self)
 
 
 def _resolve_model_name_from_type(hand_type: str | None) -> str:
@@ -102,6 +183,75 @@ def _canonical_joint_to_motor_map(
         inversion_dict[joint] = motor_id < 0
         normalized_map[joint] = abs(motor_id)
     return normalized_map, inversion_dict
+
+
+def _validated_gain_partial(raw, where: str) -> Dict[str, float]:
+    """Check one partial gain mapping and return it as plain floats.
+
+    Kept partial rather than resolved so each layer can override only the keys
+    it names; building a JointGains from it here surfaces bad keys and negative
+    values at config-load time instead of at connect.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HandConfigValidationError(f"{where} must be a mapping, got {raw!r}")
+    JointGains.from_dict(raw)  # validates keys and values; result discarded
+    return {key: float(value) for key, value in raw.items()}
+
+
+def _parse_joint_control_gains(
+    raw: Dict[str, dict] | None,
+) -> tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
+    """Parse the config.yaml ``joint_control_gains`` block.
+
+    The block holds overrides only — the defaults in ``control.constants`` are
+    the baseline, so an absent block (or an absent key within it) means "use
+    the shipped default". Four layers, each overriding only the gains it
+    names::
+
+        control/constants.py  DEFAULT_KP / DEFAULT_KI / DEFAULT_CORRECTION_MAX_DEG
+          └─ DEFAULT_JOINT_GAIN_OVERRIDES   shipped per-joint defaults
+               └─ config.yaml  all:         this hand, every joint
+                    └─ config.yaml  joints: this hand, the joints it names
+
+    Expected shape, with every key optional::
+
+        joint_control_gains:
+          all: {kp: 0.4}
+          joints:
+            index_mcp: {kp: 0.25}
+
+    Returns the raw partial overrides; :meth:`OrcaHandConfig.joint_gains_for`
+    layers them.
+    """
+    if raw is None:
+        return {}, {}
+    if not isinstance(raw, dict):
+        raise HandConfigValidationError(
+            f"joint_control_gains must be a mapping, got {raw!r}"
+        )
+    unknown = set(raw) - {"all", "joints"}
+    if unknown:
+        raise HandConfigValidationError(
+            f"unknown joint_control_gains key(s) {sorted(unknown)}; "
+            "expected 'all' and/or 'joints'"
+        )
+
+    gains_all = _validated_gain_partial(raw.get("all"), "joint_control_gains.all")
+
+    raw_joints = raw.get("joints") or {}
+    if not isinstance(raw_joints, dict):
+        raise HandConfigValidationError(
+            f"joint_control_gains.joints must be a mapping, got {raw_joints!r}"
+        )
+    overrides = {
+        str(joint): _validated_gain_partial(
+            entry, f"joint_control_gains.joints.{joint}"
+        )
+        for joint, entry in raw_joints.items()
+    }
+    return gains_all, overrides
 
 
 @dataclass(frozen=True)
@@ -214,9 +364,36 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
     use_joint_feedback: bool | None = None
+    # Joint names or the ["all"] sentinel (every slotted joint, wrist
+    # included); an explicit finger-only list leaves the wrist open-loop.
     joint_encoder_joints: List[str] | None = None
     encoder_serial_port: str = "auto"
     encoder_baudrate: int = DEFAULT_ENCODER_BAUDRATE
+    # Partial outer-loop PI gain overrides from the config.yaml
+    # 'joint_control_gains' block; the defaults live in control.constants.
+    # See _parse_joint_control_gains() for the layering.
+    joint_gains_all: Dict[str, float] = field(default_factory=dict)
+    joint_gains_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def joint_gains_for(self, joint: str) -> JointGains:
+        """Gains the closed-loop controller uses for ``joint``, with every
+        override layer applied in order. Each layer sets only the gains it
+        names; the rest fall through to the layer above."""
+        layered: Dict[str, float] = dict(DEFAULT_JOINT_GAIN_OVERRIDES.get(joint, {}))
+        layered.update(self.joint_gains_all)
+        layered.update(self.joint_gains_overrides.get(joint, {}))
+        return JointGains.from_dict(layered)
+
+    @property
+    def joint_gains_baseline(self) -> JointGains:
+        """What a joint with no per-joint override resolves to — the package
+        defaults with this hand's ``all:`` block applied."""
+        return JointGains.from_dict(self.joint_gains_all)
+
+    @property
+    def joint_gains_dict(self) -> Dict[str, JointGains]:
+        """Resolved gains for every configured joint, overrides applied."""
+        return {joint: self.joint_gains_for(joint) for joint in self.joint_ids}
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -327,6 +504,12 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["encoder_serial_port"] = str(config["encoder_serial_port"])
         if "encoder_baudrate" in config:
             kwargs["encoder_baudrate"] = int(config["encoder_baudrate"])
+        if "joint_control_gains" in config:
+            gains_all, overrides = _parse_joint_control_gains(
+                config["joint_control_gains"]
+            )
+            kwargs["joint_gains_all"] = gains_all
+            kwargs["joint_gains_overrides"] = overrides
 
         return cls(**kwargs)
 
@@ -380,6 +563,14 @@ class OrcaHandConfig(BaseHandConfig):
                         f"Invalid direction for joint {joint}."
                     )
 
+        # A gain override for an unknown joint would silently never apply.
+        unknown_gain_joints = set(self.joint_gains_overrides) - set(self.joint_ids)
+        if unknown_gain_joints:
+            raise HandConfigValidationError(
+                f"joint_control_gains.joints names unknown joint(s) "
+                f"{sorted(unknown_gain_joints)}; expected joints from joint_ids."
+            )
+
         if self.use_joint_feedback is True and not self.has_joint_encoders:
             raise HandConfigValidationError(
                 "use_joint_feedback: true requires joint_encoder_joints to be set."
@@ -393,7 +584,7 @@ class OrcaHandConfig(BaseHandConfig):
             for joint in self.joint_encoder_joints:
                 if str(joint).lower() == ENCODER_JOINTS_ALL:
                     continue
-                if joint == "wrist" or joint not in JOINT_TO_ENCODER_SLOT:
+                if joint not in JOINT_TO_ENCODER_SLOT:
                     raise HandConfigValidationError(
                         f"joint_encoder_joints contains {joint!r}, which has no encoder slot."
                     )

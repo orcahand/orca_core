@@ -21,6 +21,7 @@ SUPPORTED_MOTOR_TYPES = [DYNAMIXEL, FEETECH]
 
 JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
+JOINT_ROMS_MEASURED = "joint_roms_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
 KNOWN_VIDS: dict[str, list[int]] = {

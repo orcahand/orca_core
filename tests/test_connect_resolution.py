@@ -347,6 +347,11 @@ def test_non_interactive_connect_skips_port_picker(mock_hand, monkeypatch):
     monkeypatch.setattr(
         hardware_hand, "auto_detect_port", lambda *a, **k: None
     )
+    # The config ships ``port: auto``; resolve it so the test exercises a
+    # failing port attempt rather than the no-port-detected path.
+    monkeypatch.setattr(
+        hardware_hand, "find_single_usb_serial_port", lambda: "/dev/fake"
+    )
 
     def picker_must_not_run():
         raise AssertionError("interactive picker invoked")
@@ -377,9 +382,35 @@ def test_failed_connect_restores_config(mock_hand, monkeypatch):
 
     monkeypatch.setattr(OrcaHand, "_connect_on_port", probe_then_fail)
     monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hardware_hand, "find_single_usb_serial_port", lambda: "/dev/fake"
+    )
 
     success, _ = OrcaHand.connect(mock_hand, interactive=False)
     assert not success
     assert mock_hand.config.motor_type is None
     assert mock_hand.config.baudrate is None
     assert mock_hand.config.port == original_port
+
+
+def test_unresolvable_auto_port_never_opens_the_literal_string(
+    mock_hand, monkeypatch
+):
+    """``port: auto`` with nothing detectable must report the detection
+    failure, not a missing-file error for a device named 'auto'."""
+    import orca_core.hardware_hand as hardware_hand
+
+    def must_not_open(self, port, base_config=None):
+        raise AssertionError(f"attempted to open {port!r}")
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", must_not_open)
+    monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hardware_hand, "find_single_usb_serial_port", lambda: None
+    )
+
+    assert mock_hand.config.port == "auto"
+    success, msg = OrcaHand.connect(mock_hand, interactive=False)
+    assert not success
+    assert "no motor bus detected" in msg
+    assert "No such file or directory" not in msg
