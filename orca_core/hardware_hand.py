@@ -21,7 +21,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
-from .hardware.motor_client import MotionTimeoutError, MotorClient
+from .hardware.motor_client import MotionTimeoutError, MotorClient, MotorRead
 from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -579,6 +579,11 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor positions in radians as an array or dict.
+
+        Note:
+            One bus round trip per motor. Use :meth:`get_motor_state` when
+            velocity or current is wanted too — it costs the same single
+            transaction.
         """
         with self._motor_lock:
             motor_pos = self._motor_client.read_position_velocity_current().position
@@ -599,6 +604,11 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor currents (mA) as an array, or dict.
+
+        Note:
+            One bus round trip per motor. Use :meth:`get_motor_state` when
+            position or velocity is wanted too — it costs the same single
+            transaction.
         """
         with self._motor_lock:
             motor_current = self._motor_client.read_position_velocity_current().current
@@ -610,6 +620,23 @@ class OrcaHand(BaseHand):
                 }
 
             return motor_current
+
+    def get_motor_state(self) -> MotorRead:
+        """Read position, velocity, and current in a single bus transaction.
+
+        Each per-quantity accessor costs a full round trip to every motor, so
+        reading two of them in sequence pays that cost twice for data one
+        transaction already carries. Callers wanting more than one quantity
+        should take a snapshot here instead.
+
+        Returns:
+            A :class:`~orca_core.hardware.motor_client.MotorRead` of positions
+            (radians), velocities, and currents (mA). Each field is an array
+            ordered by :attr:`~orca_core.OrcaHandConfig.motor_ids`; zip against
+            that to key by motor ID.
+        """
+        with self._motor_lock:
+            return self._motor_client.read_position_velocity_current()
 
     def wait_for_motion(self, timeout: float = 5.0) -> None:
         """Block until all motors have settled at their commanded position.

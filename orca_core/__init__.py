@@ -25,6 +25,7 @@ from .hardware_hand_sensing import (
 )
 from .hand_factory import HandDetection, detect_hand, load_hand
 from .hardware.joint_encoder_client import EncodersNotAvailableError
+from .hardware.motor_client import MotorRead
 from .hardware.sensing.types import LinkHealth, TaxelData
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform, frames
@@ -49,6 +50,7 @@ __all__ = [
     "JointFeedbackConnectError",
     "EncodersNotAvailableError",
     "LinkHealth",
+    "MotorRead",
     "load_hand",
     "detect_hand",
     "HandDetection",

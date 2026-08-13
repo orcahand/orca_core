@@ -15,7 +15,7 @@ import contextlib
 import io
 import sys
 
-from orca_core import OrcaHand, detect_hand
+from orca_core import detect_hand, load_hand
 
 
 @contextlib.contextmanager
@@ -40,8 +40,17 @@ def _capabilities(detection) -> str:
     return ", ".join(present)
 
 
-def _print_detection(detection) -> None:
+def _motor_family(detection) -> str:
+    """The motor family answering on the bus, as a suffix for the port line."""
+    if detection.motor_type is None:
+        return "" if detection.motor_port is None else "  (no motor answered)"
+    baud = f" @ {detection.motor_baudrate}" if detection.motor_baudrate else ""
+    return f"  ({detection.motor_type}{baud})"
+
+
+def _print_detection(detection, hand_class: "str | None") -> None:
     print(f"Model:       {detection.model_name}  ({_capabilities(detection)})")
+    print(f"Hand class:  {hand_class or 'could not be loaded'}")
 
     identity = detection.identity
     if identity is None:
@@ -58,17 +67,14 @@ def _print_detection(detection) -> None:
         probed = _describe(detection.probed_tactile, detection.probed_encoders)
         print(f"Sensing cfg: CFG={detection.declared_config} declared, {probed} responding")
 
-    print(f"Motor bus:   {detection.motor_port or 'not detected'}")
+    print(f"Motor bus:   {detection.motor_port or 'not detected'}{_motor_family(detection)}")
     print(f"Sensing:     {detection.sensing_port or 'not detected'}")
     if detection.tactile_port and detection.tactile_port != detection.sensing_port:
         print(f"Tactile:     {detection.tactile_port}")
 
 
-def _print_calibration(detection) -> None:
+def _print_calibration(hand) -> None:
     """Report the calibration state of the bundled model detection picked."""
-    with _quiet():
-        hand = OrcaHand(model_name=detection.model_name)
-
     print(f"\nCalibration ({hand.config.model_path}):")
     print(f"  motor limits:    {'ok' if hand.calibrated else 'NOT calibrated'}")
     print(f"  wrist:           {'ok' if hand.wrist_calibrated else 'NOT calibrated'}")
@@ -117,39 +123,51 @@ def _print_notes(detection) -> None:
             "exclusively, so whatever sits behind it is missing above — close "
             "the other client and re-run."
         )
-    elif detection.identity is None:
+    if detection.identity is None:
         notes.append(
             "No controller board answered. With nothing plugged in, detection "
             "falls back to the plain right-hand model above."
         )
-    elif detection.motor_port is None:
+    if detection.motor_port is None:
         notes.append(
-            "No port identified itself as the motor bus. connect() falls back "
-            "to matching a motor adapter by USB vendor ID."
+            "No motor bus found: no port identified itself as the motor bus, "
+            "and no bare motor adapter answered. Check the USB cable and the "
+            "hand's power."
         )
 
     for note in notes:
         print(f"\nNote: {note}")
 
 
-def main() -> None:
+def main() -> int:
     argparse.ArgumentParser(description=__doc__.split("\n", 1)[0]).parse_args()
 
     try:
         detection = detect_hand()
     except Exception as e:
         print(f"Detection failed: {e}")
-        sys.exit(1)
+        return 1
 
-    _print_detection(detection)
-
+    # Constructed, never connected: this only reads calibration off disk, so
+    # no link is opened on the sensing port.
+    hand = None
     try:
-        _print_calibration(detection)
+        with _quiet():
+            hand = load_hand(model_name=detection.model_name)
     except Exception as e:
-        print(f"\nCould not read calibration for {detection.model_name}: {e}")
+        print(f"Could not load {detection.model_name}: {e}")
+
+    _print_detection(detection, type(hand).__name__ if hand is not None else None)
+
+    if hand is not None:
+        try:
+            _print_calibration(hand)
+        except Exception as e:
+            print(f"\nCould not read calibration for {detection.model_name}: {e}")
 
     _print_notes(detection)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

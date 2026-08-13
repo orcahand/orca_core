@@ -36,6 +36,8 @@ def _get_hand() -> BaseHand:
     if hand is None:
         with _hand_init_lock:
             if hand is None:
+                # Autodetect: serve the hand that is plugged in, not the
+                # packaged default, which would drive a sensing hand blind.
                 hand = load_hand()
     return hand
 

@@ -57,7 +57,12 @@ def create_hand(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
 ) -> BaseHand:
-    """Build the hand class matching the selected (or detected) model."""
+    """Build the hand class matching the selected — or detected — model.
+
+    With no ``config_path`` or ``model_name`` on a physical hand this probes
+    the hardware, so the model matches what is actually plugged in rather than
+    the packaged default.
+    """
     hand = load_hand(
         config_path=config_path,
         mock=use_mock,
