@@ -31,15 +31,42 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import replace
 
 import numpy as np
 import yaml
 
 from dataset import load_session
 from estimator import Estimator, PriorConfig
-from model import KinematicModel
+from model import DISTAL_LINK, TIP_POINT_LOCAL, KinematicModel
 
 SIGMA_GATE_DEG = 0.5
+
+
+def split_plate_holdout(ds, frac: float):
+    """Deterministically hold out a fraction of the plate contacts: the
+    plate doubles as calibration anchor and validation, but never with the
+    same contacts (design doc §10). Returns ``(ds_cal, held_out)``."""
+    if frac <= 0 or not ds.plate_obs:
+        return ds, []
+    k = int(round(len(ds.plate_obs) * frac))
+    if k == 0:
+        return ds, []
+    idx = set(np.random.default_rng(0).permutation(len(ds.plate_obs))[:k].tolist())
+    held = [e for i, e in enumerate(ds.plate_obs) if i in idx]
+    keep = [e for i, e in enumerate(ds.plate_obs) if i not in idx]
+    return replace(ds, plate_obs=keep), held
+
+
+def plate_errors_mm(est, x, ds, contacts) -> list[float]:
+    """Post-solve fingertip-vs-dimple distances of held-out contacts."""
+    world = est.world_link_poses(x, ds)
+    out = []
+    for frame, finger, obs in contacts:
+        R, t = world[DISTAL_LINK[finger]]
+        pred = R[frame] @ TIP_POINT_LOCAL[finger] + t[frame]
+        out.append(float(np.linalg.norm(pred - obs) * 1000))
+    return out
 
 
 def main() -> int:
@@ -52,9 +79,16 @@ def main() -> int:
     ap.add_argument("--manifolds", default=None,
                     help="Contact-manifold YAML for abd-block events "
                          "(build_contact_manifold.py)")
+    ap.add_argument("--plate-holdout", type=float, default=0.0,
+                    help="Fraction of plate contacts held out of the solve "
+                         "and reported as validation errors")
     args = ap.parse_args()
 
     ds = load_session(args.session_dir)
+    ds, plate_held = split_plate_holdout(ds, args.plate_holdout)
+    if plate_held:
+        print(f"holding out {len(plate_held)}/{len(plate_held) + len(ds.plate_obs)} "
+              "plate contacts for validation")
     out_dir = args.out or args.session_dir
     n_dots = sum(a.shape[1] for a in ds.dot_obs.values())
     print("Observation classes: "
@@ -130,6 +164,14 @@ def main() -> int:
         },
         "session_meta": dict(ds.meta),
     }
+    if plate_held:
+        errs = plate_errors_mm(est, result.x, ds, plate_held)
+        diagnostics["plate_holdout_mm"] = {
+            "n": len(errs), "mean": round(float(np.mean(errs)), 3),
+            "max": round(float(np.max(errs)), 3),
+        }
+        print(f"plate holdout: {len(errs)} contacts, "
+              f"mean {np.mean(errs):.2f} mm, max {np.max(errs):.2f} mm")
 
     os.makedirs(out_dir, exist_ok=True)
     for name, doc in (("vision_calibration.yaml", calibration),
