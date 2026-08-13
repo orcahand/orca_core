@@ -57,6 +57,11 @@ WRIST_MOTOR_TARGET_MARGIN_DEG = 3.0
 # doesn't drown the log file.
 FRESHNESS_WARN_INTERVAL_S = 1.0
 
+# Same treatment for the target clamp: a joint pinned at its travel limit
+# stays pinned for as long as the target is unreachable, so the warning that
+# says so has to be rate-limited to stay readable.
+CLAMP_WARN_INTERVAL_S = 5.0
+
 # Jitter monitor: loop-period ratios and consecutive-cycle streak lengths
 # that trigger warn / e-stop; a single transient slow cycle is tolerated.
 JITTER_WARN_RATIO = 2.0
