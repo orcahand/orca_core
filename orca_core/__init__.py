@@ -23,7 +23,16 @@ from .hardware_hand_sensing import (
     OrcaHandJointFeedback,
     OrcaHandTouch,
 )
-from .hand_factory import HandDetection, detect_hand, detect_hands, load_hand
+from .hand_factory import (
+    AmbiguousHandError,
+    HandDetection,
+    HandNotFoundError,
+    HandSelector,
+    detect_hand,
+    detect_hands,
+    load_hand,
+    load_hands,
+)
 from .hardware.joint_encoder_client import EncodersNotAvailableError
 from .hardware.motor_client import MotorRead
 from .hardware.sensing.types import LinkHealth, TaxelData
@@ -52,8 +61,12 @@ __all__ = [
     "LinkHealth",
     "MotorRead",
     "load_hand",
+    "AmbiguousHandError",
+    "HandNotFoundError",
+    "HandSelector",
     "detect_hand",
     "detect_hands",
+    "load_hands",
     "HandDetection",
     "OrcaJointPositions",
     "HandKinematics",

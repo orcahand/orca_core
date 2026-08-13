@@ -348,7 +348,7 @@ def test_load_hand_autodetects_and_pins_ports(monkeypatch):
         motor_port="/dev/cu.m",
         sensing_port="/dev/cu.s",
     )
-    monkeypatch.setattr(hand_factory, "detect_hand", lambda: detection)
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: [detection])
     hand = load_hand()
     assert type(hand) is OrcaHandTouch
     assert hand.config.type == "left"
@@ -374,7 +374,7 @@ def test_load_hand_detection_fallback_is_default_model(monkeypatch):
 )
 def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
     def _must_not_probe():
-        raise AssertionError("detect_hand() ran despite explicit selection")
+        raise AssertionError("the bus was probed despite an explicit selection")
 
-    monkeypatch.setattr(hand_factory, "detect_hand", _must_not_probe)
+    monkeypatch.setattr(hand_factory, "detect_hands", _must_not_probe)
     load_hand(**kwargs)

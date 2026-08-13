@@ -46,6 +46,18 @@ def _no_settle_sleeps():
 
 
 @pytest.fixture(autouse=True)
+def _empty_usb_bus(monkeypatch):
+    """Hide whatever is plugged into the developer's machine.
+
+    Discovery enumerates real ports, so without this a test that forgets to
+    stub the bus quietly probes an attached hand — passing or failing on
+    hardware that CI does not have. Tests that want devices patch
+    ``comports`` themselves, which overrides this.
+    """
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _release_port_claims():
     """Drop port claims between tests.
 

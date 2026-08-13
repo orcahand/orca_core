@@ -48,8 +48,12 @@ PACKAGE_EXPORTS = frozenset({
     "TaxelData",
     "Transform",
     "canonical_joint_ids",
+    "AmbiguousHandError",
+    "HandNotFoundError",
+    "HandSelector",
     "detect_hand",
     "detect_hands",
+    "load_hands",
     "frames",
     "load_hand",
 })

@@ -40,6 +40,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from . import hand_store
 from .hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
@@ -358,6 +359,83 @@ def _describe_caps(tactile: bool, encoders: bool) -> str:
     return " + ".join(present) if present else "motors only"
 
 
+class HandNotFoundError(LookupError):
+    """Raised when no attached hand matches what the caller asked for."""
+
+
+class AmbiguousHandError(LookupError):
+    """Raised when more than one attached hand matches, so there is no
+    single right answer and picking one could drive the wrong arm."""
+
+
+@dataclass(frozen=True)
+class HandSelector:
+    """Which hand a caller means, when more than one is attached.
+
+    Every field given must match. ``side`` is the loosest and only tells two
+    hands apart when they face opposite ways; ``hand_id`` is exact.
+    """
+
+    hand_id: Optional[str] = None
+    board_id: Optional[str] = None
+    side: Optional[str] = None
+    motor_port: Optional[str] = None
+
+    def matches(self, detection: HandDetection) -> bool:
+        for field in ("hand_id", "board_id", "side", "motor_port"):
+            wanted = getattr(self, field)
+            if wanted is not None and getattr(detection, field) != wanted:
+                return False
+        return True
+
+    def describe(self) -> str:
+        given = {
+            field: getattr(self, field)
+            for field in ("hand_id", "board_id", "side", "motor_port")
+            if getattr(self, field) is not None
+        }
+        if not given:
+            return "any hand"
+        return ", ".join(f"{k}={v!r}" for k, v in given.items())
+
+
+def _describe_hand(detection: HandDetection) -> str:
+    name = detection.hand_id or "unidentified"
+    return f"{name} ({detection.side} {detection.model_name})"
+
+
+def select_hand(
+    detections: "list[HandDetection]", selector: Optional[HandSelector] = None
+) -> HandDetection:
+    """Pick the one hand a selector names.
+
+    Raises rather than guessing: with two hands attached, returning either
+    hands the caller an arm it did not ask for, and ``comports()`` ordering
+    is not reproducible across replugs anyway.
+    """
+    selector = selector or HandSelector()
+    matches = [d for d in detections if selector.matches(d)]
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        if not detections:
+            raise HandNotFoundError(
+                "no hand is attached. Check power and the USB cable, or pass "
+                "config_path/model_name to work offline."
+            )
+        raise HandNotFoundError(
+            f"no attached hand matches {selector.describe()}. Attached: "
+            + "; ".join(_describe_hand(d) for d in detections)
+        )
+    raise AmbiguousHandError(
+        f"{len(matches)} attached hands match {selector.describe()}: "
+        + "; ".join(_describe_hand(d) for d in matches)
+        + ". Name one with load_hand(select=HandSelector(hand_id=...)), or "
+        "use load_hands() to get them all."
+    )
+
+
 def _pin_detected_ports(config, detection: HandDetection):
     """Point the config at the ports detection already found, so connect()
     doesn't have to re-discover them. Fields with nothing detected keep
@@ -375,6 +453,72 @@ def _pin_detected_ports(config, detection: HandDetection):
     return config
 
 
+def _bind_hand_store(config, detection: HandDetection):
+    """Point a detected hand's calibration at its own directory.
+
+    Two hands of one model resolve to the same packaged model, so without
+    this the second to calibrate overwrites the first. An explicit
+    ``calibration_path`` always wins over the store.
+    """
+    identity = detection.identity
+    hand_store.record_identity(detection.hand_id, {
+        "serial": identity.serial if identity is not None else None,
+        "board_id": detection.board_id,
+        "usb_serial": detection.usb_serial,
+        "side": detection.side,
+        "model": detection.model_name,
+        "declared_config": detection.declared_config,
+    })
+    return dataclasses.replace(
+        config,
+        calibration_path=hand_store.resolve_calibration_path(
+            detection.hand_id, config.calibration_path
+        ),
+    )
+
+
+def load_hands(
+    mock: bool = False,
+    engage_feedback: bool = True,
+    engage_sensors: bool = True,
+    select: Optional[HandSelector] = None,
+) -> "list[OrcaHand]":
+    """Construct every attached hand, one per controller board.
+
+    Each hand gets its own model, its own ports, and its own calibration, so
+    several can be driven from one program. Ordered as :func:`detect_hands`
+    orders them, which is stable across replugs. Returns an empty list when
+    nothing is attached; pass ``select`` to build only the hands that match.
+
+    Args:
+        select: Restrict to the hands a selector matches. Unlike
+            :func:`load_hand` this never raises on several matches — that is
+            the point — but it does raise :class:`HandNotFoundError` when a
+            selector matches nothing.
+    """
+    detections = detect_hands()
+    if select is not None:
+        matched = [d for d in detections if select.matches(d)]
+        if not matched:
+            # Reuse the one place that phrases this well.
+            select_hand(detections, select)
+        detections = matched
+
+    return [
+        _build_hand(
+            detection,
+            config_path=None,
+            calibration_path=None,
+            model_version=None,
+            model_name=None,
+            mock=mock,
+            engage_feedback=engage_feedback,
+            engage_sensors=engage_sensors,
+        )
+        for detection in detections
+    ]
+
+
 def load_hand(
     config_path: str | None = None,
     calibration_path: str | None = None,
@@ -383,6 +527,7 @@ def load_hand(
     mock: bool = False,
     engage_feedback: bool = True,
     engage_sensors: bool = True,
+    select: Optional[HandSelector] = None,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -409,13 +554,53 @@ def load_hand(
             tactile link even if the config declares sensors. Tactile and
             encoders can share one CDC, so a caller that opens its own reader
             on the sensing port must not have the hand open it too.
+        select: Which hand to load when more than one is attached. Without
+            it, two attached hands raise :class:`AmbiguousHandError` rather
+            than picking one — with two arms on the bench, guessing drives
+            the wrong one.
 
     Returns:
         A constructed (not yet connected) hand instance.
+
+    Raises:
+        AmbiguousHandError: several attached hands match, so there is no
+            single right answer. Name one, or use :func:`load_hands`.
+        HandNotFoundError: ``select`` matches nothing attached.
     """
     detection = None
     if config_path is None and model_name is None and model_version is None and not mock:
-        detection = detect_hand()
+        detections = detect_hands()
+        if detections or select is not None:
+            # A selector that matches nothing is an error; asking for no
+            # particular hand with none attached is not, and still yields the
+            # bundled default so a config can be inspected off the bench.
+            detection = select_hand(detections, select)
+    return _build_hand(
+        detection,
+        config_path=config_path,
+        calibration_path=calibration_path,
+        model_version=model_version,
+        model_name=model_name,
+        mock=mock,
+        engage_feedback=engage_feedback,
+        engage_sensors=engage_sensors,
+    )
+
+
+def _build_hand(
+    detection: Optional[HandDetection],
+    *,
+    config_path: str | None,
+    calibration_path: str | None,
+    model_version: str | None,
+    model_name: str | None,
+    mock: bool,
+    engage_feedback: bool,
+    engage_sensors: bool,
+) -> OrcaHand:
+    """Construct the hand class a resolved detection (or an explicit model)
+    calls for. Detection has already happened; nothing here probes."""
+    if detection is not None:
         model_name = detection.model_name
         if detection.busy_ports:
             logger.warning(
@@ -453,6 +638,8 @@ def load_hand(
     )
     if detection is not None:
         config = _pin_detected_ports(config, detection)
+        if calibration_path is None and detection.hand_id:
+            config = _bind_hand_store(config, detection)
 
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
