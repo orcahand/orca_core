@@ -106,6 +106,7 @@ class Estimator:
         self.manifolds = manifolds or []
         self.rom_mid = np.array([np.mean(JOINT_ROMS[j]) for j in self.joints])
         self._ctx = None
+        self._m_ordered = None
 
     # ---- parameter packing -------------------------------------------------
 
@@ -125,6 +126,21 @@ class Estimator:
 
     # ---- calibration mapping ----------------------------------------------
 
+    def m_in_model_order(self, ds: Dataset) -> np.ndarray:
+        """Session encoder columns permuted into ``self.joints`` order.
+
+        Producers store columns in their own joint order; every residual here
+        indexes them by the model's, so the two must be reconciled once.
+        """
+        if self._m_ordered is not None:
+            return self._m_ordered
+        if list(ds.joints) == list(self.joints):
+            return ds.m
+        missing = [j for j in self.joints if j not in ds.joints]
+        if missing:
+            raise ValueError(f"session lacks joints the model needs: {missing}")
+        return ds.m[:, [list(ds.joints).index(j) for j in self.joints]]
+
     def apply_cal(self, m: np.ndarray, b: np.ndarray) -> np.ndarray:
         u = (m - self.rom_mid) / U_SCALE
         q = m + b[:, 0]
@@ -138,6 +154,8 @@ class Estimator:
 
     def prepare(self, ds: Dataset) -> None:
         """Precompute the (constant) observation masks for this dataset."""
+        self._m_ordered = None
+        self._m_ordered = self.m_in_model_order(ds)
         masks = {}
         for link, obs in ds.dot_obs.items():
             valid = np.isfinite(obs).all(axis=2)          # (F, K)
@@ -158,7 +176,7 @@ class Estimator:
 
     def _world_poses(self, x: np.ndarray, ds: Dataset):
         rvec, t, b = self.unpack(x)
-        q = self.apply_cal(ds.m, b)
+        q = self.apply_cal(self.m_in_model_order(ds), b)
         poses = self.nominal.link_poses({j: q[:, i] for i, j in enumerate(self.joints)})
         Rb = _rodrigues(rvec)
         world = {}
@@ -257,7 +275,7 @@ class Estimator:
         """
         out = []
         self.skipped_contacts = []  # rewritten every call; read after solve
-        q = self.apply_cal(ds.m, b)
+        q = self.apply_cal(self.m_in_model_order(ds), b)
         jidx = {j: i for i, j in enumerate(self.joints)}
         for e in ds.contact_obs:
             f = e.frame
@@ -278,7 +296,7 @@ class Estimator:
                 out.append((pts[0] - pts[1]) / sigma)
             elif e.kind == "abd_block":
                 pair = sorted((e.body_a, e.body_b))
-                man, why = self._match_manifold(pair, ds.m[f], jidx)
+                man, why = self._match_manifold(pair, self.m_in_model_order(ds)[f], jidx)
                 if man is None:
                     self.skipped_contacts.append((e.kind, e.body_a, e.body_b, why))
                     continue
@@ -296,7 +314,8 @@ class Estimator:
             tol = man.get("posture_tol_deg", 3.0)
             if not all(abs(m_row[jidx[j]] - v) <= tol
                        for j, v in man.get("posture", {}).items() if j in jidx):
-                why = "posture mismatch"
+                if why == "no manifold":
+                    why = "posture mismatch"
                 continue
             lo, hi = man["arg_range"]
             if not (lo <= m_row[jidx[man["arg"]]] <= hi):

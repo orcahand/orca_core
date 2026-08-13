@@ -204,6 +204,50 @@ def test_abd_block_recovers_offsets_with_synthetic_manifolds(nominal):
     assert not est.skipped_contacts
 
 
+def test_session_joint_order_need_not_match_the_model(nominal):
+    # Capture tools store encoder columns in the hand's own joint order, which
+    # differs from the model's; the estimator must permute rather than index
+    # one order with the other's positions.
+    rng = np.random.default_rng(4)
+    joints = nominal.joint_names
+    jidx = {j: i for i, j in enumerate(joints)}
+    a, b = "ring_abd", "pinky_abd"
+    posture_polys = {15.0: np.array([0.002, -1.15, 12.0]),
+                     40.0: np.array([0.003, -0.55, 4.0])}
+    manifolds = [
+        {"pair": sorted((a, b)), "arg": a, "out": b, "poly": list(poly),
+         "arg_range": list(JOINT_ROMS[a]), "sigma_deg": 0.3,
+         "posture": {"ring_mcp": posture}}
+        for posture, poly in posture_polys.items()
+    ]
+    off = {a: 2.1, b: -1.7}
+    rows, events = [], []
+    for k in range(12):
+        posture = 15.0 if k % 2 == 0 else 40.0
+        qa = rng.uniform(JOINT_ROMS[a][0] + 3, JOINT_ROMS[a][1] - 3)
+        m = np.zeros(len(joints))
+        m[jidx[a]] = qa + off[a]
+        m[jidx[b]] = float(np.polyval(posture_polys[posture], qa)) + off[b]
+        m[jidx["ring_mcp"]] = posture
+        rows.append(m)
+        events.append(ContactEvent(frame=k, kind="abd_block",
+                                   body_a=a, body_b=b))
+    m_model = np.asarray(rows)
+
+    perm = list(rng.permutation(len(joints)))
+    shuffled = [joints[i] for i in perm]
+    assert shuffled != list(joints)
+    ds = _empty_ds(m_model[:, perm], shuffled, events)
+
+    prior = PriorConfig(mode={a: "wide", b: "wide"})
+    est = Estimator(nominal, offsets_only=True, prior=prior,
+                    manifolds=manifolds)
+    result = est.solve(ds, est.initial_x({}))
+    assert not est.skipped_contacts
+    assert result.b[jidx[a], 0] == pytest.approx(-off[a], abs=0.3)
+    assert result.b[jidx[b], 0] == pytest.approx(-off[b], abs=0.3)
+
+
 def test_abd_block_without_manifold_is_skipped_not_guessed(nominal):
     joints = nominal.joint_names
     ds = _empty_ds(np.zeros((1, len(joints))), joints, [

@@ -114,7 +114,7 @@ def main() -> int:
                 "angle_correction_poly": [round(float(v), 5) for v in result.b[i, 1:]],
                 "sigma_deg": round(result.sigma_b0_deg[j], 4),
             }
-            for i, j in enumerate(ds.joints)
+            for i, j in enumerate(est.joints)
         },
     }
     diagnostics = {
