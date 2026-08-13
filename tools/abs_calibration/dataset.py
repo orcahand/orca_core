@@ -81,6 +81,12 @@ class Dataset:
     sweep_frames: dict[str, np.ndarray]  # {joint: frame indices}
     joints: list
     contact_obs: list = field(default_factory=list)  # [ContactEvent]
+    # Per-anchor detection sigmas (deg): {link: (A,)} / {link: (2, A)}.
+    # Optional — sessions without them (the synthetic study) use the
+    # estimator's default weight; detection writes its honest per-frame
+    # uncertainty so a ragged anchor informs, not dominates.
+    dir_sigma: dict[str, np.ndarray] = field(default_factory=dict)
+    frame_axes_sigma: dict[str, np.ndarray] = field(default_factory=dict)
     q_true: np.ndarray | None = None     # (F, J) simulation truth, absent on hardware
     meta: dict = field(default_factory=dict)
 
@@ -106,6 +112,10 @@ def save_session(ds: Dataset, session_dir: str) -> None:
         np.save(os.path.join(session_dir, f"dirs_{link}.npy"), arr)
     for link, arr in ds.frame_axes.items():
         np.save(os.path.join(session_dir, f"frame_axes_{link}.npy"), arr)
+    for name, obs in (("dirs_sigma", ds.dir_sigma),
+                      ("frame_axes_sigma", ds.frame_axes_sigma)):
+        for link, arr in obs.items():
+            np.save(os.path.join(session_dir, f"{name}_{link}.npy"), arr)
     with open(os.path.join(session_dir, "plate.yaml"), "w") as f:
         yaml.safe_dump(
             [{"frame": int(fr), "finger": fi, "xyz": [float(v) for v in xyz]}
@@ -159,6 +169,15 @@ def load_session(session_dir: str) -> Dataset:
         with open(contacts_path) as f:
             contacts_raw = yaml.safe_load(f) or []
     q_true_path = os.path.join(session_dir, "q_true.npy")
+
+    def _sigmas(prefix: str, links: list) -> dict:
+        out = {}
+        for link in links:
+            p = os.path.join(session_dir, f"{prefix}_{link}.npy")
+            if os.path.exists(p):
+                out[link] = np.load(p)
+        return out
+
     return Dataset(
         m=np.load(os.path.join(session_dir, "encoders.npy")),
         dot_obs={l: np.load(os.path.join(session_dir, f"dots_{l}.npy"))
@@ -167,6 +186,9 @@ def load_session(session_dir: str) -> Dataset:
                  for l in manifest["dir_links"]},
         frame_axes={l: np.load(os.path.join(session_dir, f"frame_axes_{l}.npy"))
                     for l in manifest["frame_axis_links"]},
+        dir_sigma=_sigmas("dirs_sigma", manifest["dir_links"]),
+        frame_axes_sigma=_sigmas("frame_axes_sigma",
+                                 manifest["frame_axis_links"]),
         dir_frames=np.asarray(manifest["dir_frames"], int),
         plate_obs=[(e["frame"], e["finger"], np.asarray(e["xyz"], float))
                    for e in plate_raw],

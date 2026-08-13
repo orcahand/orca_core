@@ -71,6 +71,47 @@ def _finger_of(joint: str) -> str:
     return joint.rsplit("_", 1)[0]
 
 
+def anchor_pose_plan(joints: list[str], roms: dict[str, tuple[float, float]],
+                     held: dict[str, float], n_poses: int,
+                     rng: np.random.Generator, *, margin_deg: float = 2.0,
+                     ) -> tuple[np.ndarray, list[str]]:
+    """Anchor-pose rows for the direction/frame anchors: ``(q (N, J), kinds)``.
+
+    Two kinds, half each. ``mid`` rows put every joint at 30-70% of its ROM:
+    mid-flexion shows adjacent links as two distinct silhouette segments
+    (collinear poses are the degenerate anchor poses). ``extended`` rows put
+    the flexion joints near their ROM start with each abduction pushed wide
+    on the side its held value already leans toward: abd offsets are
+    observable only with the finger extended (the phalanx direction aligns
+    with the abd axis as the finger curls), and the spread also opens the
+    finger row for the low cameras. Anchor rows are reached by jumps — dot
+    tracks fragment there harmlessly; the anchors don't use dot identity.
+    """
+    jidx = {j: i for i, j in enumerate(joints)}
+    n_mid = (n_poses + 1) // 2
+    rows, kinds = [], []
+    for _ in range(n_mid):
+        rows.append([rng.uniform(lo + 0.3 * (hi - lo), lo + 0.7 * (hi - lo))
+                     for lo, hi in (roms[j] for j in joints)])
+        kinds.append("mid")
+    for _ in range(n_poses - n_mid):
+        row = np.empty(len(joints))
+        for j in joints:
+            lo, hi = roms[j]
+            lo, hi = lo + margin_deg, hi - margin_deg
+            if j.endswith("_abd"):
+                low_side = held.get(j, 0.5 * (lo + hi)) < 0.5 * (lo + hi)
+                frac = rng.uniform(0.05, 0.25) if low_side else rng.uniform(0.75, 0.95)
+            elif j == "wrist":
+                frac = rng.uniform(0.25, 0.75)
+            else:  # flexion joints (mcp/pip/dip/cmc): extended
+                frac = rng.uniform(0.05, 0.25)
+            row[jidx[j]] = lo + frac * (hi - lo)
+        rows.append(row)
+        kinds.append("extended")
+    return np.asarray(rows, float).reshape(n_poses, len(joints)), kinds
+
+
 def build_plan(joints: list[str], roms: dict[str, tuple[float, float]],
                held: dict[str, float], *, step_scale: float = 1.0,
                margin_deg: float = 2.0,

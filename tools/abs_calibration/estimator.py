@@ -81,6 +81,16 @@ class SolveResult:
     scipy_result: object
 
 
+def _anchor_sigmas(sigma_deg: np.ndarray | None, mask: np.ndarray) -> np.ndarray:
+    """Per-anchor residual sigmas (rad): the detection's own uncertainty when
+    the session carries it, floored at the default so an optimistic sigma
+    never outweighs the class; the default otherwise."""
+    if sigma_deg is None:
+        return np.full(int(mask.sum()), SIGMA_DIR)
+    s = np.deg2rad(np.asarray(sigma_deg, float)[mask])
+    return np.clip(np.where(np.isfinite(s), s, SIGMA_DIR), SIGMA_DIR, None)
+
+
 def _rodrigues(rvec: np.ndarray) -> np.ndarray:
     theta = np.linalg.norm(rvec)
     if theta < 1e-12:
@@ -167,6 +177,16 @@ class Estimator:
                            np.einsum("ij,fj->fi", Rb, tt) + t)
         return world
 
+    def world_link_poses(self, x: np.ndarray, ds: Dataset):
+        """Posed world frames of every link at every frame of ``ds`` for the
+        parameter vector ``x`` — ``{link: (R (F,3,3), t (F,3))}``. This is
+        what anchor detection predicts contours from."""
+        return self._world_poses(x, ds)
+
+    def base_pose(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        rvec, t, _ = self.unpack(x)
+        return _rodrigues(rvec), t
+
     def dot_layout(self, world, ds: Dataset, link: str) -> tuple[np.ndarray, np.ndarray]:
         """VarPro closed form: masked-mean link-local dot positions.
 
@@ -206,17 +226,22 @@ class Estimator:
                 continue
             R, _ = world[link]
             pred = R[ds.dir_frames][mask][:, :, 2]
-            res.append((np.cross(pred, obs[mask]) / SIGMA_DIR).ravel())
+            sig = _anchor_sigmas(ds.dir_sigma.get(link), mask)
+            res.append((np.cross(pred, obs[mask]) / sig[:, None]).ravel())
 
         # Mesh-referenced frame anchors (forearm — mandatory for the wrist —
         # and the palm dorsal shell): two axes constrain full orientation.
         for link in sorted(ds.frame_axes):
             axes_obs = ds.frame_axes[link]
+            sig_rows = ds.frame_axes_sigma.get(link)
             R = world[link][0][ds.dir_frames]
-            for col, obs in zip((2, 0), axes_obs):
+            for row, (col, obs) in enumerate(zip((2, 0), axes_obs)):
                 mask = np.isfinite(obs).all(axis=1)
                 if mask.any():
-                    res.append((np.cross(R[mask][:, :, col], obs[mask]) / SIGMA_DIR).ravel())
+                    sig = _anchor_sigmas(
+                        sig_rows[row] if sig_rows is not None else None, mask)
+                    res.append((np.cross(R[mask][:, :, col], obs[mask])
+                                / sig[:, None]).ravel())
 
         for frame_idx, finger, obs in ds.plate_obs:
             R, t = world[DISTAL_LINK[finger]]

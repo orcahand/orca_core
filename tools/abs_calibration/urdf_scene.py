@@ -115,16 +115,23 @@ def _model_link_of(urdf_link: str, joints) -> str | None:
 
 class MeshScene:
     """Point-cloud surfaces (with normals) of every hand body, plus skin
-    exclusion clouds, all in the packaged model's link frames."""
+    exclusion clouds, all in the packaged model's link frames.
 
-    def __init__(self, urdf_path: str = DEFAULT_URDF, n_per_body: int = 6000):
+    Sampling is deterministic (seeded per mesh file): a scene rebuilt from
+    the same config reproduces the exact clouds — reusing a rendered workdir
+    depends on it."""
+
+    def __init__(self, urdf_path: str = DEFAULT_URDF, n_per_body: int = 6000,
+                 seed: int = 0):
         urdf_path = os.path.abspath(urdf_path)
         if not os.path.exists(urdf_path):
             raise FileNotFoundError(
                 f"orcahand_description URDF not found at {urdf_path} — the "
                 "mesh-rendered synthetic scene needs the description checkout")
+        self._seed = seed
+        side = "left" if "left" in os.path.basename(urdf_path) else "right"
         self.asset_dir = os.path.join(os.path.dirname(urdf_path), "..",
-                                      "assets", "right")
+                                      "assets", side)
         links, joints = _parse(urdf_path)
         self.bodies: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.visual_offset: dict[str, np.ndarray] = {}
@@ -144,9 +151,12 @@ class MeshScene:
             self.skin[model_link] = np.vstack(clouds)
 
     def _sample(self, fname: str, scale: float, offset, n: int):
+        import zlib
+
         import trimesh
         mesh = trimesh.load(os.path.join(self.asset_dir, fname), force="mesh")
         mesh.apply_scale(scale)
         mesh.apply_translation(np.broadcast_to(np.asarray(offset, float), 3))
-        pts, face_idx = trimesh.sample.sample_surface(mesh, n)
+        seed = (self._seed + zlib.crc32(f"{fname}:{n}".encode())) & 0x7FFFFFFF
+        pts, face_idx = trimesh.sample.sample_surface(mesh, n, seed=seed)
         return np.asarray(pts), mesh.face_normals[face_idx]
