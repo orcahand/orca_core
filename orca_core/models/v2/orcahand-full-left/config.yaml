@@ -41,22 +41,22 @@ joint_ids:
 - pinky_mcp
 - pinky_pip
 joint_to_motor_map:
-  thumb_cmc: -10
-  thumb_abd: -13
-  thumb_mcp: 12
-  thumb_dip: 11
-  index_abd: -7
-  index_mcp: -8
+  thumb_cmc: 10
+  thumb_abd: 13
+  thumb_mcp: -12
+  thumb_dip: -11
+  index_abd: 7
+  index_mcp: 8
   index_pip: -9
-  middle_abd: -6
-  middle_mcp: -17
-  middle_pip: -2
-  ring_abd: -5
-  ring_mcp: 4
-  ring_pip: -3
-  pinky_abd: 14
-  pinky_mcp: -15
-  pinky_pip: 16
+  middle_abd: 6
+  middle_mcp: 17
+  middle_pip: 2
+  ring_abd: 5
+  ring_mcp: -4
+  ring_pip: 3
+  pinky_abd: -14
+  pinky_mcp: 15
+  pinky_pip: -16
   wrist: -1
 joint_roms:
   wrist:
