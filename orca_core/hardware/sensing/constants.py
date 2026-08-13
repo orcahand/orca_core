@@ -93,6 +93,15 @@ FORCE_ROUND_DECIMALS = 1
 # resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
+# Headroom on each taxel's measured dither when it becomes a noise gate. The
+# capture window is a few seconds, so its worst observed excursion is not the
+# taxel's worst: sizing a gate at exactly that still leaves the noisiest taxels
+# flickering, always the same ones within a run. The scale is multiplicative on
+# purpose — it widens noisy taxels without costing quiet ones any sensitivity.
+# These are the knobs to turn if dither still shows through after zeroing.
+NOISE_GATE_SCALE = 1.5
+NOISE_GATE_MARGIN_N = RESOLUTION_N_PER_LSB
+
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
 BYTES_PER_TAXEL = 3      # fx(int8) + fy(int8) + fz(uint8)
@@ -257,6 +266,11 @@ LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
 """How long ``JointEncoderClient.start_stream`` waits for the first valid
 AA A9 frame before raising ``EncodersNotAvailableError``."""
+
+ENCODER_FILTER_CUTOFF_HZ = 5.0
+"""Cutoff of the low-pass ``JointEncoderClient`` applies to the count stream.
+Only display and monitoring consumers see this — the control loop and the
+calibration sweep read the unfiltered stream."""
 
 # ---------------------------------------------------------------------------
 # Auto-stream timing

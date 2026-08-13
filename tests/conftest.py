@@ -109,9 +109,19 @@ def tactile_mock_factory():
 @pytest.fixture
 def encoder_link_and_client():
     """Encoder client connected on a mock link; AA A9 handler registered."""
+    yield from _encoder_link_and_client()
+
+
+@pytest.fixture
+def encoder_link_and_client_unfiltered():
+    """As ``encoder_link_and_client``, with ``get_latest()`` smoothing off."""
+    yield from _encoder_link_and_client(filter_cutoff_hz=None)
+
+
+def _encoder_link_and_client(**client_kwargs):
     link = MockHandSerialLink()
     link.connect()
-    client = JointEncoderClient(link)
+    client = JointEncoderClient(link, **client_kwargs)
     client.connect()
     try:
         yield link, client

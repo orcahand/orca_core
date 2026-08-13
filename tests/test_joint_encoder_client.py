@@ -19,11 +19,14 @@ from orca_core.hardware.joint_encoder_client import (
 )
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import (
+    AUTO_ENC_ANGLE_ERROR_BIT,
+    AUTO_ENC_ANGLE_MASK,
     AUTO_ENC_NUM_JOINTS,
+    AUTO_ENC_PARITY_BIT,
     PROTOCOL_BYTE_AUTO_ENC,
 )
 
-from tests._encoder_helpers import feed_encoder_frame
+from tests._encoder_helpers import feed_encoder_frame, full_counts
 from tests._helpers import wait_until
 
 
@@ -240,3 +243,120 @@ def test_frame_in_timeout_race_window_is_not_published(
         client.start_stream(timeout=0.05)
 
     assert client.get_latest() is None
+
+
+# ---------------------------------------------------------------------------
+# Smoothing
+# ---------------------------------------------------------------------------
+
+ANGLE = AUTO_ENC_ANGLE_MASK
+
+
+def _feed_and_wait(link, client, value):
+    """Feed one parity-clean frame with every slot at ``value``."""
+    before = client.get_stats().frames_ok
+    feed_encoder_frame(link, raw_counts=full_counts(value))
+    wait_until(lambda: client.get_stats().frames_ok > before)
+
+
+def _start_at(link, client, value):
+    feed_encoder_frame(link, raw_counts=full_counts(value))
+    client.start_stream(timeout=0.5)
+
+
+def test_get_latest_smooths_while_unfiltered_stays_on_the_wire_value(
+    encoder_link_and_client,
+):
+    link, client = encoder_link_and_client
+    _start_at(link, client, 1000)
+
+    _feed_and_wait(link, client, 5000)
+
+    assert client.get_latest_unfiltered().raw_counts[0] & ANGLE == 5000
+    assert 1000 < client.get_latest().raw_counts[0] & ANGLE < 5000
+
+
+def test_repeated_frames_converge_on_the_wire_value(encoder_link_and_client):
+    link, client = encoder_link_and_client
+    _start_at(link, client, 1000)
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        _feed_and_wait(link, client, 5000)
+        if client.get_latest().raw_counts[0] & ANGLE == 5000:
+            break
+
+    assert client.get_latest().raw_counts[0] & ANGLE == 5000
+
+
+def test_parity_failure_holds_the_slot_instead_of_ingesting_it(
+    encoder_link_and_client,
+):
+    link, client = encoder_link_and_client
+    _start_at(link, client, 1000)
+
+    corrupt = full_counts(5000) ^ np.uint16(AUTO_ENC_PARITY_BIT)
+    for _ in range(20):
+        before = client.get_stats().frames_ok
+        feed_encoder_frame(link, raw_counts=corrupt)
+        wait_until(lambda: client.get_stats().frames_ok > before)
+
+    assert client.get_latest().raw_counts[0] & ANGLE == 1000
+
+
+def test_smoothing_preserves_the_frames_flags(encoder_link_and_client):
+    link, client = encoder_link_and_client
+    raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
+    raw[3] = 0x8000  # popcount 1 → parity BAD
+    raw[7] = 0x4002  # popcount 2 → parity OK, angle-error set
+    feed_encoder_frame(link, raw_counts=raw)
+    client.start_stream(timeout=0.5)
+
+    reading = client.get_latest()
+
+    assert bool(reading.parity_ok[3]) is False
+    assert bool(reading.angle_error[7]) is True
+    assert reading.raw_counts[7] & AUTO_ENC_ANGLE_ERROR_BIT
+
+
+def test_disabled_filter_publishes_the_raw_frame(encoder_link_and_client_unfiltered):
+    link, client = encoder_link_and_client_unfiltered
+    _start_at(link, client, 1000)
+
+    _feed_and_wait(link, client, 5000)
+
+    assert client.filter_cutoff_hz is None
+    assert client.get_latest().raw_counts[0] & ANGLE == 5000
+
+
+def test_restart_reseeds_smoothing_at_the_new_pose(encoder_link_and_client):
+    """The hand may have been moved while stopped; the first frame of the
+    next session must not be dragged toward the old pose."""
+    link, client = encoder_link_and_client
+    _start_at(link, client, 1000)
+    client.stop_stream()
+
+    def _start_in_thread():
+        client.start_stream(timeout=1.0)
+
+    t = threading.Thread(target=_start_in_thread, daemon=True)
+    t.start()
+    time.sleep(0.05)
+    feed_encoder_frame(link, raw_counts=full_counts(9000))
+    t.join(timeout=1.0)
+
+    assert client.get_latest().raw_counts[0] & ANGLE == 9000
+
+
+def test_cutoff_can_be_changed_and_disabled_while_streaming(encoder_link_and_client):
+    link, client = encoder_link_and_client
+    _start_at(link, client, 1000)
+
+    client.filter_cutoff_hz = 50.0
+    assert client.filter_cutoff_hz == 50.0
+
+    client.filter_cutoff_hz = None
+    _feed_and_wait(link, client, 5000)
+
+    assert client.filter_cutoff_hz is None
+    assert client.get_latest().raw_counts[0] & ANGLE == 5000

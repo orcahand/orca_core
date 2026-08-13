@@ -22,7 +22,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
 from .hardware.motor_factory import create_motor_client
-from .hardware.motor_client import MotorClient
+from .hardware.motor_client import MotorClient, MotorRead
 from .hardware.motor_resolution import persist_resolved_driver, trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -222,6 +222,17 @@ class OrcaHand(BaseHand):
         """
         return self._motor_client
 
+    @property
+    def last_read_ok(self) -> bool:
+        """Whether the most recent motor read returned fresh data.
+
+        ``False`` means the bus answered nothing and the last
+        :meth:`get_motor_pos` / :meth:`get_motor_current` returned the client's
+        stale cache. Qualifies only the single most recent read: check it right
+        after the read it describes, before another can run.
+        """
+        return self._motor_client.last_read_ok
+
     def _create_motor_client(self) -> MotorClient:
         return create_motor_client(
             self.config.motor_type,
@@ -346,12 +357,21 @@ class OrcaHand(BaseHand):
         # unique adapter is found the normal recovery cascade below runs.
         configured_port = self.config.port
         first_port = configured_port
+        unresolved = None
         if configured_port == "auto":
             detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
-            if detected is not None:
+            if detected is None:
+                # Opening the literal "auto" reports a missing-file error that
+                # reads like a config typo; name the real failure instead.
+                unresolved = (
+                    "no motor bus detected: no controller board answered "
+                    "ORCA_ID? and no single known USB adapter is attached "
+                    "(a port held open by another process cannot be probed)"
+                )
+            else:
                 first_port = detected
 
-        error = self._try_port(first_port, existing_config)
+        error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "
@@ -553,6 +573,10 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor positions in radians as an array or dict.
+
+        Note:
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            velocity or current too for the same single transaction.
         """
         with self._motor_lock:
             motor_pos = self._motor_client.read_position_velocity_current().position
@@ -573,6 +597,10 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor currents (mA) as an array, or dict.
+
+        Note:
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            position or velocity too for the same single transaction.
         """
         with self._motor_lock:
             motor_current = self._motor_client.read_position_velocity_current().current
@@ -584,6 +612,20 @@ class OrcaHand(BaseHand):
                 }
 
             return motor_current
+
+    def get_motor_state(self) -> MotorRead:
+        """Read position, velocity, and current in a single bus transaction.
+
+        The per-quantity accessors each cost a full round trip to every motor,
+        so wanting two of them should be one snapshot rather than two calls.
+
+        Returns:
+            A :class:`~orca_core.hardware.motor_client.MotorRead`: positions
+            (radians), velocities, and currents (mA), each an array ordered by
+            :attr:`~orca_core.OrcaHandConfig.motor_ids`.
+        """
+        with self._motor_lock:
+            return self._motor_client.read_position_velocity_current()
 
     def wait_for_motion(self, timeout: float = 5.0) -> None:
         """Block until all motors have settled at their commanded position.

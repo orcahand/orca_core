@@ -58,9 +58,11 @@ class OrcaBoardInfo:
 
     ``serial`` is the hand's assigned serial number and ``board_id`` the
     board's immutable MCU-derived identifier; :attr:`hand_id` prefers the
-    former. Boards that answer only the legacy ``ORCA_ID?`` yield a role
-    with every identity field ``None``; hands that report no side are
-    treated as right-handed by the callers that need one.
+    former. ``config`` is the provisioned sensing-config code, the hand's own
+    declaration of which sensors it was built with. Boards that answer only
+    the legacy ``ORCA_ID?`` yield a role with every identity field ``None``;
+    hands that report no side are treated as right-handed by the callers that
+    need one.
     """
 
     role: str  # "motor" | "sensor"
@@ -69,6 +71,7 @@ class OrcaBoardInfo:
     fw_version: Optional[int] = None
     serial: Optional[str] = None
     board_id: Optional[str] = None
+    config: Optional[int] = None  # sensing config code; None when unprovisioned
 
     @property
     def hand_id(self) -> Optional[str]:
@@ -108,6 +111,8 @@ def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
         fw_version=_int_or_none("FW"),
         serial=fields.get("SN") or None,
         board_id=fields.get("BID") or None,
+        # Firmware omits CFG entirely when unset, and reports 0 for no sensing.
+        config=_int_or_none("CFG") or None,
     )
 
 

@@ -360,6 +360,30 @@ def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
     )
 
 
+def test_clamped_joint_warns_by_name_with_rate_limit(calibrated_hand, caplog):
+    """A joint held short of its target by the clamp is otherwise invisible —
+    only an unlogged counter moves — so it must say so, naming the joint, and
+    rate-limited so a persistently unreachable target doesn't drown the log."""
+    from orca_core.constants import WRIST
+
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, correction_max_deg=60.0)
+    loop.prime_for_step()
+    loop.set_target({WRIST: calibrated_hand.config.joint_roms_dict[WRIST][1]})
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(50):
+            loop.step_once(dt=0.001)
+
+    assert loop.get_stats()["cycles_clamped"] == 50
+    clamp_records = [
+        r for r in caplog.records
+        if "clamped" in r.getMessage() and r.levelno == logging.WARNING
+    ]
+    assert 1 <= len(clamp_records) <= 2, "rate limit must collapse the repeats"
+    assert WRIST in clamp_records[0].getMessage()
+
+
 def test_jitter_monitor_estops_after_pathological_streak(calibrated_hand):
     encoder = _static_at_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder)

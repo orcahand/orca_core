@@ -13,6 +13,10 @@ a device register to enable it. ``connect()`` registers the frame handler
 ``start_stream()`` only gates whether parsed readings become
 visible via ``get_latest()``.
 
+``get_latest()`` publishes a low-pass-smoothed view of the stream;
+``get_latest_unfiltered()`` returns the frame as received, for control and
+calibration paths that must not take on the filter's phase lag.
+
 All public methods are thread-safe.
 """
 import dataclasses
@@ -28,9 +32,11 @@ import numpy as np
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.sensing.constants import (
     ENCODER_COUNTS_PER_REV,
+    ENCODER_FILTER_CUTOFF_HZ,
     ENCODER_FIRST_FRAME_TIMEOUT_S,
     PROTOCOL_BYTE_AUTO_ENC,
 )
+from orca_core.hardware.sensing.encoder_filter import EncoderCountFilter
 from orca_core.hardware.sensing.encoder_protocol import parse_encoder_frame
 from orca_core.hardware.sensing.types import EncoderReading
 
@@ -53,7 +59,7 @@ class JointEncoderCalibrationError(RuntimeError):
 
 
 class _ReadsLatestEncoderFrame(Protocol):
-    def get_latest(self) -> EncoderReading | None: ...
+    def get_latest_unfiltered(self) -> EncoderReading | None: ...
 
 
 @dataclass
@@ -78,15 +84,28 @@ class JointEncoderClient:
     The handler always parses incoming frames so stats track the stream
     even before ``start_stream()``; the publish flag only gates
     public visibility of the latest reading.
+
+    Args:
+        link: The serial link carrying the AA A9 stream.
+        filter_cutoff_hz: Cutoff of the low-pass behind ``get_latest()``;
+            ``None`` disables smoothing.
     """
 
-    def __init__(self, link: HandSerialLink):
+    def __init__(
+        self,
+        link: HandSerialLink,
+        filter_cutoff_hz: float | None = ENCODER_FILTER_CUTOFF_HZ,
+    ):
         self._link = link
         self._connected = False
 
         self._lock = threading.Lock()
         self._publish_active = False
         self._latest: EncoderReading | None = None
+        self._latest_unfiltered: EncoderReading | None = None
+        self._filter = (
+            EncoderCountFilter(filter_cutoff_hz) if filter_cutoff_hz else None
+        )
         self._stats = EncoderStreamStats()
         self._first_frame_event = threading.Event()
 
@@ -131,7 +150,7 @@ class JointEncoderClient:
 
         with self._lock:
             self._first_frame_event.clear()
-            self._latest = None
+            self._clear_published()
             self._publish_active = True
 
         if not self._first_frame_event.wait(timeout):
@@ -139,7 +158,7 @@ class JointEncoderClient:
             # and this cleanup must not stay visible after a failed start.
             with self._lock:
                 self._publish_active = False
-                self._latest = None
+                self._clear_published()
                 self._first_frame_event.clear()
             raise EncodersNotAvailableError(
                 f"No encoder frame within {timeout}s"
@@ -151,16 +170,51 @@ class JointEncoderClient:
         ``start_stream()``."""
         with self._lock:
             self._publish_active = False
-            self._latest = None
+            self._clear_published()
             self._first_frame_event.clear()
+
+    def _clear_published(self) -> None:
+        """Drop the cached readings and reset the filter, since the stream may
+        resume at a different pose. Caller holds the lock."""
+        self._latest = None
+        self._latest_unfiltered = None
+        if self._filter is not None:
+            self._filter.reset()
 
     # ----- Reads ------------------------------------------------------------
 
     def get_latest(self) -> EncoderReading | None:
-        """Returns ``None`` before the first frame is published or while
-        the stream is stopped."""
+        """Latest reading, low-pass smoothed unless filtering is disabled.
+
+        ``None`` before the first frame is published or while the stream is
+        stopped. Only the angle counts are smoothed; the flags are the source
+        frame's.
+        """
         with self._lock:
             return self._latest
+
+    def get_latest_unfiltered(self) -> EncoderReading | None:
+        """Latest reading exactly as it came off the wire, for callers that
+        cannot take on the filter's group delay."""
+        with self._lock:
+            return self._latest_unfiltered
+
+    @property
+    def filter_cutoff_hz(self) -> float | None:
+        """Cutoff of the low-pass behind :meth:`get_latest`, or ``None``
+        when smoothing is disabled. Assignable while streaming."""
+        with self._lock:
+            return self._filter.cutoff_hz if self._filter is not None else None
+
+    @filter_cutoff_hz.setter
+    def filter_cutoff_hz(self, value: float | None) -> None:
+        with self._lock:
+            if not value:
+                self._filter = None
+            elif self._filter is None:
+                self._filter = EncoderCountFilter(value)
+            else:
+                self._filter.cutoff_hz = value
 
     def get_stats(self) -> EncoderStreamStats:
         """Snapshot of the diagnostic counters — safe to call without
@@ -189,8 +243,25 @@ class JointEncoderClient:
             self._stats.last_frame_timestamp = timestamp
             if not self._publish_active:
                 return
-            self._latest = reading
+            self._latest_unfiltered = reading
+            self._latest = self._smooth(reading)
             self._first_frame_event.set()
+
+    def _smooth(self, reading: EncoderReading) -> EncoderReading:
+        """Fold a frame into the filter and return the smoothed reading.
+        Caller holds the lock.
+
+        Parity failures hold the slot — the word is corrupt. The angle-error
+        flag does not, so a flagged slot keeps tracking.
+        """
+        if self._filter is None:
+            return reading
+        return dataclasses.replace(
+            reading,
+            raw_counts=self._filter.update(
+                reading.raw_counts, reading.timestamp, valid=reading.parity_ok
+            ),
+        )
 
 
 # ----- Anchor sampling for the joint-encoder calibration sweep --------------
@@ -218,11 +289,12 @@ def sample_anchor_count_from_client(
     """Cosine-average ``num_samples`` distinct frames for ``slot`` at the
     current pose.
 
-    Chip-flagged samples (parity failure or angle-error bit) are rejected and
-    do not count toward ``num_samples``; if the deadline expires — including
-    when flagged samples starve the collection — a
-    :class:`JointEncoderCalibrationError` is raised rather than folding
-    corrupted counts into the anchor.
+    Samples come off the unfiltered stream — pre-smoothed frames would be
+    correlated and defeat the averaging. Chip-flagged samples (parity failure
+    or angle-error bit) are rejected and do not count toward ``num_samples``;
+    if the deadline expires — including when flagged samples starve the
+    collection — a :class:`JointEncoderCalibrationError` is raised rather than
+    folding corrupted counts into the anchor.
     """
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
@@ -233,7 +305,7 @@ def sample_anchor_count_from_client(
     collected = 0
     rejected = 0
     while collected < num_samples:
-        reading = client.get_latest()
+        reading = client.get_latest_unfiltered()
         if reading is not None and reading.timestamp != last_ts:
             last_ts = reading.timestamp
             if bool(reading.parity_ok[slot]) and not bool(reading.angle_error[slot]):

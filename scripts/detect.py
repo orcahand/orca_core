@@ -15,7 +15,7 @@ import contextlib
 import io
 import sys
 
-from orca_core import OrcaHand, detect_hand, detect_hands
+from orca_core import detect_hand, detect_hands, load_hand
 
 
 @contextlib.contextmanager
@@ -24,6 +24,11 @@ def _quiet():
     warning per uncalibrated motor. This script reports that state itself."""
     with contextlib.redirect_stdout(io.StringIO()):
         yield
+
+
+def _describe(tactile: bool, encoders: bool) -> str:
+    present = [n for n, on in (("tactile", tactile), ("encoders", encoders)) if on]
+    return " + ".join(present) if present else "nothing"
 
 
 def _capabilities(detection) -> str:
@@ -50,6 +55,12 @@ def _print_detection(detection) -> None:
     else:
         print("Identity:    not reported")
 
+    if detection.declared_config is None:
+        print("Sensing cfg: not declared (capabilities came from probing)")
+    else:
+        probed = _describe(detection.probed_tactile, detection.probed_encoders)
+        print(f"Sensing cfg: CFG={detection.declared_config} declared, {probed} responding")
+
     print(f"Motor bus:   {detection.motor_port or 'not detected'}")
     print(f"Sensing:     {detection.sensing_port or 'not detected'}")
     if detection.tactile_port and detection.tactile_port != detection.sensing_port:
@@ -59,7 +70,13 @@ def _print_detection(detection) -> None:
 def _print_calibration(detection) -> None:
     """Report the calibration state of the bundled model detection picked."""
     with _quiet():
-        hand = OrcaHand(model_name=detection.model_name)
+        # Motor-only: this only reads calibration off disk, and opening
+        # the sensing links would fight anything already on that port.
+        hand = load_hand(
+            model_name=detection.model_name,
+            engage_feedback=False,
+            engage_sensors=False,
+        )
 
     print(f"\nCalibration ({hand.config.model_path}):")
     print(f"  motor limits:    {'ok' if hand.calibrated else 'NOT calibrated'}")
@@ -85,27 +102,43 @@ def _print_calibration(detection) -> None:
 def _print_notes(detection) -> None:
     """Explain anything detection could not see, so a partial result is never
     mistaken for a simpler hand."""
+    notes = []
+
+    if detection.missing_capabilities:
+        notes.append(
+            f"This hand declares {' and '.join(detection.missing_capabilities)}, "
+            f"but that hardware did not respond on "
+            f"{detection.sensing_port or 'any port'}. The model above is loaded "
+            "from the declaration, so connect() will fail until it is fixed. "
+            "Check the sensing cable and power-cycle the hand, then run "
+            "scripts/check_sensors.py."
+        )
+    if detection.undeclared_capabilities:
+        notes.append(
+            f"{' and '.join(detection.undeclared_capabilities)} answered but "
+            f"CFG={detection.declared_config} does not declare it, so it stays "
+            "unused. The board is provisioned wrong — re-provision it."
+        )
     if detection.busy_ports:
-        note = (
+        notes.append(
             f"{', '.join(detection.busy_ports)} is held by another process (a "
             "running UI, script or serial monitor). Ports are probed "
             "exclusively, so whatever sits behind it is missing above — close "
             "the other client and re-run."
         )
     elif detection.identity is None:
-        note = (
+        notes.append(
             "No controller board answered. With nothing plugged in, detection "
             "falls back to the plain right-hand model above."
         )
     elif detection.motor_port is None:
-        note = (
+        notes.append(
             "No port identified itself as the motor bus. connect() falls back "
             "to matching a motor adapter by USB vendor ID."
         )
-    else:
-        return
 
-    print(f"\nNote: {note}")
+    for note in notes:
+        print(f"\nNote: {note}")
 
 
 def _report(detection) -> None:

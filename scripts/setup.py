@@ -6,8 +6,15 @@ Three rounds of tension+calibration with a 1-minute motion test in between.
 
 import argparse
 import time
+from pathlib import Path
 
-from orca_core.utils.cli import connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand_from_args,
+    print_calibration_progress,
+    shutdown_hand,
+)
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
@@ -28,51 +35,6 @@ def print_step(step_num, title):
     print(f"\n{DIVIDER}")
     print(f"  STEP {step_num}: {title}")
     print(DIVIDER)
-
-
-def _print_calibration_progress(event: dict) -> None:
-    """Render calibration progress events on the terminal."""
-    name = event.get("event")
-    if name == "calibration_started":
-        print(
-            f"Calibrating {len(event['joints'])} joint(s) "
-            f"over {event['steps']} step(s)..."
-        )
-    elif name == "step_started":
-        joints = ", ".join(f"{j} ({d})" for j, d in event["joints"].items())
-        print(f"[step {event['index'] + 1}/{event['total']}] {joints}")
-    elif name == "limit_recorded":
-        print(
-            f"  motor {event['motor']} ({event['joint']}) "
-            f"{event['bound']} limit at {event['limit']:.4f} rad"
-        )
-    elif name == "joint_calibrated":
-        print(f"  {event['joint']} calibrated (ratio {event['ratio']:.4f})")
-    elif name == "wrist_skipped":
-        print("Wrist already calibrated; skipping wrist steps.")
-    elif name == "encoder_anchor_recorded":
-        print(
-            f"  {event['joint']} encoder anchor: count {event['anchor_count']} "
-            f"at {event['anchor_angle_deg']:.1f} deg"
-        )
-    elif name == "encoder_anchor_failed":
-        print(f"  WARNING: encoder anchor failed for {event['joint']}: {event['error']}")
-    elif name == "offset_calibration_failed":
-        print(
-            f"  WARNING: offset calibration failed for motor {event['motor']} "
-            f"({event['joint']}); skipped"
-        )
-    elif name == "torque_release_failed":
-        print(
-            f"  WARNING: torque release failed for motor {event['motor']} "
-            f"({event['joint']}); limit not recorded"
-        )
-    elif name == "calibration_done":
-        print("Calibration complete.")
-    elif name == "calibration_aborted":
-        print("Calibration aborted.")
-    elif name == "cleanup_failed":
-        print(f"WARNING: cleanup after abort failed: {event['error']}")
 
 
 def run_tension(hand, step_num, label):
@@ -101,7 +63,7 @@ def run_calibrate(hand, step_num, label, force_wrist=False):
         print("  Calibrating finger joints (wrist already calibrated, skipping)...")
     try:
         hand.calibrate(
-            force_wrist=force_wrist, progress_callback=_print_calibration_progress
+            force_wrist=force_wrist, progress_callback=print_calibration_progress
         )
     except KeyboardInterrupt:
         print("\n  Calibration skipped.")
@@ -113,7 +75,7 @@ def run_neutral(hand, step_num):
     print("  Moving hand to neutral position...")
     print("  Press Ctrl+C to skip.")
     hand.enable_torque()
-    hand.set_control_mode('current_based_position')
+    hand.set_control_mode(hand.config.control_mode)
     try:
         hand.set_neutral_position()
         print("  Hand is in neutral position.")
@@ -129,7 +91,7 @@ def run_motion_test(hand, step_num, duration=60):
     print("  Press Ctrl+C to skip.\n")
 
     hand.enable_torque()
-    hand.set_control_mode('current_based_position')
+    hand.set_control_mode(hand.config.control_mode)
 
     open_pos = hand.pose_from_fractions(
         {
@@ -199,10 +161,7 @@ def run_motion_test(hand, step_num, duration=60):
 
 def main():
     parser = argparse.ArgumentParser(description="Full ORCA Hand setup workflow.")
-    parser.add_argument(
-        "config_path", type=str, nargs="?", default=None,
-        help="Path to the hand config.yaml file"
-    )
+    add_hand_arguments(parser, feedback_flag=False)
     args = parser.parse_args()
 
     print(DIVIDER)
@@ -211,8 +170,12 @@ def main():
     print("  Type 's' at any prompt or Ctrl+C to skip a step")
     print(DIVIDER)
 
-    hand = create_hand(args.config_path, use_mock=False)
+    # The workflow runs tension and calibrate, neither of which can share the
+    # motors with a live joint loop.
+    hand = create_hand_from_args(args, engage_feedback=False)
     connect_hand(hand)
+    print(f"  Model: {Path(hand.config.config_path).parent.name}")
+    print(f"  Motor family: {hand.config.motor_type}")
     print("  Connected and ready.")
 
     try:

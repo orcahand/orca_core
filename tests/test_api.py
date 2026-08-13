@@ -319,7 +319,7 @@ def test_set_config_does_not_build_default_hand(monkeypatch):
         return MockOrcaHand.__new__(MockOrcaHand)
 
     monkeypatch.setattr(api, "hand", None)
-    monkeypatch.setattr(api, "OrcaHand", _factory)
+    monkeypatch.setattr(api, "load_hand", _factory)
     client = TestClient(api.app)
     resp = client.post("/config", json="/some/config.yaml")
     assert resp.status_code == 200
@@ -342,7 +342,7 @@ def test_hand_is_constructed_lazily_on_first_use(monkeypatch):
         return stub
 
     monkeypatch.setattr(api, "hand", None)
-    monkeypatch.setattr(api, "OrcaHand", _factory)
+    monkeypatch.setattr(api, "load_hand", _factory)
     client = TestClient(api.app)
     resp = client.get("/status")
     assert resp.status_code == 200

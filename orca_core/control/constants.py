@@ -1,7 +1,9 @@
 """Constants for the joint-control loop and watchdog."""
 
 
-DEFAULT_LOOP_HZ = 100
+# Set by command granularity, not control bandwidth: at 100 Hz the coarsest
+# joints step only ~2-3 encoder counts a cycle and visibly chase the staircase.
+DEFAULT_LOOP_HZ = 200
 
 # Controller dt clamp so a loop slip cannot blow up the integral term:
 # floor below the realistic loop budget, ceiling at the watchdog hold tier.
@@ -25,7 +27,9 @@ WATCHDOG_STOP_LOOP_MS = 1000
 # Only mechanical lag keeps that stable, so stiffly-coupled (fast) joints have
 # the least margin and want the lowest Kp.
 DEFAULT_KP = 0.5           # degrees of correction per degree of error
-DEFAULT_KI = 5.0           # degrees of correction per degree·second of error
+# Low because the integrator fights stiction: it winds up until the joint breaks
+# loose, then overshoots — a limit cycle that reaches the eye as judder.
+DEFAULT_KI = 2.0           # degrees of correction per degree·second of error
 
 # Also the effective anti-windup bound: conditional integration freezes the
 # integrator once the output saturates, so the retained integral contribution
@@ -52,6 +56,11 @@ WRIST_MOTOR_TARGET_MARGIN_DEG = 3.0
 # Freshness warning is rate-limited so a chronic stale-encoder condition
 # doesn't drown the log file.
 FRESHNESS_WARN_INTERVAL_S = 1.0
+
+# Same treatment for the target clamp: a joint pinned at its travel limit
+# stays pinned for as long as the target is unreachable, so the warning that
+# says so has to be rate-limited to stay readable.
+CLAMP_WARN_INTERVAL_S = 5.0
 
 # Jitter monitor: loop-period ratios and consecutive-cycle streak lengths
 # that trigger warn / e-stop; a single transient slow cycle is tolerated.

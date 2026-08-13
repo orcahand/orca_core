@@ -94,10 +94,12 @@ class StaticEncoderSource:
     def set_reading(self, reading: EncoderReading | None) -> None:
         self._reading = reading
 
-    def get_latest(self) -> EncoderReading | None:
+    def get_latest_unfiltered(self) -> EncoderReading | None:
         if self._reading is None:
             return None
         return dc.replace(
             self._reading,
             timestamp=time.monotonic() - self.freshness_ms / 1000.0,
         )
+
+    get_latest = get_latest_unfiltered

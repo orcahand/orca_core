@@ -2,7 +2,7 @@
 
 import argparse
 
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 
 
 def _print_progress(event: dict) -> None:
@@ -18,7 +18,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Hold the hand under tension for manual tendon setup."
     )
-    add_hand_arguments(parser)
+    add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument(
         "--move-motors",
         action=argparse.BooleanOptionalAction,
@@ -27,7 +27,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    # tension() refuses to run against a live joint loop; connect open-loop.
+    hand = create_hand_from_args(args, engage_feedback=False)
     try:
         connect_hand(hand)
         hand.tension(move_motors=args.move_motors, progress_callback=_print_progress)

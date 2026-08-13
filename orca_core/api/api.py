@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel, Field
 import uvicorn
 
-from orca_core import OrcaHand
+from orca_core import OrcaHand, load_hand
 
 app = FastAPI(title="OrcaHand API", version="1.0.0")
 
@@ -34,7 +34,9 @@ def _get_hand() -> OrcaHand:
     if hand is None:
         with _hand_init_lock:
             if hand is None:
-                hand = OrcaHand()
+                # Autodetect: serve the hand that is plugged in, not the
+                # packaged default, which would drive a sensing hand blind.
+                hand = load_hand()
     return hand
 
 
@@ -118,7 +120,7 @@ def set_hand_config(
                     )
                 hand.disconnect()
 
-            hand = OrcaHand(config_path=config_path)
+            hand = load_hand(config_path=config_path)
             return {"message": f"Hand configuration updated to: {config_path}"}
         except Exception as e:
             handle_hand_exception(e)

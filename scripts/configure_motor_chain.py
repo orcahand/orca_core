@@ -204,7 +204,7 @@ def main() -> int:
     args = parser.parse_args()
 
     config = _load_config(args.config_path)
-    port = _resolve_port(config.get('port', '/dev/ttyUSB0'), args.motor_type)
+    port = _resolve_port(config.get('port', 'auto'), args.motor_type)
     motor_type = _resolve_motor_type(args.motor_type, port)
     try:
         plan = plan_motor_chain(config, port, motor_type)

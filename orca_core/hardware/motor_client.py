@@ -147,6 +147,9 @@ class MotorClient(ABC):
     bus; chain assembly power-cycles the adapter between motors when this is set.
     """
 
+    max_operating_temp_c: ClassVar[float] = 70.0
+    """Maximum rated operating temperature in degrees Celsius (XC330/XC430, HLS3930/HLS3915)."""
+
     @classmethod
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""
