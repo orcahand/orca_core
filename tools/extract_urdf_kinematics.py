@@ -27,20 +27,23 @@ fatal, and so is a limit-verified sign that contradicts axis coherence: the
 tool refuses to emit data it could not verify.
 
 Usage:
-    uv run python tools/extract_urdf_kinematics.py <orcahand_right.urdf> \
-        --config orca_core/models/v2/orcahand-right/config.yaml [--out chains.yaml]
+    uv run python tools/extract_urdf_kinematics.py <orcahand.urdf> \
+        --config <model name or config.yaml path> [--out chains.yaml]
 """
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import yaml
 
+from orca_core.hand_config import OrcaHandConfig
 from orca_core.kinematics.transforms import Transform
+from orca_core.utils.utils import get_model_path
 
 THUMB_CHAIN_JOINTS = ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"]
 FINGER_CHAIN_JOINTS = ["abd", "mcp", "pip"]
@@ -281,17 +284,34 @@ def resolve_abduction_signs(chains: dict, audits: dict[str, str]) -> list[str]:
     return notes
 
 
+def load_joint_roms(config: str | None) -> dict:
+    """Joint ROMs for the sign audit, from a config.yaml path or a model name.
+
+    Resolved through the same model lookup the rest of orca_core uses, so a
+    mistyped selector fails loudly instead of yielding an empty audit.
+    """
+    if not config:
+        return {}
+    config_path = (
+        config
+        if os.path.basename(config) == "config.yaml"
+        else os.path.join(get_model_path(config), "config.yaml")
+    )
+    return OrcaHandConfig.from_config_path(config_path=config_path).joint_roms_dict
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("urdf_path")
-    parser.add_argument("--config", help="hand config.yaml with joint_roms for the sign audit")
+    parser.add_argument(
+        "--config",
+        help="hand model providing joint_roms for the sign audit: a config.yaml "
+             "path, a model name, or a version/model pair",
+    )
     parser.add_argument("--out", help="output YAML path (stdout if omitted)")
     args = parser.parse_args()
 
-    roms = {}
-    if args.config:
-        with open(args.config) as f:
-            roms = yaml.safe_load(f).get("joint_roms", {})
+    roms = load_joint_roms(args.config)
 
     model = UrdfModel(args.urdf_path)
     wrist, _carpals, fingers = identify_chains(model)

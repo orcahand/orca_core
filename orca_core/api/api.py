@@ -11,16 +11,17 @@ import time
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Union
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Response
 from pydantic import BaseModel, Field
 import uvicorn
 
-from orca_core import OrcaHand, load_hand
+from orca_core import BaseHand, load_hand
 
 app = FastAPI(title="OrcaHand API", version="1.0.0")
 
-# Created lazily on first use so importing this module has no side effects.
-hand: Optional[OrcaHand] = None
+# Bound lazily so importing this module has no side effects. Binding probes
+# the serial ports, so only /connect and /config may do it.
+hand: Optional[BaseHand] = None
 
 _hand_init_lock = threading.Lock()
 
@@ -29,7 +30,8 @@ _hand_init_lock = threading.Lock()
 _hand_lock = threading.Lock()
 
 
-def _get_hand() -> OrcaHand:
+def _get_hand() -> BaseHand:
+    """Return the bound hand, autodetecting the connected one on first use."""
     global hand
     if hand is None:
         with _hand_init_lock:
@@ -55,12 +57,36 @@ def _exclusive_hand_operation():
         _hand_lock.release()
 
 
-def _require_connected(h: OrcaHand) -> None:
+def _require_hand() -> BaseHand:
+    """Return the bound hand; 409 rather than probe the ports from a read."""
+    if hand is None:
+        raise HTTPException(
+            status_code=409, detail="No hand bound. POST /connect or /config first."
+        )
+    return hand
+
+
+def _require_connected(h: BaseHand) -> None:
     if not h.is_connected():
         raise HTTPException(status_code=409, detail="Hand is not connected.")
 
 
 _TASK_STOP_TIMEOUT_S = 10.0
+
+# Torque writes that some motors never acknowledge are routine on a long
+# serial chain, so a partial result is reported, not raised.
+_PARTIAL_STATUS = 207
+
+
+def _torque_response(
+    response: Response, action: str, ids: Optional[List[int]], failed: List[int]
+) -> dict:
+    if failed:
+        response.status_code = _PARTIAL_STATUS
+        message = f"Torque {action} for motors: {ids or 'all'}, except {failed}"
+    else:
+        message = f"Torque {action} for motors: {ids or 'all'}"
+    return {"message": message, "failed_motor_ids": failed}
 
 
 class MotorList(BaseModel):
@@ -98,13 +124,14 @@ def set_hand_config(
     config_path: str = Body(..., json_schema_extra={"example": "/path/to/config"})
 ):
     """
-    Sets or updates the hand configuration by recreating the OrcaHand object.
+    Sets or updates the hand configuration, rebinding the hand class that
+    config declares (motor-only, touch, joint-feedback, or full).
 
     Args:
         config_path (str): Path to the new configuration file.
 
     Returns:
-        dict: Success message.
+        dict: The bound hand class, hand type and motor family.
     """
     global hand
     with _exclusive_hand_operation():
@@ -121,7 +148,12 @@ def set_hand_config(
                 hand.disconnect()
 
             hand = load_hand(config_path=config_path)
-            return {"message": f"Hand configuration updated to: {config_path}"}
+            return {
+                "message": f"Hand configuration updated to: {config_path}",
+                "hand_class": type(hand).__name__,
+                "type": hand.config.type,
+                "motor_type": hand.config.motor_type,
+            }
         except Exception as e:
             handle_hand_exception(e)
 
@@ -160,7 +192,7 @@ def disconnect_hand():
         dict: Status message indicating success or failure.
     """
     with _exclusive_hand_operation():
-        h = _get_hand()
+        h = _require_hand()
         if not h.is_connected():
             return {"message": "Hand already disconnected."}
         try:
@@ -188,24 +220,36 @@ def disconnect_hand():
 @app.get("/status", summary="Get Hand Status", tags=["Status"])
 def get_status():
     """
-    Retrieves the current connection and calibration status of the hand.
+    Retrieves the current connection and calibration status of the hand,
+    plus which hand the server is actually bound to.
 
     Returns:
-        dict: Contains 'connected' (bool) and 'calibrated' (bool) status.
+        dict: 'connected' and 'calibrated' status, the bound 'hand_class',
+        the hand 'type' (left/right), 'motor_type', 'port', and whether
+        tactile sensing and joint feedback are available. Reports
+        ``connected: false`` with no hand bound; POST /connect binds one.
     """
     try:
-        h = _get_hand()
+        h = hand
+        if h is None:
+            return {"connected": False, "calibrated": False}
         # Same source as GET /calibrate/status: calibration is persisted
         # state, meaningful whether or not the hand is currently connected.
         return {
             "connected": h.is_connected(),
             "calibrated": h.is_calibrated(),
+            "hand_class": type(h).__name__,
+            "type": h.config.type,
+            "motor_type": h.config.motor_type,
+            "port": h.config.port,
+            "tactile": hasattr(h, "get_tactile_data"),
+            "joint_feedback": hasattr(h, "get_measured_joints"),
         }
     except Exception as e:
         handle_hand_exception(e)
 
 @app.post("/torque/enable", summary="Enable Motor Torque", tags=["Control"])
-def enable_torque(motor_list: MotorList = Body(None)):
+def enable_torque(response: Response, motor_list: MotorList = Body(None)):
     """
     Enables torque for specified motors or all motors if none are specified.
 
@@ -215,19 +259,20 @@ def enable_torque(motor_list: MotorList = Body(None)):
                                            If omitted or null, torque is enabled for all motors.
 
     Returns:
-        dict: Success message.
+        dict: Status message and 'failed_motor_ids', the motors that did not
+        acknowledge. A non-empty list is reported as 207 (partial).
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         _require_connected(h)
         ids = motor_list.motor_ids if motor_list else None
-        h.enable_torque(motor_ids=ids)
-        return {"message": f"Torque enabled for motors: {ids or 'all'}"}
+        failed = list(h.enable_torque(motor_ids=ids) or [])
+        return _torque_response(response, "enabled", ids, failed)
     except Exception as e:
         handle_hand_exception(e)
 
 @app.post("/torque/disable", summary="Disable Motor Torque", tags=["Control"])
-def disable_torque(motor_list: MotorList = Body(None)):
+def disable_torque(response: Response, motor_list: MotorList = Body(None)):
     """
     Disables torque for specified motors or all motors if none are specified.
 
@@ -237,14 +282,15 @@ def disable_torque(motor_list: MotorList = Body(None)):
                                            If omitted or null, torque is disabled for all motors.
 
     Returns:
-        dict: Success message.
+        dict: Status message and 'failed_motor_ids', the motors that did not
+        acknowledge. A non-empty list is reported as 207 (partial).
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         _require_connected(h)
         ids = motor_list.motor_ids if motor_list else None
-        h.disable_torque(motor_ids=ids)
-        return {"message": f"Torque disabled for motors: {ids or 'all'}"}
+        failed = list(h.disable_torque(motor_ids=ids) or [])
+        return _torque_response(response, "disabled", ids, failed)
     except Exception as e:
         handle_hand_exception(e)
 
@@ -264,7 +310,7 @@ def set_max_current(max_current: MaxCurrent):
         dict: Success message.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         _require_connected(h)
         h.set_max_current(current=max_current.current)
         return {"message": "Maximum current set successfully."}
@@ -281,7 +327,7 @@ def get_motor_position():
               Returns null if not connected.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         if not h.is_connected():
             return {"positions": None}
         pos = h.get_motor_pos()
@@ -300,7 +346,7 @@ def get_motor_current():
               Returns null if not connected.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         if not h.is_connected():
             return {"currents": None}
         cur = h.get_motor_current()
@@ -318,7 +364,7 @@ def get_motor_temperature():
               Returns null if not connected.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         if not h.is_connected():
             return {"temperatures": None}
         temp = h.get_motor_temp()
@@ -338,7 +384,7 @@ def get_joint_position():
               Responds 409 if the hand is not connected.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         _require_connected(h)
         return {"positions": h.get_joint_position().as_dict()}
     except Exception as e:
@@ -358,7 +404,7 @@ def set_joint_position(joint_positions: JointPositions):
         dict: Success message.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         _require_connected(h)
         h.set_joint_positions(joint_positions.positions)
         return {"message": "Joint positions command sent successfully."}
@@ -375,7 +421,7 @@ def get_calibration_status():
         dict: Contains 'calibrated' (bool) and 'running' (bool) status.
     """
     try:
-        h = _get_hand()
+        h = _require_hand()
         return {"calibrated": h.is_calibrated(), "running": h.task_running}
     except Exception as e:
         handle_hand_exception(e)
@@ -393,7 +439,7 @@ def calibrate_auto():
     # The lock covers only the start of the task, so /disconnect can still
     # abort a calibration that runs for minutes.
     with _exclusive_hand_operation():
-        h = _get_hand()
+        h = _require_hand()
         if not h.is_connected():
              raise HTTPException(status_code=409, detail="Hand must be connected to calibrate.")
         if h.task_running:
@@ -407,4 +453,21 @@ def calibrate_auto():
     return {"message": "Calibration started. Poll /calibrate/status for progress."}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import argparse
+
+    from orca_core.utils.cli import add_hand_arguments
+
+    parser = argparse.ArgumentParser(description="Serve an ORCA hand over HTTP.")
+    add_hand_arguments(parser)
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port to serve on.")
+    args = parser.parse_args()
+
+    # Bind up front so the server reports the right hand before /connect.
+    hand = load_hand(
+        config_path=args.config_path,
+        mock=args.mock,
+        model_name=args.model_name,
+        engage_feedback=args.engage_feedback,
+    )
+    print(f"Serving {type(hand).__name__} from {hand.config.config_path}")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

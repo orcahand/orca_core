@@ -40,6 +40,14 @@ def _capabilities(detection) -> str:
     return ", ".join(present)
 
 
+def _motor_family(detection) -> str:
+    """The motor family answering on the bus, as a suffix for the port line."""
+    if detection.motor_type is None:
+        return "" if detection.motor_port is None else "  (no motor answered)"
+    baud = f" @ {detection.motor_baudrate}" if detection.motor_baudrate else ""
+    return f"  ({detection.motor_type}{baud})"
+
+
 def _print_detection(detection) -> None:
     print(f"Model:       {detection.model_name}  ({_capabilities(detection)})")
 
@@ -58,7 +66,7 @@ def _print_detection(detection) -> None:
         probed = _describe(detection.probed_tactile, detection.probed_encoders)
         print(f"Sensing cfg: CFG={detection.declared_config} declared, {probed} responding")
 
-    print(f"Motor bus:   {detection.motor_port or 'not detected'}")
+    print(f"Motor bus:   {detection.motor_port or 'not detected'}{_motor_family(detection)}")
     print(f"Sensing:     {detection.sensing_port or 'not detected'}")
     if detection.tactile_port and detection.tactile_port != detection.sensing_port:
         print(f"Tactile:     {detection.tactile_port}")

@@ -26,7 +26,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from ..constants import FINGER, MOTOR_MODELS, SUPPORTED_MOTOR_TYPES, WRIST
+from ..constants import (
+    FINGER,
+    MOTOR_BAUD_RATES,
+    MOTOR_MODELS,
+    SUPPORTED_MOTOR_TYPES,
+    WRIST,
+)
 from ..hardware.motor_client import MotorClient
 from ..hardware.motor_factory import create_motor_client, motor_client_class
 from ..utils.utils import auto_detect_port
@@ -75,6 +81,13 @@ class MotorChainPlan:
     target_baud: int
     finger_ids: list[int]
     wrist_id: Optional[int]
+
+    def __post_init__(self):
+        if self.target_baud not in valid_baudrates(self.motor_type):
+            raise MotorChainError(
+                f"invalid baud rate {self.target_baud} for {self.motor_type}; "
+                f"valid: {valid_baudrates(self.motor_type)}"
+            )
 
     @property
     def client_cls(self) -> type[MotorClient]:
@@ -228,6 +241,7 @@ def plan_motor_chain(config: dict, port: str, motor_type: str) -> MotorChainPlan
     The wrist motor ID comes from ``joint_to_motor_map`` (sign stripped, as in
     the hand config); the fingers take the remaining IDs. Motors are configured
     from the highest ID down, the order they are daisy-chained from the board.
+    An unpinned ``baudrate`` falls back to the family's preferred rate.
     """
     motor_ids = config.get("motor_ids") or list(range(17, 0, -1))
     joint_map = config.get("joint_to_motor_map") or {}
@@ -240,7 +254,7 @@ def plan_motor_chain(config: dict, port: str, motor_type: str) -> MotorChainPlan
     return MotorChainPlan(
         motor_type=motor_type,
         port=port,
-        target_baud=config.get("baudrate") or 1_000_000,
+        target_baud=config.get("baudrate") or MOTOR_BAUD_RATES[motor_type][0],
         finger_ids=finger_ids,
         wrist_id=wrist_id,
     )
@@ -313,17 +327,46 @@ def _await_motor_connection(
                   should_stop=should_stop)
 
 
-def find_default_motor(plan: MotorChainPlan, expected_model: str) -> Optional[dict]:
+def _model_is_unrecognised(plan: MotorChainPlan, motor: dict) -> bool:
+    """Whether the client could not name this motor's model number.
+
+    Clients fall back to the bare family label ("Feetech") or an "Unknown(n)"
+    label for model numbers outside their lookup table, which a new production
+    batch of the same servo will hit. That is unknown, not wrong.
+    """
+    model_name = str(motor.get("model_name", "")).strip().lower()
+    return model_name == plan.motor_type.lower() or model_name.startswith("unknown")
+
+
+def _model_matches(plan: MotorChainPlan, motor: dict, expected_model: str) -> bool:
+    """Whether ``motor`` is the expected model, treating unknown as a match."""
+    return _model_is_unrecognised(plan, motor) or expected_model in motor["model_name"]
+
+
+def find_default_motor(
+    plan: MotorChainPlan,
+    expected_model: Optional[str],
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Optional[dict]:
     """Return the factory-default motor on the bus, or ``None`` if absent.
 
-    Raises :class:`MotorChainError` when a default motor is present but is the
-    wrong model — continuing would program a wrist motor into a finger slot.
+    Raises :class:`MotorChainError` when a default motor is present but is a
+    known wrong model — continuing would program a wrist motor into a finger
+    slot. ``expected_model=None`` skips the check entirely.
     """
     motors = scan_motors(plan.motor_type, plan.port, plan.default_baud,
                          (plan.default_id, plan.default_id))
     if not motors:
         return None
     motor = motors[0]
+    if expected_model is None:
+        return motor
+    if _model_is_unrecognised(plan, motor):
+        _emit(progress_callback, "unrecognised_motor_model",
+              expected_model=expected_model,
+              model_number=motor.get("model_number"),
+              model_name=motor["model_name"])
+        return motor
     if expected_model not in motor["model_name"]:
         raise MotorChainError(
             f"wrong motor type on the bus: found {motor['model_name']}, "
@@ -404,7 +447,7 @@ def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
     if plan.target_baud == plan.default_baud:
         motors = [
             m for m in motors
-            if m["id"] != plan.default_id or plan.wrist_model in m["model_name"]
+            if m["id"] != plan.default_id or _model_matches(plan, m, plan.wrist_model)
         ]
     if not motors:
         return ChainScan(valid_ids=[], invalid_ids=[], motors_by_id={})
@@ -413,7 +456,7 @@ def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
     valid: list[int] = []
     for expected_id in plan.all_target_ids:
         found = motor_by_id.get(expected_id)
-        if found is None or plan.model_for(expected_id) not in found["model_name"]:
+        if found is None or not _model_matches(plan, found, plan.model_for(expected_id)):
             break
         valid.append(expected_id)
 
@@ -471,9 +514,9 @@ def configure_motor_chain(
     """Program every motor in ``plan``, resuming from whatever is already done.
 
     Emits ``chain_started``, ``prescan_done``, ``step_started``,
-    ``awaiting_motor``, ``wrong_motor_detected``, ``motor_found``,
-    ``duplicate_default_motor``, ``motor_configured``, ``chain_verified``,
-    ``chain_done``. Asks the operator
+    ``awaiting_motor``, ``wrong_motor_detected``, ``unrecognised_motor_model``,
+    ``motor_found``, ``duplicate_default_motor``, ``motor_configured``,
+    ``chain_verified``, ``chain_done``. Asks the operator
     to connect each motor via ``prompt_callback`` (required for Feetech, whose
     bus must be unpowered while plugging).
 
@@ -524,7 +567,7 @@ def configure_motor_chain(
         while True:
             _check_stop(should_stop)
             try:
-                motor = find_default_motor(plan, expected_model)
+                motor = find_default_motor(plan, expected_model, progress_callback)
             except MotorChainError as exc:
                 if not wrong_model_reported:
                     _emit(progress_callback, "wrong_motor_detected",

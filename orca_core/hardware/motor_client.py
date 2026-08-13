@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
 
+from ..constants import CONTROL_MODES
+
 
 class MotorError(Exception):
     """Raised when a motor operation cannot be completed."""
@@ -110,6 +112,15 @@ class MotorClient(ABC):
     bus; chain assembly power-cycles the adapter between motors when this is set.
     """
 
+    supports_multi_turn: ClassVar[bool] = True
+    """Whether this family can travel beyond one turn (multi-turn position mode)."""
+
+    supported_modes: ClassVar[frozenset[str]] = frozenset(CONTROL_MODES)
+    """Control-mode names from :data:`~orca_core.constants.CONTROL_MODES` this family accepts."""
+
+    position_range_rad: ClassVar["tuple[float, float] | None"] = None
+    """Commandable position span in radians; ``None`` means unbounded/wrapping."""
+
     max_operating_temp_c: ClassVar[float] = 70.0
     """Maximum rated operating temperature in degrees Celsius (XC330/XC430, HLS3930/HLS3915)."""
 
@@ -117,6 +128,15 @@ class MotorClient(ABC):
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""
         return sorted(cls.baud_rate_map, reverse=True)
+
+    @staticmethod
+    def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
+        """Return True if motors of this family answer on ``port`` at ``baudrate``.
+
+        Used by connect-time driver resolution; must not enable torque or
+        change motor state. Clients that cannot probe report False.
+        """
+        return False
 
     # ----- Provisioning (assigning IDs and baud rates) ----------------------
     #
@@ -218,7 +238,10 @@ class MotorClient(ABC):
         returned fresh data for every motor.
 
         A failed bus read keeps returning the stale cache, so callers must
-        discard or retry samples taken while this is ``False``.
+        discard or retry samples taken while this is ``False``. A motor's own
+        latched fault flags (overload, overheat) say nothing about freshness:
+        they are logged and the data they arrived with stands, so a routine
+        that stalls the motors on purpose still reads them.
 
         The flag is client-global mutable state, overwritten by every read
         from any thread: it qualifies only the single most recent read on
@@ -269,6 +292,33 @@ class MotorClient(ABC):
             currents: The desired currents in mA.
         """
         ...
+
+    def write_profile_velocity(
+        self,
+        motor_ids: Sequence[int],
+        profile_velocity: np.ndarray
+    ) -> None:
+        """Writes the motion-profile velocity limit, in this family's raw speed units.
+
+        Args:
+            motor_ids: The motor IDs to write to.
+            profile_velocity: The per-motor speed limits.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot write a profile velocity")
+
+    def read_status_is_done_moving(self) -> bool:
+        """Returns True once every motor reports it has stopped moving."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot report moving status")
+
+    def check_connected(self) -> None:
+        """Raises ``OSError`` unless the client is connected.
+
+        Connects first when the client was built with ``lazy_connect``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement check_connected")
 
     def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
         """Block until all motors finish their commanded motion.

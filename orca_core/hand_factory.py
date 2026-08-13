@@ -28,9 +28,10 @@ config straight off the controller board's identity reply — the board knows
 what it was built with, so that declaration wins over inference. Probing the
 sensors (encoder stream, tactile register) then serves two purposes: it
 supplies the capabilities for boards too old or too fresh to declare a
-``CFG``, and it flags declared sensors that aren't answering. Hands that
-report no side are treated as right-handed; a config selects the model
-explicitly whenever detection can't.
+``CFG``, and it flags declared sensors that aren't answering. The motor family
+comes from probing the motor bus itself. Hands that report no side are treated
+as right-handed; a config selects the model explicitly whenever detection
+can't.
 """
 
 from __future__ import annotations
@@ -116,9 +117,10 @@ class HandDetection:
     ``model_name`` is the bundled v2 model matching the detected side and
     sensing capabilities; the port fields carry what was discovered so the
     hand can connect without re-probing. ``identity`` is ``None`` for hands
-    whose board doesn't report one. ``busy_ports`` lists controller-board
-    CDCs another process holds: those stay silent under probing, so anything
-    behind them is missing from the rest of this result.
+    whose board doesn't report one, and ``motor_type``/``motor_baudrate`` are
+    ``None`` when the motor bus answered nothing. ``busy_ports`` lists
+    controller-board CDCs another process holds: those stay silent under
+    probing, so anything behind them is missing from the rest of this result.
 
     ``has_tactile``/``has_encoders`` are what the hand *is*: the provisioned
     ``declared_config`` when the board reports one, else what probing found.
@@ -142,6 +144,40 @@ class HandDetection:
     probed_encoders: bool = False
     missing_capabilities: tuple[str, ...] = ()
     undeclared_capabilities: tuple[str, ...] = ()
+    motor_type: Optional[str] = None
+    motor_baudrate: Optional[int] = None
+
+
+# Motor IDs the family probe pings when no config names them yet.
+_PROBE_MOTOR_IDS = list(range(1, 18))
+
+
+def _detect_motor_family(port: str) -> "tuple[Optional[str], Optional[int]]":
+    """Identify the motor family answering on ``port``, non-fatally.
+
+    A factory-default probe names the family outright; motors already
+    programmed into a chain no longer answer there, so fall back to the
+    connect-time trial probe with both axes unpinned. Returns ``(None, None)``
+    when nothing responds — detection must never fail on this.
+    """
+    try:
+        from .maintenance.motor_chain import detect_motor_type
+
+        motor_type = detect_motor_type(port)
+        if motor_type is not None:
+            return motor_type, None
+
+        from types import SimpleNamespace
+
+        from .hardware.motor_resolution import trial_probe
+
+        return trial_probe(
+            SimpleNamespace(motor_type=None, baudrate=None, motor_ids=_PROBE_MOTOR_IDS),
+            port,
+        )
+    except Exception:
+        logger.debug("motor-family detection failed on %s", port, exc_info=True)
+        return None, None
 
 
 def detect_hand() -> HandDetection:
@@ -156,7 +192,8 @@ def detect_hand() -> HandDetection:
     Boards that report no ``CFG`` — unprovisioned, or firmware predating the
     field — fall back to probing: joint encoders from a live encoder stream on
     the sensing CDC, tactile from a sensor register reply (on the shared CDC or
-    a dedicated adapter). Anything the hardware doesn't answer falls back
+    a dedicated adapter). The motor family comes from probing the motor bus.
+    Anything the hardware doesn't answer falls back
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
@@ -216,6 +253,10 @@ def detect_hand() -> HandDetection:
     missing = tuple(n for n, on in declared_caps.items() if on and not probed[n])
     undeclared = tuple(n for n, on in probed.items() if on and not declared_caps[n])
 
+    motor_type, motor_baudrate = (
+        _detect_motor_family(motor_port) if motor_port is not None else (None, None)
+    )
+
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
 
@@ -240,6 +281,8 @@ def detect_hand() -> HandDetection:
         probed_encoders=probed_encoders,
         missing_capabilities=missing,
         undeclared_capabilities=undeclared,
+        motor_type=motor_type,
+        motor_baudrate=motor_baudrate,
     )
 
 
@@ -286,6 +329,18 @@ def _pin_detected_ports(config, detection: HandDetection):
     their configured (typically ``auto``) values."""
     if detection.motor_port is not None:
         config = dataclasses.replace(config, port=detection.motor_port)
+    if detection.motor_type is not None and detection.motor_type != config.motor_type:
+        # The bundled model pins the other family, so its baud rate is wrong
+        # too; an undetected one is left unpinned for the connect-time probe.
+        logger.info(
+            "detected %s motors on %s; overriding the model's %s pinning",
+            detection.motor_type, detection.motor_port, config.motor_type,
+        )
+        config = dataclasses.replace(
+            config,
+            motor_type=detection.motor_type,
+            baudrate=detection.motor_baudrate,
+        )
     if detection.has_encoders and detection.sensing_port is not None:
         config = dataclasses.replace(
             config, encoder_serial_port=detection.sensing_port

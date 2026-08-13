@@ -12,6 +12,7 @@ from orca_core.utils.cli import (
     add_hand_arguments,
     create_hand_from_args,
     print_calibration_progress,
+    shutdown_hand,
 )
 
 
@@ -83,7 +84,7 @@ def _open_encoder_client(encoder_port_override: str, baudrate: int):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Calibrate the ORCA Hand. Specify the path to the hand config.yaml file."
+        description="Calibrate the ORCA Hand (autodetects the connected hand by default)."
     )
     add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument(
@@ -132,6 +133,7 @@ def main():
     if not status[0]:
         print("Failed to connect to the hand.")
         sys.exit(1)
+    print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
 
     link = None
     client = None
@@ -149,7 +151,7 @@ def main():
             )
         except Exception as exc:
             print(f"FAIL: could not open encoder stream ({exc})")
-            hand.disconnect()
+            shutdown_hand(hand)
             sys.exit(1)
 
     try:
@@ -170,7 +172,7 @@ def main():
             client.disconnect()
         if link is not None:
             link.disconnect()
-        hand.disconnect()
+        shutdown_hand(hand)
 
 
 if __name__ == "__main__":
