@@ -1,6 +1,6 @@
 import argparse
 
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
@@ -16,11 +16,11 @@ def main() -> int:
     parser.add_argument("--step-size", type=float, default=STEP_SIZE)
     args = parser.parse_args()
 
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
         hand.init_joints(
-            force_calibrate=args.force_calibrate or args.mock, move_to_neutral=False
+            force_calibrate=args.force_calibrate, move_to_neutral=False
         )
         print("Moving all joints to zero...")
         hand.set_zero_position(num_steps=args.num_steps, step_size=args.step_size)

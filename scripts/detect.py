@@ -15,7 +15,7 @@ import contextlib
 import io
 import sys
 
-from orca_core import OrcaHand, detect_hand
+from orca_core import detect_hand, load_hand
 
 
 @contextlib.contextmanager
@@ -67,7 +67,13 @@ def _print_detection(detection) -> None:
 def _print_calibration(detection) -> None:
     """Report the calibration state of the bundled model detection picked."""
     with _quiet():
-        hand = OrcaHand(model_name=detection.model_name)
+        # Motor-only: this only reads calibration off disk, and opening
+        # the sensing links would fight anything already on that port.
+        hand = load_hand(
+            model_name=detection.model_name,
+            engage_feedback=False,
+            engage_sensors=False,
+        )
 
     print(f"\nCalibration ({hand.config.model_path}):")
     print(f"  motor limits:    {'ok' if hand.calibrated else 'NOT calibrated'}")

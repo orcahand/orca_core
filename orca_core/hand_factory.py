@@ -304,6 +304,7 @@ def load_hand(
     model_name: str | None = None,
     mock: bool = False,
     engage_feedback: bool = True,
+    engage_sensors: bool = True,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -326,6 +327,10 @@ def load_hand(
         engage_feedback: When ``False``, return the motor-only class even if
             the config enables joint feedback. The config still carries the
             encoder declaration so calibration's encoder pass runs.
+        engage_sensors: When ``False``, return a class that does not open the
+            tactile link even if the config declares sensors. Tactile and
+            encoders can share one CDC, so a caller that opens its own reader
+            on the sensing port must not have the hand open it too.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -350,9 +355,12 @@ def load_hand(
         model_name=model_name,
     )
     raw = read_yaml(resolved_config_path) or {}
-    tactile = "sensors" in raw
+    declares_tactile = "sensors" in raw
+    # The config keeps its sensor declaration either way; only the class that
+    # would open the link is withheld, mirroring engage_feedback.
+    tactile = declares_tactile and engage_sensors
 
-    config_cls = OrcaHandTouchConfig if tactile else OrcaHandConfig
+    config_cls = OrcaHandTouchConfig if declares_tactile else OrcaHandConfig
     config = config_cls.from_config_path(
         config_path=resolved_config_path,
         calibration_path=calibration_path,

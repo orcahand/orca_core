@@ -33,7 +33,8 @@ from typing import List
 
 import numpy as np
 
-from orca_core import JointGains, OrcaHand, OrcaHandJointFeedback, load_hand
+from orca_core import JointGains, OrcaHandJointFeedback
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
@@ -47,10 +48,7 @@ MOTOR_SLIDER_SPAN_RAD = 1.0
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    p.add_argument(
-        "config_path", nargs="?", default=None,
-        help="Path to the hand config.yaml.",
-    )
+    add_hand_arguments(p)
     p.add_argument(
         "--motor-space", action="store_true",
         help="Slider per motor instead of per joint (tendon bring-up; motor bus only).",
@@ -535,9 +533,11 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
 
 
 def _run_motor_space(args: argparse.Namespace) -> int:
-    # OrcaHand directly rather than load_hand(): motor-space nudging wants the motor
-    # bus alone, not the encoder and tactile links the factory opens for a sensing hand.
-    hand = OrcaHand(config_path=args.config_path)
+    # Motor-space nudging wants the motor bus alone, not the encoder and
+    # tactile links the factory opens for a sensing hand.
+    hand = create_hand_from_args(
+        args, engage_feedback=False, engage_sensors=False
+    )
     success, msg = hand.connect()
     print(msg)
     if not success:
@@ -567,7 +567,7 @@ def main() -> int:
     if args.motor_space:
         return _run_motor_space(args)
 
-    hand = load_hand(config_path=args.config_path)
+    hand = create_hand_from_args(args)
     overrides = {}
     if args.encoder_port is not None:
         overrides["encoder_serial_port"] = args.encoder_port
