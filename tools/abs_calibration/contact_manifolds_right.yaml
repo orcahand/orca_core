@@ -4,13 +4,13 @@
   arg: pinky_abd
   out: ring_abd
   poly:
-  - -0.01767365264633384
-  - 1.4678466282454623
-  - -18.846935449327738
+  - -0.00357116315610665
+  - 0.9998903171182263
+  - 16.99158761160713
   arg_range:
-  - 0.0
-  - 29.0
-  sigma_deg: 1.8322204922160996
+  - -29.0
+  - 7.25
+  sigma_deg: 1.588238017426859
   posture:
     pinky_mcp: 15.0
     ring_mcp: 15.0
@@ -23,13 +23,32 @@
   arg: pinky_abd
   out: ring_abd
   poly:
-  - -0.0020619504658702264
-  - 1.0475653220867287
-  - -20.500643229484556
+  - -0.003540972163241018
+  - 1.0094524515086203
+  - 16.49492885044641
   arg_range:
-  - 0.0
-  - 29.0
-  sigma_deg: 1.5894165070247248
+  - -29.0
+  - 7.25
+  sigma_deg: 1.588238017426859
+  posture:
+    pinky_mcp: 27.0
+    ring_mcp: 27.0
+    pinky_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: pinky_abd
+  out: ring_abd
+  poly:
+  - -0.0028724573212162126
+  - 1.0386516702586206
+  - 16.087137276785693
+  arg_range:
+  - -29.0
+  - 7.25
+  sigma_deg: 1.588238017426859
   posture:
     pinky_mcp: 40.0
     ring_mcp: 40.0
@@ -42,13 +61,13 @@
   arg: ring_abd
   out: pinky_abd
   poly:
-  - 0.0017443788693165397
-  - 0.8390327782639658
-  - 16.341126263141643
+  - 0.0028408090307128833
+  - 0.8965505523122715
+  - -16.083914620535726
   arg_range:
-  - -26.0
-  - 13.0
-  sigma_deg: 3.4169507584680514
+  - -13.0
+  - 26.0
+  sigma_deg: 1.588238017426859
   posture:
     ring_mcp: 15.0
     pinky_mcp: 15.0
@@ -61,13 +80,32 @@
   arg: ring_abd
   out: pinky_abd
   poly:
-  - 0.007388929870304002
-  - 1.064168230092133
-  - 19.749834234799646
+  - 0.002840809030712875
+  - 0.8917267628205132
+  - -15.496268136160724
   arg_range:
-  - -26.0
-  - 6.5
-  sigma_deg: 2.3112644002267424
+  - -13.0
+  - 26.0
+  sigma_deg: 1.588238017426859
+  posture:
+    ring_mcp: 27.0
+    pinky_mcp: 27.0
+    ring_pip: 8.0
+    pinky_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - pinky_abd
+  - ring_abd
+  arg: ring_abd
+  out: pinky_abd
+  poly:
+  - 0.0031280818540434133
+  - 0.8847244877518318
+  - -15.027971540178584
+  arg_range:
+  - -13.0
+  - 26.0
+  sigma_deg: 1.588238017426859
   posture:
     ring_mcp: 40.0
     pinky_mcp: 40.0
@@ -80,32 +118,70 @@
   arg: ring_abd
   out: middle_abd
   poly:
-  - -0.02003238751338072
-  - 1.8099797487258893
-  - -21.82581720352173
+  - -0.0037595867673992918
+  - 1.0552687872023816
+  - 10.978724888392868
   arg_range:
-  - 0.0
+  - -26.0
+  - 13.0
+  sigma_deg: 1.588238017426859
+  posture:
+    ring_mcp: 15.0
+    middle_mcp: 15.0
+    ring_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: ring_abd
+  out: middle_abd
+  poly:
+  - -0.0034734146062271208
+  - 1.0602446056547625
+  - 10.285016741071436
+  arg_range:
+  - -26.0
+  - 13.0
+  sigma_deg: 1.588238017426859
+  posture:
+    ring_mcp: 27.0
+    middle_mcp: 27.0
+    ring_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: ring_abd
+  out: middle_abd
+  poly:
+  - -0.003444797390109912
+  - 1.0702427455357146
+  - 9.638462611607155
+  arg_range:
+  - -26.0
+  - 13.0
+  sigma_deg: 1.588238017426859
+  posture:
+    ring_mcp: 40.0
+    middle_mcp: 40.0
+    ring_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: middle_abd
+  out: ring_abd
+  poly:
+  - 0.002418154761904773
+  - 0.8978329613095241
+  - -10.072823660714295
+  arg_range:
+  - -13.0
   - 26.0
-  sigma_deg: 3.074092068453974
-  posture:
-    ring_mcp: 15.0
-    middle_mcp: 15.0
-    ring_pip: 8.0
-    middle_pip: 8.0
-  posture_tol_deg: 3.0
-- pair:
-  - middle_abd
-  - ring_abd
-  arg: middle_abd
-  out: ring_abd
-  poly:
-  - -0.014135824455009749
-  - 0.39314921583448137
-  - 23.21181758471899
-  arg_range:
-  - -26.0
-  - 0.0
-  sigma_deg: 1.7272494724214364
+  sigma_deg: 1.588238017426859
   posture:
     middle_mcp: 15.0
     ring_mcp: 15.0
@@ -118,13 +194,32 @@
   arg: middle_abd
   out: ring_abd
   poly:
-  - -0.013675157840435362
-  - 0.434894013404846
-  - 23.445463848114024
+  - 0.0026059552426739847
+  - 0.8927292596726188
+  - -9.453095935639874
   arg_range:
-  - -26.0
-  - 0.0
-  sigma_deg: 1.623150677549592
+  - -19.5
+  - 26.0
+  sigma_deg: 1.588238017426859
+  posture:
+    middle_mcp: 27.0
+    ring_mcp: 27.0
+    middle_pip: 8.0
+    ring_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - middle_abd
+  - ring_abd
+  arg: middle_abd
+  out: ring_abd
+  poly:
+  - 0.00252189217032965
+  - 0.8867420014880955
+  - -8.768229166666659
+  arg_range:
+  - -19.5
+  - 26.0
+  sigma_deg: 1.588238017426859
   posture:
     middle_mcp: 40.0
     ring_mcp: 40.0
@@ -137,11 +232,11 @@
   arg: middle_abd
   out: index_abd
   poly:
-  - 0.0017537940183334321
-  - 0.5489643908463983
-  - -19.828509622812266
+  - -0.00329593283319246
+  - 0.8687444554143777
+  - 12.738978794642867
   arg_range:
-  - -6.5
+  - -26.0
   - 13.0
   sigma_deg: 1.588238017426859
   posture:
@@ -156,13 +251,32 @@
   arg: middle_abd
   out: index_abd
   poly:
-  - 0.024577304456360895
-  - 0.7394399789663456
-  - -21.829602050781244
+  - -0.0031646788708086914
+  - 0.8713039076808613
+  - 12.16964285714287
   arg_range:
-  - -6.5
+  - -26.0
   - 13.0
-  sigma_deg: 1.8614236478921902
+  sigma_deg: 1.588238017426859
+  posture:
+    middle_mcp: 27.0
+    index_mcp: 27.0
+    middle_pip: 8.0
+    index_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: middle_abd
+  out: index_abd
+  poly:
+  - -0.0034308327389757733
+  - 0.8627960987580132
+  - 11.610473632812507
+  arg_range:
+  - -26.0
+  - 13.0
+  sigma_deg: 1.588238017426859
   posture:
     middle_mcp: 40.0
     index_mcp: 40.0
@@ -175,13 +289,13 @@
   arg: index_abd
   out: middle_abd
   poly:
-  - 0.01632189899811826
-  - 1.5335426149366826
-  - 20.023920561460603
+  - 0.004622816330163279
+  - 1.040758012749199
+  - -14.004808675101245
   arg_range:
-  - -29.0
-  - 4.125
-  sigma_deg: 1.7860370554998004
+  - -9.125
+  - 24.0
+  sigma_deg: 1.588238017426859
   posture:
     index_mcp: 15.0
     middle_mcp: 15.0
@@ -194,13 +308,32 @@
   arg: index_abd
   out: middle_abd
   poly:
-  - -0.011160572195547155
-  - 0.7773922426615909
-  - 12.819226785662098
+  - 0.004250924960585917
+  - 1.0489726798905301
+  - -13.343917552259484
   arg_range:
-  - -29.0
+  - -9.125
   - 24.0
-  sigma_deg: 2.362632604267864
+  sigma_deg: 1.588238017426859
+  posture:
+    index_mcp: 27.0
+    middle_mcp: 27.0
+    index_pip: 8.0
+    middle_pip: 8.0
+  posture_tol_deg: 3.0
+- pair:
+  - index_abd
+  - middle_abd
+  arg: index_abd
+  out: middle_abd
+  poly:
+  - 0.004483357066571754
+  - 1.0556441269770638
+  - -12.795035106187706
+  arg_range:
+  - -9.125
+  - 24.0
+  sigma_deg: 1.588238017426859
   posture:
     index_mcp: 40.0
     middle_mcp: 40.0

@@ -17,7 +17,7 @@ abd-block   One finger parks at its abduction stop with normal current (the
             in small steps under a LOW current limit; first contact is the
             onset of tracking error with dying velocity (contact_detect),
             captured and backed off before force builds. Pairwise in both
-            directions and at two flexion postures. Solving these needs the
+            directions and at several flexion postures. Solving these needs the
             mesh contact manifolds (build_contact_manifold.py).
 
 tip-press   Torque off (the hand goes limp; encoders stay live). The
@@ -38,7 +38,7 @@ what the hardstop calibration does on your hand.
 
 Usage:
     uv run python tools/abs_calibration/record_contacts.py CONFIG_PATH \
-        --out SESSION_DIR [--modes abd,tip] [--push-current 100] [--dry-run]
+        --out SESSION_DIR [--modes abd,tip] [--push-current 50,80] [--dry-run]
 """
 from __future__ import annotations
 
@@ -62,11 +62,12 @@ ABD_PAIRS = [
     ("middle_abd", "index_abd"),
 ]
 # Flexion postures (deg) applied to BOTH fingers' mcp during the approach:
-# contact at two postures touches different mesh regions (conditioning, and
-# it averages print error over patches). Both pips are held at ABD_PIP_DEG.
+# contact at several postures touches different mesh regions (conditioning,
+# and it averages print error over patches). Both pips are held at
+# ABD_PIP_DEG.
 # These are protocol constants shared with build_contact_manifold.py — the
 # manifolds are only valid at the postures they were computed for.
-ABD_POSTURES = (15.0, 40.0)
+ABD_POSTURES = (15.0, 27.0, 40.0)
 ABD_PIP_DEG = 8.0
 
 # Approach directions are DERIVED FROM THE KINEMATICS, not assumed: for
@@ -251,12 +252,14 @@ def main() -> int:
     ap.add_argument("config_path")
     ap.add_argument("--out", required=True)
     ap.add_argument("--modes", default="abd,tip")
-    ap.add_argument("--push-current", default="80,160",
+    ap.add_argument("--push-current", default="50,80",
                     help="Pusher current limits, mA, comma list — each "
                          "approach repeats per current; two currents let a "
                          "later pass extrapolate the skin compression out "
-                         "of the stall depth")
-    ap.add_argument("--hold-current", type=float, default=350.0,
+                         "of the stall depth. Must stay well under the hold "
+                         "current or the pusher displaces the parked finger "
+                         "instead of stalling against it")
+    ap.add_argument("--hold-current", type=float, default=300.0,
                     help="Current limit for every other motor, mA")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

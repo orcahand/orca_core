@@ -47,7 +47,8 @@ DEFAULT_URDF = os.path.join(
     "orcahand_description", "v2", "models", "urdf", "orcahand_right.urdf")
 
 SAMPLES_PER_BODY = 6000
-CONTACT_EPS_M = 5e-5          # bisection convergence on signed clearance
+TOUCH_GAP_M = 2e-4            # surface gap at or below this counts as contact
+BISECT_TOL_DEG = 0.02         # bisection convergence on the pusher angle
 PRINT_ALLOWANCE_DEG = 0.5     # as-printed-vs-mesh bias class on contact faces
 # The merged meshes carry the NOMINAL (uncompressed) silicone skin, so the
 # manifold is the zero-force first-touch surface; the stall detector fires
@@ -213,19 +214,16 @@ def _rodrigues(axis: np.ndarray, ang: float) -> np.ndarray:
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
 
 
-def signed_clearance(pts_a, pts_b, nrm_b) -> float:
-    """Approximate minimum signed distance from cloud A to surface B.
+def surface_gap(pts_a, pts_b) -> float:
+    """Minimum distance between the two sampled surfaces, in metres.
 
-    Nearest B sample per A point, signed by B's outward normal — negative
-    when A has crossed inside B. Accuracy ~ half the sample spacing."""
-    tree = cKDTree(pts_b)
-    d, idx = tree.query(pts_a, k=1)
-    near = d < 0.02   # only the closest region matters
-    if not near.any():
-        return float(d.min())
-    signed = np.einsum("ij,ij->i", pts_a[near] - pts_b[idx[near]],
-                       nrm_b[idx[near]])
-    return float(signed.min())
+    Unsigned by design. A normal-signed variant is unusable here: adjacent
+    phalanx surfaces are near-parallel, so a single sample landing behind
+    any facet of B pins the minimum negative regardless of the true gap.
+    The pusher approaches monotonically, so the first crossing below
+    TOUCH_GAP_M is first contact and no sign is needed."""
+    d, _ = cKDTree(pts_b).query(pts_a, k=1)
+    return float(d.min())
 
 
 def cross_check_fk(hand: UrdfHand, nominal: KinematicModel,
@@ -267,9 +265,9 @@ def build_pair(hand: UrdfHand, parked: str, pusher: str,
     def clearance(qp, qb):
         q = dict(q_common)
         q[parked], q[pusher] = qp, qb
-        pa, na = hand.posed_cloud(fp, q)
-        pb, nb = hand.posed_cloud(fb, q)
-        return signed_clearance(pa, pb, nb)
+        pa, _ = hand.posed_cloud(fp, q)
+        pb, _ = hand.posed_cloud(fb, q)
+        return surface_gap(pa, pb)
 
     qp_mid = 0.5 * (lo_p + hi_p)
     sign = 1.0 if clearance(qp_mid, hi_b - 1) < clearance(qp_mid, lo_b + 1) \
@@ -280,19 +278,17 @@ def build_pair(hand: UrdfHand, parked: str, pusher: str,
     grid, contact = [], []
     for qp in np.linspace(lo_p + 1, hi_p - 1, GRID_POINTS):
         c_far, c_deep = clearance(qp, far), clearance(qp, deep)
-        if not (c_far > 0 > c_deep):
+        if not (c_far > TOUCH_GAP_M >= c_deep):
             continue  # no contact reachable at this parked angle
         a, b_ = far, deep
         for _ in range(24):
             mid = 0.5 * (a + b_)
-            c = clearance(qp, mid)
-            if abs(c) < CONTACT_EPS_M:
-                b_ = mid
-                break
-            if c > 0:
+            if clearance(qp, mid) > TOUCH_GAP_M:
                 a = mid
             else:
                 b_ = mid
+            if abs(b_ - a) < BISECT_TOL_DEG:
+                break
         grid.append(qp)
         contact.append(0.5 * (a + b_))
 
