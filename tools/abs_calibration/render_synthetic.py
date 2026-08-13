@@ -38,7 +38,7 @@ from board import BoardSpec, detect_board
 from cameras import Camera, Rig
 from model import HELD_POSE, JOINT_ROMS, EncoderTruth, KinematicModel
 from sim import DOT_LINKS
-from sweep_plan import build_plan
+from sweep_plan import anchor_pose_plan, build_plan
 
 CAPTURE_FORMAT = 1
 
@@ -52,7 +52,8 @@ class SynthConfig:
     step_scale: float = 1.0         # multiplies the per-joint sweep step sizes
     sweep_joints: tuple | None = None   # None = all joints
     dot_links: tuple | None = None      # None = all standard dot links
-    n_anchor: int = 8
+    n_anchor: int = 10
+    n_assist: int = 3               # hand-held assist shots per anchor frame
     # 7 per link, measured optimum at this working distance: fewer starves
     # the rigidity-voting quorum, more (10 tried) crowds the image and
     # feeds tracking confusion. The guide prescribes 6-8 per link.
@@ -64,7 +65,10 @@ class SynthConfig:
     n_clutter: int = 4              # static bright spots near the mount
     n_intrinsic: int = 14
     n_extrinsic: int = 3
-    mesh_points_per_body: int = 7000  # URDF-mesh splat density per body
+    # Splat density: sparse clouds leave speckle holes inside the bodies —
+    # pixel-noise gradients no real photograph has, which anchor edge search
+    # would have to survive. Dense enough to render solid interiors.
+    mesh_points_per_body: int = 16000
     grazing_cos: float = 0.05       # surfaces seen edge-on render no disk
     zbuf_tol_m: float = 0.004       # dot-vs-body depth test tolerance
     dot_dropout: float = 0.02
@@ -107,6 +111,9 @@ class SynthScene:
     dots_world: np.ndarray = field(init=False)    # (F, D, 3) all dots + clutter
     normals_world: np.ndarray = field(init=False)  # (F, D, 3), NaN = always visible
     dot_links: list[str] = field(init=False)       # per column; clutter -> "clutter"
+    assist_cam: Camera = field(init=False, default=None)  # intrinsics only
+    cam_target: np.ndarray = field(init=False, default=None)
+    assist_shots: list = field(init=False, default_factory=list)
 
 
 def _look_at(center: np.ndarray, target: np.ndarray,
@@ -122,8 +129,9 @@ def _look_at(center: np.ndarray, target: np.ndarray,
 
 
 def _pose_plan(joints: list[str], cfg: SynthConfig, rng: np.random.Generator):
-    """The shared sweep protocol plus mid-range anchor frames, with per-frame
-    held-joint creep noise as on a tendon hand."""
+    """The shared sweep protocol plus the shared anchor-pose plan (mid-flexion
+    and extended/spread rows), with per-frame held-joint creep noise as on a
+    tendon hand."""
     swept = list(cfg.sweep_joints) if cfg.sweep_joints else list(joints)
     plan_q, plan_sweeps = build_plan(
         swept, {j: JOINT_ROMS[j] for j in swept},
@@ -138,11 +146,9 @@ def _pose_plan(joints: list[str], cfg: SynthConfig, rng: np.random.Generator):
         q[:, jidx[j]] = plan_q[:, c]
     q += rng.normal(0, 0.03, size=q.shape)
 
-    anchor_rows = np.array([
-        [rng.uniform(lo + 0.3 * (hi - lo), lo + 0.7 * (hi - lo))
-         for lo, hi in (JOINT_ROMS[j] for j in joints)]
-        for _ in range(cfg.n_anchor)
-    ])
+    anchor_rows, _ = anchor_pose_plan(
+        joints, {j: JOINT_ROMS[j] for j in joints}, cfg.held,
+        cfg.n_anchor, rng)
     anchor_frames = list(range(len(q), len(q) + cfg.n_anchor))
     return np.vstack([q, anchor_rows]), plan_sweeps, anchor_frames
 
@@ -395,6 +401,30 @@ def _place_cameras(scene: SynthScene, rng: np.random.Generator) -> None:
         cams[f"cam{i}"] = Camera(
             name=f"cam{i}", image_size=cfg.image_size, K=K, dist=dist, R=R, t=t)
     scene.rig_truth = Rig(cameras=cams, board=scene.board)
+    scene.cam_target = target
+
+    # The hand-held assist camera: ONE set of intrinsics (one physical
+    # camera), a fresh pose per shot (sampled at render time).
+    f = cfg.focal_px * rng.uniform(0.96, 1.04)
+    K = np.array([[f, 0, w / 2 + rng.normal(0, 5)],
+                  [0, f * rng.uniform(0.999, 1.001), h / 2 + rng.normal(0, 5)],
+                  [0, 0, 1.0]])
+    dist = np.array([rng.uniform(-0.13, -0.06), rng.uniform(0.01, 0.05),
+                     rng.normal(0, 8e-4), rng.normal(0, 8e-4), 0.0])
+    scene.assist_cam = Camera(name="assist0", image_size=cfg.image_size,
+                              K=K, dist=dist, R=np.eye(3), t=np.zeros(3))
+
+
+def _assist_pose(scene: SynthScene, rng: np.random.Generator):
+    """One hand-held shot pose: a wider arc than the fixed cameras (including
+    beyond it and lower), aimed so hand and board share the frame."""
+    az = np.deg2rad(rng.uniform(-210, 110))
+    pol = np.deg2rad(rng.uniform(25, 82))
+    r = rng.uniform(0.40, 0.55)
+    center = scene.cam_target + r * np.array([
+        np.sin(pol) * np.cos(az), np.sin(pol) * np.sin(az), -np.cos(pol)])
+    aim = scene.cam_target + rng.normal(0, 0.02, 3)
+    return _look_at(center, aim, up=np.array([0.0, -1.0, 0.0]))
 
 
 # ---- image formation ---------------------------------------------------------
@@ -479,16 +509,24 @@ def _sample_intrinsic_pose(cam: Camera, spec: BoardSpec, rng: np.random.Generato
 def render_calibration(scene: SynthScene, calib_dir: str,
                        rng: np.random.Generator) -> None:
     tex, H_tex = _board_texture(scene.board)
-    for cam in scene.rig_truth.cameras.values():
+    cams = list(scene.rig_truth.cameras.values())
+    if scene.cfg.n_assist > 0:
+        cams.append(scene.assist_cam)     # intrinsics only: no extrinsic dir
+    for cam in cams:
+        is_assist = cam is scene.assist_cam
         remap_xy = _distortion_remap(cam)
         d_int = os.path.join(calib_dir, cam.name, "intrinsic")
-        d_ext = os.path.join(calib_dir, cam.name, "extrinsic")
         os.makedirs(d_int, exist_ok=True)
-        os.makedirs(d_ext, exist_ok=True)
         for i in range(scene.cfg.n_intrinsic):
             R, t = _sample_intrinsic_pose(cam, scene.board, rng)
             img = render_board_image(cam, R, t, tex, H_tex, remap_xy, rng)
             cv2.imwrite(os.path.join(d_int, f"view_{i:03d}.png"), img)
+        if is_assist:
+            print(f"  {cam.name}: {scene.cfg.n_intrinsic} intrinsic images "
+                  "(hand-held: no extrinsics)")
+            continue
+        d_ext = os.path.join(calib_dir, cam.name, "extrinsic")
+        os.makedirs(d_ext, exist_ok=True)
         for i in range(scene.cfg.n_extrinsic):
             # Board fixed at the world origin: its camera-frame pose IS the
             # camera's world pose.
@@ -511,11 +549,12 @@ class SceneRenderer:
         self.scene = scene
         cfg = scene.cfg
         self.w, self.h = cfg.image_size
-        tex, H_tex = _board_texture(scene.board)
+        self._tex, self._H_tex = _board_texture(scene.board)
+        self._assist_remap = None
         self.cam_assets = {}
         for cam in scene.rig_truth.cameras.values():
             remap_xy = _distortion_remap(cam)
-            board_ud = _warp_board(cam, cam.R, cam.t, tex, H_tex,
+            board_ud = _warp_board(cam, cam.R, cam.t, self._tex, self._H_tex,
                                    np.full((self.h, self.w), 22, np.uint8))
             layer = cv2.remap(board_ud, remap_xy[0], remap_xy[1],
                               cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
@@ -545,8 +584,26 @@ class SceneRenderer:
     def render(self, cam_name: str, f: int, body_pts, body_nrm,
                rng: np.random.Generator):
         """One frame for one camera: ``(image_uint8, visible_dot_mask)``."""
-        scene, cfg = self.scene, self.scene.cfg
         cam, board_layer = self.cam_assets[cam_name]
+        return self._render_on(cam, board_layer, f, body_pts, body_nrm, rng)
+
+    def render_free(self, cam: Camera, f: int, body_pts, body_nrm,
+                    rng: np.random.Generator):
+        """One frame through a camera at an arbitrary pose (assist shots).
+        The distortion remap is cached per intrinsics — every assist shot
+        shares the one physical camera."""
+        if self._assist_remap is None:
+            self._assist_remap = _distortion_remap(cam)
+        board_ud = _warp_board(cam, cam.R, cam.t, self._tex, self._H_tex,
+                               np.full((self.h, self.w), 22, np.uint8))
+        layer = cv2.remap(board_ud, self._assist_remap[0],
+                          self._assist_remap[1], cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=22)
+        return self._render_on(cam, layer, f, body_pts, body_nrm, rng)
+
+    def _render_on(self, cam: Camera, board_layer: np.ndarray, f: int,
+                   body_pts, body_nrm, rng: np.random.Generator):
+        scene, cfg = self.scene, self.scene.cfg
         w, h, S = self.w, self.h, self.ZBUF_SCALE
         canvas = board_layer.copy()
 
@@ -568,6 +625,11 @@ class SceneRenderer:
         sh = shade[order]
         zbuf = np.full((h // S + 1, w // S + 1), np.inf)
         zbuf[vy // S, ux // S] = z_in[order]
+        # Cull bin-occluded points before drawing: sampled meshes include
+        # internal geometry, and without this it bleeds through sampling
+        # holes in the outer shell as bright speckle no real surface has.
+        keep = z_in[order] <= zbuf[vy // S, ux // S] + cfg.zbuf_tol_m
+        ux, vy, sh = ux[keep], vy[keep], sh[keep]
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 canvas[np.clip(vy + dy, 0, h - 1), np.clip(ux + dx, 0, w - 1)] = sh
@@ -623,6 +685,32 @@ def render_capture(scene: SynthScene, capture_dir: str,
             print(f"  frame {f}/{F}")
     print(f"  {F} frames x {len(cam_names)} cameras")
 
+    # Hand-held assist shots at the anchor frames: sampled poses kept only
+    # when the board is detectable in the shot (as an operator would keep
+    # them); each records its truth pose for scoring.
+    scene.assist_shots = []
+    if cfg.n_assist > 0:
+        os.makedirs(os.path.join(capture_dir, "assist"), exist_ok=True)
+        base = scene.assist_cam
+        for f in scene.anchor_frames:
+            body_pts, body_nrm = renderer.body_points(f)
+            kept = attempts = 0
+            while kept < cfg.n_assist and attempts < cfg.n_assist * 4:
+                attempts += 1
+                R, t = _assist_pose(scene, rng)
+                cam = Camera(name=base.name, image_size=base.image_size,
+                             K=base.K, dist=base.dist, R=R, t=t)
+                img, _ = renderer.render_free(cam, f, body_pts, body_nrm, rng)
+                if detect_board(img, scene.board, min_corners=10) is None:
+                    continue
+                fname = f"assist/shot_{f:05d}_{kept}.png"
+                cv2.imwrite(os.path.join(capture_dir, fname), img)
+                scene.assist_shots.append(
+                    {"frame": int(f), "file": fname, "R": R, "t": t})
+                kept += 1
+        print(f"  {len(scene.assist_shots)} assist shots over "
+              f"{len(scene.anchor_frames)} anchor frames")
+
     m = np.stack([scene.enc.measure(j, scene.q[:, i], rng)
                   for i, j in enumerate(scene.joints)], axis=1)
     np.save(os.path.join(capture_dir, "encoders.npy"), m)
@@ -636,6 +724,12 @@ def render_capture(scene: SynthScene, capture_dir: str,
         "meta": {"producer": "render_synthetic", "seed": scene.cfg.seed,
                  "image_size": list(cfg.image_size)},
     }
+    if scene.assist_shots:
+        manifest["assist"] = {
+            "camera": scene.assist_cam.name,
+            "shots": [{"frame": s["frame"], "file": s["file"]}
+                      for s in scene.assist_shots],
+        }
     with open(os.path.join(capture_dir, "capture.yaml"), "w") as f:
         yaml.safe_dump(manifest, f, sort_keys=False)
     return n_views
@@ -656,6 +750,14 @@ def write_truth(scene: SynthScene, n_views: np.ndarray, truth_dir: str) -> None:
             "enc_offset": {j: float(scene.enc.offset[j]) for j in scene.joints},
             "hardstop_b0": {j: float(v) for j, v in scene.hardstop_b0.items()},
         }, f, sort_keys=False)
+    if scene.assist_shots:
+        with open(os.path.join(truth_dir, "assist_truth.yaml"), "w") as f:
+            yaml.safe_dump([
+                {"frame": s["frame"], "file": s["file"],
+                 "R": [[float(v) for v in row] for row in s["R"]],
+                 "t": [float(v) for v in s["t"]]}
+                for s in scene.assist_shots
+            ], f, sort_keys=False)
 
 
 def quick_config(seed: int = 0) -> SynthConfig:

@@ -80,6 +80,10 @@ def main() -> int:
     ap.add_argument("out_dir")
     ap.add_argument("--camera", action="append", default=[],
                     metavar="NAME=INDEX", required=True)
+    ap.add_argument("--assist-camera", default="", metavar="NAME=INDEX",
+                    help="Hand-held assist camera: shoots the intrinsic "
+                         "phase only (it has no fixed pose; each session "
+                         "shot self-localises off the board)")
     ap.add_argument("--size", default="1280x960")
     ap.add_argument("--board", default=None)
     args = ap.parse_args()
@@ -94,12 +98,15 @@ def main() -> int:
 
     w, h = (int(v) for v in args.size.split("x"))
     caps = open_cameras(args.camera, (w, h))
+    assist_caps = (open_cameras([args.assist_camera], (w, h))
+                   if args.assist_camera else {})
 
     print("\n== intrinsic phase: move the board between shots ==")
     print("Enter = shot, q+Enter = next phase")
     shot = 0
     while input(f"[intrinsic {shot}] > ").strip().lower() != "q":
-        capture_round(caps, spec, args.out_dir, "intrinsic", shot)
+        capture_round({**caps, **assist_caps}, spec, args.out_dir,
+                      "intrinsic", shot)
         shot += 1
     if shot < 12:
         print(f"WARNING: only {shot} intrinsic shots; 12+ recommended")

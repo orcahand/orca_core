@@ -31,6 +31,7 @@ import os
 import sys
 
 import cv2
+import numpy as np
 import yaml
 
 from board import BoardSpec, average_poses, board_pose, calibrate_intrinsics
@@ -53,13 +54,25 @@ def calibrate_camera_dir(cam_dir: str, spec: BoardSpec, min_corners: int) -> Cam
     name = os.path.basename(cam_dir.rstrip("/"))
     intr_paths = sorted(glob.glob(os.path.join(cam_dir, "intrinsic", "*")))
     extr_paths = sorted(glob.glob(os.path.join(cam_dir, "extrinsic", "*")))
-    if not intr_paths or not extr_paths:
-        raise SystemExit(f"{name}: need intrinsic/ and extrinsic/ image dirs")
+    if not intr_paths:
+        raise SystemExit(f"{name}: need an intrinsic/ image dir")
 
     intr = calibrate_intrinsics(
         [im for _, im in _load_gray(intr_paths)], spec, min_corners)
     print(f"{name}: intrinsics rms {intr['rms_px']:.3f} px "
           f"({intr['n_views']}/{len(intr_paths)} views)")
+
+    if not extr_paths:
+        # Intrinsics-only camera: hand-held assist — every shot localises
+        # itself off the board at use time, so it carries no rig pose.
+        print(f"  {name}: no extrinsic/ dir -> assist camera "
+              "(per-shot board self-localisation)")
+        return Camera(
+            name=name, image_size=intr["image_size"], K=intr["K"],
+            dist=intr["dist"], R=np.eye(3), t=np.zeros(3),
+            meta={"intrinsic_rms_px": round(intr["rms_px"], 4),
+                  "intrinsic_views": intr["n_views"], "assist": True},
+        )
 
     poses = []
     for p, im in _load_gray(extr_paths):

@@ -42,7 +42,7 @@ import numpy as np
 import yaml
 
 from cameras import Rig
-from sweep_plan import build_plan
+from sweep_plan import anchor_pose_plan, build_plan
 
 CAPTURE_FORMAT = 1
 ROM_MARGIN_DEG = 2.0
@@ -116,7 +116,15 @@ def main() -> int:
                          "neutral opposes the thumb across the fingers; parked "
                          "clear, thumb and finger dots stop crossing in image "
                          "space and stealing identities ('' = config neutral)")
-    ap.add_argument("--anchor-poses", type=int, default=8)
+    ap.add_argument("--anchor-poses", type=int, default=10)
+    ap.add_argument("--assist-camera", default="",
+                    metavar="NAME=INDEX",
+                    help="Hand-held assist camera (intrinsics-only in the "
+                         "rig): at each anchor pose the operator orbits the "
+                         "hand and presses ENTER per shot; every shot "
+                         "self-localises off the board later")
+    ap.add_argument("--assist-shots", type=int, default=3,
+                    help="Assist shots to take per anchor pose")
     ap.add_argument("--dry-run", action="store_true",
                     help="Plan and report only; no hardware, no cameras")
     ap.add_argument("--yes", action="store_true", help="Skip the confirmation")
@@ -164,11 +172,9 @@ def main() -> int:
             margin_deg=ROM_MARGIN_DEG, abd_flexion_fracs=fracs,
             clear_flexion=clear or None)
         rng = np.random.default_rng(0)
-        anchors = np.array([
-            [rng.uniform(lo + 0.3 * (hi - lo), lo + 0.7 * (hi - lo))
-             for lo, hi in (roms[j] for j in joints)]
-            for _ in range(args.anchor_poses)
-        ])
+        anchors, anchor_kinds = anchor_pose_plan(
+            joints, roms, held, args.anchor_poses, rng,
+            margin_deg=ROM_MARGIN_DEG)
         anchor_frames = list(range(len(q), len(q) + len(anchors)))
         q = np.vstack([q, anchors])
 
@@ -189,6 +195,23 @@ def main() -> int:
         for name in caps:
             os.makedirs(os.path.join(args.out, "frames", name), exist_ok=True)
 
+        assist_name, assist_cap = None, None
+        if args.assist_camera:
+            assist_name, _, idx = args.assist_camera.partition("=")
+            if assist_name not in rig.cameras:
+                raise SystemExit(f"assist camera {assist_name!r} not in the "
+                                 "rig (calibrate its intrinsics first)")
+            assist_cap = cv2.VideoCapture(int(idx))
+            if not assist_cap.isOpened():
+                raise SystemExit(f"cannot open assist camera device {idx}")
+            w_a, h_a = rig.cameras[assist_name].image_size
+            assist_cap.set(cv2.CAP_PROP_FRAME_WIDTH, w_a)
+            assist_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h_a)
+            assist_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            os.makedirs(os.path.join(args.out, "assist"), exist_ok=True)
+        assist_shots = []
+        anchor_set = set(anchor_frames)
+
         hand.init_joints()
         m = np.full((len(q), len(joints)), np.nan)
         t0 = time.monotonic()
@@ -203,6 +226,21 @@ def main() -> int:
                     continue
                 cv2.imwrite(os.path.join(args.out, "frames", name,
                                          f"frame_{f:05d}.png"), img)
+            if f in anchor_set and assist_cap is not None:
+                print(f"  anchor pose {sorted(anchor_set).index(f) + 1}"
+                      f"/{len(anchor_set)}: take {args.assist_shots} assist "
+                      "shots (board + hand in frame, hold still per shot)")
+                for k in range(args.assist_shots):
+                    if input(f"    shot {k + 1}: ENTER to grab "
+                             "(s=skip rest) ").strip().lower() == "s":
+                        break
+                    img = grab_frame(assist_cap)
+                    if img is None:
+                        print("    dropped; try again")
+                        continue
+                    fname = f"assist/shot_{f:05d}_{k}.png"
+                    cv2.imwrite(os.path.join(args.out, fname), img)
+                    assist_shots.append({"frame": int(f), "file": fname})
             if f % 25 == 0:
                 el = time.monotonic() - t0
                 eta = el / (f + 1) * (len(q) - f - 1)
@@ -223,9 +261,13 @@ def main() -> int:
                 "settle_s": args.settle,
                 "encoder_samples": args.samples,
                 "abd_flexion_fracs": list(fracs) if fracs else [],
+                "anchor_kinds": list(anchor_kinds),
                 "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             },
         }
+        if assist_shots:
+            manifest["assist"] = {"camera": assist_name,
+                                  "shots": assist_shots}
         with open(os.path.join(args.out, "capture.yaml"), "w") as f:
             yaml.safe_dump(manifest, f, sort_keys=False)
         print(f"wrote capture to {args.out}")
