@@ -1,7 +1,9 @@
 """Constants for the joint-control loop and watchdog."""
 
 
-DEFAULT_LOOP_HZ = 100
+# Set by command granularity, not control bandwidth: at 100 Hz the coarsest
+# joints step only ~2-3 encoder counts a cycle and visibly chase the staircase.
+DEFAULT_LOOP_HZ = 200
 
 # Controller dt clamp so a loop slip cannot blow up the integral term:
 # floor below the realistic loop budget, ceiling at the watchdog hold tier.
@@ -25,7 +27,9 @@ WATCHDOG_STOP_LOOP_MS = 1000
 # Only mechanical lag keeps that stable, so stiffly-coupled (fast) joints have
 # the least margin and want the lowest Kp.
 DEFAULT_KP = 0.5           # degrees of correction per degree of error
-DEFAULT_KI = 5.0           # degrees of correction per degree·second of error
+# Low because the integrator fights stiction: it winds up until the joint breaks
+# loose, then overshoots — a limit cycle that reaches the eye as judder.
+DEFAULT_KI = 2.0           # degrees of correction per degree·second of error
 
 # Also the effective anti-windup bound: conditional integration freezes the
 # integrator once the output saturates, so the retained integral contribution
