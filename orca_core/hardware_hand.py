@@ -519,9 +519,8 @@ class OrcaHand(BaseHand):
             Motor positions in radians as an array or dict.
 
         Note:
-            One bus round trip per motor. Use :meth:`get_motor_state` when
-            velocity or current is wanted too — it costs the same single
-            transaction.
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            velocity or current too for the same single transaction.
         """
         with self._motor_lock:
             motor_pos = self._motor_client.read_position_velocity_current().position
@@ -544,9 +543,8 @@ class OrcaHand(BaseHand):
             Motor currents (mA) as an array, or dict.
 
         Note:
-            One bus round trip per motor. Use :meth:`get_motor_state` when
-            position or velocity is wanted too — it costs the same single
-            transaction.
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            position or velocity too for the same single transaction.
         """
         with self._motor_lock:
             motor_current = self._motor_client.read_position_velocity_current().current
@@ -562,16 +560,13 @@ class OrcaHand(BaseHand):
     def get_motor_state(self) -> MotorRead:
         """Read position, velocity, and current in a single bus transaction.
 
-        Each per-quantity accessor costs a full round trip to every motor, so
-        reading two of them in sequence pays that cost twice for data one
-        transaction already carries. Callers wanting more than one quantity
-        should take a snapshot here instead.
+        The per-quantity accessors each cost a full round trip to every motor,
+        so wanting two of them should be one snapshot rather than two calls.
 
         Returns:
-            A :class:`~orca_core.hardware.motor_client.MotorRead` of positions
-            (radians), velocities, and currents (mA). Each field is an array
-            ordered by :attr:`~orca_core.OrcaHandConfig.motor_ids`; zip against
-            that to key by motor ID.
+            A :class:`~orca_core.hardware.motor_client.MotorRead`: positions
+            (radians), velocities, and currents (mA), each an array ordered by
+            :attr:`~orca_core.OrcaHandConfig.motor_ids`.
         """
         with self._motor_lock:
             return self._motor_client.read_position_velocity_current()
