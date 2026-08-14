@@ -850,3 +850,36 @@ def test_detection_tells_this_process_apart_from_a_foreign_client(monkeypatch):
     assert len(detections) == 1
     assert detections[0].owned_ports == ("/dev/cu.mine",)
     assert detections[0].busy_ports == ("/dev/cu.theirs",)
+
+
+# ----- a hand silent on one CDC --------------------------------------------
+
+@pytest.mark.parametrize("silent, resolver, neighbour", [
+    ("/dev/cu.a-motor", "find_motor_port", "/dev/cu.b-motor"),
+    ("/dev/cu.a-sensor", "_find_oh_sensor_port", "/dev/cu.b-sensor"),
+])
+def test_a_hand_silent_on_one_cdc_still_counts_as_a_second_hand(
+        monkeypatch, silent, resolver, neighbour):
+    """Counting only the CDCs whose reply matched the requested role hides a
+    hand whose other CDC is held, leaving the neighbour as the lone match."""
+    from orca_core.hardware.sensing import serial_discovery
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [
+        _oh_port("/dev/cu.a-motor", _BOARD_A),
+        _oh_port("/dev/cu.a-sensor", _BOARD_A),
+        _oh_port("/dev/cu.b-motor", _BOARD_B),
+        _oh_port("/dev/cu.b-sensor", _BOARD_B),
+    ])
+    replies = {
+        "/dev/cu.a-motor": ORCA_ID_RESP_MOTOR,
+        "/dev/cu.a-sensor": ORCA_ID_RESP_SENSOR,
+        "/dev/cu.b-motor": ORCA_ID_RESP_MOTOR,
+        "/dev/cu.b-sensor": ORCA_ID_RESP_SENSOR,
+    }
+    del replies[silent]
+    monkeypatch.setattr(
+        serial_discovery, "_probe_orca_id", lambda p, **k: replies.get(p)
+    )
+
+    resolved = getattr(serial_discovery, resolver)()
+    assert resolved is None, f"resolved onto the neighbouring hand ({neighbour})"

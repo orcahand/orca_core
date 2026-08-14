@@ -499,30 +499,42 @@ def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
     """Return the controller-board CDC whose ``ORCA_ID?`` reply matches
     ``expected_resp``, or None unless exactly one board answers.
 
-    Boards are counted by what replies, not by what enumerates: the vendor ID
-    is shared with the bare controller module, so a spare board on the bench
-    must not stop a lone hand resolving its ports. When two hands do answer
+    Boards are counted by whether they answered at all, not by whether the
+    requested role matched: the vendor ID is shared with the bare controller
+    module, so a spare board on the bench answers nothing and must not stop a
+    lone hand resolving its ports — while a hand answering on only one of its
+    two CDCs still means a second hand is attached. When two boards answer
     there is no single right answer, and returning either hands the caller a
     port belonging to a hand it did not ask for — those callers use
     :func:`probe_boards`.
     """
     matches = []
+    answering_boards = 0
     for candidate in oh_board_candidates():
+        found = None
+        answered = False
         for _ in range(ORCA_ID_PROBE_ATTEMPTS):
-            found = next(
-                (p for p in candidate.ports if _probe_orca_id(p) == expected_resp),
-                None,
-            )
+            for port in candidate.ports:
+                resp = _probe_orca_id(port)
+                if resp is None:
+                    continue
+                answered = True
+                if resp == expected_resp:
+                    found = port
+                    break
             if found is not None:
-                matches.append(found)
                 break
+        if answered:
+            answering_boards += 1
+        if found is not None:
+            matches.append(found)
 
-    if len(matches) == 1:
+    if len(matches) == 1 and answering_boards == 1:
         return matches[0]
-    if matches:
+    if answering_boards > 1:
         logger.warning(
             "%d controller boards answered, so no single motor or sensing "
-            "port can be resolved. Select a hand explicitly.", len(matches),
+            "port can be resolved. Select a hand explicitly.", answering_boards,
         )
     return None
 
