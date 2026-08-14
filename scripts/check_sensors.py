@@ -33,7 +33,12 @@ import sys
 import threading
 import time
 
-from orca_core import OrcaHandTouch, load_hand
+from orca_core import OrcaHandTouch
+from orca_core.utils.cli import (
+    add_hand_selection_arguments,
+    create_hand,
+    handle_hand_selection,
+)
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -680,6 +685,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--baudrate", type=int, default=LINK_DEFAULT_BAUDRATE,
                    help="Encoder link baudrate; only used with --port.")
+    add_hand_selection_arguments(p)
     p.add_argument("--encoder-duration", type=float, default=ENCODER_DURATION_S,
                    help=f"Seconds to sample the encoder stream (default: {ENCODER_DURATION_S:.0f}).")
     return p.parse_args()
@@ -687,6 +693,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    handle_hand_selection(args)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     if args.port:
@@ -698,7 +705,10 @@ def main() -> int:
         )
         return 0 if print_summary([("encoders: stream health", *result)]) else 1
 
-    hand = load_hand(config_path=args.config_path, engage_feedback=False)
+    hand = create_hand(
+        args.config_path, use_mock=False, engage_feedback=False,
+        hand_id=args.hand,
+    )
     has_encoders = hand.config.has_joint_encoders
     has_tactile = isinstance(hand, OrcaHandTouch)
     if not (has_encoders or has_tactile):

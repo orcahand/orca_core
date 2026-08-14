@@ -367,9 +367,17 @@ class HandSelectionError(LookupError):
     probing the bus a second time and racing whatever connected in between.
     """
 
-    def __init__(self, message: str, detections: "tuple[HandDetection, ...]" = ()):
+    def __init__(
+        self,
+        message: str,
+        detections: "tuple[HandDetection, ...]" = (),
+        summary: "str | None" = None,
+    ):
         super().__init__(message)
         self.detections = tuple(detections)
+        self.summary = summary or message
+        """The failure without the advice, so a front-end can append its own.
+        The message names a Python call; a CLI has a flag instead."""
 
 
 class HandNotFoundError(HandSelectionError):
@@ -451,12 +459,16 @@ def select_hand(
             + "; ".join(_describe_hand(d) for d in detections),
             detections,
         )
-    raise AmbiguousHandError(
+    summary = (
         f"{len(matches)} attached hands match {selector.describe()}: "
         + "; ".join(_describe_hand(d) for d in matches)
-        + ". Name one with load_hand(select=HandSelector(hand_id=...)), or "
-        "use load_hands() to get them all.",
+        + "."
+    )
+    raise AmbiguousHandError(
+        summary + " Name one with load_hand(select=HandSelector(hand_id=...)), "
+        "or use load_hands() to get them all.",
         matches,
+        summary,
     )
 
 

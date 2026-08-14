@@ -124,6 +124,8 @@ def test_shared_hand_arguments_are_exposed(rel_path, capsys, monkeypatch):
     assert "[config_path]" in help_text, "config_path must stay optional (autodetect)"
     assert "--mock" in help_text
     assert "--model-name" in help_text
+    assert "--hand" in help_text, "no way to name a hand on a two-hand bench"
+    assert "--list-hands" in help_text
     if "--no-engage-feedback" not in help_text:
         # Omitting it is only allowed when the front-end decides for itself.
         assert FEEDBACK_PINNED.search((REPO_ROOT / rel_path).read_text()), (
@@ -207,7 +209,7 @@ class TestCreateHandFromArgs:
         assert calls == [dict(
             config_path="cfg.yaml", mock=True,
             model_name="orcahand-full-left", engage_feedback=False,
-            engage_sensors=True,
+            engage_sensors=True, select=None,
         )]
 
     def test_front_end_override_wins_over_the_flag(self, monkeypatch, capsys):
@@ -397,3 +399,125 @@ class TestEngageFlagsSelectTheClass:
         hand = self._hand(engage_feedback=False, engage_sensors=False)
         assert hand.config.joint_feedback_enabled
         assert hand.config.sensor_port
+
+
+HAND_SELECTION_MODULES = HAND_CLI_MODULES + [
+    "scripts/check_sensors.py",
+    "scripts/check_encoder_signs.py",
+]
+
+
+@pytest.mark.parametrize("rel_path", HAND_SELECTION_MODULES)
+def test_every_front_end_can_name_a_hand(rel_path, capsys, monkeypatch):
+    """With two hands attached, a front-end that cannot be told which one
+    either tracebacks or silently picks an arm."""
+    monkeypatch.setattr(sys, "argv", [rel_path, "--help"])
+    module = _load(rel_path)
+    help_text = _help_text(module, rel_path, capsys)
+
+    assert "--hand" in help_text
+    assert "--list-hands" in help_text
+
+
+def _detection(hand_id, board_id=None, side="right", model="orcahand-right"):
+    from orca_core.hand_factory import HandDetection
+
+    return HandDetection(
+        model_name=model, side=side, has_tactile=False, has_encoders=False,
+        hand_id=hand_id, board_id=board_id or f"BID-{hand_id}",
+    )
+
+
+class TestHandSelectionFromTheCommandLine:
+    @staticmethod
+    def _cli(monkeypatch, detections):
+        import orca_core.utils.cli as cli
+
+        calls = []
+
+        def fake_load_hand(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(config=SimpleNamespace(config_path="fake.yaml"))
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: list(detections))
+        return cli, calls
+
+    def _args(self, cli, argv):
+        parser = argparse.ArgumentParser()
+        cli.add_hand_arguments(parser)
+        return parser.parse_args(argv)
+
+    def test_hand_flag_reaches_load_hand_as_a_selector(self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001"), _detection("ser-0002")])
+
+        cli.create_hand_from_args(self._args(cli, ["--hand", "ser-0002"]))
+
+        assert calls[0]["select"].hand_id == "ser-0002"
+
+    def test_a_board_id_is_accepted_where_a_hand_id_does_not_match(
+            self, monkeypatch, capsys):
+        """An unprovisioned board answers with its board id; the operator
+        should not have to know which one their hand reports."""
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001", board_id="BID-X")])
+
+        cli.create_hand_from_args(self._args(cli, ["--hand", "BID-X"]))
+
+        assert calls[0]["select"].board_id == "BID-X"
+        assert calls[0]["select"].hand_id is None
+
+    def test_two_hands_exit_non_zero_naming_both_and_the_flag(
+            self, monkeypatch, capsys):
+        import orca_core.utils.cli as cli
+        from orca_core import AmbiguousHandError
+
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        monkeypatch.setattr(cli, "detect_hands", lambda: list(detections))
+
+        def raising(**kwargs):
+            # Raised the way the library really raises it, advice and all —
+            # a short stand-in message would hide the leak this pins.
+            from orca_core.hand_factory import select_hand
+
+            select_hand(detections, None)
+
+        monkeypatch.setattr(cli, "load_hand", raising)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli.create_hand_from_args(self._args(cli, []))
+
+        message = str(excinfo.value)
+        assert "ser-0001" in message and "ser-0002" in message
+        assert "--hand" in message
+        assert "load_hand(" not in message, "advice the operator cannot act on"
+
+    def test_list_hands_prints_the_attached_hands_and_stops(
+            self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001"), _detection("ser-0002")])
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli.create_hand_from_args(self._args(cli, ["--list-hands"]))
+
+        assert excinfo.value.code == 0
+        assert calls == [], "listing hands must not build one"
+        out = capsys.readouterr().out
+        assert "ser-0001" in out and "ser-0002" in out
+
+    def test_hand_is_refused_where_it_cannot_be_honoured(self, monkeypatch, capsys):
+        """Recording rather than raising: a load_hand patched to raise routes
+        into the ambiguity handler, whose message also mentions --hand."""
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001")])
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli.create_hand_from_args(self._args(cli, ["--mock", "--hand", "ser-0001"]))
+
+        assert "--mock" in str(excinfo.value)
+        assert calls == []
+
+    def test_a_board_reporting_no_id_is_still_listed(self, monkeypatch, capsys):
+        cli, _ = self._cli(monkeypatch, [_detection(None, board_id=None)])
+
+        with pytest.raises(SystemExit):
+            cli.create_hand_from_args(self._args(cli, ["--list-hands"]))
+
+        assert "unidentified" in capsys.readouterr().out

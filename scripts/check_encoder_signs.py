@@ -19,7 +19,12 @@ import argparse
 import sys
 import time
 
-from orca_core import OrcaHand, detect_hand
+from orca_core import OrcaHand
+from orca_core.utils.cli import (
+    add_hand_selection_arguments,
+    handle_hand_selection,
+    resolve_detected_model,
+)
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -86,7 +91,9 @@ def main():
                         help="Override config encoder_serial_port.")
     parser.add_argument("--hold", action="store_true",
                         help="Keep torque enabled instead of releasing it.")
+    add_hand_selection_arguments(parser)
     args = parser.parse_args()
+    handle_hand_selection(args)
 
     # A motor-only hand, whatever the model: the loop must not run while its
     # inputs are unverified, and a tactile connect would hold the sensing CDC
@@ -94,7 +101,7 @@ def main():
     if args.config_path:
         hand = OrcaHand(config_path=args.config_path)
     else:
-        hand = OrcaHand(model_name=detect_hand().model_name)
+        hand = OrcaHand(model_name=resolve_detected_model(args.hand))
     joints = hand.encoder_backed_joints
     if not joints:
         print("This hand declares no encoder-backed joints.")

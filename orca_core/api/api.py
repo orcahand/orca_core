@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel, Field
 import uvicorn
 
-from orca_core import OrcaHand, load_hand
+from orca_core import HandSelectionError, OrcaHand, load_hand
 
 app = FastAPI(title="OrcaHand API", version="1.0.0")
 
@@ -36,7 +36,11 @@ def _get_hand() -> OrcaHand:
             if hand is None:
                 # Autodetect: serve the hand that is plugged in, not the
                 # packaged default, which would drive a sensing hand blind.
-                hand = load_hand()
+                try:
+                    hand = load_hand()
+                except HandSelectionError as e:
+                    # This API serves one hand and has no way to be told which.
+                    raise HTTPException(status_code=409, detail=str(e)) from e
     return hand
 
 
