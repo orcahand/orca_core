@@ -6,10 +6,12 @@ probe opening a port another client already owns.
 """
 
 import logging
+import pathlib
 from types import SimpleNamespace
 
 import pytest
 
+import orca_core
 from orca_core import MockOrcaHand, OrcaHand
 from orca_core.constants import (
     KNOWN_VIDS,
@@ -19,6 +21,8 @@ from orca_core.constants import (
 )
 
 from tests._helpers import fake_serial_port
+
+_MODELS = pathlib.Path(orca_core.__file__).parent / "models"
 
 _OH_VID = KNOWN_VIDS["oh_board"][0]
 _BOARD_A = "1B46C9E850304C43552E3120FF061305" * 2
@@ -852,7 +856,31 @@ def test_detection_tells_this_process_apart_from_a_foreign_client(monkeypatch):
     assert detections[0].busy_ports == ("/dev/cu.theirs",)
 
 
-# ----- a hand silent on one CDC --------------------------------------------
+# ----- a hand that cannot name its own bus ---------------------------------
+
+def _patch_bus(monkeypatch, ports, infos, held=(), tactile_adapter=None):
+    """A bus of controller-board CDCs, some of them held by another program.
+
+    ``infos`` answers ``ORCA_INFO?``; a port in ``held`` answers nothing and
+    reports busy, exactly as an exclusive open by another client looks.
+    """
+    from orca_core import hand_factory
+    from orca_core.hardware.sensing import serial_discovery
+
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
+    monkeypatch.setattr(
+        serial_discovery, "probe_orca_info",
+        lambda p, *a, **k: None if p in held else infos.get(p),
+    )
+    monkeypatch.setattr(serial_discovery, "port_in_use", lambda p: p in held)
+    monkeypatch.setattr(serial_discovery, "_probe_orca_id", lambda p, **k: (
+        None if p in held or infos.get(p) is None
+        else {"motor": ORCA_ID_RESP_MOTOR, "sensor": ORCA_ID_RESP_SENSOR}[infos[p].role]
+    ))
+    monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
+    monkeypatch.setattr(hand_factory, "_tactile_responds_at", lambda p, b: False)
+    monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: tactile_adapter)
+
 
 @pytest.mark.parametrize("silent, resolver, neighbour", [
     ("/dev/cu.a-motor", "find_motor_port", "/dev/cu.b-motor"),
@@ -883,3 +911,140 @@ def test_a_hand_silent_on_one_cdc_still_counts_as_a_second_hand(
 
     resolved = getattr(serial_discovery, resolver)()
     assert resolved is None, f"resolved onto the neighbouring hand ({neighbour})"
+
+
+def test_a_hand_whose_ports_are_all_held_refuses_its_neighbours_motor_bus(
+        monkeypatch, tmp_path):
+    """The hand is named explicitly, so handing back the only bus that
+    happens to answer would drive the arm the caller ruled out."""
+    from orca_core import hand_factory
+    from orca_core.hand_factory import HandPortUnresolvedError, HandSelector
+    from orca_core.hardware.sensing import serial_discovery
+    from orca_core.hardware.sensing.serial_discovery import (
+        OrcaBoardInfo, board_id_from_usb_serial,
+    )
+
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path))
+    _patch_bus(
+        monkeypatch,
+        ports=[
+            _oh_port("/dev/cu.a-motor", _BOARD_A),
+            _oh_port("/dev/cu.a-sensor", _BOARD_A),
+            _oh_port("/dev/cu.b-motor", _BOARD_B),
+            _oh_port("/dev/cu.b-sensor", _BOARD_B),
+        ],
+        infos={
+            "/dev/cu.b-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-0002"),
+            "/dev/cu.b-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0002"),
+        },
+        held=("/dev/cu.a-motor", "/dev/cu.a-sensor"),
+    )
+    held_hand = board_id_from_usb_serial(_BOARD_A)
+
+    # The bus search the refusal replaces would still land on the neighbour.
+    assert serial_discovery.find_motor_port() == "/dev/cu.b-motor"
+
+    with pytest.raises(HandPortUnresolvedError, match="held by another program"):
+        hand_factory.load_hand(select=HandSelector(hand_id=held_hand))
+
+
+def test_a_held_sensing_cdc_disables_the_link_instead_of_discovering_one(
+        monkeypatch, tmp_path):
+    """A declared sensing link that did not answer must not be auto-discovered
+    with a neighbour attached: discovery opens the neighbour's CDC."""
+    from orca_core import hand_factory
+    from orca_core.hand_factory import HandSelector
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path))
+    _patch_bus(
+        monkeypatch,
+        ports=[
+            _oh_port("/dev/cu.a-motor", _BOARD_A),
+            _oh_port("/dev/cu.a-sensor", _BOARD_A),
+            _oh_port("/dev/cu.b-motor", _BOARD_B),
+            _oh_port("/dev/cu.b-sensor", _BOARD_B),
+        ],
+        infos={
+            "/dev/cu.a-motor": OrcaBoardInfo(
+                role="motor", side="right", serial="ser-0001", config=2500),
+            "/dev/cu.b-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-0002"),
+            "/dev/cu.b-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0002"),
+        },
+        held=("/dev/cu.a-sensor",),
+        tactile_adapter="/dev/cu.paxini",
+    )
+
+    hand = hand_factory.load_hand(select=HandSelector(hand_id="ser-0001"))
+
+    assert hand.config.port == "/dev/cu.a-motor"
+    assert hand.config.encoder_serial_port == "disabled"
+    assert hand.config.sensor_port == "disabled", (
+        "an unattributed tactile adapter was auto-discovered anyway"
+    )
+
+
+def test_a_lone_hand_with_a_transient_probe_miss_still_resolves_at_connect(
+        monkeypatch, tmp_path):
+    """With one hand attached a bus search can only find that hand again, and
+    it is what recovers a CDC that missed its probe. Refusing here bricks it."""
+    from orca_core import hand_factory
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path))
+    _patch_bus(
+        monkeypatch,
+        ports=[
+            _oh_port("/dev/cu.a-motor", _BOARD_A),
+            _oh_port("/dev/cu.a-sensor", _BOARD_A),
+        ],
+        infos={
+            "/dev/cu.a-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
+        },
+    )
+
+    hand = hand_factory.load_hand()
+    assert hand.config.port == "auto"
+
+
+def test_a_spare_board_does_not_make_a_lone_hand_unresolvable(
+        monkeypatch, tmp_path):
+    """A bare module answers nothing, so it is not a second hand and must not
+    turn a missed probe into a refusal."""
+    from orca_core import hand_factory
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path))
+    _patch_bus(
+        monkeypatch,
+        ports=[
+            _oh_port("/dev/cu.a-motor", _BOARD_A),
+            _oh_port("/dev/cu.a-sensor", _BOARD_A),
+            _oh_port("/dev/cu.spare", _BOARD_B),
+        ],
+        infos={
+            "/dev/cu.a-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
+        },
+    )
+
+    hand = hand_factory.load_hand()
+    assert hand.config.port == "auto"
+
+
+def test_a_hand_found_only_by_its_tactile_adapter_keeps_searching_for_motors(
+        monkeypatch):
+    """Its motor bus really is a plain USB adapter with no controller board
+    behind it, so there is no detected port to pin and nothing to refuse."""
+    from orca_core.hand_config import OrcaHandConfig
+    from orca_core.hand_factory import HandDetection, _pin_detected_ports
+
+    detection = HandDetection(
+        model_name="orcahand-touch-right", side="right",
+        has_tactile=True, has_encoders=False, tactile_port="/dev/cu.paxini",
+    )
+    config = OrcaHandConfig.from_config_path(
+        config_path=str(_MODELS / "v2" / "orcahand-right" / "config.yaml"),
+        calibration_path=None,
+    )
+
+    assert _pin_detected_ports(config, detection, attached=2).port == "auto"

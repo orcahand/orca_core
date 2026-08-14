@@ -368,6 +368,12 @@ class AmbiguousHandError(LookupError):
     single right answer and picking one could drive the wrong arm."""
 
 
+class HandPortUnresolvedError(LookupError):
+    """Raised when an attached hand was detected but the bus it must be driven
+    through could not be named. Connecting anyway would mean searching the
+    whole bus, which with a second hand attached lands on the neighbour."""
+
+
 @dataclass(frozen=True)
 class HandSelector:
     """Which hand a caller means, when more than one is attached.
@@ -436,20 +442,83 @@ def select_hand(
     )
 
 
-def _pin_detected_ports(config, detection: HandDetection):
+def _unresolved_reason(detection: HandDetection) -> str:
+    """Why a detected hand stayed silent on a CDC, and what to do about it."""
+    if detection.busy_ports:
+        return (
+            f"{', '.join(detection.busy_ports)} is held by another program; "
+            "close it and retry"
+        )
+    if detection.owned_ports:
+        return (
+            f"{', '.join(detection.owned_ports)} is already connected in this "
+            "process; disconnect that hand first"
+        )
+    return "the board did not answer; check its power and USB cable"
+
+
+def _pin_detected_ports(config, detection: HandDetection, attached: int):
     """Point the config at the ports detection already found, so connect()
-    doesn't have to re-discover them. Fields with nothing detected keep
-    their configured (typically ``auto``) values."""
+    doesn't have to re-discover them.
+
+    A port detection could not name is left at its configured ``auto`` while
+    one hand is attached, where searching the bus can only find that hand
+    again and recovers a probe the board missed. With a neighbour attached the
+    same search returns *its* bus, so the field is refused or disabled instead.
+    """
+    board_seen = bool(
+        detection.sensing_port or detection.busy_ports or detection.owned_ports
+    )
     if detection.motor_port is not None:
         config = dataclasses.replace(config, port=detection.motor_port)
+    elif board_seen and attached > 1:
+        # No "disabled" sentinel exists for the motor bus, and no workflow
+        # survives an unknown one, so refusing is the only fail-safe outcome.
+        raise HandPortUnresolvedError(
+            f"hand {_describe_hand(detection)} is attached but its motor bus "
+            f"could not be resolved: {_unresolved_reason(detection)}. Refusing "
+            f"to search the bus for it — with {attached} hands attached, that "
+            f"search returns the neighbour's motor bus."
+        )
+    elif board_seen:
+        logger.info(
+            "hand %s did not name its motor bus (%s); resolving it at connect, "
+            "which is unambiguous while it is the only hand attached.",
+            detection.hand_id or "unidentified", _unresolved_reason(detection),
+        )
+
+    wants_tactile = detection.has_tactile and isinstance(config, OrcaHandTouchConfig)
+    sensor_port = detection.tactile_port or detection.sensing_port
     if detection.has_encoders and detection.sensing_port is not None:
         config = dataclasses.replace(
             config, encoder_serial_port=detection.sensing_port
         )
-    if detection.has_tactile and isinstance(config, OrcaHandTouchConfig):
-        sensor_port = detection.tactile_port or detection.sensing_port
-        if sensor_port is not None:
-            config = dataclasses.replace(config, sensor_port=sensor_port)
+    if wants_tactile and sensor_port is not None:
+        config = dataclasses.replace(config, sensor_port=sensor_port)
+
+    unresolved = [
+        name
+        for name, declared, port in (
+            ("joint encoders", detection.has_encoders, detection.sensing_port),
+            ("tactile", wants_tactile, sensor_port),
+        )
+        if declared and port is None
+    ]
+    if unresolved and attached > 1:
+        # Disabled rather than refused: open-loop maintenance on a hand whose
+        # sensing link is unreachable is still worth allowing.
+        if detection.has_encoders and detection.sensing_port is None:
+            config = dataclasses.replace(config, encoder_serial_port="disabled")
+        if wants_tactile and sensor_port is None:
+            config = dataclasses.replace(config, sensor_port="disabled")
+        logger.warning(
+            "hand %s declares %s but its sensing port could not be resolved: "
+            "%s. That link is disabled rather than auto-discovered, which with "
+            "another hand attached would open the neighbour's sensing CDC; "
+            "connect() fails on it until the port is free.",
+            detection.hand_id or "unidentified", " and ".join(unresolved),
+            _unresolved_reason(detection),
+        )
     return config
 
 
@@ -497,6 +566,9 @@ def load_hands(
             selector matches nothing.
     """
     detections = detect_hands()
+    # Counted before ``select`` narrows the list: what a port search can stray
+    # onto is what is attached, not what this caller asked for.
+    attached = len(detections)
     if select is not None:
         matched = [d for d in detections if select.matches(d)]
         if not matched:
@@ -514,6 +586,7 @@ def load_hands(
             mock=mock,
             engage_feedback=engage_feedback,
             engage_sensors=engage_sensors,
+            attached=attached,
         )
         for detection in detections
     ]
@@ -566,10 +639,15 @@ def load_hand(
         AmbiguousHandError: several attached hands match, so there is no
             single right answer. Name one, or use :func:`load_hands`.
         HandNotFoundError: ``select`` matches nothing attached.
+        HandPortUnresolvedError: the chosen hand is attached but did not name
+            its motor bus, and another hand is attached for a port search to
+            stray onto.
     """
     detection = None
+    attached = 0
     if config_path is None and model_name is None and model_version is None and not mock:
         detections = detect_hands()
+        attached = len(detections)
         if detections or select is not None:
             # A selector that matches nothing is an error; asking for no
             # particular hand with none attached is not, and still yields the
@@ -584,6 +662,7 @@ def load_hand(
         mock=mock,
         engage_feedback=engage_feedback,
         engage_sensors=engage_sensors,
+        attached=attached,
     )
 
 
@@ -597,9 +676,13 @@ def _build_hand(
     mock: bool,
     engage_feedback: bool,
     engage_sensors: bool,
+    attached: int = 0,
 ) -> OrcaHand:
     """Construct the hand class a resolved detection (or an explicit model)
-    calls for. Detection has already happened; nothing here probes."""
+    calls for. Detection has already happened; nothing here probes.
+
+    ``attached`` is how many hands that detection found, which decides whether
+    a port it could not name may still be searched for at connect."""
     if detection is not None:
         model_name = detection.model_name
         if detection.busy_ports:
@@ -637,7 +720,7 @@ def _build_hand(
         calibration_path=calibration_path,
     )
     if detection is not None:
-        config = _pin_detected_ports(config, detection)
+        config = _pin_detected_ports(config, detection, attached)
         if calibration_path is None and detection.hand_id:
             config = _bind_hand_store(config, detection)
 
