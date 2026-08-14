@@ -43,7 +43,7 @@ DISCOVERY = "orca_core.hardware.sensing.serial_discovery"
 
 # The motor and sensing CDCs of one board share its USB serial number; that
 # is what groups them into a single hand.
-BOARD_A_SERIAL = "1B46C9E850304C43552E3120FF061305" * 2
+BOARD_A_SERIAL = "5EED1CE500FA11EDBEEFCAFE0DDBA11D" * 2
 
 paxini = fake_serial_port(PAXINI_PORT, PAXINI_VID)
 motor = fake_serial_port(OH_MOTOR_PORT, OH_VID, serial_number=BOARD_A_SERIAL)

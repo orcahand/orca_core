@@ -25,7 +25,7 @@ from tests._helpers import fake_serial_port
 _MODELS = pathlib.Path(orca_core.__file__).parent / "models"
 
 _OH_VID = KNOWN_VIDS["oh_board"][0]
-_BOARD_A = "1B46C9E850304C43552E3120FF061305" * 2
+_BOARD_A = "5EED1CE500FA11EDBEEFCAFE0DDBA11D" * 2
 _BOARD_B = "0011223344556677889AABBCCDDEEFF0" * 2
 
 
@@ -482,14 +482,15 @@ def test_board_id_is_derived_from_the_usb_descriptor():
     firmware at all. Values measured on a real board."""
     from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
 
-    assert board_id_from_usb_serial(_BOARD_A) == "4B7685ABAA282225"
+    measured = "1B46C9E850304C43552E3120FF061305" * 2
+    assert board_id_from_usb_serial(measured) == "4B7685ABAA282225"
     # A descriptor carrying the ID once folds identically.
-    assert board_id_from_usb_serial(_BOARD_A[:32]) == "4B7685ABAA282225"
+    assert board_id_from_usb_serial(measured[:32]) == "4B7685ABAA282225"
 
 
 @pytest.mark.parametrize(
     "usb_serial",
-    [None, "", "not-hex-at-all", "ABCD", "1B46C9E850304C43552E3120FF0613050000"],
+    [None, "", "not-hex-at-all", "ABCD", "5EED1CE500FA11EDBEEFCAFE0DDBA11D0000"],
 )
 def test_board_id_is_none_for_a_descriptor_of_the_wrong_shape(usb_serial):
     from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
@@ -644,14 +645,14 @@ def test_a_board_that_answers_nothing_is_not_reported_as_a_hand(monkeypatch):
         _oh_port("/dev/cu.spare", _BOARD_B),
     ])
     _patch_probe(monkeypatch, {
-        "/dev/cu.hand-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-9964"),
-        "/dev/cu.hand-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-9964"),
+        "/dev/cu.hand-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-0001"),
+        "/dev/cu.hand-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
     })
     monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
     monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
 
     detections = hand_factory.detect_hands()
-    assert [d.hand_id for d in detections] == ["ser-9964"]
+    assert [d.hand_id for d in detections] == ["ser-0001"]
 
 
 def test_one_sideless_hand_among_several_is_still_warned_about(monkeypatch, caplog):

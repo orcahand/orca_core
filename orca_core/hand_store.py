@@ -17,7 +17,7 @@ deletes it, and a read-only install cannot record it at all.
 So each hand gets a directory under ``${ORCA_HOME:-~/.orca}/hands/``, keyed
 by the identity its controller board reports::
 
-    ~/.orca/hands/ser-9964/
+    ~/.orca/hands/ser-0001/
         identity.yaml     what this hand is, and when it was last seen
         calibration.yaml  this hand's calibration
 

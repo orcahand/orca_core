@@ -58,6 +58,23 @@ def _empty_usb_bus(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_hand_store(monkeypatch, tmp_path_factory):
+    """Keep per-hand state out of the developer's real home directory.
+
+    ``load_hand`` records identity and resolves calibration under
+    ``${ORCA_HOME:-~/.orca}``, keyed by whatever hand id the fixtures hand it.
+    Without this the suite writes into the store of a physically attached
+    hand — and would copy a calibration left beside a packaged model into it.
+    Tests that set ``ORCA_HOME`` themselves override this.
+    """
+    from orca_core import hand_store
+
+    monkeypatch.setenv(
+        hand_store.ORCA_HOME_ENV, str(tmp_path_factory.mktemp("orca-home"))
+    )
+
+
+@pytest.fixture(autouse=True)
 def _release_port_claims():
     """Drop port claims between tests.
 

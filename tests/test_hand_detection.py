@@ -29,7 +29,7 @@ def test_parse_full_identity_line():
 
 def test_parse_reads_sensing_config():
     info = parse_orca_info(
-        b"ORCA:SENSOR;SIDE=R;HW=2;FW=2;CFG=2500;SN=ser-9964;BID=4B7685ABAA282225"
+        b"ORCA:SENSOR;SIDE=R;HW=2;FW=2;CFG=2500;SN=ser-0001;BID=5E170D08B3346BE3"
     )
     assert info.config == 2500
 
@@ -69,7 +69,7 @@ def test_parse_rejects_non_identity_lines(line):
 OH_VID = KNOWN_VIDS["oh_board"][0]
 
 # One board's CDCs share its USB serial number; that is what pairs them.
-BOARD_A = "1B46C9E850304C43552E3120FF061305" * 2
+BOARD_A = "5EED1CE500FA11EDBEEFCAFE0DDBA11D" * 2
 BOARD_B = "0011223344556677889AABBCCDDEEFF0" * 2
 
 
@@ -185,7 +185,7 @@ def test_every_declarable_config_names_a_bundled_model():
 
 def _declaring(config, **kwargs):
     """Patch args for a board declaring ``config`` on both its CDCs."""
-    info = OrcaBoardInfo(role="sensor", side="right", serial="ser-9964",
+    info = OrcaBoardInfo(role="sensor", side="right", serial="ser-0001",
                          config=config)
     return dict(
         oh_ports=["/dev/cu.m", "/dev/cu.s"],
@@ -270,7 +270,7 @@ def test_load_hand_warns_loudly_when_declared_sensing_is_dead(monkeypatch, caplo
         hand = load_hand()
     assert type(hand) is OrcaHandFull
     assert "CFG=2500" in caplog.text
-    assert "ser-9964" in caplog.text
+    assert "ser-0001" in caplog.text
 
 
 def test_load_hand_pins_the_sensing_port_of_a_declared_but_dead_link(monkeypatch):

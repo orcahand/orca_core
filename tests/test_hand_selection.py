@@ -231,3 +231,20 @@ def test_a_hand_id_cannot_escape_the_store_directory(monkeypatch, tmp_path):
 def test_orca_home_can_be_moved_off_the_invoking_users_home(monkeypatch, tmp_path):
     monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path / "rig"))
     assert hand_store.hands_root().startswith(str(tmp_path / "rig"))
+
+
+def test_the_suite_never_writes_into_the_invoking_users_home(monkeypatch, tmp_path):
+    """The store is keyed on ids the fixtures invent, and a physically
+    attached hand may answer to one of them. Nothing here sets ORCA_HOME, so
+    this passes only while the autouse fence in conftest does."""
+    import orca_core.hand_factory as hand_factory
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: [_detection("ser-0001")])
+
+    load_hand()
+
+    leaked = sorted(str(f.relative_to(home)) for f in home.rglob("*") if f.is_file())
+    assert not leaked, leaked
