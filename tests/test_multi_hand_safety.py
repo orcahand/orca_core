@@ -948,6 +948,35 @@ def test_a_hand_whose_ports_are_all_held_refuses_its_neighbours_motor_bus(
         hand_factory.load_hand(select=HandSelector(hand_id=held_hand))
 
 
+def test_one_held_hand_does_not_withhold_the_other(monkeypatch, tmp_path, caplog):
+    """A hand nobody can reach is a reason to skip it, not a reason to refuse
+    the arm sitting free beside it."""
+    from orca_core import hand_factory
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path))
+    _patch_bus(
+        monkeypatch,
+        ports=[
+            _oh_port("/dev/cu.a-motor", _BOARD_A),
+            _oh_port("/dev/cu.a-sensor", _BOARD_A),
+            _oh_port("/dev/cu.b-motor", _BOARD_B),
+            _oh_port("/dev/cu.b-sensor", _BOARD_B),
+        ],
+        infos={
+            "/dev/cu.b-motor": OrcaBoardInfo(role="motor", side="right", serial="ser-0002"),
+            "/dev/cu.b-sensor": OrcaBoardInfo(role="sensor", side="right", serial="ser-0002"),
+        },
+        held=("/dev/cu.a-motor", "/dev/cu.a-sensor"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        hands = hand_factory.load_hands()
+
+    assert [h.config.port for h in hands] == ["/dev/cu.b-motor"]
+    assert any("Skipping it" in r.getMessage() for r in caplog.records)
+
+
 def test_a_held_sensing_cdc_disables_the_link_instead_of_discovering_one(
         monkeypatch, tmp_path):
     """A declared sensing link that did not answer must not be auto-discovered

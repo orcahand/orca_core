@@ -559,6 +559,12 @@ def load_hands(
     orders them, which is stable across replugs. Returns an empty list when
     nothing is attached; pass ``select`` to build only the hands that match.
 
+    A hand that cannot name the bus it must be driven through is skipped with
+    a warning rather than failing the call: this returns the hands it can
+    build, and one arm being held by another program is no reason to withhold
+    the other. Use :func:`load_hand` to ask for one hand and be told why it
+    is unavailable.
+
     Args:
         select: Restrict to the hands a selector matches. Unlike
             :func:`load_hand` this never raises on several matches — that is
@@ -576,20 +582,23 @@ def load_hands(
             select_hand(detections, select)
         detections = matched
 
-    return [
-        _build_hand(
-            detection,
-            config_path=None,
-            calibration_path=None,
-            model_version=None,
-            model_name=None,
-            mock=mock,
-            engage_feedback=engage_feedback,
-            engage_sensors=engage_sensors,
-            attached=attached,
-        )
-        for detection in detections
-    ]
+    hands = []
+    for detection in detections:
+        try:
+            hands.append(_build_hand(
+                detection,
+                config_path=None,
+                calibration_path=None,
+                model_version=None,
+                model_name=None,
+                mock=mock,
+                engage_feedback=engage_feedback,
+                engage_sensors=engage_sensors,
+                attached=attached,
+            ))
+        except HandPortUnresolvedError as e:
+            logger.warning("%s Skipping it; the other hands still load.", e)
+    return hands
 
 
 def load_hand(
