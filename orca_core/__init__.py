@@ -26,6 +26,7 @@ from .hardware_hand_sensing import (
 from .hand_factory import (
     AmbiguousHandError,
     HandDetection,
+    HandFleet,
     HandNotFoundError,
     HandPortUnresolvedError,
     HandSelectionError,
@@ -71,6 +72,7 @@ __all__ = [
     "detect_hand",
     "detect_hands",
     "load_hands",
+    "HandFleet",
     "HandDetection",
     "OrcaJointPositions",
     "HandKinematics",

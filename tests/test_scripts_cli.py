@@ -60,7 +60,9 @@ FORBIDDEN_IMPORTS = {
 # The shared flags are only honoured through create_hand_from_args(args), so a
 # hand-taking front-end must build its hand with it and nothing else.
 HAND_BUILT_DIRECTLY = re.compile(r"\b(load_hand|create_hand)\s*\(")
-FEEDBACK_PINNED = re.compile(r"create_hand_from_args\([^)]*engage_feedback\s*=")
+FEEDBACK_PINNED = re.compile(
+    r"create_(hand|fleet)_from_args\([^)]*engage_feedback\s*="
+)
 
 # Hand classes must come from load_hand()/create_hand(), never be constructed.
 HAND_CONSTRUCTION = re.compile(r"\b(Mock)?OrcaHand(Touch|Full|JointFeedback)?\s*\(")
@@ -138,7 +140,9 @@ def test_hand_is_built_from_the_parsed_arguments(rel_path):
     """A front-end that calls create_hand()/load_hand() itself silently drops the
     flags add_hand_arguments() advertised for it."""
     source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-    assert "create_hand_from_args(" in source, f"{rel_path} must build its hand from args"
+    assert "create_hand_from_args(" in source or "create_fleet_from_args(" in source, (
+        f"{rel_path} must build its hand from args"
+    )
     offenders = [
         line for line in source.splitlines()
         if HAND_BUILT_DIRECTLY.search(line) and not line.lstrip().startswith(("#", "*", ":"))
@@ -428,6 +432,142 @@ def _detection(hand_id, board_id=None, side="right", model="orcahand-right"):
     )
 
 
+class TestQuietConstruction:
+    def test_quiet_drops_the_uncalibrated_banner_but_keeps_other_output(
+        self, monkeypatch, capsys
+    ):
+        import orca_core.utils.cli as cli
+
+        def fake_load_hand(**kwargs):
+            print("Using model path: /fake/model")
+            print("\x1b[93mWarning: Motor ID 1 (Joint: wrist) has not been "
+                  "fully calibrated (missing motor limits).\x1b[0m")
+            print("\x1b[93mWarning: Joint wrist is missing a joint-encoder "
+                  "calibration entry.\x1b[0m")
+            return SimpleNamespace(config=SimpleNamespace(config_path="fake.yaml"))
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: [_detection("ser-0001")])
+
+        cli.create_hand(None, use_mock=False, quiet=True)
+
+        out = capsys.readouterr().out
+        assert "Using model path" in out
+        assert "has not been fully calibrated" not in out
+        assert "missing a joint-encoder calibration entry" not in out
+
+    def test_without_quiet_the_banner_still_shows(self, monkeypatch, capsys):
+        import orca_core.utils.cli as cli
+
+        def fake_load_hand(**kwargs):
+            print("Warning: Motor ID 1 (Joint: wrist) has not been fully "
+                  "calibrated (missing motor limits).")
+            return SimpleNamespace(config=SimpleNamespace(config_path="fake.yaml"))
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: [_detection("ser-0001")])
+
+        cli.create_hand(None, use_mock=False)
+
+        assert "has not been fully calibrated" in capsys.readouterr().out
+
+    def test_quiet_does_not_wrap_the_interactive_picker(self, monkeypatch, capsys):
+        """The bug this guards against: buffering the whole selection call
+        (rather than just load_hand()) would swallow the picker's prompt,
+        since input() writes its prompt through sys.stdout too."""
+        from orca_core.hand_factory import select_hand
+
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        cli, calls = TestHandSelectionFromTheCommandLine._cli_with_real_ambiguity(
+            monkeypatch, detections
+        )
+        prompted = []
+
+        def fake_picker(dets, **kw):
+            prompted.append(dets)
+            return cli.HandSelector(hand_id="ser-0002")
+
+        monkeypatch.setattr(cli, "_choose_hand_interactively", fake_picker)
+
+        hand = cli.create_hand(None, use_mock=False, quiet=True)
+
+        assert len(prompted) == 1  # the picker really ran, not skipped
+        assert hand.config.config_path == "ser-0002.yaml"
+
+
+class TestQuietUncalibratedWarnings:
+    def test_suppresses_the_hardware_hand_logger_and_restores_it(self):
+        import logging
+
+        import orca_core.utils.cli as cli
+
+        target = logging.getLogger("orca_core.hardware_hand")
+        target.setLevel(logging.WARNING)
+
+        with cli.quiet_uncalibrated_warnings():
+            assert target.level == logging.ERROR
+
+        assert target.level == logging.WARNING
+
+    def test_restores_the_level_even_on_exception(self):
+        import logging
+
+        import orca_core.utils.cli as cli
+
+        target = logging.getLogger("orca_core.hardware_hand")
+        target.setLevel(logging.WARNING)
+
+        with pytest.raises(ValueError):
+            with cli.quiet_uncalibrated_warnings():
+                raise ValueError("boom")
+
+        assert target.level == logging.WARNING
+
+
+class TestChooseHandInteractively:
+    @staticmethod
+    def _interactive(monkeypatch, answer):
+        import orca_core.utils.cli as cli
+
+        monkeypatch.setattr(
+            cli, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True))
+        )
+        monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+        return cli
+
+    def test_not_a_tty_returns_none_without_prompting(self, monkeypatch):
+        import orca_core.utils.cli as cli
+
+        monkeypatch.setattr(
+            cli, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: False))
+        )
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": (_ for _ in ()).throw(AssertionError("must not prompt"))
+        )
+        assert cli._choose_hand_interactively([_detection("ser-0001")]) is None
+
+    def test_picks_a_hand_by_number(self, monkeypatch, capsys):
+        from orca_core import HandSelector
+
+        cli = self._interactive(monkeypatch, "2")
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+
+        result = cli._choose_hand_interactively(detections)
+
+        assert result == HandSelector(hand_id="ser-0002")
+
+    def test_all_is_offered_only_when_allowed(self, monkeypatch, capsys):
+        cli = self._interactive(monkeypatch, "a")
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+
+        assert cli._choose_hand_interactively(detections, allow_all=True) == "all"
+        assert "All 2 hands" in capsys.readouterr().out
+
+    def test_quitting_returns_none(self, monkeypatch):
+        cli = self._interactive(monkeypatch, "q")
+        assert cli._choose_hand_interactively([_detection("ser-0001")]) is None
+
+
 class TestHandSelectionFromTheCommandLine:
     @staticmethod
     def _cli(monkeypatch, detections):
@@ -521,3 +661,207 @@ class TestHandSelectionFromTheCommandLine:
             cli.create_hand_from_args(self._args(cli, ["--list-hands"]))
 
         assert "unidentified" in capsys.readouterr().out
+
+    @staticmethod
+    def _cli_with_real_ambiguity(monkeypatch, detections):
+        """Like _cli, but fake_load_hand actually resolves select_hand()
+        against the fake detections, so an unselected two-hand call raises
+        AmbiguousHandError the way the real load_hand() does."""
+        import orca_core.utils.cli as cli
+        from orca_core.hand_factory import select_hand
+
+        calls = []
+
+        def fake_load_hand(*, select=None, **kwargs):
+            calls.append({"select": select, **kwargs})
+            picked = select_hand(list(detections), select)
+            return SimpleNamespace(config=SimpleNamespace(config_path=f"{picked.hand_id}.yaml"))
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: list(detections))
+        return cli, calls
+
+    def test_two_hands_with_no_flag_offers_the_interactive_picker(self, monkeypatch, capsys):
+        """The bug this pins: --hand-less two-hand runs used to exit non-zero
+        unconditionally, with no chance to choose — like the port picker
+        offers when connect() can't resolve a port on its own."""
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        cli, calls = self._cli_with_real_ambiguity(monkeypatch, detections)
+        monkeypatch.setattr(
+            cli, "_choose_hand_interactively",
+            lambda dets, **kw: cli.HandSelector(hand_id="ser-0002"),
+        )
+
+        hand = cli.create_hand_from_args(self._args(cli, []))
+
+        assert hand.config.config_path == "ser-0002.yaml"
+        assert calls[-1]["select"].hand_id == "ser-0002"
+
+    def test_quitting_the_picker_still_exits_non_zero(self, monkeypatch, capsys):
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        cli, calls = self._cli_with_real_ambiguity(monkeypatch, detections)
+        monkeypatch.setattr(cli, "_choose_hand_interactively", lambda dets, **kw: None)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli.create_hand_from_args(self._args(cli, []))
+
+        assert "ser-0001" in str(excinfo.value) and "ser-0002" in str(excinfo.value)
+
+
+class TestFleetSelectionFromTheCommandLine:
+    @staticmethod
+    def _cli(monkeypatch, detections, hands=None):
+        import orca_core.utils.cli as cli
+        from orca_core import HandFleet
+
+        calls = []
+
+        def fake_load_hands(**kwargs):
+            calls.append(kwargs)
+            built = hands if hands is not None else [
+                SimpleNamespace(config=SimpleNamespace(config_path=f"{d.hand_id}.yaml"))
+                for d in detections
+            ]
+            return HandFleet(tuple(built), tuple(d.hand_id for d in detections))
+
+        monkeypatch.setattr(cli, "load_hands", fake_load_hands)
+        monkeypatch.setattr(cli, "detect_hands", lambda: list(detections))
+        return cli, calls
+
+    def _args(self, cli, argv):
+        parser = argparse.ArgumentParser()
+        cli.add_hand_arguments(parser, all_flag=True)
+        return parser.parse_args(argv)
+
+    def test_no_all_flag_wraps_a_single_hand_in_a_one_hand_fleet(self, monkeypatch, capsys):
+        import orca_core.utils.cli as cli
+
+        hand = SimpleNamespace(config=SimpleNamespace(config_path="fake.yaml"))
+        monkeypatch.setattr(cli, "load_hand", lambda **kwargs: hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: [_detection("ser-0001")])
+
+        fleet = cli.create_fleet_from_args(self._args(cli, []))
+
+        assert len(fleet) == 1
+        assert fleet.only() is hand
+
+    def test_all_flag_builds_every_attached_hand(self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001"), _detection("ser-0002")])
+
+        fleet = cli.create_fleet_from_args(self._args(cli, ["--all"]))
+
+        assert len(fleet) == 2
+        assert calls[0].get("select") is None
+
+    def test_no_flags_offers_all_in_the_interactive_picker(self, monkeypatch, capsys):
+        """The other half of the bug report: a fleet-aware script's picker
+        must offer "all", not just one hand at a time."""
+        from orca_core.hand_factory import select_hand
+
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        cli, calls = self._cli(monkeypatch, detections)
+
+        def fake_load_hand(*, select=None, **kwargs):
+            select_hand(list(detections), select)  # raises when select is None
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(
+            cli, "_choose_hand_interactively", lambda dets, **kw: "all"
+        )
+
+        fleet = cli.create_fleet_from_args(self._args(cli, []))
+
+        assert len(fleet) == 2
+        assert calls[0].get("select") is None
+
+    def test_picker_offers_all_flag_to_choose_hand_interactively(self, monkeypatch, capsys):
+        """_choose_hand_interactively is called with allow_all=True when the
+        parser supports --all and nothing else narrowed the choice."""
+        import orca_core.utils.cli as cli
+        from orca_core.hand_factory import select_hand
+
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+
+        def fake_load_hand(*, select=None, **kwargs):
+            select_hand(list(detections), select)
+
+        cli, calls = self._cli(monkeypatch, detections)
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        seen_kwargs = {}
+
+        def spy(dets, **kw):
+            seen_kwargs.update(kw)
+            return None
+
+        monkeypatch.setattr(cli, "_choose_hand_interactively", spy)
+
+        with pytest.raises(SystemExit):
+            cli.create_fleet_from_args(self._args(cli, []))
+
+        assert seen_kwargs.get("allow_all") is True
+
+    def test_all_is_refused_with_a_config_path(self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001"), _detection("ser-0002")])
+
+        with pytest.raises(SystemExit):
+            cli.create_fleet_from_args(self._args(cli, ["fake.yaml", "--all"]))
+
+        assert calls == []
+
+    def test_all_is_refused_with_hand(self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001"), _detection("ser-0002")])
+
+        with pytest.raises(SystemExit):
+            cli.create_fleet_from_args(self._args(cli, ["--all", "--hand", "ser-0001"]))
+
+        assert calls == []
+
+    def test_all_with_no_hand_attached_exits_non_zero(self, monkeypatch, capsys):
+        cli, _ = self._cli(monkeypatch, [], hands=[])
+
+        with pytest.raises(SystemExit):
+            cli.create_fleet_from_args(self._args(cli, ["--all"]))
+
+    def test_overrides_reach_load_hands(self, monkeypatch, capsys):
+        cli, calls = self._cli(monkeypatch, [_detection("ser-0001")])
+
+        cli.create_fleet_from_args(
+            self._args(cli, ["--all"]), engage_feedback=False, engage_sensors=False
+        )
+
+        assert calls[0]["engage_feedback"] is False
+        assert calls[0]["engage_sensors"] is False
+
+
+class TestDetectReportsCalibrationForTheHandItDescribes:
+    """load_hand() now probes the bus regardless of model_name, so an
+    unselected call is ambiguous between several attached hands — reproduced
+    on real hardware 2026-08-14: with two hands attached, detect.py's
+    per-hand calibration report failed with AmbiguousHandError for both."""
+
+    def test_print_calibration_selects_the_hand_it_is_reporting_on(
+            self, monkeypatch, capsys):
+        from orca_core import AmbiguousHandError
+
+        detect = _load("scripts/detect.py")
+        detections = [_detection("ser-0001"), _detection("ser-0002")]
+        calls = []
+
+        def fake_load_hand(*, model_name, engage_feedback, engage_sensors, select=None):
+            calls.append(select)
+            if select is None:
+                raise AmbiguousHandError("ambiguous", tuple(detections), "ambiguous")
+            matches = [d for d in detections if d.hand_id == select.hand_id]
+            assert len(matches) == 1, "selector did not resolve to exactly one hand"
+            return SimpleNamespace(
+                config=SimpleNamespace(model_path="fake", joint_feedback_enabled=False),
+                calibrated=False,
+                wrist_calibrated=False,
+            )
+
+        monkeypatch.setattr(detect, "load_hand", fake_load_hand)
+
+        detect._print_calibration(detections[1])
+
+        assert calls[-1] is not None and calls[-1].hand_id == "ser-0002"
+        assert "NOT calibrated" in capsys.readouterr().out

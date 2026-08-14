@@ -15,7 +15,7 @@ import contextlib
 import io
 import sys
 
-from orca_core import detect_hand, detect_hands, load_hand
+from orca_core import HandSelector, detect_hand, detect_hands, load_hand
 
 
 @contextlib.contextmanager
@@ -72,10 +72,14 @@ def _print_calibration(detection) -> None:
     with _quiet():
         # Motor-only: this only reads calibration off disk, and opening
         # the sensing links would fight anything already on that port.
+        # select= pins this to the hand this detection describes: load_hand()
+        # re-probes the bus regardless of model_name, and with several hands
+        # attached an unselected re-probe is ambiguous between all of them.
         hand = load_hand(
             model_name=detection.model_name,
             engage_feedback=False,
             engage_sensors=False,
+            select=HandSelector(hand_id=detection.hand_id) if detection.hand_id else None,
         )
 
     print(f"\nCalibration ({hand.config.model_path}):")

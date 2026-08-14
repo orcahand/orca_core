@@ -37,8 +37,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 from . import hand_store
 from .hand_config import (
@@ -606,17 +607,101 @@ def _bind_hand_store(config, detection: HandDetection):
     )
 
 
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class HandFleet:
+    """Every hand a selection matched, with the ergonomics for both the
+    common one-hand case and running work across several.
+
+    Iterating, indexing and ``len()`` work directly on the hands it holds, so
+    code that only ever expects one hand can still do ``for hand in fleet``.
+    """
+
+    hands: "tuple[OrcaHand, ...]"
+    ids: "tuple[str, ...]" = ()
+    """Parallel to ``hands``: each hand's key in :meth:`run`'s result dict.
+    Falls back to the hand's list index when not given explicitly."""
+
+    def __post_init__(self):
+        if len(self.ids) != len(self.hands):
+            object.__setattr__(
+                self, "ids", tuple(str(i) for i in range(len(self.hands)))
+            )
+
+    def __iter__(self):
+        return iter(self.hands)
+
+    def __len__(self) -> int:
+        return len(self.hands)
+
+    def __getitem__(self, index):
+        return self.hands[index]
+
+    def only(self) -> OrcaHand:
+        """The one hand in this fleet.
+
+        Raises :class:`HandNotFoundError` if empty, :class:`AmbiguousHandError`
+        if more than one — the same exceptions a selector that does not
+        resolve to exactly one attached hand raises.
+        """
+        if len(self.hands) == 1:
+            return self.hands[0]
+        if not self.hands:
+            raise HandNotFoundError("this fleet has no hands.")
+        raise AmbiguousHandError(
+            f"this fleet has {len(self.hands)} hands ({', '.join(self.ids)}); "
+            "narrow the selection before calling .only()."
+        )
+
+    def run(
+        self, fn: "Callable[[OrcaHand], T]", *, parallel: bool = True
+    ) -> "dict[str, T]":
+        """Run ``fn(hand)`` for every hand in this fleet.
+
+        One hand's exception does not stop the others: it is captured and
+        returned in that hand's place, keyed by :attr:`ids`. The caller
+        decides what a failure in the result dict means for its exit code.
+        Runs one thread per hand unless ``parallel=False`` — hands are
+        independent USB devices, so this is safe by default; see the
+        multi-hand harness design notes for why.
+        """
+        if not parallel or len(self.hands) <= 1:
+            results: "dict[str, T]" = {}
+            for hand_id, hand in zip(self.ids, self.hands):
+                try:
+                    results[hand_id] = fn(hand)
+                except Exception as e:
+                    results[hand_id] = e
+            return results
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=len(self.hands)) as pool:
+            future_to_id = {
+                pool.submit(fn, hand): hand_id
+                for hand_id, hand in zip(self.ids, self.hands)
+            }
+            for future in as_completed(future_to_id):
+                hand_id = future_to_id[future]
+                try:
+                    results[hand_id] = future.result()
+                except Exception as e:
+                    results[hand_id] = e
+        return results
+
+
 def load_hands(
     mock: bool = False,
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     select: Optional[HandSelector] = None,
-) -> "list[OrcaHand]":
+) -> HandFleet:
     """Construct every attached hand, one per controller board.
 
     Each hand gets its own model, its own ports, and its own calibration, so
     several can be driven from one program. Ordered as :func:`detect_hands`
-    orders them, which is stable across replugs. Returns an empty list when
+    orders them, which is stable across replugs. Returns an empty fleet when
     nothing is attached; pass ``select`` to build only the hands that match.
 
     A hand that cannot name the bus it must be driven through is skipped with
@@ -643,6 +728,7 @@ def load_hands(
         detections = matched
 
     hands = []
+    ids = []
     for detection in detections:
         try:
             hands.append(_build_hand(
@@ -656,9 +742,10 @@ def load_hands(
                 engage_sensors=engage_sensors,
                 attached=attached,
             ))
+            ids.append(detection.hand_id or detection.board_id or str(len(ids)))
         except HandPortUnresolvedError as e:
             logger.warning("%s Skipping it; the other hands still load.", e)
-    return hands
+    return HandFleet(tuple(hands), tuple(ids))
 
 
 def load_hand(

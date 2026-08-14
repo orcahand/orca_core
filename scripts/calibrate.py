@@ -10,8 +10,9 @@ from orca_core.hardware.joint_encoder_client import (
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 from orca_core.utils.cli import (
     add_hand_arguments,
-    create_hand_from_args,
+    create_fleet_from_args,
     print_calibration_progress,
+    quiet_uncalibrated_warnings,
 )
 
 
@@ -81,11 +82,74 @@ def _open_encoder_client(encoder_port_override: str, baudrate: int):
     return link, client
 
 
+def _calibrate_one(hand, args, parser) -> None:
+    """Connect, open the encoder stream if needed, and calibrate one hand.
+
+    Raises RuntimeError on a connect or encoder-open failure, with the hand
+    left disconnected. hand.calibrate() itself never raises for a cooperative
+    Ctrl+C abort — that is reported, not propagated, so one hand aborting
+    does not read as a failure of the others in a multi-hand run.
+    """
+    if args.encoder_port is not None:
+        hand.config = dataclasses.replace(
+            hand.config, encoder_serial_port=args.encoder_port,
+        )
+
+    joints = _resolve_joints(parser, args, hand.config.joint_ids)
+
+    status = hand.connect()
+    print(status)
+    if not status[0]:
+        raise RuntimeError("failed to connect to the hand")
+
+    link = None
+    client = None
+    encoder_pass = (
+        hand.config.joint_feedback_enabled
+        and not args.mock
+        and hand.config.encoder_serial_port != ENCODER_DISABLED
+    )
+    if hand.config.joint_feedback_enabled and not encoder_pass and not args.mock:
+        print("Encoder pass disabled; running the open-loop motor-limits pass only.")
+    if encoder_pass:
+        try:
+            link, client = _open_encoder_client(
+                hand.config.encoder_serial_port, hand.config.encoder_baudrate
+            )
+        except Exception as exc:
+            hand.disconnect()
+            raise RuntimeError(f"could not open encoder stream ({exc})") from exc
+
+    try:
+        # A hand being uncalibrated is this routine's whole starting premise:
+        # its own position reads would otherwise re-report that after every
+        # step it commits, on top of what progress_callback already says.
+        with quiet_uncalibrated_warnings():
+            hand.calibrate(
+                force_wrist=args.force_wrist,
+                joints=joints,
+                joint_encoder_client=client,
+                progress_callback=print_calibration_progress,
+            )
+    except KeyboardInterrupt:
+        print("\nCalibration interrupted.")
+    finally:
+        if client is not None:
+            try:
+                client.stop_stream()
+            except Exception:
+                pass
+            client.disconnect()
+        if link is not None:
+            link.disconnect()
+        hand.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Calibrate the ORCA Hand. Specify the path to the hand config.yaml file."
     )
-    add_hand_arguments(parser, feedback_flag=False)
+    add_hand_arguments(parser, feedback_flag=False, all_flag=True)
     parser.add_argument(
         "--force-wrist",
         action="store_true",
@@ -110,6 +174,11 @@ def main():
              '"auto" runs discovery; an explicit path bypasses; "disabled" '
              'forces the open-loop motor-limits pass only.',
     )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="With --all, calibrate one hand at a time instead of together.",
+    )
     args = parser.parse_args()
 
     if args.fingers and args.joints:
@@ -117,60 +186,33 @@ def main():
 
     # Connect motor-only regardless of config: calibration drives the motors
     # open-loop, and a second reader on the sensing port would corrupt the
-    # encoder stream this script opens for itself.
-    hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
-    if args.encoder_port is not None:
-        hand.config = dataclasses.replace(
-            hand.config, encoder_serial_port=args.encoder_port,
-        )
-
-    joints = _resolve_joints(parser, args, hand.config.joint_ids)
-
-    status = hand.connect()
-    print(status)
-
-    if not status[0]:
-        print("Failed to connect to the hand.")
-        sys.exit(1)
-
-    link = None
-    client = None
-    encoder_pass = (
-        hand.config.joint_feedback_enabled
-        and not args.mock
-        and hand.config.encoder_serial_port != ENCODER_DISABLED
+    # encoder stream this script opens for itself. quiet=True drops
+    # construction's own not-calibrated banner — the same noise
+    # quiet_uncalibrated_warnings() suppresses below, just one step earlier;
+    # this is the point of running this script, not something to report
+    # before it has even started.
+    fleet = create_fleet_from_args(
+        args, quiet=True, engage_feedback=False, engage_sensors=False
     )
-    if hand.config.joint_feedback_enabled and not encoder_pass and not args.mock:
-        print("Encoder pass disabled; running the open-loop motor-limits pass only.")
-    if encoder_pass:
-        try:
-            link, client = _open_encoder_client(
-                hand.config.encoder_serial_port, hand.config.encoder_baudrate
-            )
-        except Exception as exc:
-            print(f"FAIL: could not open encoder stream ({exc})")
-            hand.disconnect()
-            sys.exit(1)
 
-    try:
-        hand.calibrate(
-            force_wrist=args.force_wrist,
-            joints=joints,
-            joint_encoder_client=client,
-            progress_callback=print_calibration_progress,
-        )
-    except KeyboardInterrupt:
-        print("\nCalibration interrupted.")
-    finally:
-        if client is not None:
-            try:
-                client.stop_stream()
-            except Exception:
-                pass
-            client.disconnect()
-        if link is not None:
-            link.disconnect()
-        hand.disconnect()
+    if len(fleet) == 1:
+        try:
+            _calibrate_one(fleet.only(), args, parser)
+        except RuntimeError as exc:
+            print(f"FAIL: {exc}")
+            sys.exit(1)
+        return
+
+    print(f"Calibrating {len(fleet)} hands"
+          f"{' one at a time' if args.sequential else ' at the same time'}...")
+    results = fleet.run(
+        lambda hand: _calibrate_one(hand, args, parser), parallel=not args.sequential
+    )
+    failed = {hand_id: err for hand_id, err in results.items() if isinstance(err, Exception)}
+    for hand_id, err in failed.items():
+        print(f"[{hand_id}] FAILED: {err}")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ PACKAGE_EXPORTS = frozenset({
     "EncodersNotAvailableError",
     "HandConfigValidationError",
     "HandDetection",
+    "HandFleet",
     "HandKinematics",
     "JointFeedbackConnectError",
     "JointGains",

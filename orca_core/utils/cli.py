@@ -7,26 +7,41 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import contextlib
+import io
+import logging
+import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 from orca_core import (
+    AmbiguousHandError,
     BaseHand,
+    HandFleet,
     HandSelectionError,
     HandSelector,
     detect_hands,
     load_hand,
+    load_hands,
 )
 
 
 def add_hand_arguments(
-    parser: ArgumentParser, *, mock_default: bool = False, feedback_flag: bool = True
+    parser: ArgumentParser,
+    *,
+    mock_default: bool = False,
+    feedback_flag: bool = True,
+    all_flag: bool = False,
 ) -> None:
     """Add the shared hand-selection arguments.
 
     ``feedback_flag=False`` omits ``--no-engage-feedback`` for front-ends that
     always drive the motors open-loop, so the flag is never advertised where it
-    could not be honoured.
+    could not be honoured. ``all_flag=True`` adds ``--all`` for front-ends that
+    can run their operation across every attached hand via
+    :func:`create_fleet_from_args`; omitted by default so a front-end that
+    only ever builds one hand (:func:`create_hand_from_args`) can't advertise
+    a flag it would silently ignore.
     """
     parser.add_argument(
         "config_path",
@@ -45,7 +60,7 @@ def add_hand_arguments(
         default=None,
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
     )
-    add_hand_selection_arguments(parser)
+    add_hand_selection_arguments(parser, all_flag=all_flag)
     if feedback_flag:
         parser.add_argument(
             "--no-engage-feedback",
@@ -56,8 +71,10 @@ def add_hand_arguments(
         )
 
 
-def add_hand_selection_arguments(parser: ArgumentParser) -> None:
-    """Add ``--hand`` and ``--list-hands``.
+def add_hand_selection_arguments(
+    parser: ArgumentParser, *, all_flag: bool = False
+) -> None:
+    """Add ``--hand`` and ``--list-hands``, and optionally ``--all``.
 
     Separate from :func:`add_hand_arguments` so a front-end that cannot honour
     ``--mock`` or ``--model-name`` can still let the operator name a hand.
@@ -69,6 +86,12 @@ def add_hand_selection_arguments(parser: ArgumentParser) -> None:
         help="Which hand to use when several are attached (serial or board ID). "
              "Run --list-hands to see them.",
     )
+    if all_flag:
+        parser.add_argument(
+            "--all",
+            action="store_true",
+            help="Use every attached hand instead of exactly one.",
+        )
     parser.add_argument(
         "--list-hands",
         action="store_true",
@@ -106,6 +129,44 @@ def _selector_for(hand_id: str | None) -> HandSelector | None:
     return HandSelector(hand_id=hand_id)
 
 
+def _choose_hand_interactively(detections, *, allow_all: bool = False):
+    """Prompt for one of several attached hands, the way ``get_and_choose_port``
+    prompts for a port when none was named: a numbered list, chosen with a
+    number (or ``a`` for every hand, where offered).
+
+    Returns a :class:`HandSelector`, the string ``"all"``, or ``None`` when
+    stdin is not a terminal or the operator quits — the caller falls back to
+    the flag-based error in that case.
+    """
+    if not sys.stdin.isatty():
+        return None
+    print("\nSeveral hands are attached:")
+    for i, d in enumerate(detections, 1):
+        name = d.hand_id or "unidentified"
+        print(f"  {i}. {name}  {d.side} {d.model_name}")
+    if allow_all:
+        print(f"  a. All {len(detections)} hands")
+    print("  q. Quit")
+    while True:
+        choice = input("Choose a hand: ").strip().lower()
+        if choice in ("q", "quit", ""):
+            return None
+        if allow_all and choice in ("a", "all"):
+            return "all"
+        if choice.isdigit() and 1 <= int(choice) <= len(detections):
+            return HandSelector(hand_id=detections[int(choice) - 1].hand_id)
+        valid = f"1-{len(detections)}{', a,' if allow_all else ''} or q"
+        print(f"Enter {valid}.")
+
+
+def _explain_selection_failure(e: HandSelectionError):
+    raise SystemExit(
+        f"{e.summary}\n\nAttached hands:\n"
+        f"{describe_attached_hands(e.detections or None)}"
+        "\n\nName one with --hand HAND_ID, or --list-hands to see them."
+    ) from e
+
+
 def handle_hand_selection(args: Namespace) -> None:
     """Serve ``--list-hands``, which prints and exits."""
     if getattr(args, "list_hands", False):
@@ -125,12 +186,18 @@ def resolve_detected_model(hand_id: str | None = None) -> str:
 
     try:
         return select_hand(detect_hands(), _selector_for(hand_id)).model_name
+    except AmbiguousHandError as e:
+        chosen = None if hand_id is not None else _choose_hand_interactively(e.detections)
+        if not isinstance(chosen, HandSelector):
+            _explain_selection_failure(e)
+        # e.detections already is the ambiguous set: reuse it rather than
+        # probing the bus again for what was just shown on screen.
+        try:
+            return select_hand(e.detections, chosen).model_name
+        except HandSelectionError as e2:
+            _explain_selection_failure(e2)
     except HandSelectionError as e:
-        raise SystemExit(
-            f"{e.summary}\n\nAttached hands:\n"
-            f"{describe_attached_hands(e.detections or None)}"
-            "\n\nName one with --hand HAND_ID, or --list-hands to see them."
-        ) from e
+        _explain_selection_failure(e)
 
 
 def create_hand(
@@ -141,44 +208,102 @@ def create_hand(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     hand_id: str | None = None,
+    quiet: bool = False,
 ) -> BaseHand:
     """Build the hand class matching the selected — or detected — model.
 
     With no ``config_path`` or ``model_name`` on a physical hand this probes
     the hardware, so the model matches what is actually plugged in rather than
     the packaged default. A selection failure exits with the attached hands
-    listed rather than a traceback naming a Python API.
+    listed rather than a traceback naming a Python API. ``quiet=True`` drops
+    construction's one-time not-calibrated banner (see
+    :func:`create_hand_from_args`).
     """
     if hand_id is not None and use_mock:
         raise SystemExit(
             "--hand names a physical hand to detect; --mock has none to name."
         )
-    try:
-        hand = load_hand(
-            config_path=config_path,
-            mock=use_mock,
-            model_name=model_name,
-            engage_feedback=engage_feedback,
-            engage_sensors=engage_sensors,
-            select=_selector_for(hand_id),
-        )
-    except HandSelectionError as e:
-        raise SystemExit(
-            f"{e.summary}\n\nAttached hands:\n"
-            f"{describe_attached_hands(e.detections or None)}"
-            "\n\nName one with --hand HAND_ID, or --list-hands to see them."
-        ) from e
+    build = dict(
+        config_path=config_path, mock=use_mock, model_name=model_name,
+        engage_feedback=engage_feedback, engage_sensors=engage_sensors,
+    )
+    hand, _ = _resolve_selection(build, hand_id=hand_id, allow_all=False, quiet=quiet)
     print(f"Loaded {type(hand).__name__} from {hand.config.config_path}")
     return hand
 
 
-def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
+# Construction prints one Warning line per uncalibrated motor/joint — useful
+# the first time an operator sees a hand, noise to a routine whose entire job
+# is fixing exactly that (calibrate.py, tension.py opt in via quiet=True).
+_UNCALIBRATED_BANNER_SNIPPETS = (
+    "has not been fully calibrated",
+    "is missing a joint-encoder calibration entry",
+)
+
+
+def _without_uncalibrated_banner(build_hand):
+    """Run ``build_hand`` (a zero-arg call into ``load_hand``/``load_hands``)
+    with its uncalibrated-banner lines dropped from what it prints.
+
+    Buffers and replays rather than filtering live, which is only safe
+    because building a hand never calls ``input()`` — the interactive picker
+    that might is always a separate call, never wrapped here, so its prompt
+    is never at risk of ending up silently in this buffer.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = build_hand()
+    for line in buf.getvalue().splitlines():
+        if not any(s in line for s in _UNCALIBRATED_BANNER_SNIPPETS):
+            print(line)
+    return result
+
+
+def _resolve_selection(
+    build: dict, *, hand_id: str | None, allow_all: bool, quiet: bool = False
+):
+    """Resolve one hand from ``build`` (:func:`load_hand` kwargs minus
+    ``select``), prompting interactively on ambiguity exactly as a bare
+    ``--hand``-less invocation with two hands attached would want.
+
+    Returns ``(hand, picked_all)``. ``hand`` is ``None`` iff ``picked_all``
+    is ``True`` — the caller build every hand itself in that case. Exits the
+    process (naming the attached hands and ``--hand``) when nothing resolves
+    and no interactive choice was made, whether because stdin is not a
+    terminal or the operator quit.
+    """
+    def _load(select):
+        call = lambda: load_hand(select=select, **build)  # noqa: E731
+        return _without_uncalibrated_banner(call) if quiet else call()
+
+    try:
+        return _load(_selector_for(hand_id)), False
+    except AmbiguousHandError as e:
+        chosen = None if hand_id is not None else _choose_hand_interactively(
+            e.detections, allow_all=allow_all
+        )
+        if chosen == "all":
+            return None, True
+        if not isinstance(chosen, HandSelector):
+            _explain_selection_failure(e)
+        try:
+            return _load(chosen), False
+        except HandSelectionError as e2:
+            _explain_selection_failure(e2)
+    except HandSelectionError as e:
+        _explain_selection_failure(e)
+
+
+def create_hand_from_args(
+    args: Namespace, *, quiet: bool = False, **overrides
+) -> BaseHand:
     """Build the hand every argument in :func:`add_hand_arguments` selects.
 
     Front-ends call this instead of :func:`create_hand` so a flag can never be
     advertised and then dropped. ``overrides`` pin what the front-end decides
     itself, e.g. ``engage_feedback=False`` for a routine that must drive the
-    motors open-loop.
+    motors open-loop. ``quiet=True`` drops construction's one-time
+    not-calibrated banner — for a front-end whose whole job is fixing that.
     """
     handle_hand_selection(args)
     options = {
@@ -188,7 +313,81 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
         "hand_id": getattr(args, "hand", None),
     }
     options.update(overrides)
-    return create_hand(args.config_path, **options)
+    return create_hand(args.config_path, quiet=quiet, **options)
+
+
+def _load_every_hand(args: Namespace, overrides: dict, *, quiet: bool = False) -> HandFleet:
+    options = {
+        "mock": args.mock,
+        "engage_feedback": getattr(args, "engage_feedback", True),
+    }
+    options.update(overrides)
+    call = lambda: load_hands(**options)  # noqa: E731
+    try:
+        fleet = _without_uncalibrated_banner(call) if quiet else call()
+    except HandSelectionError as e:
+        _explain_selection_failure(e)
+    if not fleet:
+        raise SystemExit(
+            "no hand is attached.\n\nAttached hands:\n" + describe_attached_hands()
+        )
+    for hand in fleet:
+        print(f"Loaded {type(hand).__name__} from {hand.config.config_path}")
+    return fleet
+
+
+def create_fleet_from_args(
+    args: Namespace, *, quiet: bool = False, **overrides
+) -> HandFleet:
+    """Build the fleet ``--all``/``--hand``/``config_path`` selects.
+
+    Every case that does not name ``--all`` explicitly is exactly
+    :func:`create_hand_from_args`, wrapped as a one-hand fleet — a front-end
+    that never checks ``args.all`` keeps behaving as it always has. With
+    ``--all``, every attached hand is built, each with its own detected
+    model; ``config_path``/``--model-name`` are refused alongside it, since
+    one config can't stand in for every hand's own. ``quiet=True`` drops
+    construction's one-time not-calibrated banner for every hand built this
+    way — for a front-end whose whole job is fixing that.
+
+    When the parser advertised ``--all`` (``add_hand_arguments(...,
+    all_flag=True)``) and nothing else narrowed the choice, an ambiguous
+    bench also offers "all hands" in the interactive picker — not just one
+    hand at a time.
+    """
+    handle_hand_selection(args)
+    if getattr(args, "all", False):
+        if args.config_path is not None or args.model_name is not None:
+            raise SystemExit(
+                "--all selects every attached hand's own model; it can't be "
+                "combined with config_path or --model-name."
+            )
+        if getattr(args, "hand", None) is not None:
+            raise SystemExit("--all and --hand are mutually exclusive; pick one.")
+        return _load_every_hand(args, overrides, quiet=quiet)
+
+    offer_all = (
+        hasattr(args, "all")
+        and not args.mock
+        and getattr(args, "hand", None) is None
+        and args.config_path is None
+        and args.model_name is None
+    )
+    if not offer_all:
+        return HandFleet((create_hand_from_args(args, quiet=quiet, **overrides),))
+
+    build = dict(
+        config_path=None, mock=False, model_name=None,
+        engage_feedback=getattr(args, "engage_feedback", True), engage_sensors=True,
+    )
+    build.update(overrides)
+    hand, picked_all = _resolve_selection(
+        build, hand_id=None, allow_all=True, quiet=quiet
+    )
+    if picked_all:
+        return _load_every_hand(args, overrides, quiet=quiet)
+    print(f"Loaded {type(hand).__name__} from {hand.config.config_path}")
+    return HandFleet((hand,))
 
 
 def connect_hand(hand, *, interactive: bool = True) -> None:
@@ -241,6 +440,26 @@ def print_calibration_progress(event: dict) -> None:
         print("Calibration aborted.")
     elif name == "cleanup_failed":
         print(f"WARNING: cleanup after abort failed: {event['error']}")
+
+
+@contextlib.contextmanager
+def quiet_uncalibrated_warnings():
+    """Suppress the "not calibrated" warning that a calibration routine's
+    own position reads re-trigger after every step it commits.
+
+    Each committed step re-arms ``OrcaHand``'s warn-once set (a
+    recalibration should re-report motors still missing data), so a
+    multi-step routine that commits progress after each step sees it fire
+    again and again for whatever it has not reached yet. For the routine
+    doing that fixing, it is not something to report on every step.
+    """
+    logger = logging.getLogger("orca_core.hardware_hand")
+    previous = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        logger.setLevel(previous)
 
 
 def shutdown_hand(hand) -> None:

@@ -164,6 +164,71 @@ def test_load_hands_builds_every_attached_hand(monkeypatch, tmp_path):
     assert all(type(h) is OrcaHand for h in hands)
 
 
+# ----- HandFleet -------------------------------------------------------
+
+def test_fleet_only_returns_the_one_hand():
+    from orca_core import HandFleet
+
+    hand = object()
+    assert HandFleet((hand,)).only() is hand
+
+
+def test_fleet_only_refuses_zero_hands():
+    from orca_core import HandFleet
+
+    with pytest.raises(HandNotFoundError):
+        HandFleet(()).only()
+
+
+def test_fleet_only_refuses_several_hands():
+    from orca_core import HandFleet
+
+    with pytest.raises(AmbiguousHandError):
+        HandFleet((object(), object())).only()
+
+
+def test_fleet_run_keys_results_by_id_and_isolates_exceptions():
+    from orca_core import HandFleet
+
+    fleet = HandFleet((object(), object()), ("a", "b"))
+    boom = ValueError("nope")
+
+    def fn(hand):
+        if hand is fleet.hands[1]:
+            raise boom
+        return "ok"
+
+    for parallel in (False, True):
+        results = fleet.run(fn, parallel=parallel)
+        assert results == {"a": "ok", "b": boom}
+
+
+def test_fleet_run_calls_every_hand_even_in_parallel():
+    from orca_core import HandFleet
+
+    hands = tuple(object() for _ in range(4))
+    fleet = HandFleet(hands)
+    seen = []
+
+    results = fleet.run(lambda hand: seen.append(hand) or hand, parallel=True)
+    assert sorted(id(h) for h in seen) == sorted(id(h) for h in hands)
+    assert set(results.values()) == set(hands)
+
+
+def test_load_hands_returns_a_fleet_iterable_and_sized_like_a_list(monkeypatch, tmp_path):
+    import orca_core.hand_factory as hand_factory
+    from orca_core import HandFleet
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: TWO_RIGHT)
+
+    fleet = load_hands()
+    assert isinstance(fleet, HandFleet)
+    assert len(fleet) == 2
+    assert fleet.ids == ("ser-0001", "ser-0002")
+    assert [type(h) for h in fleet] == [OrcaHand, OrcaHand]
+
+
 def test_load_hands_detects_once_however_many_hands(monkeypatch, tmp_path):
     """Probing opens ports, so a per-hand re-probe would multiply that cost
     and race with the hands it just described."""
