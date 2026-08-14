@@ -364,17 +364,24 @@ def test_load_hand_detection_fallback_is_default_model(monkeypatch):
     assert hand.config.port == "auto"
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"mock": True},
-        {"model_name": "orcahand-left"},
-        {"model_version": "v2"},
-    ],
-)
-def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
+def test_load_hand_skips_detection_for_a_mock(monkeypatch):
+    """A mock hand has no bus, so nothing about it can come from hardware."""
     def _must_not_probe():
-        raise AssertionError("the bus was probed despite an explicit selection")
+        raise AssertionError("the bus was probed for a mock hand")
 
     monkeypatch.setattr(hand_factory, "detect_hands", _must_not_probe)
-    load_hand(**kwargs)
+    load_hand(mock=True)
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"model_name": "orcahand-left"}, {"model_version": "v2"}]
+)
+def test_a_named_model_survives_detection(monkeypatch, kwargs):
+    """Detection still runs for a named model — it is what binds the store and
+    pins the ports — but it says which hand this is, never which model."""
+    _patch_hardware(monkeypatch)
+
+    hand = load_hand(**kwargs)
+
+    expected = kwargs.get("model_name", "orcahand-right")
+    assert hand.config.config_path.endswith(f"{expected}/config.yaml")

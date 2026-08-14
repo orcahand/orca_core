@@ -248,3 +248,129 @@ def test_the_suite_never_writes_into_the_invoking_users_home(monkeypatch, tmp_pa
 
     leaked = sorted(str(f.relative_to(home)) for f in home.rglob("*") if f.is_file())
     assert not leaked, leaked
+
+
+# ----- a named config still names only the model ---------------------------
+
+def _detected(monkeypatch, detections):
+    import orca_core.hand_factory as hand_factory
+
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: list(detections))
+
+
+def _model(name="orcahand-right"):
+    import orca_core
+
+    return os.path.join(
+        os.path.dirname(orca_core.__file__), "models", "v2", name, "config.yaml"
+    )
+
+
+def test_a_named_config_still_binds_the_hand_store(monkeypatch, tmp_path):
+    """orca_ui names a config at every call site. Without this its
+    calibrations land beside the packaged model, where the next hand of the
+    same model reads them as its own."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [_detection("ser-0001")])
+
+    hand = load_hand(config_path=_model())
+
+    assert "ser-0001" in hand.config.calibration_path
+    assert str(tmp_path) in hand.config.calibration_path
+
+
+def test_a_named_config_does_not_license_guessing_between_hands(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, TWO_RIGHT)
+
+    with pytest.raises(AmbiguousHandError):
+        load_hand(config_path=_model())
+
+
+def test_select_is_honoured_next_to_a_named_config(monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, TWO_RIGHT)
+
+    hand = load_hand(config_path=_model(), select=HandSelector(hand_id="ser-0002"))
+
+    assert "ser-0002" in hand.config.calibration_path
+
+
+def test_select_cannot_be_combined_with_a_mock_hand(monkeypatch):
+    with pytest.raises(ValueError, match="mock"):
+        load_hand(mock=True, select=HandSelector(hand_id="ser-0001"))
+
+
+def test_a_named_model_does_not_come_back_as_the_detected_one(
+        monkeypatch, tmp_path):
+    """Detection resolves the hand, not the model — otherwise naming a model
+    would be silently overruled by whatever is plugged in."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [_detection("ser-0001", model="orcahand-full-right")])
+
+    hand = load_hand(model_name="orcahand-right")
+
+    assert hand.config.config_path.endswith("orcahand-right/config.yaml")
+
+
+def _pinned_config(tmp_path, port):
+    config = tmp_path / f"pinned{port.replace('/', '_')}"
+    config.mkdir()
+    text = open(_model(), encoding="utf-8").read().replace(
+        "port: auto", f"port: {port}", 1
+    )
+    (config / "config.yaml").write_text(text, encoding="utf-8")
+    return str(config / "config.yaml")
+
+
+def test_a_pinned_port_is_not_overwritten_by_detection(monkeypatch, tmp_path):
+    """Pinning port: is the documented way to nail a hand to a bus; detection
+    replacing it swaps one silent wrong behaviour for another."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [_detection("ser-0001", motor_port="/dev/cu.pinned")])
+
+    hand = load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.pinned"))
+
+    assert hand.config.port == "/dev/cu.pinned"
+
+
+def test_a_pin_contradicting_the_selected_hand_is_refused(monkeypatch, tmp_path):
+    """Keeping either one crosses the pair: the pinned bus with the selected
+    hand's calibration, or the selected hand driven through a bus it does not
+    own."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [
+        _detection("ser-0001", motor_port="/dev/cu.a-motor"),
+        _detection("ser-0002", motor_port="/dev/cu.b-motor"),
+    ])
+
+    with pytest.raises(ValueError, match="one hand's motors under the other"):
+        load_hand(
+            config_path=_pinned_config(tmp_path, "/dev/cu.b-motor"),
+            select=HandSelector(hand_id="ser-0001"),
+        )
+
+
+def test_a_pinned_port_selects_the_hand_whose_bus_it_is(monkeypatch, tmp_path):
+    """Otherwise the motors come from one hand and the calibration from
+    whichever hand detection happened to pick."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [
+        _detection("ser-0001", motor_port="/dev/cu.a-motor"),
+        _detection("ser-0002", motor_port="/dev/cu.b-motor"),
+    ])
+
+    hand = load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.b-motor"))
+
+    assert hand.config.port == "/dev/cu.b-motor"
+    assert "ser-0002" in hand.config.calibration_path
+
+
+def test_a_pinned_port_that_is_nobodys_bus_is_a_configuration_error(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [_detection("ser-0001", motor_port="/dev/cu.a-motor")])
+
+    with pytest.raises(HandNotFoundError, match="/dev/cu.gone"):
+        load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.gone"))

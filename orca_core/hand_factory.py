@@ -442,6 +442,23 @@ def select_hand(
     )
 
 
+def _pinned_port(
+    config_path: str | None, model_version: str | None, model_name: str | None
+) -> Optional[str]:
+    """The motor port a named config pins, or ``None`` for ``auto``.
+
+    Only consulted when the caller named a config: with no model named the
+    model comes from detection, so there is no configured port to honour.
+    """
+    if config_path is None and model_version is None and model_name is None:
+        return None
+    resolved = _resolve_config_path(
+        config_path, model_version=model_version, model_name=model_name
+    )
+    port = (read_yaml(resolved) or {}).get("port")
+    return port if port and port != "auto" else None
+
+
 def _unresolved_reason(detection: HandDetection) -> str:
     """Why a detected hand stayed silent on a CDC, and what to do about it."""
     if detection.busy_ports:
@@ -469,7 +486,19 @@ def _pin_detected_ports(config, detection: HandDetection, attached: int):
     board_seen = bool(
         detection.sensing_port or detection.busy_ports or detection.owned_ports
     )
-    if detection.motor_port is not None:
+    if config.port != "auto":
+        # Pinned by whoever wrote the config. Normally it is also the selector
+        # that chose this hand, so the two agree; when a caller's own selector
+        # picked a different hand, driving either one crosses the pair.
+        if detection.motor_port is not None and detection.motor_port != config.port:
+            raise ValueError(
+                f"config pins port {config.port!r} but the selected hand "
+                f"{_describe_hand(detection)} is on {detection.motor_port!r}. "
+                f"Driving that hand through the pinned port would run one "
+                f"hand's motors under the other's calibration; drop the pin or "
+                f"select the hand it belongs to."
+            )
+    elif detection.motor_port is not None:
         config = dataclasses.replace(config, port=detection.motor_port)
     elif board_seen and attached > 1:
         # No "disabled" sentinel exists for the motor bus, and no workflow
@@ -652,9 +681,22 @@ def load_hand(
             its motor bus, and another hand is attached for a port search to
             stray onto.
     """
+    if select is not None and mock:
+        raise ValueError(
+            "select= names a physical hand to detect; mock=True has none. Drop "
+            "one of the two."
+        )
+
     detection = None
     attached = 0
-    if config_path is None and model_name is None and model_version is None and not mock:
+    if not mock:
+        # A config that pins a port names a hand as surely as a selector does,
+        # so it picks the hand whose bus that is — otherwise the store and the
+        # calibration could come from a different hand than the motors.
+        if select is None:
+            pinned = _pinned_port(config_path, model_version, model_name)
+            if pinned is not None:
+                select = HandSelector(motor_port=pinned)
         detections = detect_hands()
         attached = len(detections)
         if detections or select is not None:
@@ -692,7 +734,13 @@ def _build_hand(
 
     ``attached`` is how many hands that detection found, which decides whether
     a port it could not name may still be searched for at connect."""
-    if detection is not None:
+    named_model = (
+        config_path is not None or model_name is not None or model_version is not None
+    )
+    # Detection says *which hand* this is; it only says which model when the
+    # caller named none. The warnings below all read "may understate this
+    # hand", which means nothing once a model is pinned.
+    if detection is not None and not named_model:
         model_name = detection.model_name
         if detection.busy_ports:
             logger.warning(
