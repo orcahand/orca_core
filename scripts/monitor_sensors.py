@@ -15,6 +15,7 @@ run ``scripts/check_sensors.py`` instead.
 Usage:
     uv run python scripts/monitor_sensors.py                # autodetect the port
     uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
+    uv run python scripts/monitor_sensors.py --hand ser-9964 # with several hands attached
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from orca_core.hardware.joint_encoder_client import (
 )
 from orca_core.hardware.sensing.serial_discovery import (
     baud_for_port,
-    discover_sensing_ports,
+    resolve_sensing_ports,
 )
 from orca_core.hardware.sensing.constants import (
     ENCODER_SLOT_TO_JOINT,
@@ -41,6 +42,11 @@ from orca_core.hardware.sensing.constants import (
     AUTO_ENC_ANGLE_MASK,
     AUTO_ENC_ANGLE_ERROR_BIT,
     AUTO_ENC_NUM_JOINTS,
+)
+from orca_core.utils.cli import (
+    add_hand_selection_arguments,
+    create_hand,
+    handle_hand_selection,
 )
 
 REFRESH_MS = 150
@@ -62,6 +68,7 @@ def parse_args() -> argparse.Namespace:
                    help="Link baud. Default: auto-detect from the connected sensor.")
     p.add_argument("--start-mode", choices=list(MODES), default="Resultant",
                    help="Tactile mode to start in.")
+    add_hand_selection_arguments(p)
     return p.parse_args()
 
 
@@ -224,10 +231,24 @@ class SensorFeedbackUI:
 
 def main() -> int:
     args = parse_args()
+    handle_hand_selection(args)
 
     port, baud = args.port, args.baud
     if port is None:
-        discovered = discover_sensing_ports()
+        # Goes through the same hand selection as every other front-end
+        # (--hand, the interactive picker, --list-hands) rather than a bare
+        # bus-wide port scan: with several hands attached, an unscoped scan
+        # can't tell a hand missing its connector board from an ambiguity,
+        # and refuses both alike. Selecting a hand ties resolution to that
+        # hand's own port, still auto-detected if it wasn't already pinned.
+        hand = create_hand(
+            None, use_mock=False, engage_feedback=False, engage_sensors=False,
+            hand_id=args.hand, quiet=True,
+        )
+        discovered = resolve_sensing_ports(
+            tactile_override=getattr(hand.config, "sensor_port", "disabled"),
+            encoder_override=hand.config.encoder_serial_port,
+        )
         port = discovered.encoder or discovered.tactile
         if port is None:
             sys.exit("No sensor port found; pass --port.")

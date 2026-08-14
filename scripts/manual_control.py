@@ -14,11 +14,16 @@ window around the motor's position at startup. This is a tendon bring-up aid
 for nudging a single motor and watching its tendon respond, not a way to pose
 the hand. It talks to the motor bus only — no encoders, no tactile.
 
+With ``--all`` (or ``--hand`` given twice is not supported — attach exactly
+the hands you want and use ``--all``), up to two attached hands share one
+window as side-by-side columns, each driving its own hand independently.
+
 Usage:
     uv run python scripts/manual_control.py CONFIG
     uv run python scripts/manual_control.py CONFIG --fingers ring
     uv run python scripts/manual_control.py CONFIG --joints ring_mcp ring_pip --max-current 600
     uv run python scripts/manual_control.py CONFIG --motor-space
+    uv run python scripts/manual_control.py --all          # up to two hands, side by side
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ from typing import List
 import numpy as np
 
 from orca_core import JointGains, OrcaHandJointFeedback
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, create_fleet_from_args
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
@@ -45,10 +50,12 @@ REFRESH_MS = 100
 # read at startup. Deliberately tight: this mode is for precise nudges.
 MOTOR_SLIDER_SPAN_RAD = 1.0
 
+MAX_HANDS = 2
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    add_hand_arguments(p)
+    add_hand_arguments(p, all_flag=True)
     p.add_argument(
         "--motor-space", action="store_true",
         help="Slider per motor instead of per joint (tendon bring-up; motor bus only).",
@@ -129,10 +136,39 @@ def _resolve_joint_set(
     return selected
 
 
+def _build_columns(root: tk.Tk, labels: List[str]) -> List[ttk.Frame]:
+    """One frame per hand, side by side, separated by a vertical rule.
+
+    A single hand gets no label and no rule — this is the zero-ceremony case,
+    visually identical to before columns existed. With more than one, each
+    column is headed by its hand's identity so the operator always knows
+    which slider drives which physical hand.
+    """
+    container = ttk.Frame(root)
+    container.pack(fill=tk.BOTH, expand=True)
+
+    columns = []
+    for i, label in enumerate(labels):
+        grid_col = i * 2
+        if i > 0:
+            ttk.Separator(container, orient=tk.VERTICAL).grid(
+                row=0, column=grid_col - 1, rowspan=2, sticky="ns", padx=6
+            )
+        if len(labels) > 1:
+            ttk.Label(
+                container, text=label, font=("", 11, "bold"), padding=(4, 4, 0, 2)
+            ).grid(row=0, column=grid_col, sticky="w")
+        col = ttk.Frame(container)
+        col.grid(row=1, column=grid_col, sticky="nsew")
+        container.columnconfigure(grid_col, weight=1)
+        columns.append(col)
+    return columns
+
+
 class HandControlUI:
     """Plain motor-only slider UI: one slider per joint + torque buttons."""
 
-    def __init__(self, root, hand):
+    def __init__(self, parent: tk.Widget, hand):
         self.hand = hand
         self.joint_roms = hand.config.joint_roms_dict
         self.joint_ids = hand.config.joint_ids
@@ -142,13 +178,10 @@ class HandControlUI:
         for joint, pos in current_joint_positions.items():
             if joint in self.joint_values:
                 self.joint_values[joint].set(pos)
-        self.create_ui(root)
+        self.create_ui(parent)
 
-    def create_ui(self, root):
-        root.title("Orca Hand Control")
-        root.geometry("400x600")
-
-        torque_frame = ttk.Frame(root)
+    def create_ui(self, parent: tk.Widget):
+        torque_frame = ttk.Frame(parent)
         torque_frame.pack(pady=10)
 
         enable_button = ttk.Button(torque_frame, text="Enable Torque", command=self.enable_torque)
@@ -157,7 +190,7 @@ class HandControlUI:
         disable_button = ttk.Button(torque_frame, text="Disable Torque", command=self.disable_torque)
         disable_button.pack(side=tk.LEFT, padx=5)
 
-        sliders_frame = ttk.Frame(root)
+        sliders_frame = ttk.Frame(parent)
         sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
         for joint in self.joint_ids:
@@ -211,16 +244,13 @@ class MotorSliderUI:
     """Motor-space slider UI: one slider per motor over a narrow window around
     its startup position, plus torque buttons."""
 
-    def __init__(self, root, hand):
+    def __init__(self, parent: tk.Widget, hand):
         self.hand = hand
         self.motor_values = {motor: tk.DoubleVar() for motor in hand.config.motor_ids}
-        self.create_ui(root)
+        self.create_ui(parent)
 
-    def create_ui(self, root):
-        root.title("Orca Hand Motor Control")
-        root.geometry("400x800")
-
-        torque_frame = ttk.Frame(root)
+    def create_ui(self, parent: tk.Widget):
+        torque_frame = ttk.Frame(parent)
         torque_frame.pack(pady=10)
 
         ttk.Button(torque_frame, text="Enable Torque", command=self.enable_torque).pack(
@@ -230,7 +260,7 @@ class MotorSliderUI:
             side=tk.LEFT, padx=5
         )
 
-        sliders_frame = ttk.Frame(root)
+        sliders_frame = ttk.Frame(parent)
         sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
         current_motor_pos = self.hand.get_motor_pos(as_dict=True)
@@ -285,21 +315,24 @@ class MotorSliderUI:
 
 
 class JointFeedbackSliderUI:
-    """Closed-loop slider UI: encoder readback + live PI trim + tuning panel."""
+    """Closed-loop slider UI: one row per joint carries both the target
+    slider and its live encoder readback (measured angle + PI trim) —
+    everything about a joint stays in one line rather than two stacked
+    sections, which is what made this window taller than a laptop screen.
+    """
 
     def __init__(
         self,
-        root: tk.Tk,
+        parent: tk.Widget,
         hand: OrcaHandJointFeedback,
         slider_joints: List[str],
         initial_gains: JointGains,
     ):
         self.hand = hand
-        self.root = root
+        self.widget = parent
         self.slider_joints = slider_joints
         self.joint_values: dict[str, tk.DoubleVar] = {}
-        self.measured_labels: dict[str, ttk.Label] = {}
-        self.trim_labels: dict[str, ttk.Label] = {}
+        self.readback_labels: dict[str, ttk.Label] = {}
 
         # Seeded from the live gains, collapsed when uniform across joints
         # (the baseline otherwise). Apply pushes only the fields you edited,
@@ -322,7 +355,7 @@ class JointFeedbackSliderUI:
         self.apply_status_var = tk.StringVar(value="")
 
         self._seed_initial_targets()
-        self._build_ui()
+        self._build_ui(parent)
         self._schedule_refresh()
 
     def _seed_initial_targets(self) -> None:
@@ -345,29 +378,38 @@ class JointFeedbackSliderUI:
             value = max(rom_min, min(rom_max, value))
             self.joint_values[joint] = tk.DoubleVar(value=value)
 
-    def _build_ui(self) -> None:
-        self.root.title("Joint-feedback slider")
-        self.root.geometry("640x720")
-
-        sliders_frame = ttk.LabelFrame(self.root, text="targets", padding=6)
+    def _build_ui(self, parent: tk.Widget) -> None:
+        sliders_frame = ttk.LabelFrame(parent, text="targets + encoder", padding=6)
         sliders_frame.pack(fill=tk.X, padx=6, pady=6)
-        for joint in self.slider_joints:
+        sliders_frame.columnconfigure(2, weight=1)
+
+        for row, joint in enumerate(self.slider_joints):
             rom_min, rom_max = self.hand.config.joint_roms_dict[joint]
-            row = ttk.Frame(sliders_frame, padding=4)
-            row.pack(fill=tk.X)
-            ttk.Label(row, text=joint, width=14).pack(side=tk.LEFT)
-            ttk.Label(row, text=f"{rom_min:+4.0f}°", width=6).pack(side=tk.LEFT)
+            ttk.Label(sliders_frame, text=joint, width=12).grid(
+                row=row, column=0, sticky="w", pady=1
+            )
+            ttk.Label(sliders_frame, text=f"{rom_min:+4.0f}°", width=5).grid(
+                row=row, column=1
+            )
             slider = ttk.Scale(
-                row,
+                sliders_frame,
                 from_=rom_min, to=rom_max,
                 orient=tk.HORIZONTAL,
                 variable=self.joint_values[joint],
                 command=lambda v, j=joint: self._on_slider(j, v),
             )
-            slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            ttk.Label(row, text=f"{rom_max:+4.0f}°", width=6).pack(side=tk.LEFT)
-            target_label = ttk.Label(row, text="--", width=8)
-            target_label.pack(side=tk.LEFT, padx=4)
+            slider.grid(row=row, column=2, sticky="ew", padx=4)
+            ttk.Label(sliders_frame, text=f"{rom_max:+4.0f}°", width=5).grid(
+                row=row, column=3
+            )
+            target_label = ttk.Label(sliders_frame, text="--", width=7)
+            target_label.grid(row=row, column=4, padx=(6, 0))
+            readback_label = ttk.Label(
+                sliders_frame, text="m:--  t:--", width=15, font=("Menlo", 10)
+            )
+            readback_label.grid(row=row, column=5, padx=(6, 0))
+            self.readback_labels[joint] = readback_label
+
             self.joint_values[joint].trace_add(
                 "write",
                 lambda *_, j=joint, lbl=target_label: lbl.config(
@@ -375,23 +417,12 @@ class JointFeedbackSliderUI:
                 ),
             )
 
-        readback = ttk.LabelFrame(self.root, text="encoder", padding=6)
-        readback.pack(fill=tk.X, padx=6, pady=6)
-        for joint in self.slider_joints:
-            row = ttk.Frame(readback)
-            row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=joint, width=14).pack(side=tk.LEFT)
-            self.measured_labels[joint] = ttk.Label(row, text="meas: --", width=14)
-            self.measured_labels[joint].pack(side=tk.LEFT)
-            self.trim_labels[joint] = ttk.Label(row, text="", width=14)
-            self.trim_labels[joint].pack(side=tk.LEFT)
-
         # trace_add only fires on writes after binding, so seed the labels
         # by manually firing each slider callback once.
         for joint in self.slider_joints:
             self._on_slider(joint, self.joint_values[joint].get())
 
-        tuning = ttk.LabelFrame(self.root, text="tuning", padding=6)
+        tuning = ttk.LabelFrame(parent, text="tuning", padding=6)
         tuning.pack(fill=tk.X, padx=6, pady=6)
         for label, var in (
             ("Kp", self.kp_var),
@@ -474,7 +505,7 @@ class JointFeedbackSliderUI:
 
     def _schedule_refresh(self) -> None:
         self._refresh()
-        self.root.after(REFRESH_MS, self._schedule_refresh)
+        self.widget.after(REFRESH_MS, self._schedule_refresh)
 
     def _refresh(self) -> None:
         try:
@@ -482,20 +513,20 @@ class JointFeedbackSliderUI:
             correction = self.hand.get_loop_correction()
         except RuntimeError as exc:
             for joint in self.slider_joints:
-                self.measured_labels[joint].config(text="meas: e-stop")
-                self.trim_labels[joint].config(text="trim: --")
+                self.readback_labels[joint].config(text="e-stop")
             logging.warning("joint loop unavailable: %s", exc)
             return
         for joint in self.slider_joints:
-            self.measured_labels[joint].config(
-                text=f"meas: {measured.get(joint, float('nan')):+6.1f}°"
-            )
-            self.trim_labels[joint].config(
-                text=f"trim: {correction.get(joint, 0.0):+5.1f}°"
-            )
+            m = measured.get(joint, float("nan"))
+            t = correction.get(joint, 0.0)
+            self.readback_labels[joint].config(text=f"m:{m:+5.1f}° t:{t:+4.1f}°")
 
 
-def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> int:
+def _hand_label(hand_id: str, hand) -> str:
+    return f"{hand_id}  ({hand.config.type or '?'})"
+
+
+def _run_feedback(parent: tk.Widget, args: argparse.Namespace, hand: OrcaHandJointFeedback) -> None:
     # connect() starts the loop but leaves the motors unpowered. The loop
     # latches its target to the measured pose, so powering up holds, not yanks.
     hand.enable_torque()
@@ -523,39 +554,52 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
                   f"correction_max={g.correction_max_deg:.1f}°")
     print(f"  → sliders for {len(slider_joints)} joint(s): {slider_joints}")
 
-    root = tk.Tk()
     JointFeedbackSliderUI(
-        root, hand, slider_joints,
+        parent, hand, slider_joints,
         initial_gains=hand.config.joint_gains_baseline,
     )
-    root.mainloop()
-    return 0
 
 
 def _run_motor_space(args: argparse.Namespace) -> int:
     # Motor-space nudging wants the motor bus alone, not the encoder and
     # tactile links the factory opens for a sensing hand.
-    hand = create_hand_from_args(
-        args, engage_feedback=False, engage_sensors=False
-    )
-    success, msg = hand.connect()
-    print(msg)
-    if not success:
-        print("Failed to connect to the hand.")
-        return 1
+    fleet = create_fleet_from_args(args, engage_feedback=False, engage_sensors=False)
+    _refuse_if_too_many(fleet)
+
+    for hand in fleet:
+        success, msg = hand.connect()
+        print(msg)
+        if not success:
+            print("Failed to connect to the hand.")
+            return 1
 
     try:
-        # Minimal bring-up only: this mode runs pre-calibration on hands with
-        # unseated tendons, so it must never calibrate or move the hand.
-        hand.enable_torque()
-        hand.set_control_mode(hand.config.control_mode)
-        hand.set_max_current(hand.config.max_current)
         root = tk.Tk()
-        MotorSliderUI(root, hand)
+        root.title("Orca Hand Motor Control")
+        columns = _build_columns(
+            root, [_hand_label(hand_id, hand) for hand_id, hand in zip(fleet.ids, fleet)]
+        )
+        for col, hand in zip(columns, fleet):
+            # Minimal bring-up only: this mode runs pre-calibration on hands
+            # with unseated tendons, so it must never calibrate or move the hand.
+            hand.enable_torque()
+            hand.set_control_mode(hand.config.control_mode)
+            hand.set_max_current(hand.config.max_current)
+            MotorSliderUI(col, hand)
         root.mainloop()
         return 0
     finally:
-        hand.disconnect()
+        for hand in fleet:
+            hand.disconnect()
+
+
+def _refuse_if_too_many(fleet) -> None:
+    if len(fleet) > MAX_HANDS:
+        raise SystemExit(
+            f"manual_control.py shows at most {MAX_HANDS} hands side by side; "
+            f"{len(fleet)} are attached ({', '.join(fleet.ids)}). Name one with "
+            "--hand HAND_ID, or unplug the rest."
+        )
 
 
 def main() -> int:
@@ -567,34 +611,50 @@ def main() -> int:
     if args.motor_space:
         return _run_motor_space(args)
 
-    hand = create_hand_from_args(args)
+    fleet = create_fleet_from_args(args)
+    _refuse_if_too_many(fleet)
+
     overrides = {}
     if args.encoder_port is not None:
         overrides["encoder_serial_port"] = args.encoder_port
     if args.max_current is not None:
         overrides["max_current"] = args.max_current
     if overrides:
-        hand.config = dataclasses.replace(hand.config, **overrides)
+        for hand in fleet:
+            hand.config = dataclasses.replace(hand.config, **overrides)
+
+    for hand_id, hand in zip(fleet.ids, fleet):
+        try:
+            success, msg = hand.connect()
+        except (JointFeedbackConnectError, EncodersNotAvailableError) as exc:
+            print(f"[{hand_id}] FAIL: {exc}")
+            return 1
+        print(f"[{hand_id}] {msg}" if len(fleet) > 1 else msg)
+        if not success:
+            print(f"[{hand_id}] Failed to connect to the hand.")
+            return 1
 
     try:
-        success, msg = hand.connect()
-    except (JointFeedbackConnectError, EncodersNotAvailableError) as exc:
-        print(f"FAIL: {exc}")
-        return 1
-    print(msg)
-    if not success:
-        print("Failed to connect to the hand.")
-        return 1
+        any_feedback = any(isinstance(hand, OrcaHandJointFeedback) for hand in fleet)
+        title = "Joint-feedback slider" if any_feedback else "Orca Hand Control"
+        if len(fleet) > 1:
+            title += " (2 hands)"
 
-    try:
-        if isinstance(hand, OrcaHandJointFeedback):
-            return _run_feedback_ui(args, hand)
         root = tk.Tk()
-        HandControlUI(root, hand)
+        root.title(title)
+        columns = _build_columns(
+            root, [_hand_label(hand_id, hand) for hand_id, hand in zip(fleet.ids, fleet)]
+        )
+        for col, hand in zip(columns, fleet):
+            if isinstance(hand, OrcaHandJointFeedback):
+                _run_feedback(col, args, hand)
+            else:
+                HandControlUI(col, hand)
         root.mainloop()
         return 0
     finally:
-        hand.disconnect()
+        for hand in fleet:
+            hand.disconnect()
 
 
 if __name__ == "__main__":

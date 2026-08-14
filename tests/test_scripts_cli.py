@@ -865,3 +865,34 @@ class TestDetectReportsCalibrationForTheHandItDescribes:
 
         assert calls[-1] is not None and calls[-1].hand_id == "ser-0002"
         assert "NOT calibrated" in capsys.readouterr().out
+
+
+class TestManualControlHandCap:
+    """manual_control.py's non-GUI logic: the two-hand cap and column
+    labels. The widget classes themselves need a real Tk display (none of
+    the existing scripts/examples tests instantiate one either) so those
+    stay verified by hand, in a real terminal."""
+
+    def test_refuses_more_than_two_hands(self):
+        from orca_core import HandFleet
+
+        mc = _load("scripts/manual_control.py")
+        fleet = HandFleet((object(), object(), object()), ("a", "b", "c"))
+
+        with pytest.raises(SystemExit) as excinfo:
+            mc._refuse_if_too_many(fleet)
+
+        assert "a" in str(excinfo.value) and "c" in str(excinfo.value)
+
+    def test_allows_up_to_two_hands(self):
+        from orca_core import HandFleet
+
+        mc = _load("scripts/manual_control.py")
+        mc._refuse_if_too_many(HandFleet((object(),), ("a",)))
+        mc._refuse_if_too_many(HandFleet((object(), object()), ("a", "b")))
+
+    def test_hand_label_names_the_hand_and_its_side(self):
+        mc = _load("scripts/manual_control.py")
+        hand = SimpleNamespace(config=SimpleNamespace(type="right"))
+
+        assert mc._hand_label("ser-8316", hand) == "ser-8316  (right)"
