@@ -40,6 +40,61 @@ def test_one_attached_hand_needs_no_selector():
     assert select_hand([only]) is only
 
 
+def test_every_field_of_a_selector_must_match():
+    """A caller pinning side as a cross-check against hand_id gets the wrong
+    arm if the fields are ORed instead of ANDed."""
+    with pytest.raises(HandNotFoundError):
+        select_hand(TWO_RIGHT, HandSelector(hand_id="ser-0001", side="left"))
+
+
+def test_a_selector_can_name_a_hand_by_its_motor_port():
+    hands = [
+        _detection("ser-0001", motor_port="/dev/cu.a-motor"),
+        _detection("ser-0002", motor_port="/dev/cu.b-motor"),
+    ]
+    picked = select_hand(hands, HandSelector(motor_port="/dev/cu.b-motor"))
+    assert picked.hand_id == "ser-0002"
+
+
+def test_a_selection_failure_carries_what_was_attached():
+    """A front-end renders its own advice from these rather than probing the
+    bus a second time."""
+    with pytest.raises(AmbiguousHandError) as ambiguous:
+        select_hand(TWO_RIGHT)
+    assert [d.hand_id for d in ambiguous.value.detections] == ["ser-0001", "ser-0002"]
+
+    with pytest.raises(HandNotFoundError) as missing:
+        select_hand(TWO_RIGHT, HandSelector(hand_id="ser-0009"))
+    assert [d.hand_id for d in missing.value.detections] == ["ser-0001", "ser-0002"]
+
+
+def test_load_hands_builds_only_the_hands_a_selector_matches(monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, TWO_RIGHT)
+
+    hands = load_hands(select=HandSelector(hand_id="ser-0002"))
+
+    assert len(hands) == 1
+    assert "ser-0002" in hands[0].config.calibration_path
+
+
+def test_load_hands_refuses_a_selector_matching_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, TWO_RIGHT)
+
+    with pytest.raises(HandNotFoundError):
+        load_hands(select=HandSelector(hand_id="ser-0009"))
+
+
+def test_load_hand_forwards_its_selector(monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, TWO_RIGHT)
+
+    hand = load_hand(select=HandSelector(hand_id="ser-0001"))
+
+    assert "ser-0001" in hand.config.calibration_path
+
+
 def test_two_hands_refuse_to_be_guessed_between():
     with pytest.raises(AmbiguousHandError) as excinfo:
         select_hand(TWO_RIGHT)

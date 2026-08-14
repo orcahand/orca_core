@@ -280,9 +280,13 @@ def test_overlapping_connects_cannot_both_claim_one_calibration_file(mock_config
 
     config_path = str(mock_config_dir / "config.yaml")
 
+    opened = 0
+
     class _SlowConnect(_RealCalibrationMockHand):
         def _connect_cascade(self, interactive):
+            nonlocal opened
             time.sleep(0.15)
+            opened += 1
             return super()._connect_cascade(interactive)
 
     hands = [_SlowConnect(config_path=config_path) for _ in range(2)]
@@ -303,6 +307,12 @@ def test_overlapping_connects_cannot_both_claim_one_calibration_file(mock_config
     try:
         assert outcomes.count(True) == 1, outcomes
         assert outcomes.count("refused") == 1, outcomes
+        # The claim has to be taken before the bus is touched, so the loser
+        # must have been refused without ever connecting. Counting outcomes
+        # alone still holds when the claim is moved after the connect.
+        connected = [h for h in hands if h.is_connected()]
+        assert len(connected) == 1, "both hands reached the bus"
+        assert opened == 1, f"the bus was opened {opened} times for one winner"
     finally:
         for hand in hands:
             hand.disconnect()
@@ -890,14 +900,16 @@ def test_detection_tells_this_process_apart_from_a_foreign_client(monkeypatch):
         _oh_port("/dev/cu.theirs", _BOARD_A),
     ])
     monkeypatch.setattr(serial_discovery, "probe_orca_info", lambda p, *a, **k: None)
-    monkeypatch.setattr(
-        serial_discovery, "port_in_use", lambda p: p == "/dev/cu.theirs"
-    )
+    # True for both, as a real exclusive open reports: pyserial locks per open
+    # file description, so a port THIS process holds is busy to a probe too.
+    # Only the registry can tell the two apart, which is what this pins.
+    monkeypatch.setattr(serial_discovery, "port_in_use", lambda p: True)
     monkeypatch.setattr(hand_factory, "detect_encoder_stream", lambda p: False)
     monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: None)
 
-    holder = _Client()
-    port_registry.claim("/dev/cu.mine", holder)
+    link = MockHandSerialLink(port="/dev/cu.mine")
+    link._claim_port = lambda: port_registry.claim("/dev/cu.mine", link)
+    link.connect()
 
     detections = hand_factory.detect_hands()
     assert len(detections) == 1
