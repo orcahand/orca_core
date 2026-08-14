@@ -359,19 +359,35 @@ def _describe_caps(tactile: bool, encoders: bool) -> str:
     return " + ".join(present) if present else "motors only"
 
 
-class HandNotFoundError(LookupError):
-    """Raised when no attached hand matches what the caller asked for."""
+class HandSelectionError(LookupError):
+    """Base for the ways picking a hand can fail.
+
+    Carries the detections behind the failure, so a front-end can render its
+    own message — naming a CLI flag rather than a Python call — without
+    probing the bus a second time and racing whatever connected in between.
+    """
+
+    def __init__(self, message: str, detections: "tuple[HandDetection, ...]" = ()):
+        super().__init__(message)
+        self.detections = tuple(detections)
 
 
-class AmbiguousHandError(LookupError):
+class HandNotFoundError(HandSelectionError):
+    """Raised when no attached hand matches what the caller asked for.
+    :attr:`detections` holds every hand that *is* attached."""
+
+
+class AmbiguousHandError(HandSelectionError):
     """Raised when more than one attached hand matches, so there is no
-    single right answer and picking one could drive the wrong arm."""
+    single right answer and picking one could drive the wrong arm.
+    :attr:`detections` holds the hands that matched."""
 
 
-class HandPortUnresolvedError(LookupError):
+class HandPortUnresolvedError(HandSelectionError):
     """Raised when an attached hand was detected but the bus it must be driven
     through could not be named. Connecting anyway would mean searching the
-    whole bus, which with a second hand attached lands on the neighbour."""
+    whole bus, which with a second hand attached lands on the neighbour.
+    :attr:`detections` holds the hand that could not be resolved."""
 
 
 @dataclass(frozen=True)
@@ -432,13 +448,15 @@ def select_hand(
             )
         raise HandNotFoundError(
             f"no attached hand matches {selector.describe()}. Attached: "
-            + "; ".join(_describe_hand(d) for d in detections)
+            + "; ".join(_describe_hand(d) for d in detections),
+            detections,
         )
     raise AmbiguousHandError(
         f"{len(matches)} attached hands match {selector.describe()}: "
         + "; ".join(_describe_hand(d) for d in matches)
         + ". Name one with load_hand(select=HandSelector(hand_id=...)), or "
-        "use load_hands() to get them all."
+        "use load_hands() to get them all.",
+        matches,
     )
 
 
@@ -507,7 +525,8 @@ def _pin_detected_ports(config, detection: HandDetection, attached: int):
             f"hand {_describe_hand(detection)} is attached but its motor bus "
             f"could not be resolved: {_unresolved_reason(detection)}. Refusing "
             f"to search the bus for it — with {attached} hands attached, that "
-            f"search returns the neighbour's motor bus."
+            f"search returns the neighbour's motor bus.",
+            (detection,),
         )
     elif board_seen:
         logger.info(

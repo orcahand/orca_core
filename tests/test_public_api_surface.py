@@ -50,6 +50,8 @@ PACKAGE_EXPORTS = frozenset({
     "canonical_joint_ids",
     "AmbiguousHandError",
     "HandNotFoundError",
+    "HandPortUnresolvedError",
+    "HandSelectionError",
     "HandSelector",
     "detect_hand",
     "detect_hands",
