@@ -80,6 +80,13 @@ class MockHandSerialLink(HandSerialLink):
 
     # ----- I/O seam overrides ----------------------------------------------
 
+    def _claim_port(self) -> None:
+        """No bus to contend for: each mock link has its own byte stream, so
+        any number of them may share one port name."""
+
+    def _release_port(self) -> None:
+        pass
+
     def _open_serial(self) -> None:
         with self._injected_cv:
             self._mock_serial_open = True

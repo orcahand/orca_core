@@ -306,10 +306,8 @@ class DynamixelClient(MotorClient):
         """
         if not self.is_connected:
             return
-        if self.port_handler.is_using:
-            logging.error('Port handler in use; cannot disconnect.')
-            return
         with self._bus_lock:
+            self._clear_stale_bus_flag()
             try:
                 # Ensure motors are disabled at the end.
                 self.set_torque_enabled(self.motor_ids, False, retries=0)

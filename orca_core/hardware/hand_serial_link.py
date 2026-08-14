@@ -156,14 +156,11 @@ class HandSerialLink:
         if self._disconnected:
             raise RuntimeError("hand serial link already disconnected; cannot reconnect")
 
-        # Bookkeeping only: the open below is already exclusive. The claim is
-        # what lets discovery tell this process's own link apart from a port
-        # some other program is holding.
-        port_registry.claim(self._port, self)
+        self._claim_port()
         try:
             self._open_serial()
         except Exception:
-            port_registry.release(self._port, self)
+            self._release_port()
             raise
         self._demux_running = True
         self._connected = True
@@ -192,9 +189,24 @@ class HandSerialLink:
             pass
 
         self._close_serial()
-        port_registry.release(self._port, self)
+        self._release_port()
         self._connected = False
         self._disconnected = True
+
+    # ----- Port ownership ---------------------------------------------------
+
+    def _claim_port(self) -> None:
+        """Records this link as its port's owner, alongside the exclusive open.
+
+        Bookkeeping only, but it is what lets discovery tell this process's own
+        link apart from a port some other program is holding. Links that drive
+        no real bus override this to stay out of the registry.
+        """
+        port_registry.claim(self._port, self)
+
+    def _release_port(self) -> None:
+        """Drops this link's claim on its port."""
+        port_registry.release(self._port, self)
 
     # ----- Handler registry -------------------------------------------------
 

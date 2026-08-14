@@ -19,6 +19,8 @@ from orca_core.constants import (
     ORCA_ID_RESP_SENSOR,
     PORT_BUSY_ERRNOS,
 )
+from orca_core.hardware.hand_serial_link import HandSerialLink
+from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 
 from tests._helpers import fake_serial_port
 
@@ -815,6 +817,52 @@ def test_two_names_for_one_device_are_the_same_claim(tmp_path):
     port_registry.claim(str(real), first)
     with pytest.raises(port_registry.PortAlreadyClaimed):
         port_registry.claim(str(link), second)
+
+
+class _RealPortLink(MockHandSerialLink):
+    """Mock serial I/O, but the real link's port-ownership hooks — a stand-in
+    for a link that does drive a bus."""
+
+    _claim_port = HandSerialLink._claim_port
+    _release_port = HandSerialLink._release_port
+
+
+def test_a_serial_link_claims_its_port_and_releases_it_on_disconnect():
+    """Two links demuxing one board's stream would each eat frames the other
+    is waiting on."""
+    from orca_core.hardware import port_registry
+
+    first = _RealPortLink(port="/dev/cu.encoders")
+    first.connect()
+    assert port_registry.owner_of("/dev/cu.encoders") is first
+
+    second = _RealPortLink(port="/dev/cu.encoders")
+    with pytest.raises(port_registry.PortAlreadyClaimed):
+        second.connect()
+
+    first.disconnect()
+    assert port_registry.owner_of("/dev/cu.encoders") is None
+    second.disconnect()
+
+    third = _RealPortLink(port="/dev/cu.encoders")
+    third.connect()
+    third.disconnect()
+
+
+def test_two_mock_serial_links_share_a_port_name():
+    """Mock links share no bus, so the port name a mock hand is pinned to must
+    not stop a second one opening."""
+    first = MockHandSerialLink(port="/dev/orca-mock")
+    second = MockHandSerialLink(port="/dev/orca-mock")
+    first.connect()
+    second.connect()
+
+    # Sharing the name is safe because the byte streams are separate.
+    first.feed_bytes(b"\xAA\xA9payload")
+    assert bytes(second._injected_buffer) == b""
+
+    second.disconnect()
+    first.disconnect()
 
 
 def test_a_motor_client_releases_its_port_on_a_failed_connect(monkeypatch):

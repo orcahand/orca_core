@@ -100,6 +100,18 @@ class MotorClient(ABC):
         except Exception:
             pass
 
+    def _clear_stale_bus_flag(self):
+        """Drops a transaction-in-flight flag the vendor SDK latches when a
+        transaction raises; call it holding the bus lock, which proves nothing
+        is really in flight."""
+        handler = getattr(self, "port_handler", None)
+        if handler is not None and getattr(handler, "is_using", False):
+            logging.warning(
+                "Clearing stale in-use flag on %s left by a failed transaction.",
+                getattr(self, "port_name", "<unknown>"),
+            )
+            handler.is_using = False
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         # A new motor family gets its own registry; subclasses of an existing
@@ -116,9 +128,7 @@ class MotorClient(ABC):
         """
         for client in list(cls.OPEN_CLIENTS):
             try:
-                if client.port_handler.is_using:
-                    logging.warning("Forcing %s to close.", cls.__name__)
-                client.port_handler.is_using = False
+                client._clear_stale_bus_flag()
                 client.disconnect()
             except Exception:
                 logging.exception(

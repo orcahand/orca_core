@@ -44,3 +44,21 @@ def test_mock_touch_serves_tactile_configuration():
         assert config.connected.get("index") is True
     finally:
         hand.disconnect()
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["orcahand-touch-right", "orcahand-joint-right", "orcahand-full-right"],
+)
+def test_two_mock_sensing_hands_connect_at_once(model):
+    """Mock links share no bus, so pinning every mock hand to one port name
+    must not stop a second hand connecting — the bimanual case mocks exist for."""
+    first = load_hand(model_name=model, mock=True)
+    second = load_hand(model_name=model, mock=True)
+    assert first.connect()[0]
+    try:
+        success, msg = second.connect()
+        assert success, msg
+        second.disconnect()
+    finally:
+        first.disconnect()

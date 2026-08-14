@@ -5,6 +5,10 @@ port is actually open: registered on successful connect(), never on
 construction or failed connect, and removed on disconnect(). The atexit
 cleanup handlers must survive one client failing so the remaining clients
 still get their torque disabled.
+
+The same lifecycle owns the in-process port registry: connect() claims the
+port and disconnect() releases it, including when a failed transaction left
+the vendor SDK's in-flight flag latched.
 """
 
 import sys
@@ -13,6 +17,7 @@ import types
 import pytest
 
 import orca_core.hardware.feetech_client as feetech_client_module
+from orca_core.hardware import port_registry
 from orca_core.hardware.dynamixel_client import (
     DynamixelClient,
     dynamixel_cleanup_handler,
@@ -291,3 +296,76 @@ def test_feetech_cleanup_handler_survives_a_failing_client(feetech_registry):
 
     assert not good.port_handler.is_open, "good client must still be closed"
     assert good not in feetech_registry
+
+
+# ---------------------------------------------------------------------------
+# In-process port ownership
+# ---------------------------------------------------------------------------
+
+
+def test_dxl_connect_claims_the_port_and_disconnect_releases_it(dxl_registry):
+    """Without the claim, a second client opens the same bus and the two read
+    each other's replies."""
+    first = _make_dxl()
+    first.connect()
+    assert port_registry.owner_of("/dev/fake") is first
+
+    second = _make_dxl()
+    with pytest.raises(port_registry.PortAlreadyClaimed):
+        second.connect()
+
+    first.disconnect()
+    assert port_registry.owner_of("/dev/fake") is None
+    second.connect()
+    second.disconnect()
+
+
+def test_feetech_connect_claims_the_port_and_disconnect_releases_it(feetech_registry):
+    first = _make_feetech()
+    first.connect()
+    assert port_registry.owner_of("/dev/fake") is first
+
+    second = _make_feetech()
+    with pytest.raises(port_registry.PortAlreadyClaimed):
+        second.connect()
+
+    first.disconnect()
+    assert port_registry.owner_of("/dev/fake") is None
+    second.connect()
+    second.disconnect()
+
+
+def test_dxl_disconnect_releases_the_port_after_a_latched_transaction(dxl_registry):
+    """The vendor SDK leaves ``is_using`` set when a transaction raises — a
+    yanked cable mid-read is enough. Bailing out of disconnect there strands
+    the claim for the life of the process, so no later client can connect."""
+    client = _make_dxl()
+    client.connect()
+    client.port_handler.is_using = True
+
+    client.disconnect()
+
+    assert port_registry.owner_of("/dev/fake") is None
+    assert dxl_registry == set()
+    assert not client.port_handler.is_open
+
+    replacement = _make_dxl()
+    replacement.connect()
+    replacement.disconnect()
+
+
+def test_feetech_disconnect_releases_the_port_after_a_latched_transaction(
+        feetech_registry):
+    client = _make_feetech()
+    client.connect()
+    client.port_handler.is_using = True
+
+    client.disconnect()
+
+    assert port_registry.owner_of("/dev/fake") is None
+    assert feetech_registry == set()
+    assert not client.port_handler.is_open
+
+    replacement = _make_feetech()
+    replacement.connect()
+    replacement.disconnect()
