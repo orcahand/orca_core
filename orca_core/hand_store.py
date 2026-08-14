@@ -28,6 +28,7 @@ this hand writes one.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
@@ -59,13 +60,19 @@ def _safe_id(hand_id: str) -> str:
     """A hand id reduced to something usable as a directory name.
 
     Ids come from a board's own reply, so they are not trusted to be a safe
-    path component.
+    path component. Rewriting one is lossy — ``ser 1`` and ``ser/1`` reduce
+    alike — so a rewritten id carries a digest of the original and only ids
+    that survive untouched keep naming their directory exactly as they read.
     """
+    stripped = hand_id.strip()
     cleaned = "".join(
-        c if c.isalnum() or c in "-_." else "_" for c in hand_id.strip()
+        c if c.isalnum() or c in "-_." else "_" for c in stripped
     ).strip("._")
     if not cleaned:
         raise ValueError(f"hand id {hand_id!r} has no usable characters")
+    if cleaned != stripped:
+        digest = hashlib.blake2s(stripped.encode("utf-8"), digest_size=4).hexdigest()
+        return f"{cleaned}-{digest}"
     return cleaned
 
 
@@ -85,33 +92,111 @@ def calibration_path(hand_id: str) -> str:
     return os.path.join(hand_dir(hand_id), "calibration.yaml")
 
 
-def resolve_calibration_path(hand_id: str, packaged_fallback: str) -> str:
+def _stored_identities() -> "list[tuple[str, dict]]":
+    """Every hand directory in the store, with what it recorded about itself."""
+    root = hands_root()
+    if not os.path.isdir(root):
+        return []
+    found = []
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name, "identity.yaml")
+        if os.path.isfile(path):
+            found.append((name, read_yaml(path) or {}))
+    return found
+
+
+def _adopted_by(source: str) -> "str | None":
+    """The store directory already claiming ``source`` as its origin."""
+    for name, identity in _stored_identities():
+        if identity.get("adopted_from") == source:
+            return name
+    return None
+
+
+def _adopt(source: str, hand_id: str, reason: str) -> "str | None":
+    """Copy ``source`` into ``hand_id``'s store slot and record where it came
+    from. Returns the new path, or ``None`` if the store could not be written.
+    """
+    data = read_yaml(source)
+    if not data:
+        return None
+    stored = calibration_path(hand_id)
+    try:
+        _write(stored, data)
+    except OSError as e:
+        logger.warning(
+            "could not copy %s into the hand store (%s); using it in place.",
+            source, e,
+        )
+        return None
+    logger.warning(
+        "hand %s adopted the calibration at %s (%s); it now lives at %s. "
+        "No other hand will adopt that file.",
+        hand_id, source, reason, stored,
+    )
+    record_identity(hand_id, {"adopted_from": os.path.realpath(source)})
+    return stored
+
+
+def _same_board_calibration(hand_id: str, board_id: "str | None") -> "str | None":
+    """A calibration this same board recorded under an earlier hand id.
+
+    A board reports its board id until provisioning gives it a serial, at
+    which point its hand id changes and its calibration would otherwise be
+    orphaned.
+    """
+    if not board_id:
+        return None
+    here = _safe_id(hand_id)
+    candidates = [
+        name for name, identity in _stored_identities()
+        if identity.get("board_id") == board_id and name != here
+        and os.path.isfile(os.path.join(hands_root(), name, "calibration.yaml"))
+    ]
+    if len(candidates) > 1:
+        logger.warning(
+            "%d store directories (%s) record board %s and hold a calibration, "
+            "so none can be attributed to hand %s. Delete the stale ones.",
+            len(candidates), ", ".join(candidates), board_id, hand_id,
+        )
+        return None
+    if not candidates:
+        return None
+    return os.path.join(hands_root(), candidates[0], "calibration.yaml")
+
+
+def resolve_calibration_path(
+    hand_id: str, packaged_fallback: str, board_id: "str | None" = None
+) -> str:
     """The calibration path to use for ``hand_id``.
 
-    The store wins. Before it holds anything, a calibration next to the
-    packaged model is adopted so a hand calibrated before the store keeps its
-    limits; it is copied into the store rather than written back in place.
+    The store wins. Behind it, in order: a calibration this same board wrote
+    under an earlier hand id, then one sitting beside the packaged model.
+    Both are copied into this hand's slot rather than used in place, and both
+    are claimed — a calibration measured on one hand must never be handed to a
+    second, which would report itself calibrated and skip its hardstop sweep.
     """
     stored = calibration_path(hand_id)
     if os.path.exists(stored):
         return stored
 
-    legacy = read_yaml(packaged_fallback) if os.path.exists(packaged_fallback) else None
-    if legacy:
-        logger.info(
-            "adopting the calibration beside %s for hand %s; it now lives at %s.",
-            os.path.dirname(packaged_fallback), hand_id, stored,
+    earlier = _same_board_calibration(hand_id, board_id)
+    if earlier is not None:
+        return _adopt(earlier, hand_id, f"same board {board_id}") or earlier
+
+    if not os.path.exists(packaged_fallback):
+        return stored
+    claimed_by = _adopted_by(os.path.realpath(packaged_fallback))
+    if claimed_by is not None:
+        logger.warning(
+            "the calibration at %s was measured on hand %s, so hand %s does "
+            "not inherit it and starts uncalibrated.",
+            packaged_fallback, claimed_by, hand_id,
         )
-        try:
-            _write(stored, legacy)
-            return stored
-        except OSError as e:
-            logger.warning(
-                "could not copy %s into the hand store (%s); using it in place.",
-                packaged_fallback, e,
-            )
-            return packaged_fallback
-    return stored
+        return stored
+    return _adopt(
+        packaged_fallback, hand_id, "it predates the per-hand store"
+    ) or packaged_fallback
 
 
 def record_identity(hand_id: str, fields: dict) -> None:

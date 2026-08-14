@@ -570,7 +570,7 @@ def _bind_hand_store(config, detection: HandDetection):
     return dataclasses.replace(
         config,
         calibration_path=hand_store.resolve_calibration_path(
-            detection.hand_id, config.calibration_path
+            detection.hand_id, config.calibration_path, board_id=detection.board_id
         ),
     )
 

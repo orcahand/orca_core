@@ -374,3 +374,90 @@ def test_a_pinned_port_that_is_nobodys_bus_is_a_configuration_error(
 
     with pytest.raises(HandNotFoundError, match="/dev/cu.gone"):
         load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.gone"))
+
+
+# ----- adoption is a one-shot, recorded event -------------------------------
+
+def _plausible_calibration(path):
+    """A calibration complete enough to survive OrcaHand._sanity_check.
+
+    A skeletal ``{calibrated: true}`` is demoted for its missing motor limits,
+    so it would make these tests pass for the wrong reason.
+    """
+    import yaml
+
+    path.write_text(yaml.dump({
+        "motor_limits": {m: [0.0, 3.0] for m in range(1, 18)},
+        "joint_to_motor_ratios": {m: 0.02 for m in range(1, 18)},
+        "wrist_calibrated": True,
+        "calibrated": True,
+    }), encoding="utf-8")
+    return str(path)
+
+
+def test_only_the_first_hand_adopts_the_calibration_beside_the_model(
+        monkeypatch, tmp_path):
+    """It was measured on one physical hand. A second hand inheriting it
+    reports itself calibrated and skips its own hardstop sweep."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path / "store"))
+    legacy = _plausible_calibration(tmp_path / "calibration.yaml")
+
+    first = hand_store.resolve_calibration_path("ser-0001", legacy)
+    second = hand_store.resolve_calibration_path("ser-0002", legacy)
+
+    assert "ser-0001" in first
+    assert os.path.exists(first)
+    assert not os.path.exists(second), "the second hand inherited the first's limits"
+
+
+def test_a_second_hand_is_not_marked_calibrated_by_the_first(
+        monkeypatch, tmp_path):
+    import orca_core.hand_factory as hand_factory
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path / "store"))
+    model = tmp_path / "model"
+    model.mkdir()
+    import shutil
+    shutil.copy(_model(), model / "config.yaml")
+    _plausible_calibration(model / "calibration.yaml")
+    config_path = str(model / "config.yaml")
+
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: [_detection("ser-0001")])
+    first = load_hand(config_path=config_path)
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: [_detection("ser-0002")])
+    second = load_hand(config_path=config_path)
+
+    assert first.calibration.calibrated is True
+    assert second.calibration.calibrated is False
+
+
+def test_adoption_survives_the_board_being_given_a_serial(monkeypatch, tmp_path):
+    """Provisioning changes the hand id from the board id to the serial. The
+    calibration measured before that must not be orphaned."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path / "store"))
+    board = "BID-0001"
+
+    hand_store.record_identity(board, {"board_id": board})
+    _plausible_calibration(
+        __import__("pathlib").Path(hand_store.calibration_path(board))
+    )
+
+    resolved = hand_store.resolve_calibration_path(
+        "ser-0001", str(tmp_path / "absent.yaml"), board_id=board
+    )
+
+    assert "ser-0001" in resolved, "re-keying the hand orphaned its calibration"
+    assert os.path.exists(resolved)
+    assert os.path.exists(hand_store.calibration_path(board)), "adoption moved it"
+
+
+def test_ids_that_differ_only_in_punctuation_keep_separate_directories(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    dirs = {hand_store.hand_dir(i) for i in ("ser 1", "ser/1", "ser+1")}
+    assert len(dirs) == 3
+
+
+def test_a_plain_id_names_its_directory_as_it_reads(monkeypatch, tmp_path):
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    assert os.path.basename(hand_store.hand_dir("ser-0001")) == "ser-0001"
