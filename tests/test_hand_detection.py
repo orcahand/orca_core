@@ -82,16 +82,24 @@ def _patch_hardware(
     paxini_port=None,
     tactile_register=False,
     busy_ports=(),
+    classic_motor_ports=(),
 ):
     """Stand in for the USB bus at the descriptor level, so board grouping
     runs for real. An entry in ``oh_ports`` is a device path on the default
     board, or a ``(device, usb_serial)`` pair to place it on another one.
+    An entry in ``classic_motor_ports`` is a bare Feetech-VID adapter with
+    no controller board — a legacy hand's motor bus, or a
+    ``(device, serial_number)`` pair to give it a stable id.
     """
     infos = infos or {}
     ports = []
     for entry in oh_ports:
         device, usb_serial = entry if isinstance(entry, tuple) else (entry, BOARD_A)
         ports.append(fake_serial_port(device, OH_VID, serial_number=usb_serial))
+    feetech_vid = KNOWN_VIDS["feetech"][0]
+    for entry in classic_motor_ports:
+        device, serial_number = entry if isinstance(entry, tuple) else (entry, None)
+        ports.append(fake_serial_port(device, feetech_vid, serial_number=serial_number))
 
     monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
     monkeypatch.setattr(
@@ -151,6 +159,91 @@ def test_detects_legacy_touch_adapter(monkeypatch):
     assert d.model_name == "orcahand-touch-right"
     assert d.tactile_port == "/dev/cu.paxini"
     assert not d.has_encoders
+
+
+# ----- legacy hands: bare Feetech/Dynamixel adapter, no controller board ----
+
+def test_legacy_hand_resolves_its_own_motor_bus(monkeypatch):
+    """A hand old enough to predate ORCA_ID?/ORCA_INFO? never appears in
+    oh_ports — its motor bus must still be found, by USB VID alone."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=[("/dev/cu.feetech", "5B79030513")],
+        paxini_port="/dev/cu.paxini",
+    )
+    d = detect_hand()
+    assert d.model_name == "orcahand-touch-right"
+    assert d.motor_port == "/dev/cu.feetech"
+    assert d.tactile_port == "/dev/cu.paxini"
+    assert d.hand_id == "legacy-5B79030513"
+    assert d.identity is None
+
+
+def test_legacy_hand_without_a_reported_serial_has_no_hand_id(monkeypatch):
+    _patch_hardware(monkeypatch, classic_motor_ports=["/dev/cu.feetech"])
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.feetech"
+    assert d.hand_id is None
+
+
+def test_a_busy_classic_motor_port_is_reported_not_silently_dropped(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.feetech"],
+        busy_ports=("/dev/cu.feetech",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.feetech",)
+
+
+def test_two_classic_motor_adapters_are_not_guessed_between(monkeypatch, caplog):
+    """No protocol ties either adapter to an identity, so with two present
+    neither can be matched to a single legacy hand — unlike two oh_board
+    hands, there is nothing here to list them as separately either."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.a", "/dev/cu.b"],
+    )
+    with caplog.at_level("WARNING"):
+        detections = hand_factory.detect_hands()
+    assert detections == []
+    assert "2 classic" in caplog.text
+
+
+def test_legacy_hand_coexists_with_a_modern_hand_without_corrupting_it(monkeypatch):
+    """The bug this pins: a dedicated tactile adapter used to be attributed
+    to a lone oh_board hand even when a second, legacy hand's classic motor
+    adapter was also plugged in — crossing the legacy hand's tactile sensor
+    onto the modern hand's detection, and dropping the legacy hand entirely."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m", "/dev/cu.s"],
+        infos={
+            "/dev/cu.m": OrcaBoardInfo(role="motor", side="right", serial="ser-0001"),
+            "/dev/cu.s": OrcaBoardInfo(role="sensor", side="right", serial="ser-0001"),
+        },
+        classic_motor_ports=[("/dev/cu.feetech", "5B79030513")],
+        paxini_port="/dev/cu.paxini",
+        encoder_stream=True,
+    )
+    detections = hand_factory.detect_hands()
+
+    assert len(detections) == 2
+    by_id = {d.hand_id: d for d in detections}
+    modern = by_id["ser-0001"]
+    legacy = by_id["legacy-5B79030513"]
+
+    # Neither hand claims the ambiguous adapter.
+    assert modern.tactile_port is None
+    assert legacy.tactile_port is None
+    assert not legacy.has_tactile
+    # The modern hand's own capabilities are untouched by the legacy hand's
+    # presence.
+    assert modern.has_encoders
+    assert modern.sensing_port == "/dev/cu.s"
+    # The legacy hand is no longer invisible.
+    assert legacy.motor_port == "/dev/cu.feetech"
 
 
 def test_nothing_plugged_in_yields_plain_right_hand(monkeypatch):

@@ -130,10 +130,19 @@ def _print_notes(detection) -> None:
             "exclusively, so whatever sits behind it is missing above — close "
             "the other client and re-run."
         )
-    elif detection.identity is None:
+    elif detection.identity is None and detection.motor_port is None:
         notes.append(
             "No controller board answered. With nothing plugged in, detection "
             "falls back to the plain right-hand model above."
+        )
+    elif detection.identity is None:
+        notes.append(
+            "No controller board answered an identity query (predates "
+            "ORCA_ID?/ORCA_INFO?, or there is no controller board at all — a "
+            "legacy hand), so side and sensing capabilities could not be read "
+            "from hardware. The motor bus above was found by USB-vendor-ID "
+            "probing instead; name the model explicitly if it isn't a plain "
+            "right hand."
         )
     elif detection.motor_port is None:
         notes.append(

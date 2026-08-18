@@ -262,6 +262,31 @@ def test_two_identical_hands_get_separate_calibration(monkeypatch, tmp_path):
     assert "ser-0002" in second.config.calibration_path
 
 
+def test_a_legacy_hand_selects_and_binds_its_own_store(monkeypatch, tmp_path):
+    """A legacy hand's HandDetection is unremarkable — motor_port set, no
+    identity — so it must flow through load_hand()/the store exactly like
+    any provisioned hand, with no special-casing anywhere downstream."""
+    import orca_core.hand_factory as hand_factory
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    legacy = HandDetection(
+        model_name="orcahand-touch-right",
+        side="right",
+        has_tactile=True,
+        has_encoders=False,
+        motor_port="/dev/cu.feetech",
+        hand_id="legacy-5B79030513",
+        board_id="legacy-5B79030513",
+        side_source="default",
+    )
+    monkeypatch.setattr(hand_factory, "detect_hands", lambda: [legacy])
+
+    hand = load_hand(select=HandSelector(hand_id="legacy-5B79030513"))
+
+    assert hand.config.port == "/dev/cu.feetech"
+    assert "legacy-5B79030513" in hand.config.calibration_path
+
+
 def test_calibration_lands_outside_the_installed_package(monkeypatch, tmp_path):
     """A wheel upgrade replaces the package; a read-only install cannot be
     written at all. Neither may cost a hand its calibration."""

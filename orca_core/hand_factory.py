@@ -58,6 +58,7 @@ from .hardware.sensing.serial_discovery import (
     detect_encoder_stream,
     find_tactile_port,
     probe_boards,
+    probe_classic_motor_adapter,
 )
 from .hardware_hand import MockOrcaHand, OrcaHand
 from .hardware_hand_sensing import (
@@ -227,6 +228,14 @@ def detect_hands() -> "list[HandDetection]":
     board — the pairing does not depend on enumeration order, and a port
     another client holds still groups correctly.
 
+    A legacy hand — a bare Feetech/Dynamixel motor adapter with no
+    controller board, predating the ``ORCA_ID?``/``ORCA_INFO?`` identity
+    protocol — is folded into the same list as one more "board", found by
+    USB vendor ID instead of that protocol. This is what lets the rest of
+    this function (and everything built on it: selection, the interactive
+    picker, the per-hand store) treat it exactly like any other hand rather
+    than a special case.
+
     Results are ordered by ``hand_id``, which is stable across replugs
     (``comports()`` order is not). Returns an empty list when nothing is
     attached.
@@ -240,6 +249,9 @@ def detect_hands() -> "list[HandDetection]":
         if board.motor_port or board.sensing_port
         or board.busy_ports or board.owned_ports
     ]
+    legacy = probe_classic_motor_adapter()
+    if legacy is not None:
+        boards.append(legacy)
 
     # A dedicated tactile adapter is a separate USB device with nothing tying
     # it to a board, so it can only be attributed when there is one hand.

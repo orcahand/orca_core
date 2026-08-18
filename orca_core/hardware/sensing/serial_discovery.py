@@ -25,6 +25,7 @@ from ...constants import (
     ORCA_INFO_MARKER_SENSOR,
     ORCA_INFO_QUERY,
     PORT_BUSY_ERRNOS,
+    SUPPORTED_MOTOR_TYPES,
 )
 from .constants import (
     AUTO_FRAME_META_SIZE,
@@ -425,6 +426,46 @@ def probe_board(
 def probe_boards() -> "list[BoardProbe]":
     """Probe every attached controller board, one board at a time."""
     return [probe_board(candidate) for candidate in oh_board_candidates()]
+
+
+def probe_classic_motor_adapter() -> Optional[BoardProbe]:
+    """The bare Feetech/Dynamixel USB adapter of a legacy hand with no
+    controller board at all, as a :class:`BoardProbe` — or ``None`` when
+    zero or more than one such adapter answers.
+
+    Covers hardware built before the ``ORCA_ID?``/``ORCA_INFO?`` identity
+    protocol existed: a motor-driver adapter matched by USB vendor ID alone,
+    which never appears in :func:`oh_board_candidates`/:func:`probe_boards`
+    since neither speaks that protocol. There is no identity to report, so
+    ``board_id`` is the adapter's own USB serial (when it has one) prefixed
+    to keep it visibly distinct from a real board's identity — good enough
+    to tell two legacy hands apart across replugs, not to trust as
+    factory-assigned.
+    """
+    import serial.tools.list_ports
+
+    vids = {
+        vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])
+    }
+    matches = [p for p in serial.tools.list_ports.comports() if p.vid in vids]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            "%d classic Feetech/Dynamixel adapters answered with no "
+            "controller board behind any of them, so none can be matched to "
+            "a single legacy hand: %s. Their motor bus is not reported.",
+            len(matches), ", ".join(sorted(p.device for p in matches)),
+        )
+        return None
+
+    port = matches[0]
+    board_id = f"legacy-{port.serial_number}" if port.serial_number else None
+    if port_registry.owner_of(port.device) is not None:
+        return BoardProbe(ports=(port.device,), board_id=board_id, owned_ports=(port.device,))
+    if port_in_use(port.device):
+        return BoardProbe(ports=(port.device,), board_id=board_id, busy_ports=(port.device,))
+    return BoardProbe(ports=(port.device,), board_id=board_id, motor_port=port.device)
 
 
 def find_tactile_port() -> Optional[str]:
