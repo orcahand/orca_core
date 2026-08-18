@@ -152,6 +152,21 @@ class HandDetection:
 _PROBE_MOTOR_IDS = list(range(1, 18))
 
 
+def _classic_motor_ports() -> "list[str]":
+    """Device paths of adapters whose USB VID matches a known motor family.
+
+    Covers hands whose motor-side board is a bare Feetech/Dynamixel USB-serial
+    adapter that predates the ``ORCA_ID?``/``ORCA_INFO?`` identity protocol,
+    so it never appears in :func:`~.hardware.sensing.serial_discovery.oh_board_ports`.
+    """
+    import serial.tools.list_ports
+
+    from .constants import KNOWN_VIDS, SUPPORTED_MOTOR_TYPES
+
+    vids = {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}
+    return [p.device for p in serial.tools.list_ports.comports() if p.vid in vids]
+
+
 def _detect_motor_family(port: str) -> "tuple[Optional[str], Optional[int]]":
     """Identify the motor family answering on ``port``, non-fatally.
 
@@ -192,8 +207,12 @@ def detect_hand() -> HandDetection:
     Boards that report no ``CFG`` — unprovisioned, or firmware predating the
     field — fall back to probing: joint encoders from a live encoder stream on
     the sensing CDC, tactile from a sensor register reply (on the shared CDC or
-    a dedicated adapter). The motor family comes from probing the motor bus.
-    Anything the hardware doesn't answer falls back
+    a dedicated adapter). The motor family comes from probing the motor bus: a
+    board that answered the identity query as ``motor`` is probed directly;
+    otherwise (a bare Feetech/Dynamixel adapter whose firmware predates
+    ``ORCA_ID?``/``ORCA_INFO?``, e.g. no controller board at all) every port
+    matching a known motor-family USB VID is probed instead. Anything the
+    hardware doesn't answer falls back
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
@@ -253,16 +272,27 @@ def detect_hand() -> HandDetection:
     missing = tuple(n for n, on in declared_caps.items() if on and not probed[n])
     undeclared = tuple(n for n, on in probed.items() if on and not declared_caps[n])
 
-    motor_type, motor_baudrate = (
-        _detect_motor_family(motor_port) if motor_port is not None else (None, None)
-    )
+    classic_motor_ports: tuple[str, ...] = ()
+    if motor_port is not None:
+        motor_type, motor_baudrate = _detect_motor_family(motor_port)
+    else:
+        # No oh_board CDC claimed the motor role — either none is present, or
+        # its firmware predates the identity protocol. Fall back to a bare
+        # Feetech/Dynamixel USB adapter, matched by VID alone.
+        classic_motor_ports = tuple(p for p in _classic_motor_ports() if p != sensing_port)
+        motor_type, motor_baudrate = None, None
+        for port in classic_motor_ports:
+            motor_type, motor_baudrate = _detect_motor_family(port)
+            if motor_type is not None:
+                motor_port = port
+                break
 
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
 
     busy_ports = tuple(
         port
-        for port in candidates
+        for port in (*candidates, *classic_motor_ports)
         if port not in (motor_port, sensing_port) and port_in_use(port)
     )
 

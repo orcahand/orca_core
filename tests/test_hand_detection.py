@@ -72,6 +72,7 @@ def _patch_hardware(
     tactile_register=False,
     motor_family=(None, None),
     busy_ports=(),
+    classic_motor_ports=(),
 ):
     infos = infos or {}
     monkeypatch.setattr(
@@ -86,6 +87,12 @@ def _patch_hardware(
     monkeypatch.setattr(hand_factory, "find_tactile_port", lambda: paxini_port)
     monkeypatch.setattr(
         hand_factory, "_tactile_responds_at", lambda port, baud: tactile_register
+    )
+    # Real USB enumeration must never leak into these tests — a classic
+    # Feetech/Dynamixel adapter actually plugged into the machine running the
+    # suite would otherwise make this list non-empty and non-hermetic.
+    monkeypatch.setattr(
+        hand_factory, "_classic_motor_ports", lambda: list(classic_motor_ports)
     )
 
 
@@ -327,6 +334,54 @@ def test_detects_the_motor_family_on_the_motor_port(monkeypatch):
     )
     d = detect_hand()
     assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+
+
+def test_classic_adapter_found_when_no_identity_board_answers(monkeypatch):
+    """A bare Feetech/Dynamixel adapter predating ORCA_ID?/ORCA_INFO? never
+    shows up in oh_board_ports(); it must still be found by USB VID."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.motor"],
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert d.identity is None
+    assert d.motor_port == "/dev/cu.motor"
+    assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+
+
+def test_identity_board_motor_port_wins_over_classic_fallback(monkeypatch):
+    """When an oh_board CDC already claimed the motor role, the classic VID
+    sweep must not run at all — it exists only as a fallback."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        classic_motor_ports=["/dev/cu.other"],
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.m"
+
+
+def test_classic_adapter_that_never_answers_yields_no_motor_port(monkeypatch):
+    _patch_hardware(monkeypatch, classic_motor_ports=["/dev/cu.motor"])
+    d = detect_hand()
+    assert d.motor_port is None
+    assert (d.motor_type, d.motor_baudrate) == (None, None)
+
+
+def test_busy_classic_motor_port_is_reported(monkeypatch):
+    """A classic adapter held by another process must surface in busy_ports,
+    same as an oh_board CDC would."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.motor"],
+        busy_ports=("/dev/cu.motor",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.motor",)
 
 
 def test_motor_family_detection_is_non_fatal(monkeypatch):
