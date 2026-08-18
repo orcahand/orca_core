@@ -428,6 +428,39 @@ def probe_boards() -> "list[BoardProbe]":
     return [probe_board(candidate) for candidate in oh_board_candidates()]
 
 
+def _classic_motor_adapter_ports() -> "list":
+    """Every bare Feetech/Dynamixel USB adapter currently enumerated, before
+    deciding whether it can be matched to a single legacy hand.
+
+    Split out from :func:`probe_classic_motor_adapter` so a caller can tell
+    "no legacy hand" (zero here) apart from "legacy hands are attached but
+    which motor bus is whose can't be told apart" (more than one) — both
+    collapse to that function's ``None``, but a caller like
+    :func:`~orca_core.hand_factory.detect_hands` that also has a lone
+    tactile adapter to attribute needs to know which case it is in before
+    guessing that adapter belongs to a single, simple hand.
+    """
+    import serial.tools.list_ports
+
+    vids = {
+        vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])
+    }
+    return [p for p in serial.tools.list_ports.comports() if p.vid in vids]
+
+
+def count_classic_motor_adapters() -> int:
+    """How many bare Feetech/Dynamixel USB adapters currently answer, with no
+    controller board behind any of them.
+
+    Zero means no legacy hand is attached; more than one means legacy hands
+    are attached but which motor bus belongs to which cannot be told apart
+    (see :func:`probe_classic_motor_adapter`). Exposed so a front-end can
+    tell that apart from "nothing is plugged in" when detection reports no
+    hands at all.
+    """
+    return len(_classic_motor_adapter_ports())
+
+
 def probe_classic_motor_adapter() -> Optional[BoardProbe]:
     """The bare Feetech/Dynamixel USB adapter of a legacy hand with no
     controller board at all, as a :class:`BoardProbe` — or ``None`` when
@@ -442,19 +475,17 @@ def probe_classic_motor_adapter() -> Optional[BoardProbe]:
     to tell two legacy hands apart across replugs, not to trust as
     factory-assigned.
     """
-    import serial.tools.list_ports
-
-    vids = {
-        vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])
-    }
-    matches = [p for p in serial.tools.list_ports.comports() if p.vid in vids]
+    matches = _classic_motor_adapter_ports()
     if not matches:
         return None
     if len(matches) > 1:
         logger.warning(
             "%d classic Feetech/Dynamixel adapters answered with no "
             "controller board behind any of them, so none can be matched to "
-            "a single legacy hand: %s. Their motor bus is not reported.",
+            "a single legacy hand: %s. Their motor bus is not reported. Pin "
+            "each hand's port: explicitly in its own "
+            "orca_core/models/local/<name>/config.yaml (see that "
+            "directory's README) to use them together.",
             len(matches), ", ".join(sorted(p.device for p in matches)),
         )
         return None

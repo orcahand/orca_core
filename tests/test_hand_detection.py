@@ -211,6 +211,27 @@ def test_two_classic_motor_adapters_are_not_guessed_between(monkeypatch, caplog)
     assert "2 classic" in caplog.text
 
 
+def test_a_lone_paxini_is_not_guessed_onto_one_of_two_ambiguous_legacy_hands(
+    monkeypatch, caplog
+):
+    """The bug this pins: with two bare motor adapters that can't be told
+    apart (e.g. a legacy motor-only hand plus a legacy touch hand's motor
+    side), detect_hands() used to fall back to its single-legacy-touch-hand
+    shortcut and hand the one Paxini adapter to a synthesized detection with
+    no motor port at all — silently dropping the motor-only hand and risking
+    the Paxini being paired with whichever adapter a human later picks for
+    that phantom hand's motor bus, which could be either physical hand."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.a", "/dev/cu.b"],
+        paxini_port="/dev/cu.paxini",
+    )
+    with caplog.at_level("WARNING"):
+        detections = hand_factory.detect_hands()
+    assert detections == []
+    assert "2 classic" in caplog.text
+
+
 def test_legacy_hand_coexists_with_a_modern_hand_without_corrupting_it(monkeypatch):
     """The bug this pins: a dedicated tactile adapter used to be attributed
     to a lone oh_board hand even when a second, legacy hand's classic motor

@@ -14,6 +14,7 @@ from orca_core import (
     load_hand,
     load_hands,
 )
+from orca_core.constants import KNOWN_VIDS
 from orca_core.hand_factory import HandDetection, select_hand
 
 
@@ -519,6 +520,88 @@ def test_a_pinned_port_that_is_nobodys_bus_is_a_configuration_error(
 
     with pytest.raises(HandNotFoundError, match="/dev/cu.gone"):
         load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.gone"))
+
+
+def test_two_ambiguous_legacy_hands_still_load_from_their_own_pinned_configs(
+        monkeypatch, tmp_path):
+    """Two bare Feetech/Dynamixel adapters with no controller board can't be
+    told apart by detect_hands() (see test_hand_detection.py), which leaves
+    both undetected rather than guess. An operator who wired each one up
+    themselves and pinned its port in its own config.yaml has already
+    resolved that ambiguity by hand — refusing them too would make two old
+    hands unusable together even though nothing is actually at risk of being
+    crossed."""
+    from tests._helpers import fake_serial_port
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    feetech_vid = KNOWN_VIDS["feetech"][0]
+    monkeypatch.setattr(
+        "serial.tools.list_ports.comports",
+        lambda: [
+            fake_serial_port("/dev/cu.a-motor", feetech_vid),
+            fake_serial_port("/dev/cu.b-motor", feetech_vid),
+        ],
+    )
+
+    hand_a = load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.a-motor"))
+    hand_b = load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.b-motor"))
+
+    assert hand_a.config.port == "/dev/cu.a-motor"
+    assert hand_b.config.port == "/dev/cu.b-motor"
+
+
+def test_a_pinned_port_naming_nothing_plugged_in_is_still_refused(monkeypatch, tmp_path):
+    """The graceful fallback only covers a port detection left ambiguous —
+    not a config pinning a port with nothing there at all."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [])
+
+    with pytest.raises(HandNotFoundError, match="no hand is attached"):
+        load_hand(config_path=_pinned_config(tmp_path, "/dev/cu.gone"))
+
+
+def test_a_caller_supplied_motor_port_selector_gets_the_same_trust(monkeypatch, tmp_path):
+    """orca_ui's own connect ladder (orca_ui/hand/sessions.py _build_hand)
+    never relies on _pinned_port inference — it always passes
+    select=HandSelector(motor_port=...) itself, once its own hardware probe
+    (which reads the same pinned config field) has resolved a port. That
+    caller-supplied selector deserves exactly the same trust as one derived
+    internally from a config's own port: pin — both name an exact device
+    path the operator already resolved by hand, and detect_hands() can leave
+    it unconfirmed for the same reason (an ambiguous legacy sibling)."""
+    from tests._helpers import fake_serial_port
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    feetech_vid = KNOWN_VIDS["feetech"][0]
+    monkeypatch.setattr(
+        "serial.tools.list_ports.comports",
+        lambda: [
+            fake_serial_port("/dev/cu.a-motor", feetech_vid),
+            fake_serial_port("/dev/cu.b-motor", feetech_vid),
+        ],
+    )
+
+    hand = load_hand(
+        config_path=_pinned_config(tmp_path, "/dev/cu.a-motor"),
+        select=HandSelector(motor_port="/dev/cu.a-motor"),
+    )
+
+    assert hand.config.port == "/dev/cu.a-motor"
+
+
+def test_a_motor_port_selector_contradicted_by_a_detected_hand_still_raises(
+        monkeypatch, tmp_path):
+    """A detection did answer at this exact port, just for a hand that some
+    other selector field rules out — that is a genuine conflict, not the
+    ambiguous-legacy-sibling case, and must not be papered over."""
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    _detected(monkeypatch, [_detection("ser-0001", motor_port="/dev/cu.a-motor")])
+
+    with pytest.raises(HandNotFoundError):
+        load_hand(
+            config_path=_model(),
+            select=HandSelector(motor_port="/dev/cu.a-motor", hand_id="ser-0001", side="left"),
+        )
 
 
 # ----- adoption is a one-shot, recorded event -------------------------------

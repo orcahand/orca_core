@@ -55,6 +55,7 @@ from .hardware.sensing.serial_discovery import (
     BoardProbe,
     OrcaBoardInfo,
     _tactile_responds_at,
+    count_classic_motor_adapters,
     detect_encoder_stream,
     find_tactile_port,
     probe_boards,
@@ -249,19 +250,28 @@ def detect_hands() -> "list[HandDetection]":
         if board.motor_port or board.sensing_port
         or board.busy_ports or board.owned_ports
     ]
+    # More than one bare adapter is exactly as ambiguous as more than one
+    # board: probe_classic_motor_adapter() already refuses to guess between
+    # them and returns None, but that also happens when zero are attached —
+    # the tactile-attribution guard below needs to tell those apart, so the
+    # ambiguous case is checked separately rather than inferred from `legacy`.
+    legacy_ambiguous = count_classic_motor_adapters() > 1
     legacy = probe_classic_motor_adapter()
     if legacy is not None:
         boards.append(legacy)
 
     # A dedicated tactile adapter is a separate USB device with nothing tying
-    # it to a board, so it can only be attributed when there is one hand.
+    # it to a board, so it can only be attributed when there is exactly one
+    # hand — including a legacy hand whose own motor bus is itself ambiguous,
+    # since the adapter could belong to any of them.
     adapter_port = find_tactile_port()
-    if adapter_port is not None and len(boards) > 1:
+    if adapter_port is not None and (len(boards) > 1 or legacy_ambiguous):
         logger.warning(
-            "a dedicated tactile adapter is attached (%s) but %d hands are "
-            "plugged in, so it cannot be attributed to one of them. Tactile "
-            "is reported only for hands whose sensing CDC answers.",
-            adapter_port, len(boards),
+            "a dedicated tactile adapter is attached (%s) but more than one "
+            "hand's motor bus is plugged in, so it cannot be attributed to "
+            "one of them. Tactile is reported only for hands whose sensing "
+            "CDC answers.",
+            adapter_port,
         )
         adapter_port = None
 
@@ -500,6 +510,19 @@ def _pinned_port(
     )
     port = (read_yaml(resolved) or {}).get("port")
     return port if port and port != "auto" else None
+
+
+def _port_currently_present(port: str) -> bool:
+    """True if some serial adapter currently enumerates at ``port``.
+
+    Used to tell a pinned port that names hardware detection could not
+    independently confirm (two legacy hands whose bare motor adapters can't
+    be told apart — see ``probe_classic_motor_adapter``) apart from one that
+    names nothing plugged in at all, which stays a configuration error.
+    """
+    import serial.tools.list_ports
+
+    return any(p.device == port for p in serial.tools.list_ports.comports())
 
 
 def _unresolved_reason(detection: HandDetection) -> str:
@@ -830,10 +853,40 @@ def load_hand(
         detections = detect_hands()
         attached = len(detections)
         if detections or select is not None:
-            # A selector that matches nothing is an error; asking for no
-            # particular hand with none attached is not, and still yields the
-            # bundled default so a config can be inspected off the bench.
-            detection = select_hand(detections, select)
+            try:
+                # A selector that matches nothing is an error; asking for no
+                # particular hand with none attached is not, and still yields
+                # the bundled default so a config can be inspected off the
+                # bench.
+                detection = select_hand(detections, select)
+            except HandNotFoundError:
+                # A motor_port names an exact device path, which detection
+                # can fail to independently confirm only when legacy hands
+                # with no board identity leave it ambiguous which of several
+                # bare Feetech/Dynamixel adapters is which (see
+                # probe_classic_motor_adapter) — detect_hands() then reports
+                # none of them rather than guess. Whoever set motor_port
+                # (a config's own port: pin, or a caller resolving one hand
+                # among several) already resolved that ambiguity by naming
+                # the exact port, so trust it instead of refusing a hand that
+                # is plainly attached — unless some *other* detected hand
+                # answers on that same port with a selector field that
+                # disagrees, which is a real contradiction to raise on, or
+                # the port simply isn't there, which stays the configuration
+                # error it always was.
+                motor_port = select.motor_port if select is not None else None
+                contradicted = any(d.motor_port == motor_port for d in detections)
+                if motor_port is None or contradicted or not _port_currently_present(motor_port):
+                    raise
+                logger.info(
+                    "hand at %r was not resolved by autodetection (likely "
+                    "ambiguous with another legacy hand also attached); "
+                    "trusting the selector's exact port instead of refusing "
+                    "a hand that is plainly attached. Calibration comes from "
+                    "this config's own calibration_path, not the per-hand "
+                    "store.",
+                    motor_port,
+                )
     return _build_hand(
         detection,
         config_path=config_path,

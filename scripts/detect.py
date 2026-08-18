@@ -16,6 +16,7 @@ import io
 import sys
 
 from orca_core import HandSelector, detect_hand, detect_hands, load_hand
+from orca_core.hardware.sensing.serial_discovery import count_classic_motor_adapters
 
 
 @contextlib.contextmanager
@@ -173,6 +174,19 @@ def main() -> None:
         sys.exit(1)
 
     if not detections:
+        legacy_count = count_classic_motor_adapters()
+        if legacy_count > 1:
+            print(
+                f"{legacy_count} bare Feetech/Dynamixel motor adapters are plugged "
+                "in with no controller board behind any of them, so none can be "
+                "matched to a single legacy hand — nothing is reported below "
+                "instead of guessing which is which.\n"
+                "Pin each hand's port: explicitly in its own "
+                "orca_core/models/local/<name>/config.yaml (sensors.port: too, "
+                "for a touch hand — see that directory's README) and run this "
+                "script with that config_path to inspect one at a time."
+            )
+            return
         _report(detect_hand())
         return
 
