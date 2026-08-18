@@ -36,6 +36,7 @@ orca_core/
 │   ├── utils.py                      # Model-path resolution, YAML I/O (atomic writes), interpolation
 │   └── cli.py                        # Shared argparse/lifecycle helpers for scripts and examples
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
+│   └── local/                        # Gitignored: your own hand-specific config.yaml files (see its README)
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
 ├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)
 ├── hardware_hand_sensing.py        # Sensing variants: OrcaHandTouch / OrcaHandJointFeedback / OrcaHandFull (+ mocks)
@@ -195,6 +196,13 @@ All hand-specific settings are in `config.yaml`:
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)
+
+A hand old enough to predate the `ORCA_ID?`/`ORCA_INFO?` identity protocol reports no
+side, and with more than one such hand attached, autodetection refuses to guess which
+bus is which rather than risk crossing them (a warning names this). Pin each one's
+`port:` (and `sensors: port:` for a touch hand) in its own
+`orca_core/models/local/<name>/config.yaml` — gitignored, so it never gets shipped or
+committed — and pass that as `config_path`. See `orca_core/models/local/README.md`.
 
 ---
 
