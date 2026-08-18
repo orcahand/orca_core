@@ -1,6 +1,12 @@
 import argparse
 
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
+from orca_core.utils.cli import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand_from_args,
+    quiet_uncalibrated_warnings,
+    shutdown_hand,
+)
 from orca_core.constants import NUM_STEPS, STEP_SIZE
 
 
@@ -19,9 +25,15 @@ def main() -> int:
     hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints(
-            force_calibrate=args.force_calibrate, move_to_neutral=False
-        )
+        # init_joints() calibrates when the hand isn't already, or when
+        # forced — quiet the per-step re-warn that routine's own reads
+        # would otherwise repeat; construction's one-time banner stays
+        # visible, since it explains why a calibration sweep is about to
+        # run at all.
+        with quiet_uncalibrated_warnings():
+            hand.init_joints(
+                force_calibrate=args.force_calibrate, move_to_neutral=False
+            )
         print("Moving all joints to zero...")
         hand.set_zero_position(num_steps=args.num_steps, step_size=args.step_size)
         print("Reached zero position.")

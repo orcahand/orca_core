@@ -13,6 +13,7 @@ from orca_core.utils.cli import (
     connect_hand,
     create_hand_from_args,
     print_calibration_progress,
+    quiet_uncalibrated_warnings,
     shutdown_hand,
 )
 from orca_core.constants import NUM_STEPS, STEP_SIZE
@@ -62,9 +63,12 @@ def run_calibrate(hand, step_num, label, force_wrist=False):
     else:
         print("  Calibrating finger joints (wrist already calibrated, skipping)...")
     try:
-        hand.calibrate(
-            force_wrist=force_wrist, progress_callback=print_calibration_progress
-        )
+        # A hand mid-setup is expected to be uncalibrated; its own position
+        # reads would otherwise re-report that after every step it commits.
+        with quiet_uncalibrated_warnings():
+            hand.calibrate(
+                force_wrist=force_wrist, progress_callback=print_calibration_progress
+            )
     except KeyboardInterrupt:
         print("\n  Calibration skipped.")
 
@@ -171,8 +175,10 @@ def main():
     print(DIVIDER)
 
     # The workflow runs tension and calibrate, neither of which can share the
-    # motors with a live joint loop.
-    hand = create_hand_from_args(args, engage_feedback=False)
+    # motors with a live joint loop. quiet=True: a hand going through full
+    # setup is expected to start uncalibrated, not something to report
+    # before the workflow has even begun.
+    hand = create_hand_from_args(args, engage_feedback=False, quiet=True)
     connect_hand(hand)
     print(f"  Model: {Path(hand.config.config_path).parent.name}")
     print(f"  Motor family: {hand.config.motor_type}")

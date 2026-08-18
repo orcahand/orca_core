@@ -494,6 +494,52 @@ class TestQuietConstruction:
         assert len(prompted) == 1  # the picker really ran, not skipped
         assert hand.config.config_path == "ser-0002.yaml"
 
+    def test_sensors_mode_drops_motor_limits_but_keeps_encoder_anchors_when_feedback_enabled(
+        self, monkeypatch, capsys
+    ):
+        import orca_core.utils.cli as cli
+
+        def fake_load_hand(**kwargs):
+            print("Warning: Motor ID 1 (Joint: wrist) has not been fully "
+                  "calibrated (missing motor limits).")
+            print("Warning: Joint wrist is missing a joint-encoder "
+                  "calibration entry.")
+            return SimpleNamespace(
+                config=SimpleNamespace(
+                    config_path="fake.yaml", joint_feedback_enabled=True
+                )
+            )
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: [_detection("ser-0001")])
+
+        cli.create_hand(None, use_mock=False, quiet="sensors")
+
+        out = capsys.readouterr().out
+        assert "has not been fully calibrated" not in out
+        assert "missing a joint-encoder calibration entry" in out
+
+    def test_sensors_mode_drops_encoder_anchors_too_without_feedback(
+        self, monkeypatch, capsys
+    ):
+        import orca_core.utils.cli as cli
+
+        def fake_load_hand(**kwargs):
+            print("Warning: Motor ID 1 (Joint: wrist) has not been fully "
+                  "calibrated (missing motor limits).")
+            return SimpleNamespace(
+                config=SimpleNamespace(
+                    config_path="fake.yaml", joint_feedback_enabled=False
+                )
+            )
+
+        monkeypatch.setattr(cli, "load_hand", fake_load_hand)
+        monkeypatch.setattr(cli, "detect_hands", lambda: [_detection("ser-0001")])
+
+        cli.create_hand(None, use_mock=False, quiet="sensors")
+
+        assert "has not been fully calibrated" not in capsys.readouterr().out
+
 
 class TestQuietUncalibratedWarnings:
     def test_suppresses_the_hardware_hand_logger_and_restores_it(self):

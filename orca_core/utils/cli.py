@@ -208,16 +208,17 @@ def create_hand(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     hand_id: str | None = None,
-    quiet: bool = False,
+    quiet: "bool | str" = False,
 ) -> BaseHand:
     """Build the hand class matching the selected — or detected — model.
 
     With no ``config_path`` or ``model_name`` on a physical hand this probes
     the hardware, so the model matches what is actually plugged in rather than
     the packaged default. A selection failure exits with the attached hands
-    listed rather than a traceback naming a Python API. ``quiet=True`` drops
-    construction's one-time not-calibrated banner (see
-    :func:`create_hand_from_args`).
+    listed rather than a traceback naming a Python API. ``quiet`` drops
+    construction's one-time not-calibrated banner — ``True`` entirely,
+    ``"sensors"`` only the parts that don't matter to a sensor-only tool (see
+    :func:`_without_uncalibrated_banner`).
     """
     if hand_id is not None and use_mock:
         raise SystemExit(
@@ -234,16 +235,27 @@ def create_hand(
 
 # Construction prints one Warning line per uncalibrated motor/joint — useful
 # the first time an operator sees a hand, noise to a routine whose entire job
-# is fixing exactly that (calibrate.py, tension.py opt in via quiet=True).
-_UNCALIBRATED_BANNER_SNIPPETS = (
-    "has not been fully calibrated",
-    "is missing a joint-encoder calibration entry",
-)
+# is fixing exactly that (calibrate.py, tension.py, setup.py) or that never
+# touches motors or joint calibration at all (check_sensors.py, check_motor.py).
+_MOTOR_LIMIT_SNIPPET = "has not been fully calibrated"
+_ENCODER_ANCHOR_SNIPPET = "is missing a joint-encoder calibration entry"
 
 
-def _without_uncalibrated_banner(build_hand):
+def _without_uncalibrated_banner(build_hand, *, mode: "bool | str" = True):
     """Run ``build_hand`` (a zero-arg call into ``load_hand``/``load_hands``)
-    with its uncalibrated-banner lines dropped from what it prints.
+    with its construction-time not-calibrated banner filtered from what it
+    prints.
+
+    ``mode=True`` drops every line: for a caller whose whole job is fixing
+    that, or one that never touches motors or joint calibration at all,
+    neither category means anything to report before it has even started.
+
+    ``mode="sensors"`` drops only the motor-limit lines — meaningless to any
+    sensor-only tool, which never touches a motor — and keeps the
+    joint-encoder-anchor lines when the built hand actually declares
+    feedback: a tool watching that live stream (monitor_sensors.py) benefits
+    from knowing whether what it shows is anchored, which a motor-only or
+    touch-only hand never has to begin with.
 
     Buffers and replays rather than filtering live, which is only safe
     because building a hand never calls ``input()`` — the interactive picker
@@ -253,14 +265,23 @@ def _without_uncalibrated_banner(build_hand):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         result = build_hand()
+    keep_encoder_anchors = False
+    if mode == "sensors":
+        hands = result if isinstance(result, HandFleet) else (result,)
+        keep_encoder_anchors = any(
+            getattr(h.config, "joint_feedback_enabled", False) for h in hands
+        )
     for line in buf.getvalue().splitlines():
-        if not any(s in line for s in _UNCALIBRATED_BANNER_SNIPPETS):
-            print(line)
+        if _MOTOR_LIMIT_SNIPPET in line:
+            continue
+        if _ENCODER_ANCHOR_SNIPPET in line and not keep_encoder_anchors:
+            continue
+        print(line)
     return result
 
 
 def _resolve_selection(
-    build: dict, *, hand_id: str | None, allow_all: bool, quiet: bool = False
+    build: dict, *, hand_id: str | None, allow_all: bool, quiet: "bool | str" = False
 ):
     """Resolve one hand from ``build`` (:func:`load_hand` kwargs minus
     ``select``), prompting interactively on ambiguity exactly as a bare
@@ -274,7 +295,7 @@ def _resolve_selection(
     """
     def _load(select):
         call = lambda: load_hand(select=select, **build)  # noqa: E731
-        return _without_uncalibrated_banner(call) if quiet else call()
+        return _without_uncalibrated_banner(call, mode=quiet) if quiet else call()
 
     try:
         return _load(_selector_for(hand_id)), False
@@ -295,15 +316,16 @@ def _resolve_selection(
 
 
 def create_hand_from_args(
-    args: Namespace, *, quiet: bool = False, **overrides
+    args: Namespace, *, quiet: "bool | str" = False, **overrides
 ) -> BaseHand:
     """Build the hand every argument in :func:`add_hand_arguments` selects.
 
     Front-ends call this instead of :func:`create_hand` so a flag can never be
     advertised and then dropped. ``overrides`` pin what the front-end decides
     itself, e.g. ``engage_feedback=False`` for a routine that must drive the
-    motors open-loop. ``quiet=True`` drops construction's one-time
-    not-calibrated banner — for a front-end whose whole job is fixing that.
+    motors open-loop. ``quiet`` drops construction's one-time not-calibrated
+    banner — see :func:`_without_uncalibrated_banner` for what ``True`` vs
+    ``"sensors"`` each drop.
     """
     handle_hand_selection(args)
     options = {
@@ -316,7 +338,9 @@ def create_hand_from_args(
     return create_hand(args.config_path, quiet=quiet, **options)
 
 
-def _load_every_hand(args: Namespace, overrides: dict, *, quiet: bool = False) -> HandFleet:
+def _load_every_hand(
+    args: Namespace, overrides: dict, *, quiet: "bool | str" = False
+) -> HandFleet:
     options = {
         "mock": args.mock,
         "engage_feedback": getattr(args, "engage_feedback", True),
@@ -324,7 +348,7 @@ def _load_every_hand(args: Namespace, overrides: dict, *, quiet: bool = False) -
     options.update(overrides)
     call = lambda: load_hands(**options)  # noqa: E731
     try:
-        fleet = _without_uncalibrated_banner(call) if quiet else call()
+        fleet = _without_uncalibrated_banner(call, mode=quiet) if quiet else call()
     except HandSelectionError as e:
         _explain_selection_failure(e)
     if not fleet:
@@ -337,7 +361,7 @@ def _load_every_hand(args: Namespace, overrides: dict, *, quiet: bool = False) -
 
 
 def create_fleet_from_args(
-    args: Namespace, *, quiet: bool = False, **overrides
+    args: Namespace, *, quiet: "bool | str" = False, **overrides
 ) -> HandFleet:
     """Build the fleet ``--all``/``--hand``/``config_path`` selects.
 

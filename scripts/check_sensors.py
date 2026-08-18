@@ -705,9 +705,11 @@ def main() -> int:
         )
         return 0 if print_summary([("encoders: stream health", *result)]) else 1
 
+    # Motors are never powered here — calibration state has no bearing on
+    # whether the sensing links are healthy.
     hand = create_hand(
         args.config_path, use_mock=False, engage_feedback=False,
-        hand_id=args.hand,
+        hand_id=args.hand, quiet=True,
     )
     has_encoders = hand.config.has_joint_encoders
     has_tactile = isinstance(hand, OrcaHandTouch)

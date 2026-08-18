@@ -241,9 +241,13 @@ def main() -> int:
         # can't tell a hand missing its connector board from an ambiguity,
         # and refuses both alike. Selecting a hand ties resolution to that
         # hand's own port, still auto-detected if it wasn't already pinned.
+        # quiet="sensors": motor calibration never matters to a tool that
+        # only ever reads sensor streams, but whether an encoder is anchored
+        # is worth knowing while watching its raw angle live — so that part
+        # of the banner stays for a hand that actually has joint encoders.
         hand = create_hand(
             None, use_mock=False, engage_feedback=False, engage_sensors=False,
-            hand_id=args.hand, quiet=True,
+            hand_id=args.hand, quiet="sensors",
         )
         discovered = resolve_sensing_ports(
             tactile_override=getattr(hand.config, "sensor_port", "disabled"),

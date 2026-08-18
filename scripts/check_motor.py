@@ -70,8 +70,10 @@ def _resolve_motor_id(hand, args: argparse.Namespace) -> int:
 def main() -> int:
     args = parse_args()
 
-    # Motor-only: a running joint-feedback loop would fight the raw position writes.
-    hand = create_hand_from_args(args, engage_feedback=False)
+    # Motor-only: a running joint-feedback loop would fight the raw position
+    # writes. This sweeps a raw motor position, never a calibrated joint one,
+    # so calibration state has no bearing on it either.
+    hand = create_hand_from_args(args, engage_feedback=False, quiet=True)
     try:
         motor_id = _resolve_motor_id(hand, args)
         connect_hand(hand)
