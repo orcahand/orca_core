@@ -110,6 +110,10 @@ def main() -> int:
         open_pos = hand.pose_from_fractions(OPEN_FRACTIONS)
         close_pos = hand.pose_from_fractions(CLOSE_FRACTIONS)
 
+        max_temp = hand.motor_client.max_operating_temp_c
+        open_pos = hand.pose_from_fractions(OPEN_FRACTIONS)
+        close_pos = hand.pose_from_fractions(CLOSE_FRACTIONS)
+
         last_temp_check = 0.0
         try:
             while True:

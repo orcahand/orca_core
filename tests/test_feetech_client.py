@@ -21,6 +21,7 @@ from orca_core.hardware.feetech_client import (
     FeetechClient,
 )
 from orca_core.hardware.feetech import (
+    SMS_STS_LOCK,
     SMS_STS_MODE,
     SMS_STS_MOVING,
     SMS_STS_PRESENT_CURRENT_L,
@@ -68,8 +69,11 @@ class FakePacketHandler:
         self.log: list[str] = []
         self.write1_hook = None  # callable(motor_id, address, value) -> (result, error)
         self.ofs_hook = None     # callable(motor_id, position) -> (result, error)
+        self.sync_writes: list[tuple] = []  # (start_address, param bytes)
         self.client: FeetechClient | None = None
         self.lock_checks: list[bool] = []
+        self.modes: dict[int, int] = {}  # mode register per motor; 0 = servo
+        self.status_errors: dict[int, int] = {}  # latched status byte per motor
 
     def _record(self, name):
         self.log.append(name)
@@ -81,12 +85,33 @@ class FakePacketHandler:
     def scs_tohost(self, raw, bit):
         return raw
 
+    def scs_toscs(self, raw, bit):
+        return raw
+
+    def scs_lobyte(self, word):
+        return word & 0xFF
+
+    def scs_hibyte(self, word):
+        return (word >> 8) & 0xFF
+
+    def getRxPacketError(self, error):
+        return f"error 0x{error:02X}"
+
     def read2ByteTxRx(self, motor_id, address):
         self._record("read2")
         if motor_id in self.unavailable_ids:
             return 0, 1, 0
+        error = self.status_errors.get(motor_id, 0)
         if address == SMS_STS_PRESENT_POSITION_L:
-            return self.positions[motor_id], COMM_SUCCESS, 0
+            return self.positions[motor_id], COMM_SUCCESS, error
+        return 0, COMM_SUCCESS, error
+
+    def read1ByteTxRx(self, motor_id, address):
+        self._record("read1")
+        if motor_id in self.unavailable_ids:
+            return 0, 1, 0
+        if address == SMS_STS_MODE:
+            return self.modes.get(motor_id, 0), COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
     def write1ByteTxRx(self, motor_id, address, value):
@@ -94,6 +119,17 @@ class FakePacketHandler:
         if self.write1_hook is not None:
             return self.write1_hook(motor_id, address, value)
         return COMM_SUCCESS, 0
+
+    def unLockEprom(self, motor_id):
+        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 0)
+
+    def LockEprom(self, motor_id):
+        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 1)
+
+    def syncWriteTxOnly(self, start_address, data_length, param, param_length):
+        self._record("sync_write")
+        self.sync_writes.append((start_address, list(param)))
+        return COMM_SUCCESS
 
     def reOfsCal(self, motor_id, position):
         self._record("ofs_cal")
@@ -190,6 +226,23 @@ def test_per_motor_fallback_keeps_cache_and_flags_not_ok(client):
     assert read.position[0] == pytest.approx(_expected_pos(feetech, 110))
     assert read.position[1] == pytest.approx(_expected_pos(feetech, 200))
     assert read.position[2] == pytest.approx(_expected_pos(feetech, 310))
+
+
+def test_fallback_keeps_a_flagged_motors_answer(client):
+    """A latched status flag qualifies the motor, not the packet: the answer it
+    came with is fresh in the fallback exactly as in the sync path."""
+    feetech, handler = client
+    feetech.read_position_velocity_current()
+
+    handler.positions = {1: 110, 2: 999, 3: 310}
+    handler.sync_fails = True
+    handler.status_errors = {2: 0x20}
+    read = feetech.read_position_velocity_current()
+
+    assert feetech.last_read_ok is True
+    assert read.position[1] == pytest.approx(_expected_pos(feetech, 999))
+
+    handler.status_errors = {}
 
 
 def test_fallback_with_all_motors_answering_reports_ok(client):
@@ -321,6 +374,7 @@ def test_set_operating_mode_skips_motors_that_did_not_ack_torque_off(
         return COMM_SUCCESS, 0
 
     handler.write1_hook = hook
+    handler.modes = {1: 1, 2: 1, 3: 1}  # wheel mode, so a mode write is due
     feetech.set_operating_mode([1, 2, 3], 5)
 
     mode_writes = [mid for mid, addr, _ in calls if addr == SMS_STS_MODE]

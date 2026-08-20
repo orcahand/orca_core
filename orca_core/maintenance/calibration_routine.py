@@ -63,6 +63,7 @@ from ..hardware.joint_encoder_client import (
 )
 from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV, ENCODER_LSB_DEG
 from ..utils.utils import read_yaml, write_yaml_atomic
+from .motor_reads import read_motor_pos_checked
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -237,24 +238,18 @@ def _persist_calibration(
     write_yaml_atomic(calibration_path, doc)
 
 
-def _read_motor_pos_checked(hand: "OrcaHand", retries: int = 5) -> np.ndarray:
-    """Read motor positions, rejecting a bulk read the bus never answered.
+def _skips_torque_release(hand: "OrcaHand", motor_id: int) -> bool:
+    """Whether this motor's limit is taken while it presses the hardstop.
 
-    A dropped status packet leaves ``get_motor_pos`` returning the stale
-    cache — at limit capture that is the tension-biased pre-release position
-    the torque release exists to exclude. Retry, and raise rather than record
-    a stale value.
+    Only a multi-turn wrist qualifies: it travels far beyond a turn, so a
+    released re-read means nothing. On a single-turn family the wrist is an
+    ordinary servo, and skipping the release (and the offset calibration that
+    follows it) would leave its two limits in a different coordinate frame
+    from every finger motor's.
     """
-    for _ in range(retries):
-        with hand._motor_lock:
-            motor_pos = hand.get_motor_pos()
-            read_ok = hand.motor_client.last_read_ok
-        if read_ok:
-            return motor_pos
-        time.sleep(TINY_SLEEP)
-    raise RuntimeError(
-        "motor position read failed during limit capture: the motor bus "
-        "returned no status packets"
+    return (
+        hand.config.motor_to_joint_dict[motor_id] == WRIST
+        and hand.motor_client.supports_multi_turn
     )
 
 
@@ -521,9 +516,10 @@ def _drive_calibration(
                         atol=hand.config.calibration_threshold,
                     ):
                         motor_reached_limit[motor_id] = True
-                        # Wrist limit comes from the stable-position buffer (no
-                        # torque release); other motors are re-read post-release.
-                        if WRIST in hand.config.motor_to_joint_dict[motor_id]:
+                        # A multi-turn wrist's limit comes from the stable-position
+                        # buffer (no torque release); every other motor is re-read
+                        # after the release.
+                        if _skips_torque_release(hand, motor_id):
                             avg_limit = float(np.mean(position_buffers[motor_id]))
                             bound = 1 if directions[motor_id] == 1 else 0
                             pending_limits[motor_id][bound] = avg_limit
@@ -568,7 +564,7 @@ def _drive_calibration(
         for motor_id in directions.keys():
             if not motor_reached_limit.get(motor_id):
                 continue
-            if WRIST in hand.config.motor_to_joint_dict[motor_id]:
+            if _skips_torque_release(hand, motor_id):
                 continue
             idx = hand.config.motor_id_to_idx_dict[motor_id]
 
@@ -588,7 +584,7 @@ def _drive_calibration(
                 )
                 continue
             time.sleep(TINY_SLEEP)
-            avg_limit = float(_read_motor_pos_checked(hand)[idx])
+            avg_limit = float(read_motor_pos_checked(hand)[idx])
 
             if (
                 hand.motor_client.requires_offset_calibration
@@ -611,7 +607,7 @@ def _drive_calibration(
                     hand.enable_torque([motor_id])
                     continue
                 time.sleep(TINY_SLEEP)
-                avg_limit = float(_read_motor_pos_checked(hand)[idx])
+                avg_limit = float(read_motor_pos_checked(hand)[idx])
                 motors_with_final_offset.add(motor_id)
 
             bound = 1 if directions[motor_id] == 1 else 0

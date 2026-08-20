@@ -13,6 +13,7 @@ from orca_core.utils.cli import (
     create_fleet_from_args,
     print_calibration_progress,
     quiet_uncalibrated_warnings,
+    shutdown_hand,
 )
 
 
@@ -101,6 +102,7 @@ def _calibrate_one(hand, args, parser) -> None:
     print(status)
     if not status[0]:
         raise RuntimeError("failed to connect to the hand")
+    print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
 
     link = None
     client = None
@@ -117,7 +119,7 @@ def _calibrate_one(hand, args, parser) -> None:
                 hand.config.encoder_serial_port, hand.config.encoder_baudrate
             )
         except Exception as exc:
-            hand.disconnect()
+            shutdown_hand(hand)
             raise RuntimeError(f"could not open encoder stream ({exc})") from exc
 
     try:
@@ -142,12 +144,12 @@ def _calibrate_one(hand, args, parser) -> None:
             client.disconnect()
         if link is not None:
             link.disconnect()
-        hand.disconnect()
+        shutdown_hand(hand)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Calibrate the ORCA Hand. Specify the path to the hand config.yaml file."
+        description="Calibrate the ORCA Hand (autodetects the connected hand by default)."
     )
     add_hand_arguments(parser, feedback_flag=False, all_flag=True)
     parser.add_argument(

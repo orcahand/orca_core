@@ -260,7 +260,7 @@ def interpolate_waypoints(start, end, duration, step_time, mode="linear"):
         alpha = interp_func(t)
         yield [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
 
-def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
+def auto_detect_port(motor_type: "str | None" = None) -> str:
     """Auto-detect a serial adapter port for the given motor type.
 
     Args:
@@ -272,7 +272,7 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
         otherwise ``None``.
     """
     import serial.tools.list_ports
-    from ..constants import KNOWN_VIDS
+    from ..constants import KNOWN_VIDS, SUPPORTED_MOTOR_TYPES
 
     # The hand's controller board presents two CDC interfaces with one VID/PID;
     # find the motor one via ORCA_ID?, falling back to VID for classic adapters.
@@ -289,7 +289,7 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     if motor_type is None:
         known_vids = [
             vid
-            for family in ("dynamixel", "feetech")
+            for family in SUPPORTED_MOTOR_TYPES
             for vid in KNOWN_VIDS.get(family, [])
         ]
     else:

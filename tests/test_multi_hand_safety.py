@@ -184,16 +184,13 @@ def test_resolved_port_is_never_written_over_an_explicit_pin(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump({"port": "/dev/cu.mine"}))
 
-    existing = SimpleNamespace(
-        port="/dev/cu.mine", motor_type=None, baudrate=None
-    )
     resolved = SimpleNamespace(
         port="/dev/cu.the-other-hand",
         motor_type="dynamixel",
         baudrate=1_000_000,
         config_path=str(config_path),
     )
-    motor_resolution.persist_resolved_driver(existing, resolved)
+    motor_resolution.persist_resolved_driver(resolved)
 
     data = yaml.safe_load(config_path.read_text())
     assert data["port"] == "/dev/cu.mine"

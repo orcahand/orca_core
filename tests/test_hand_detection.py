@@ -81,6 +81,7 @@ def _patch_hardware(
     encoder_stream=False,
     paxini_port=None,
     tactile_register=False,
+    motor_family=(None, None),
     busy_ports=(),
     classic_motor_ports=(),
 ):
@@ -109,6 +110,11 @@ def _patch_hardware(
     monkeypatch.setattr(
         serial_discovery, "port_in_use", lambda port: port in busy_ports
     )
+    # Short-circuits the actual family probe (which needs a live serial
+    # reply) so classic_motor_ports scenarios can pin what it "found".
+    monkeypatch.setattr(
+        hand_factory, "_detect_motor_family", lambda port: motor_family
+    )
     monkeypatch.setattr(
         hand_factory, "detect_encoder_stream", lambda port: encoder_stream
     )
@@ -116,6 +122,12 @@ def _patch_hardware(
     monkeypatch.setattr(
         hand_factory, "_tactile_responds_at", lambda port, baud: tactile_register
     )
+    # Real USB enumeration must never leak into these tests — a classic
+    # Feetech/Dynamixel adapter actually plugged into the machine running the
+    # suite would otherwise make this list non-empty and non-hermetic.
+    # count_classic_motor_adapters()/probe_classic_motor_adapter() (called
+    # directly by hand_factory, not through a local wrapper) both read
+    # straight from serial.tools.list_ports.comports(), patched above.
 
 
 def test_detects_full_left_hand(monkeypatch):
@@ -449,6 +461,130 @@ def test_load_hand_is_silent_when_every_port_answered(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
         load_hand()
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ----- motor-family detection ------------------------------------------------
+
+def test_detects_the_motor_family_on_the_motor_port(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+
+
+def test_classic_adapter_found_when_no_identity_board_answers(monkeypatch):
+    """A bare Feetech/Dynamixel adapter predating ORCA_ID?/ORCA_INFO? never
+    shows up in oh_board_ports(); it must still be found by USB VID."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.motor"],
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert d.identity is None
+    assert d.motor_port == "/dev/cu.motor"
+    assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+
+
+def test_identity_board_motor_port_wins_over_classic_fallback(monkeypatch):
+    """When an oh_board CDC already claimed the motor role, the classic VID
+    sweep must not run at all — it exists only as a fallback."""
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        classic_motor_ports=["/dev/cu.other"],
+        motor_family=("feetech", 1_000_000),
+    )
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.m"
+
+
+def test_classic_adapter_found_but_its_family_never_answers(monkeypatch):
+    """A VID match plus not-busy is enough to call this the hand's motor
+    bus, same as probe_classic_motor_adapter() already decided — a silent
+    family probe only leaves motor_type/motor_baudrate unset, it does not
+    un-report the port. connect() is what actually proves it live."""
+    _patch_hardware(monkeypatch, classic_motor_ports=["/dev/cu.motor"])
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.motor"
+    assert (d.motor_type, d.motor_baudrate) == (None, None)
+
+
+def test_busy_classic_motor_port_is_reported(monkeypatch):
+    """A classic adapter held by another process must surface in busy_ports,
+    same as an oh_board CDC would."""
+    _patch_hardware(
+        monkeypatch,
+        classic_motor_ports=["/dev/cu.motor"],
+        busy_ports=("/dev/cu.motor",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.motor",)
+
+
+def test_motor_family_detection_is_non_fatal(monkeypatch):
+    def _boom(port, progress_callback=None):
+        raise OSError("port went away")
+
+    monkeypatch.setattr("orca_core.maintenance.motor_chain.detect_motor_type", _boom)
+    assert hand_factory._detect_motor_family("/dev/cu.m") == (None, None)
+
+
+def test_motor_family_falls_back_to_the_trial_probe(monkeypatch):
+    """Motors already programmed into a chain no longer answer at their
+    factory defaults, so the family comes from the connect-time probe."""
+    monkeypatch.setattr(
+        "orca_core.maintenance.motor_chain.detect_motor_type",
+        lambda port, progress_callback=None: None,
+    )
+    monkeypatch.setattr(
+        "orca_core.hardware.motor_resolution.trial_probe",
+        lambda config, port: ("feetech", 1_000_000),
+    )
+    assert hand_factory._detect_motor_family("/dev/cu.m") == ("feetech", 1_000_000)
+
+
+def test_pin_detected_ports_overrides_a_config_pinned_family():
+    """A config pinning dynamixel must lose to a detected Feetech chain, and
+    the pinned baud rate must be dropped with it."""
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v2"
+        ),
+        motor_type="dynamixel",
+        baudrate=1_000_000,
+    )
+
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False,
+        has_encoders=False, motor_port="/dev/cu.m", motor_type="feetech",
+    )
+    pinned = hand_factory._pin_detected_ports(config, detection, 1)
+    assert pinned.motor_type == "feetech"
+    assert pinned.baudrate is None
+
+
+def test_pin_detected_ports_keeps_a_matching_family():
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v1"
+        ),
+        motor_type="dynamixel",
+        baudrate=3_000_000,
+    )
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False,
+        has_encoders=False, motor_port="/dev/cu.m", motor_type="dynamixel",
+    )
+    pinned = hand_factory._pin_detected_ports(config, detection, 1)
+    assert pinned.motor_type == "dynamixel"
+    assert pinned.baudrate == config.baudrate
 
 
 # ----- load_hand integration -------------------------------------------------

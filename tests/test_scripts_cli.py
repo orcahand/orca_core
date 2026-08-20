@@ -248,6 +248,54 @@ class TestCreateHandFromArgs:
         assert calls[0]["engage_feedback"] is True
 
 
+class TestConfigureMotorChainFamily:
+    """scripts/configure_motor_chain.py: the bus names the family, not the config.
+
+    Every bundled config pins a family, so trusting it first would program a
+    hand of the other family as this one on its very first setup step.
+    """
+
+    @staticmethod
+    def _module(monkeypatch, detected):
+        module = _load("scripts/configure_motor_chain.py")
+        monkeypatch.setattr(module, "detect_motor_type", lambda *a, **k: detected)
+        return module
+
+    def test_a_detected_family_beats_the_configs_pin(self, monkeypatch, capsys):
+        module = self._module(monkeypatch, "feetech")
+        config = {"motor_type": "dynamixel", "baudrate": 1_000_000}
+
+        assert module._resolve_motor_type(None, config, "/dev/fake") == "feetech"
+        assert "dynamixel" in capsys.readouterr().out
+
+    def test_the_config_names_the_family_of_an_already_configured_chain(
+            self, monkeypatch, capsys):
+        module = self._module(monkeypatch, None)
+
+        assert module._resolve_motor_type(
+            None, {"motor_type": "feetech"}, "/dev/fake") == "feetech"
+
+    def test_a_silent_bus_and_an_unpinned_config_is_an_error(self, monkeypatch, capsys):
+        module = self._module(monkeypatch, None)
+
+        with pytest.raises(SystemExit):
+            module._resolve_motor_type(None, {}, "/dev/fake")
+
+    def test_explicit_flag_wins(self, monkeypatch):
+        module = self._module(monkeypatch, "dynamixel")
+
+        assert module._resolve_motor_type(
+            "feetech", {"motor_type": "dynamixel"}, "/dev/fake") == "feetech"
+
+    def test_the_other_familys_baudrate_is_dropped(self, monkeypatch):
+        module = self._module(monkeypatch, "feetech")
+        config = {"motor_type": "dynamixel", "baudrate": 3_000_000, "motor_ids": [1]}
+
+        assert module._config_for_family(config, "feetech") == {
+            "motor_type": "dynamixel", "motor_ids": [1]}
+        assert module._config_for_family(config, "dynamixel") == config
+
+
 class _FakeConfig:
     joint_ids = ["wrist", "index_mcp"]
     type = "right"
@@ -942,3 +990,109 @@ class TestManualControlHandCap:
         hand = SimpleNamespace(config=SimpleNamespace(type="right"))
 
         assert mc._hand_label("ser-8316", hand) == "ser-8316  (right)"
+
+
+class TestManualControlMotorSpace:
+    """scripts/manual_control.py: sliders bounded by what the motor can reach."""
+
+    @staticmethod
+    def _module():
+        pytest.importorskip("tkinter")
+        return _load("scripts/manual_control.py")
+
+    @staticmethod
+    def _hand(module, limits, position_range):
+        class _Client:
+            position_range_rad = position_range
+
+        class _Hand:
+            motor_limits_dict = limits
+            motor_client = _Client()
+
+        return _Hand()
+
+    def test_calibrated_limits_clamp_and_mark_the_slider(self):
+        module = self._module()
+        hand = self._hand(module, {1: [0.0, 0.5]}, None)
+        low, high, clamped = module._motor_slider_range(hand, 1, 0.4)
+        assert (low, high) == (0.0, 0.5)
+        assert clamped
+
+    def test_single_turn_range_bounds_an_uncalibrated_motor(self):
+        module = self._module()
+        hand = self._hand(module, {1: [None, None]}, (-6.28, 0.0))
+        low, high, clamped = module._motor_slider_range(hand, 1, -0.2)
+        assert (low, high) == (-1.2, 0.0)
+        assert clamped
+
+    def test_unbounded_motor_keeps_the_full_window(self):
+        module = self._module()
+        hand = self._hand(module, {}, None)
+        low, high, clamped = module._motor_slider_range(hand, 1, 2.0)
+        assert (low, high) == (1.0, 3.0)
+        assert not clamped
+
+    def test_feedback_only_flags_are_reported_when_set(self):
+        module = self._module()
+        parser = module.build_parser()
+        assert module._feedback_only_overrides(parser, parser.parse_args([])) == []
+        args = parser.parse_args(["--Kp", "7", "--correction-max-deg", "3"])
+        assert module._feedback_only_overrides(parser, args) == [
+            "--Kp", "--correction-max-deg",
+        ]
+
+
+class TestDetectScript:
+    """scripts/detect.py: the 'what is plugged in?' command."""
+
+    @staticmethod
+    def _detection(**overrides):
+        from orca_core import HandDetection
+
+        fields = dict(
+            model_name="orcahand-full-left",
+            side="left",
+            has_tactile=True,
+            has_encoders=True,
+            motor_port="/dev/cu.usbmodem-motor",
+            sensing_port="/dev/cu.usbmodem-sense",
+            tactile_port=None,
+            identity=None,
+            motor_type="feetech",
+            motor_baudrate=1000000,
+        )
+        fields.update(overrides)
+        return HandDetection(**fields)
+
+    def _run(self, monkeypatch, capsys, **overrides):
+        module = _load("scripts/detect.py")
+        monkeypatch.setattr(module, "detect_hand", lambda: self._detection(**overrides))
+        # Reading calibration would build a real hand off the bundled model;
+        # this script's port and family reporting is what is under test.
+        monkeypatch.setattr(
+            module, "_print_calibration", lambda detection: None
+        )
+        monkeypatch.setattr(sys, "argv", ["detect.py"])
+        module.main()
+        return capsys.readouterr().out
+
+    def test_prints_the_model_ports_and_motor_family(self, capsys, monkeypatch):
+        out = self._run(monkeypatch, capsys)
+        for expected in (
+            "orcahand-full-left", "left", "tactile", "encoders",
+            "feetech", "1000000",
+            "/dev/cu.usbmodem-motor", "/dev/cu.usbmodem-sense",
+        ):
+            assert expected in out
+
+    def test_reports_a_bus_no_motor_answered_on(self, capsys, monkeypatch):
+        out = self._run(monkeypatch, capsys, motor_type=None, motor_baudrate=None)
+        assert "no motor answered" in out
+
+    def test_reports_a_missing_motor_bus(self, capsys, monkeypatch):
+        out = self._run(
+            monkeypatch, capsys,
+            motor_port=None, motor_type=None, motor_baudrate=None,
+        )
+        assert "Motor bus:   not detected" in out
+        assert "no motor answered" not in out

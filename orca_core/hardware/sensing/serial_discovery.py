@@ -10,6 +10,7 @@ candidate", never stealing bytes from a link another client already holds.
 """
 
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -232,7 +233,19 @@ def port_in_use(port: str) -> bool:
         with serial.Serial(port, timeout=0, exclusive=True):
             return False
     except OSError as exc:
-        return exc.errno in PORT_BUSY_ERRNOS
+        # EACCES is deliberately absent on POSIX: there it means missing
+        # device permissions, not a port another process holds. Windows has
+        # no equivalent EBUSY/EAGAIN signal for a busy COM port; see below.
+        if exc.errno in PORT_BUSY_ERRNOS:
+            return True
+        if sys.platform == "win32":
+            # pyserial wraps the underlying WinError in SerialException
+            # without preserving it as .errno/.winerror — the only signal
+            # left is the message pyserial formats from repr(WinError()).
+            # A busy COM port raises PermissionError (winerror 5); an
+            # absent one raises FileNotFoundError (winerror 2) instead.
+            return "PermissionError" in str(exc)
+        return False
 
 
 def board_id_from_usb_serial(usb_serial: "str | None") -> Optional[str]:

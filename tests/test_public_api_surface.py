@@ -94,6 +94,7 @@ ORCA_HAND = BASE_HAND | {
     "is_connected",
     "jitter",
     "joint_to_motor_ratios_dict",
+    "last_read_ok",
     "motor_client",
     "motor_limits_dict",
     "set_control_mode",

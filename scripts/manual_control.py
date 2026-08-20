@@ -10,9 +10,10 @@ motor-only ``OrcaHand`` / ``OrcaHandTouch`` and gets one slider per joint plus
 torque enable/disable.
 
 Motor space (``--motor-space``): one slider per motor, each spanning a narrow
-window around the motor's position at startup. This is a tendon bring-up aid
-for nudging a single motor and watching its tendon respond, not a way to pose
-the hand. It talks to the motor bus only — no encoders, no tactile.
+window around the motor's position at startup, clamped to the motor's usable
+travel. This is a tendon bring-up aid for nudging a single motor and watching
+its tendon respond, not a way to pose the hand. The hand is still detected the
+usual way, but the closed-loop controller stays disengaged.
 
 With ``--all`` (or ``--hand`` given twice is not supported — attach exactly
 the hands you want and use ``--all``), up to two attached hands share one
@@ -33,16 +34,17 @@ import logging
 import math
 import sys
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 from typing import List
 
 import numpy as np
 
 from orca_core import JointGains, OrcaHandJointFeedback
-from orca_core.utils.cli import add_hand_arguments, create_fleet_from_args
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
+from orca_core.utils.cli import add_hand_arguments, create_fleet_from_args
 
 REFRESH_MS = 100
 
@@ -52,8 +54,155 @@ MOTOR_SLIDER_SPAN_RAD = 1.0
 
 MAX_HANDS = 2
 
+# Palette ported from orca_ui's frontend/src/theme/theme.css (same tokens,
+# solid colors instead of translucent panels since ttk can't blend with the
+# desktop behind it). Keep in sync by eye if that file's palette moves.
+BG = "#1a1c2a"
+PANEL = "#242739"
+PANEL_BORDER = "#343850"
+TEXT = "#dfe3e8"
+TEXT_BRIGHT = "#ffffff"
+DIM = "#7f8ea2"
+ACCENT = "#22d3ee"
+OK = "#34d399"
+WARN = "#c8a870"
+ERR = "#d4878a"
 
-def parse_args() -> argparse.Namespace:
+# Space Mono is orca_ui's font, loaded there via @fontsource; a desktop script
+# can't bundle a webfont without adding a dependency, so this only picks it up
+# if it happens to be installed as a system font and otherwise falls back to
+# whatever monospace font the OS ships.
+_MONO_CANDIDATES = [
+    "Space Mono", "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Courier New",
+]
+
+
+def _pick_font() -> str:
+    available = set(tkfont.families())
+    for name in _MONO_CANDIDATES:
+        if name in available:
+            return name
+    return "TkFixedFont"
+
+
+class ModernSlider(tk.Canvas):
+    """Small, modern-looking horizontal slider: a rounded track filled up to
+    the current value, dragged by a round thumb.
+
+    ttk's only cross-platform-colorable theme (clam) draws a flat rectangle
+    with no fill indicator, and pushing it further (a custom PhotoImage
+    slider element) means fighting ttk's theme engine for something a canvas
+    can just draw directly. No new dependency — tk.Canvas ships with Python.
+    Drives (and is driven by) a ``tk.DoubleVar``, like ttk.Scale: dragging it
+    calls ``var.set()`` (which fires any other trace on the same var, e.g. a
+    value-label), and an external ``var.set()`` elsewhere redraws it too.
+    """
+
+    THUMB_R = 8
+    TRACK_W = 6
+    HEIGHT = 24
+
+    def __init__(self, parent, from_, to, variable, command=None):
+        super().__init__(parent, height=self.HEIGHT, bg=BG, highlightthickness=0, cursor="hand2")
+        self._from = from_
+        self._to = to
+        self._var = variable
+        self._command = command
+        self._var.trace_add("write", lambda *_: self._redraw())
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self.bind("<Button-1>", self._on_pointer)
+        self.bind("<B1-Motion>", self._on_pointer)
+
+    def _frac(self, value: float) -> float:
+        span = self._to - self._from
+        return 0.0 if span == 0 else min(1.0, max(0.0, (value - self._from) / span))
+
+    def _redraw(self) -> None:
+        width = self.winfo_width()
+        if width <= 1:  # not yet laid out
+            return
+        self.delete("all")
+        y = self.HEIGHT // 2
+        x0, x1 = self.THUMB_R, width - self.THUMB_R
+        value = min(self._to, max(self._from, self._var.get()))
+        thumb_x = x0 + self._frac(value) * (x1 - x0)
+        self.create_line(x0, y, x1, y, width=self.TRACK_W, capstyle=tk.ROUND, fill=PANEL)
+        if thumb_x > x0:
+            self.create_line(x0, y, thumb_x, y, width=self.TRACK_W, capstyle=tk.ROUND, fill=ACCENT)
+        self.create_oval(
+            thumb_x - self.THUMB_R, y - self.THUMB_R, thumb_x + self.THUMB_R, y + self.THUMB_R,
+            fill=ACCENT, outline=BG, width=2,
+        )
+
+    def _on_pointer(self, event) -> None:
+        width = self.winfo_width()
+        x0, x1 = self.THUMB_R, width - self.THUMB_R
+        frac = 0.0 if x1 <= x0 else min(1.0, max(0.0, (event.x - x0) / (x1 - x0)))
+        value = self._from + frac * (self._to - self._from)
+        self._var.set(value)
+        if self._command is not None:
+            self._command(value)
+
+
+def _apply_theme(root: tk.Tk) -> None:
+    """Dark/monospace ttk theme matching orca_ui's frontend/src/theme/theme.css.
+    stdlib-only (ttk and PhotoImage both ship with Python).
+    """
+    font_family = _pick_font()
+    root.configure(bg=BG)
+
+    style = ttk.Style(root)
+    style.theme_use("clam")  # only clam/alt honor color overrides cross-platform
+
+    style.configure(".", background=BG, foreground=TEXT, font=(font_family, 10))
+    style.configure("TFrame", background=BG)
+    style.configure("TLabel", background=BG, foreground=TEXT)
+    style.configure("TLabelframe", background=BG, bordercolor=PANEL_BORDER)
+    style.configure(
+        "TLabelframe.Label", background=BG, foreground=TEXT_BRIGHT,
+        font=(font_family, 10, "bold"),
+    )
+    style.configure(
+        "TButton", background=PANEL, foreground=TEXT, bordercolor=PANEL_BORDER,
+        focuscolor=PANEL, padding=6,
+    )
+    style.map("TButton", background=[("active", "#2c3049")])
+    style.configure(
+        "TEntry", fieldbackground=PANEL, foreground=TEXT, bordercolor=PANEL_BORDER,
+        insertcolor=TEXT,
+    )
+
+    style.configure(
+        "Accent.TButton", background="#1b3a42", foreground=ACCENT, bordercolor="#2f5e68",
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("disabled", PANEL), ("active", "#204552")],
+        foreground=[("disabled", DIM), ("!disabled", ACCENT)],
+        bordercolor=[("disabled", PANEL_BORDER)],
+    )
+    style.configure(
+        "Danger.TButton", background="#3a2426", foreground=ERR, bordercolor="#5e3436",
+    )
+    style.map(
+        "Danger.TButton",
+        background=[("disabled", PANEL), ("active", "#452b2d")],
+        foreground=[("disabled", DIM), ("!disabled", ERR)],
+        bordercolor=[("disabled", PANEL_BORDER)],
+    )
+
+    style.configure("Header.TLabel", background=BG, foreground=TEXT_BRIGHT, font=(font_family, 13, "bold"))
+    style.configure("Dim.TLabel", background=BG, foreground=DIM, font=(font_family, 9))
+    style.configure("Ok.TLabel", background=BG, foreground=OK)
+    style.configure("Warn.TLabel", background=BG, foreground=WARN, font=(font_family, 9, "bold"))
+    style.configure("Err.TLabel", background=BG, foreground=ERR, font=(font_family, 9, "bold"))
+    style.configure(
+        "Banner.TLabel", background="#3a2f22", foreground=WARN,
+        font=(font_family, 10, "bold"), padding=8,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     add_hand_arguments(p, all_flag=True)
     p.add_argument(
@@ -82,7 +231,7 @@ def parse_args() -> argparse.Namespace:
         "--joints", nargs="+",
         help="Show sliders for these joints only (feedback hands).",
     )
-    return p.parse_args()
+    return p
 
 
 def _finger_joint_map(joint_ids: List[str]) -> dict[str, List[str]]:
@@ -166,78 +315,201 @@ def _build_columns(root: tk.Tk, labels: List[str]) -> List[ttk.Frame]:
 
 
 class HandControlUI:
-    """Plain motor-only slider UI: one slider per joint + torque buttons."""
+    """Plain motor-only slider UI: one slider per joint + torque buttons.
+
+    A joint whose motor lacks calibration data can't be commanded in joint
+    space (see ``_joint_calibrated``) — ``_joint_to_motor_pos`` would emit a
+    ``None`` target that ``_set_motor_pos`` silently drops, so the slider
+    would move with no effect. Those joints get a DIRECT-tagged slider that
+    writes the motor position straight through instead (the same fallback
+    ``--motor-space`` uses), rather than a slider that looks live but isn't.
+    """
+
+    BADGE_WIDTH = 8
 
     def __init__(self, parent: tk.Widget, hand):
         self.hand = hand
         self.joint_roms = hand.config.joint_roms_dict
         self.joint_ids = hand.config.joint_ids
         self.joint_values = {joint: tk.DoubleVar() for joint in self.joint_ids}
-
-        current_joint_positions = self.hand.get_joint_position().as_dict()
-        for joint, pos in current_joint_positions.items():
-            if joint in self.joint_values:
-                self.joint_values[joint].set(pos)
+        self.direct_motor: dict[str, int] = {}  # joint -> motor_id, for uncalibrated joints
         self.create_ui(parent)
 
+    def _joint_calibrated(self, joint: str) -> bool:
+        """Whether this joint's motor has the calibration data
+        ``_joint_to_motor_pos`` needs. Mirrors the check in
+        ``OrcaHand._joint_to_motor_pos``.
+        """
+        motor_id = self.hand.config.joint_to_motor_map.get(joint)
+        if motor_id is None:
+            return False
+        limits = self.hand.motor_limits_dict.get(motor_id) or [None, None]
+        if any(limit is None for limit in limits):
+            return False
+        return bool(self.hand.calibration.joint_to_motor_ratios_dict.get(motor_id))
+
     def create_ui(self, parent: tk.Widget):
+        # Window title/geometry are set once at the top level (main()), not
+        # here — this may be one of two side-by-side hand columns, not the
+        # whole window.
+        _apply_theme(parent)
+
+        ttk.Label(parent, text="ORCA HAND CONTROL", style="Header.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(12, 0)
+        )
+
+        uncalibrated = {j for j in self.joint_ids if not self._joint_calibrated(j)}
+        if uncalibrated:
+            ttk.Label(
+                parent,
+                text=(
+                    f"⚠ {len(uncalibrated)}/{len(self.joint_ids)} joint(s) uncalibrated: "
+                    "DIRECT motor control below. Run scripts/calibrate.py to fix."
+                ),
+                style="Banner.TLabel", wraplength=420, justify=tk.LEFT,
+            ).pack(fill=tk.X, padx=12, pady=(8, 0))
+
         torque_frame = ttk.Frame(parent)
-        torque_frame.pack(pady=10)
+        torque_frame.pack(pady=12)
 
-        enable_button = ttk.Button(torque_frame, text="Enable Torque", command=self.enable_torque)
-        enable_button.pack(side=tk.LEFT, padx=5)
+        self.enable_button = ttk.Button(
+            torque_frame, text="Enable Torque", style="Accent.TButton", command=self.enable_torque
+        )
+        self.enable_button.pack(side=tk.LEFT, padx=5)
 
-        disable_button = ttk.Button(torque_frame, text="Disable Torque", command=self.disable_torque)
-        disable_button.pack(side=tk.LEFT, padx=5)
+        self.disable_button = ttk.Button(
+            torque_frame, text="Disable Torque", style="Danger.TButton", command=self.disable_torque
+        )
+        self.disable_button.pack(side=tk.LEFT, padx=5)
+
+        self.torque_label = ttk.Label(torque_frame, text="TORQUE OFF", style="Dim.TLabel")
+        self.torque_label.pack(side=tk.LEFT, padx=(10, 0))
 
         sliders_frame = ttk.Frame(parent)
-        sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        sliders_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=10)
+
+        joint_positions = self.hand.get_joint_position().as_dict()
+        motor_positions = self.hand.get_motor_pos(as_dict=True)
 
         for joint in self.joint_ids:
-            rom_min, rom_max = self.joint_roms[joint]
+            calibrated = joint not in uncalibrated
             frame = ttk.Frame(sliders_frame)
-            frame.pack(fill=tk.X, pady=5)
+            frame.pack(fill=tk.X, pady=3)
 
-            label = ttk.Label(frame, text=joint, width=15)
-            label.pack(side=tk.LEFT)
+            # Fixed-width name + badge columns on every row, badge column
+            # always present (blank when calibrated): the slider's expand=True
+            # then claims identical space on every row regardless of state,
+            # instead of a DIRECT-tagged row's slider being visibly shorter.
+            ttk.Label(
+                frame, text=joint, width=14, style="TLabel" if calibrated else "Warn.TLabel",
+            ).pack(side=tk.LEFT)
+            ttk.Label(
+                frame, text="" if calibrated else "DIRECT", width=self.BADGE_WIDTH,
+                style="Warn.TLabel", anchor=tk.W,
+            ).pack(side=tk.LEFT, padx=(2, 4))
 
-            slider = ttk.Scale(
-                frame,
-                from_=rom_min,
-                to=rom_max,
-                orient=tk.HORIZONTAL,
-                variable=self.joint_values[joint],
-                command=lambda value, joint=joint: self.update_joint_position(joint, value),
+            if calibrated:
+                rom_min, rom_max = self.joint_roms[joint]
+                seed = joint_positions.get(joint)
+                if seed is not None:
+                    self.joint_values[joint].set(seed)
+                slider = ModernSlider(
+                    frame, from_=rom_min, to=rom_max,
+                    variable=self.joint_values[joint],
+                    command=lambda value, joint=joint: self.update_joint_position(joint, value),
+                )
+            else:
+                motor_id = self.hand.config.joint_to_motor_map.get(joint)
+                self.direct_motor[joint] = motor_id
+                current = motor_positions.get(motor_id, 0.0)
+                low, high, _clamped = _motor_slider_range(self.hand, motor_id, current)
+                self.joint_values[joint].set(current)
+                slider = ModernSlider(
+                    frame, from_=low, to=high,
+                    variable=self.joint_values[joint],
+                    command=lambda value, joint=joint: self.update_joint_position(joint, value),
+                )
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+
+            value_label = ttk.Label(
+                frame, text=f"{self.joint_values[joint].get():.1f}", width=7, style="Dim.TLabel",
             )
-            slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-            value_label = ttk.Label(frame, text=f"{rom_min:.1f}", width=8)
             value_label.pack(side=tk.RIGHT)
 
             self.joint_values[joint].trace_add("write", lambda *args, joint=joint, label=value_label: self.update_value_label(joint, label))
 
+        # Torque on by default: sliders that visibly do nothing until a
+        # separate click is the exact confusion this UI now tries to avoid.
+        self.enable_torque()
+
+    def _set_torque_state(self, enabled: bool) -> None:
+        """Reflect torque state in the buttons (grey out whichever action is
+        already in effect) and a TORQUE ON/OFF label, so the state is visible
+        without having to move a slider and see whether anything happens.
+        """
+        self.torque_enabled = enabled
+        self.enable_button.state(["disabled" if enabled else "!disabled"])
+        self.disable_button.state(["!disabled" if enabled else "disabled"])
+        self.torque_label.config(
+            text="TORQUE ON" if enabled else "TORQUE OFF",
+            style="Ok.TLabel" if enabled else "Dim.TLabel",
+        )
+
     def enable_torque(self):
         self.hand.enable_torque()
         print("Torque enabled.")
-        current_joint_positions = self.hand.get_joint_position().as_dict()
-        for joint, pos in current_joint_positions.items():
-            if joint in self.joint_values:
-                self.joint_values[joint].set(pos)
+        joint_positions = self.hand.get_joint_position().as_dict()
+        motor_positions = self.hand.get_motor_pos(as_dict=True)
+        for joint, var in self.joint_values.items():
+            if joint in self.direct_motor:
+                var.set(motor_positions.get(self.direct_motor[joint], var.get()))
+            else:
+                pos = joint_positions.get(joint)
+                if pos is not None:
+                    var.set(pos)
+        self._set_torque_state(True)
 
     def disable_torque(self):
         self.hand.disable_torque()
         print("Torque disabled.")
+        self._set_torque_state(False)
 
     def update_joint_position(self, joint, value):
         try:
-            joint_positions = {joint: float(value)}
-            self.hand.set_joint_positions(joint_positions)
+            if joint in self.direct_motor:
+                self.hand.write_motor_pos([self.direct_motor[joint]], np.array([float(value)]))
+            else:
+                self.hand.set_joint_positions({joint: float(value)})
         except Exception as e:
             print(f"Error updating joint {joint}: {e}")
 
     def update_value_label(self, joint, label):
         value = self.joint_values[joint].get()
         label.config(text=f"{value:.1f}")
+
+
+def _motor_slider_range(hand, motor: int, current: float) -> tuple[float, float, bool]:
+    """Slider window around ``current``, clamped to the motor's usable travel.
+
+    Calibrated hard limits win; otherwise the motor family's own position range
+    bounds it. Returns ``(from_, to, clamped)``.
+    """
+    low = current - MOTOR_SLIDER_SPAN_RAD
+    high = current + MOTOR_SLIDER_SPAN_RAD
+
+    limits = hand.motor_limits_dict.get(motor) or [None, None]
+    if all(limit is not None for limit in limits):
+        bounds = (min(limits), max(limits))
+    else:
+        bounds = hand.motor_client.position_range_rad
+    if bounds is None:
+        return low, high, False
+
+    clamped_low = max(low, min(bounds))
+    clamped_high = min(high, max(bounds))
+    if clamped_high <= clamped_low:
+        return low, high, False
+    return clamped_low, clamped_high, (clamped_low, clamped_high) != (low, high)
 
 
 class MotorSliderUI:
@@ -250,42 +522,58 @@ class MotorSliderUI:
         self.create_ui(parent)
 
     def create_ui(self, parent: tk.Widget):
-        torque_frame = ttk.Frame(parent)
-        torque_frame.pack(pady=10)
+        # Window title/geometry are set once at the top level (main()), not
+        # here — this may be one of two side-by-side hand columns, not the
+        # whole window.
+        _apply_theme(parent)
 
-        ttk.Button(torque_frame, text="Enable Torque", command=self.enable_torque).pack(
-            side=tk.LEFT, padx=5
+        ttk.Label(parent, text="ORCA HAND MOTOR CONTROL", style="Header.TLabel").pack(
+            anchor=tk.W, padx=12, pady=(12, 0)
         )
-        ttk.Button(torque_frame, text="Disable Torque", command=self.disable_torque).pack(
-            side=tk.LEFT, padx=5
+
+        torque_frame = ttk.Frame(parent)
+        torque_frame.pack(pady=12)
+
+        self.enable_button = ttk.Button(
+            torque_frame, text="Enable Torque", style="Accent.TButton", command=self.enable_torque
         )
+        self.enable_button.pack(side=tk.LEFT, padx=5)
+        self.disable_button = ttk.Button(
+            torque_frame, text="Disable Torque", style="Danger.TButton", command=self.disable_torque
+        )
+        self.disable_button.pack(side=tk.LEFT, padx=5)
+
+        self.torque_label = ttk.Label(torque_frame, text="TORQUE OFF", style="Dim.TLabel")
+        self.torque_label.pack(side=tk.LEFT, padx=(10, 0))
 
         sliders_frame = ttk.Frame(parent)
-        sliders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        sliders_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=10)
 
         current_motor_pos = self.hand.get_motor_pos(as_dict=True)
+        any_clamped = False
         for motor in self.hand.config.motor_ids:
             self.motor_values[motor].set(current_motor_pos[motor])
+            low, high, clamped = _motor_slider_range(
+                self.hand, motor, current_motor_pos[motor]
+            )
+            any_clamped = any_clamped or clamped
 
             frame = ttk.Frame(sliders_frame)
             frame.pack(fill=tk.X, pady=5)
 
-            ttk.Label(frame, text=f"Motor {motor}", width=15).pack(side=tk.LEFT)
+            label = f"Motor {motor}*" if clamped else f"Motor {motor}"
+            ttk.Label(frame, text=label, width=15).pack(side=tk.LEFT)
 
-            slider = tk.Scale(
+            slider = ModernSlider(
                 frame,
-                from_=current_motor_pos[motor] - MOTOR_SLIDER_SPAN_RAD,
-                to=current_motor_pos[motor] + MOTOR_SLIDER_SPAN_RAD,
-                orient=tk.HORIZONTAL,
+                from_=low,
+                to=high,
                 variable=self.motor_values[motor],
                 command=lambda value, m=motor: self.update_motor_position(m, value),
-                length=200,
-                resolution=0.1,
-                showvalue=False,
             )
-            slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
 
-            value_label = ttk.Label(frame, text=f"{current_motor_pos[motor]:.1f}", width=8)
+            value_label = ttk.Label(frame, text=f"{current_motor_pos[motor]:.1f}", width=8, style="Dim.TLabel")
             value_label.pack(side=tk.RIGHT)
 
             self.motor_values[motor].trace_add(
@@ -293,13 +581,34 @@ class MotorSliderUI:
                 lambda *args, m=motor, label=value_label: self.update_value_label(m, label),
             )
 
+        if any_clamped:
+            ttk.Label(
+                sliders_frame, text="* range clamped to the motor's usable travel",
+                style="Dim.TLabel",
+            ).pack(anchor=tk.W, pady=(6, 0))
+
+        # _run_motor_space() already enabled torque on the hand before this
+        # UI was built; sync the buttons/label to that state.
+        self.enable_torque()
+
+    def _set_torque_state(self, enabled: bool) -> None:
+        self.torque_enabled = enabled
+        self.enable_button.state(["disabled" if enabled else "!disabled"])
+        self.disable_button.state(["!disabled" if enabled else "disabled"])
+        self.torque_label.config(
+            text="TORQUE ON" if enabled else "TORQUE OFF",
+            style="Ok.TLabel" if enabled else "Dim.TLabel",
+        )
+
     def enable_torque(self):
         self.hand.enable_torque()
         print("Torque enabled.")
+        self._set_torque_state(True)
 
     def disable_torque(self):
         self.hand.disable_torque()
         print("Torque disabled.")
+        self._set_torque_state(False)
 
     def update_motor_position(self, motor, value):
         try:
@@ -364,9 +673,8 @@ class JointFeedbackSliderUI:
         anchor) seed from the motor-derived pose instead of a fixed default.
 
         Sanitises the seed: a NaN or out-of-ROM reading (a slot that hasn't
-        produced a clean frame yet) is clamped into range. ttk.Scale on
-        macOS silently skips painting a thumb it can't position, which makes
-        the slider look invisible even though it still works.
+        produced a clean frame yet) is clamped into range so the slider
+        starts somewhere sane instead of off the visible track.
         """
         measured = self.hand.get_measured_joints()
         motor_pose = self.hand.get_joint_position().as_dict()
@@ -379,6 +687,15 @@ class JointFeedbackSliderUI:
             self.joint_values[joint] = tk.DoubleVar(value=value)
 
     def _build_ui(self, parent: tk.Widget) -> None:
+        # Window title/geometry are set once at the top level (main()), not
+        # here — this may be one of two side-by-side hand columns, not the
+        # whole window.
+        _apply_theme(parent)
+
+        ttk.Label(parent, text="JOINT-FEEDBACK CONTROL", style="Header.TLabel").pack(
+            anchor=tk.W, padx=10, pady=(10, 0)
+        )
+
         sliders_frame = ttk.LabelFrame(parent, text="targets + encoder", padding=6)
         sliders_frame.pack(fill=tk.X, padx=6, pady=6)
         sliders_frame.columnconfigure(2, weight=1)
@@ -388,24 +705,23 @@ class JointFeedbackSliderUI:
             ttk.Label(sliders_frame, text=joint, width=12).grid(
                 row=row, column=0, sticky="w", pady=1
             )
-            ttk.Label(sliders_frame, text=f"{rom_min:+4.0f}°", width=5).grid(
+            ttk.Label(sliders_frame, text=f"{rom_min:+4.0f}°", width=5, style="Dim.TLabel").grid(
                 row=row, column=1
             )
-            slider = ttk.Scale(
+            slider = ModernSlider(
                 sliders_frame,
                 from_=rom_min, to=rom_max,
-                orient=tk.HORIZONTAL,
                 variable=self.joint_values[joint],
                 command=lambda v, j=joint: self._on_slider(j, v),
             )
             slider.grid(row=row, column=2, sticky="ew", padx=4)
-            ttk.Label(sliders_frame, text=f"{rom_max:+4.0f}°", width=5).grid(
+            ttk.Label(sliders_frame, text=f"{rom_max:+4.0f}°", width=5, style="Dim.TLabel").grid(
                 row=row, column=3
             )
-            target_label = ttk.Label(sliders_frame, text="--", width=7)
+            target_label = ttk.Label(sliders_frame, text="--", width=7, style="Ok.TLabel")
             target_label.grid(row=row, column=4, padx=(6, 0))
             readback_label = ttk.Label(
-                sliders_frame, text="m:--  t:--", width=15, font=("Menlo", 10)
+                sliders_frame, text="m:--  t:--", width=15, font=("Menlo", 10), style="Dim.TLabel",
             )
             readback_label.grid(row=row, column=5, padx=(6, 0))
             self.readback_labels[joint] = readback_label
@@ -439,10 +755,10 @@ class JointFeedbackSliderUI:
 
         button_row = ttk.Frame(tuning)
         button_row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(button_row, text="Apply", command=self._apply_tuning).pack(
+        ttk.Button(button_row, text="Apply", style="Accent.TButton", command=self._apply_tuning).pack(
             side=tk.LEFT
         )
-        ttk.Label(button_row, textvariable=self.apply_status_var).pack(
+        ttk.Label(button_row, textvariable=self.apply_status_var, style="Dim.TLabel").pack(
             side=tk.LEFT, padx=8
         )
 
@@ -513,13 +829,15 @@ class JointFeedbackSliderUI:
             correction = self.hand.get_loop_correction()
         except RuntimeError as exc:
             for joint in self.slider_joints:
-                self.readback_labels[joint].config(text="e-stop")
+                self.readback_labels[joint].config(text="e-stop", style="Err.TLabel")
             logging.warning("joint loop unavailable: %s", exc)
             return
         for joint in self.slider_joints:
             m = measured.get(joint, float("nan"))
             t = correction.get(joint, 0.0)
-            self.readback_labels[joint].config(text=f"m:{m:+5.1f}° t:{t:+4.1f}°")
+            self.readback_labels[joint].config(
+                text=f"m:{m:+5.1f}° t:{t:+4.1f}°", style="Dim.TLabel"
+            )
 
 
 def _hand_label(hand_id: str, hand) -> str:
@@ -602,8 +920,19 @@ def _refuse_if_too_many(fleet) -> None:
         )
 
 
+def _feedback_only_overrides(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[str]:
+    """Names of the feedback-only tuning flags the caller actually set."""
+    return [
+        flag
+        for flag, dest in (("--Kp", "Kp"), ("--Ki", "Ki"),
+                           ("--correction-max-deg", "correction_max_deg"))
+        if getattr(args, dest) != parser.get_default(dest)
+    ]
+
+
 def main() -> int:
-    args = parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
@@ -613,6 +942,14 @@ def main() -> int:
 
     fleet = create_fleet_from_args(args)
     _refuse_if_too_many(fleet)
+
+    given = _feedback_only_overrides(parser, args)
+    if given and not any(isinstance(hand, OrcaHandJointFeedback) for hand in fleet):
+        print(
+            f"FAIL: {', '.join(given)} tune the closed-loop controller, but no "
+            f"attached hand loaded with joint feedback."
+        )
+        return 1
 
     overrides = {}
     if args.encoder_port is not None:

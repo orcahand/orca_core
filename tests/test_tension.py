@@ -119,3 +119,41 @@ def test_run_tension_holding_prints_nothing(connected_mock_hand, capsys):
     capsys.readouterr()
     run_tension(connected_mock_hand, move_motors=False, should_stop=lambda: True)
     assert capsys.readouterr().out == ""
+
+
+def test_winding_retries_a_stale_read_instead_of_calling_it_a_stall(
+    connected_mock_hand, monkeypatch
+):
+    """A failed bus read repeats the cached position, i.e. zero motion. Counting
+    that as a stall ends the winding early and leaves the tendons slack."""
+    from orca_core.maintenance import motor_reads
+
+    hand = connected_mock_hand
+    reads = {"n": 0}
+    fresh = [False, False, True]
+
+    def stale_then_fresh(self):
+        reads["n"] += 1
+        return fresh[min(reads["n"] - 1, len(fresh) - 1)]
+
+    monkeypatch.setattr(
+        type(hand.motor_client), "last_read_ok", property(stale_then_fresh)
+    )
+    motor_reads.read_motor_pos_checked(hand, retries=5, retry_interval=0.0)
+    assert reads["n"] == 3
+
+
+def test_winding_reads_are_freshness_checked(connected_mock_hand, monkeypatch):
+    """run_tension must not sample motor positions unchecked."""
+    from orca_core.maintenance import tensioning
+
+    checked = []
+    monkeypatch.setattr(
+        tensioning,
+        "read_motor_pos_checked",
+        lambda hand, **kw: checked.append(1) or hand.get_motor_pos(),
+    )
+    tensioning.run_tension(
+        connected_mock_hand, move_motors=True, should_stop=lambda: True
+    )
+    assert checked, "winding read positions without a freshness check"
