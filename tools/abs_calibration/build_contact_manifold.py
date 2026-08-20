@@ -16,6 +16,19 @@ silicone skin into the surface, which is what physically touches). The
 resulting curve ``q_out = poly(q_arg)`` plus its honesty band is what turns
 a recorded abd-block event into an estimator residual.
 
+Two posture families are emitted per ordered pair:
+
+- the motor-driven protocol's symmetric mid-flexion postures (mcp 15/40,
+  pip 8, both fingers), and
+- the manual protocol's HARDSTOP postures — "extended" (both fingers
+  straight against their mcp+pip extension stops; contact near the pip
+  knuckle) and "flexed" (parked finger straight, pusher mcp at its flexion
+  stop; contact near the palm). Hardstop postures are operator-reproducible
+  without any motor and coincide with the encoder anchor points. The
+  pusher's pip is free in the flexed variant: it is not gated, and the
+  curve is built at several pip values with the spread folded into sigma.
+
+
 FK runs on the URDF itself so mesh poses are exactly description-consistent,
 and is cross-checked numerically against the estimator's kinematic model
 (the packaged v2 YAML) before anything is written — a silent frame mismatch
@@ -47,7 +60,12 @@ DEFAULT_URDF = os.path.join(
     "orcahand_description", "v2", "models", "urdf", "orcahand_right.urdf")
 
 SAMPLES_PER_BODY = 6000
-CONTACT_EPS_M = 5e-5          # bisection convergence on signed clearance
+# Unsigned-distance touch threshold: touching/overlapping surfaces read
+# ~0.05 mm (the sampling noise floor), clear poses read millimetres.
+CONTACT_EPS_M = 5e-4
+# The eps-crossing reads the contact angle slightly early (~eps / lever
+# arm); rides in sigma.
+EPS_BIAS_DEG = 0.5
 PRINT_ALLOWANCE_DEG = 0.5     # as-printed-vs-mesh bias class on contact faces
 # The merged meshes carry the NOMINAL (uncompressed) silicone skin, so the
 # manifold is the zero-force first-touch surface; the stall detector fires
@@ -213,19 +231,18 @@ def _rodrigues(axis: np.ndarray, ang: float) -> np.ndarray:
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
 
 
-def signed_clearance(pts_a, pts_b, nrm_b) -> float:
-    """Approximate minimum signed distance from cloud A to surface B.
+def surface_distance(pts_a, pts_b) -> float:
+    """Minimum unsigned distance between two sampled outer surfaces.
 
-    Nearest B sample per A point, signed by B's outward normal — negative
-    when A has crossed inside B. Accuracy ~ half the sample spacing."""
-    tree = cKDTree(pts_b)
-    d, idx = tree.query(pts_a, k=1)
-    near = d < 0.02   # only the closest region matters
-    if not near.any():
-        return float(d.min())
-    signed = np.einsum("ij,ij->i", pts_a[near] - pts_b[idx[near]],
-                       nrm_b[idx[near]])
-    return float(signed.min())
+    Touching or overlapping surfaces read ~the sampling noise floor
+    (~0.05 mm); clear poses read millimetres — CONTACT_EPS_M splits the
+    two cleanly. Interior mesh geometry cannot fake proximity (an interior
+    point is always farther than the outer surface it sits behind). A
+    normal-signed variant is NOT usable on these merged meshes: concave
+    patches and skin seams gave false overlap verdicts of ~-3 mm across
+    true 6+ mm gaps, which silently discarded the protocol's braced-side
+    contact region and fitted curves through artifact zero-crossings."""
+    return float(cKDTree(pts_b).query(pts_a, k=1)[0].min())
 
 
 def cross_check_fk(hand: UrdfHand, nominal: KinematicModel,
@@ -252,70 +269,112 @@ def cross_check_fk(hand: UrdfHand, nominal: KinematicModel,
     return worst
 
 
-def build_pair(hand: UrdfHand, parked: str, pusher: str,
-               posture: float) -> dict | None:
+def pair_posture_specs(parked: str, pusher: str) -> list[dict]:
+    """Posture specs per ordered pair: ``gate`` (joints the estimator and
+    the capture gate on), ``mesh_qs`` (one or more full mcp/pip poses to
+    build the mesh at — variants sample the ungated joints), ``tol``,
+    ``label``."""
     fp, fb = parked.rsplit("_", 1)[0], pusher.rsplit("_", 1)[0]
-    q_common = {
-        f"{fp}_mcp": posture, f"{fb}_mcp": posture,
-        f"{fp}_pip": ABD_PIP_DEG, f"{fb}_pip": ABD_PIP_DEG,
-    }
+    ext = {}
+    for f in (fp, fb):
+        ext[f"{f}_mcp"] = float(JOINT_ROMS[f"{f}_mcp"][0])
+        ext[f"{f}_pip"] = float(JOINT_ROMS[f"{f}_pip"][0])
+    specs = [
+        {"label": f"{p:.0f}",
+         "gate": {f"{fp}_mcp": p, f"{fb}_mcp": p,
+                  f"{fp}_pip": ABD_PIP_DEG, f"{fb}_pip": ABD_PIP_DEG},
+         "mesh_qs": [{f"{fp}_mcp": p, f"{fb}_mcp": p,
+                      f"{fp}_pip": ABD_PIP_DEG, f"{fb}_pip": ABD_PIP_DEG}],
+         "tol": 3.0}
+        for p in ABD_POSTURES
+    ]
+    specs.append({"label": "extended", "gate": dict(ext),
+                  "mesh_qs": [dict(ext)], "tol": 5.0})
+    # The pusher's pip is free (measured influence: zero); the uncertain
+    # dimension is how deep the mcp flexion STOP really sits vs nominal —
+    # it sets the curled knuckle's reach, so the curve is built over a
+    # depth band and the spread rides in sigma.
+    flex_gate = {f"{fp}_mcp": ext[f"{fp}_mcp"], f"{fp}_pip": ext[f"{fp}_pip"],
+                 f"{fb}_mcp": float(JOINT_ROMS[f"{fb}_mcp"][1])}
+    pip_lo = float(JOINT_ROMS[f"{fb}_pip"][0])
+    specs.append({"label": "flexed", "gate": flex_gate,
+                  "mesh_qs": [dict(flex_gate,
+                                   **{f"{fb}_pip": pip_lo,
+                                      f"{fb}_mcp": flex_gate[f"{fb}_mcp"] - d})
+                              for d in (0.0, 10.0, 20.0)],
+                  "tol": 5.0})
+    return specs
+
+
+def build_pair(hand: UrdfHand, parked: str, pusher: str,
+               spec: dict) -> dict | None:
+    fp, fb = parked.rsplit("_", 1)[0], pusher.rsplit("_", 1)[0]
+    label = f"{parked}<-{pusher} @ {spec['label']}"
     lo_p, hi_p = JOINT_ROMS[parked]
     lo_b, hi_b = JOINT_ROMS[pusher]
 
-    # Which pusher direction approaches the parked finger: clearance must
+    # Which pusher direction approaches the parked finger: the gap must
     # shrink. Probe at the parked mid angle.
-    def clearance(qp, qb):
-        q = dict(q_common)
+    def gap(qp, qb, mq):
+        q = dict(mq)
         q[parked], q[pusher] = qp, qb
-        pa, na = hand.posed_cloud(fp, q)
-        pb, nb = hand.posed_cloud(fb, q)
-        return signed_clearance(pa, pb, nb)
+        pa, _ = hand.posed_cloud(fp, q)
+        pb, _ = hand.posed_cloud(fb, q)
+        return surface_distance(pa, pb)
 
+    mq0 = spec["mesh_qs"][0]
     qp_mid = 0.5 * (lo_p + hi_p)
-    sign = 1.0 if clearance(qp_mid, hi_b - 1) < clearance(qp_mid, lo_b + 1) \
-        else -1.0
+    sign = 1.0 if gap(qp_mid, hi_b - 1, mq0) \
+        < gap(qp_mid, lo_b + 1, mq0) else -1.0
     far = lo_b + 1 if sign > 0 else hi_b - 1
     deep = hi_b - 1 if sign > 0 else lo_b + 1
 
-    grid, contact = [], []
-    for qp in np.linspace(lo_p + 1, hi_p - 1, GRID_POINTS):
-        c_far, c_deep = clearance(qp, far), clearance(qp, deep)
-        if not (c_far > 0 > c_deep):
-            continue  # no contact reachable at this parked angle
-        a, b_ = far, deep
-        for _ in range(24):
-            mid = 0.5 * (a + b_)
-            c = clearance(qp, mid)
-            if abs(c) < CONTACT_EPS_M:
-                b_ = mid
-                break
-            if c > 0:
-                a = mid
-            else:
-                b_ = mid
-        grid.append(qp)
-        contact.append(0.5 * (a + b_))
+    def contact_grid(mq):
+        pts = {}
+        for qp in np.linspace(lo_p + 1, hi_p - 1, GRID_POINTS):
+            g_far, g_deep = gap(qp, far, mq), gap(qp, deep, mq)
+            if not (g_far > CONTACT_EPS_M > g_deep):
+                continue  # no first touch bracketable at this parked angle
+            a, b_ = far, deep
+            for _ in range(18):
+                mid = 0.5 * (a + b_)
+                if gap(qp, mid, mq) > CONTACT_EPS_M:
+                    a = mid
+                else:
+                    b_ = mid
+            pts[float(qp)] = 0.5 * (a + b_)
+        return pts
 
-    if len(grid) < 4:
-        print(f"  {parked}<-{pusher} @ {posture:.0f}: contact reachable at "
-              f"only {len(grid)} grid points — pair skipped")
+    grids = [contact_grid(mq) for mq in spec["mesh_qs"]]
+    common = sorted(set.intersection(*[set(g) for g in grids]))
+    if len(common) < 4:
+        print(f"  {label}: contact reachable at only {len(common)} grid "
+              "points — pair skipped")
         return None
 
-    coeffs = np.polyfit(grid, contact, 2)
+    contact = [float(np.mean([g[qp] for g in grids])) for qp in common]
+    variant_spread = max((max(g[qp] for g in grids)
+                          - min(g[qp] for g in grids)) for qp in common) \
+        if len(grids) > 1 else 0.0
+
+    coeffs = np.polyfit(common, contact, 2)
     fit_rms = float(np.sqrt(np.mean(
-        (np.polyval(coeffs, grid) - np.asarray(contact)) ** 2)))
+        (np.polyval(coeffs, common) - np.asarray(contact)) ** 2)))
     sigma = float(np.sqrt(max(fit_rms, 0.15) ** 2 + PRINT_ALLOWANCE_DEG ** 2
-                          + COMPLIANCE_ALLOWANCE_DEG ** 2))
-    print(f"  {parked}<-{pusher} @ {posture:.0f}: {len(grid)} contact points, "
-          f"fit rms {fit_rms:.2f} deg, sigma {sigma:.2f} deg")
+                          + COMPLIANCE_ALLOWANCE_DEG ** 2 + EPS_BIAS_DEG ** 2
+                          + (0.5 * variant_spread) ** 2))
+    extra = (f", free-joint spread {variant_spread:.2f} deg"
+             if len(grids) > 1 else "")
+    print(f"  {label}: {len(common)} contact points, "
+          f"fit rms {fit_rms:.2f} deg, sigma {sigma:.2f} deg{extra}")
     return {
         "pair": sorted((parked, pusher)),
         "arg": parked, "out": pusher,
         "poly": [float(c) for c in coeffs],
-        "arg_range": [float(grid[0]), float(grid[-1])],
+        "arg_range": [float(common[0]), float(common[-1])],
         "sigma_deg": sigma,
-        "posture": {j: float(v) for j, v in q_common.items()},
-        "posture_tol_deg": 3.0,
+        "posture": {j: float(v) for j, v in spec["gate"].items()},
+        "posture_tol_deg": float(spec["tol"]),
     }
 
 
@@ -343,8 +402,8 @@ def main() -> int:
     entries = []
     for a, b in ABD_PAIRS:
         for parked, pusher in ((a, b), (b, a)):
-            for posture in ABD_POSTURES:
-                entry = build_pair(hand, parked, pusher, posture)
+            for spec in pair_posture_specs(parked, pusher):
+                entry = build_pair(hand, parked, pusher, spec)
                 if entry:
                     entries.append(entry)
 

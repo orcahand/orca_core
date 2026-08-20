@@ -58,6 +58,31 @@ def split_plate_holdout(ds, frac: float):
     return replace(ds, plate_obs=keep), held
 
 
+def raw_calibration_map(meta: dict, joints: list, b) -> dict:
+    """Self-contained per-joint map from the hand's RAW encoder degrees to
+    calibrated model-frame degrees: ``calibrated = sign*raw + offset``.
+
+    Session columns were frame-mapped at capture (``abd_frame`` in the
+    session meta: sign flip + ROM-alignment offset per abd); the solved b0
+    stacks on top. Folding both here lets any consumer (a UI, a logger)
+    apply the calibration without knowing about frame conventions."""
+    frame = meta.get("abd_frame", {})
+    out = {}
+    for i, j in enumerate(joints):
+        s, k = frame.get(j, (1.0, 0.0))
+        out[j] = {
+            "raw_sign": int(s),
+            "raw_offset_deg": round(float(k) + float(b[i, 0]), 4),
+            # The same correction expressed IN the hand's own frame:
+            # true_hand = raw + sign*b0 (the frame constants cancel). This is
+            # what display consumers (URDF renderers speak the hand's frame,
+            # e.g. the UI) must apply; the sign/offset map above is for
+            # model-frame consumers (mesh manifolds, estimators).
+            "hand_frame_delta_deg": round(float(s) * float(b[i, 0]), 4),
+        }
+    return out
+
+
 def plate_errors_mm(est, x, ds, contacts) -> list[float]:
     """Post-solve fingertip-vs-dimple distances of held-out contacts."""
     world = est.world_link_poses(x, ds)
@@ -112,10 +137,15 @@ def main() -> int:
         for joint, cfg in raw.items():
             if joint not in ds.joints:
                 sys.exit(f"priors: unknown joint {joint!r}")
-            prior.mode[joint] = cfg.get("mode", "normal")
+            mode = cfg.get("mode", "normal")
+            if mode is False:
+                mode = "off"  # YAML reads a bare `off` as boolean False
+            if mode not in ("normal", "wide", "off"):
+                sys.exit(f"priors: invalid mode {mode!r} for {joint}")
+            prior.mode[joint] = mode
             if "mean" in cfg:
                 prior.mean[joint] = float(cfg["mean"])
-            if prior.mode[joint] == "off":
+            if mode == "off":
                 denovo.append(joint)
 
     nominal = KinematicModel.load(args.side)
@@ -130,6 +160,10 @@ def main() -> int:
 
     print(f"Solving {len(ds.joints)} joints over {len(ds.m)} frames...")
     result = est.solve(ds, x0)
+    if est.filled_joints:
+        print(f"NOTE: {est.filled_joints} not in the session (outside the "
+              "encoder loop); contact residuals are invariant to them — "
+              "held at nominal, offsets stay on the prior.")
     axis_diag = est.axis_diagnostic(result.x, ds)
     if est.skipped_contacts:
         from collections import Counter
@@ -138,6 +172,7 @@ def main() -> int:
 
     has_vision = bool(ds.dot_obs or ds.dir_obs or ds.frame_axes)
     has_contact = bool(ds.contact_obs)
+    raw_map = raw_calibration_map(dict(ds.meta), list(est.joints), result.b)
     calibration = {
         "source": ("vision+contact" if has_vision and has_contact
                    else "contact" if has_contact else "vision"),
@@ -147,8 +182,9 @@ def main() -> int:
                 "offset_deg": round(float(result.b[i, 0]), 4),
                 "angle_correction_poly": [round(float(v), 5) for v in result.b[i, 1:]],
                 "sigma_deg": round(result.sigma_b0_deg[j], 4),
+                **raw_map[j],
             }
-            for i, j in enumerate(ds.joints)
+            for i, j in enumerate(est.joints)
         },
     }
     diagnostics = {
@@ -183,7 +219,7 @@ def main() -> int:
 
     print(f"\n{'joint':<14}{'offset':>9}{'sigma':>8}   {'axis dev':>9}{'(floor)':>9}")
     gated = []
-    for j in ds.joints:
+    for j in est.joints:
         c = calibration["joints"][j]
         flag = ""
         if c["sigma_deg"] > SIGMA_GATE_DEG:

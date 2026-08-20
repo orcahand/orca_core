@@ -57,6 +57,10 @@ SIGMA_TIP_SLOPE = 0.0007  # m per newton of the weaker side's force
 SIGMA_BASE_PIN = 1e-4    # pins the base when no world-frame class is present
 
 MIN_DOT_FRAMES = 3     # a dot seen fewer times than this is dropped
+# Manual abd captures brace a finger at its physical stop, which can read
+# just past the manifold's fitted grid edge; quadratic extrapolation this
+# far stays well under the manifold sigma.
+ARG_RANGE_SLACK_DEG = 1.5
 
 
 @dataclass
@@ -116,6 +120,8 @@ class Estimator:
         self.manifolds = manifolds or []
         self.rom_mid = np.array([np.mean(JOINT_ROMS[j]) for j in self.joints])
         self._ctx = None
+        self._m_ordered = None
+        self.filled_joints: list = []
 
     # ---- parameter packing -------------------------------------------------
 
@@ -135,6 +141,41 @@ class Estimator:
 
     # ---- calibration mapping ----------------------------------------------
 
+    def m_in_model_order(self, ds: Dataset) -> np.ndarray:
+        """Session encoder columns permuted into ``self.joints`` order.
+
+        Producers store columns in their own joint order; every residual here
+        indexes them by the model's, so the two must be reconciled once.
+
+        A contact-only session may lack the WRIST (a hand whose encoder loop
+        does not cover it): the wrist is common to both chains of every
+        self-contact, so the residuals are exactly invariant to its value —
+        it is filled with its nominal zero, its offset stays on the prior,
+        and the sigma gate reports it unconstrained (``filled_joints``).
+        A missing finger joint does not cancel and stays a hard error, as
+        does any missing joint when world-frame observations are present.
+        """
+        if self._m_ordered is not None:
+            return self._m_ordered
+        self.filled_joints = []
+        if list(ds.joints) == list(self.joints):
+            return ds.m
+        missing = [j for j in self.joints if j not in ds.joints]
+        contact_only = not (ds.dot_obs or ds.dir_obs or ds.frame_axes
+                            or ds.plate_obs)
+        if missing and not (contact_only
+                            and all(j == "wrist" for j in missing)):
+            raise ValueError(f"session lacks joints the model needs: {missing}")
+        self.filled_joints = missing
+        src = list(ds.joints)
+        cols = []
+        for j in self.joints:
+            if j in src:
+                cols.append(ds.m[:, src.index(j)])
+            else:
+                cols.append(np.zeros(len(ds.m)))
+        return np.column_stack(cols)
+
     def apply_cal(self, m: np.ndarray, b: np.ndarray) -> np.ndarray:
         u = (m - self.rom_mid) / U_SCALE
         q = m + b[:, 0]
@@ -148,6 +189,8 @@ class Estimator:
 
     def prepare(self, ds: Dataset) -> None:
         """Precompute the (constant) observation masks for this dataset."""
+        self._m_ordered = None
+        self._m_ordered = self.m_in_model_order(ds)
         masks = {}
         for link, obs in ds.dot_obs.items():
             valid = np.isfinite(obs).all(axis=2)          # (F, K)
@@ -168,7 +211,7 @@ class Estimator:
 
     def _world_poses(self, x: np.ndarray, ds: Dataset):
         rvec, t, b = self.unpack(x)
-        q = self.apply_cal(ds.m, b)
+        q = self.apply_cal(self.m_in_model_order(ds), b)
         poses = self.nominal.link_poses({j: q[:, i] for i, j in enumerate(self.joints)})
         Rb = _rodrigues(rvec)
         world = {}
@@ -282,7 +325,7 @@ class Estimator:
         """
         out = []
         self.skipped_contacts = []  # rewritten every call; read after solve
-        q = self.apply_cal(ds.m, b)
+        q = self.apply_cal(self.m_in_model_order(ds), b)
         jidx = {j: i for i, j in enumerate(self.joints)}
         for e in ds.contact_obs:
             f = e.frame
@@ -303,7 +346,8 @@ class Estimator:
                 out.append((pts[0] - pts[1]) / sigma)
             elif e.kind == "abd_block":
                 pair = sorted((e.body_a, e.body_b))
-                man, why = self._match_manifold(pair, ds.m[f], jidx)
+                man, why = self._match_manifold(
+                    pair, self.m_in_model_order(ds)[f], jidx)
                 if man is None:
                     self.skipped_contacts.append((e.kind, e.body_a, e.body_b, why))
                     continue
@@ -321,10 +365,12 @@ class Estimator:
             tol = man.get("posture_tol_deg", 3.0)
             if not all(abs(m_row[jidx[j]] - v) <= tol
                        for j, v in man.get("posture", {}).items() if j in jidx):
-                why = "posture mismatch"
+                if why == "no manifold":
+                    why = "posture mismatch"
                 continue
             lo, hi = man["arg_range"]
-            if not (lo <= m_row[jidx[man["arg"]]] <= hi):
+            if not (lo - ARG_RANGE_SLACK_DEG <= m_row[jidx[man["arg"]]]
+                    <= hi + ARG_RANGE_SLACK_DEG):
                 why = "outside manifold range"
                 continue
             return man, ""

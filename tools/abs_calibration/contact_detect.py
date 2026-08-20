@@ -64,6 +64,12 @@ class TipPressDetector:
     _cooldown: int = 0
     _last_m: np.ndarray | None = None
 
+    @property
+    def hold(self) -> int:
+        """Qualifying samples accumulated toward a capture — a live UI can
+        show whether force or stillness is the blocker."""
+        return self._hold
+
     def update(self, force_a: float, force_b: float,
                m: np.ndarray) -> bool:
         """Feed one sample (both pads' resultants + encoder row); True on

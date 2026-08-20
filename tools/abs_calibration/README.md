@@ -248,12 +248,54 @@ session with **contact events** instead of dots — same solver, same
 outputs, per-joint `sigma_deg` reporting honestly what the data could
 determine:
 
-- **abd-block** — park one finger at its abduction stop (the stop is
-  stiffness, nothing more: both encoders are READ at contact, no hardstop
-  angle is assumed), drive the neighbour in under a weak current limit
-  until its encoder stalls; the pair then sits on a mesh contact manifold
-  precomputed from the description URDF (`build_contact_manifold.py`,
-  table committed as `contact_manifolds_right.yaml`; skin surfaces, sigma
+- **abd-manual** (default) — pair contacts, FULLY hand-guided: torque
+  goes off on every motor at mode start and **no joint is ever driven**;
+  the operator arranges everything, uninvolved fingers hang wherever.
+  Postures are **hardstop-defined** (operator-reproducible without
+  motors, and coincident with the encoder anchor points, so the posture
+  gates are self-consistent): *extended* — both fingers straight against
+  their mcp+pip extension stops, contact near the pip knuckle (pinky
+  meets ring at its fingertip — in the mesh, fine); *flexed* — braced
+  finger straight, moved finger's mcp at its flexion stop, contact near
+  the palm (closer to the abd axis, so angular sigma is honest-larger;
+  the free pip's influence is measured into the manifold sigma). The two
+  variants give two differently-sloped contact curves per pair — that is
+  what separates the pair's offsets.
+  **Frame note (measured 2026-08-13 on the full-right dev hand)**: the
+  hand's abd convention is MIRRORED vs the kinematic model — pushing any
+  finger toward the thumb *increases* its encoder angle, uniformly,
+  while the model (and URDF, and the config's own ROM tables) has
+  decreasing-toward-thumb, pinned in tests. The joint loop tracks, so
+  motor and encoder agree with each other: the config frame is coherent
+  but mirrored, not faulty. Recorded abd angles are mapped into the
+  model frame at capture (`abd_frame_flips`: sign flip plus, for
+  asymmetric ROMs, the offset that lands the mirrored config stops on
+  the model's — index: −5° — noted in session meta; residual per-joint
+  error is the solver's b0) so sessions solve against the mesh
+  manifolds directly; `--directions` overrides the per-joint measured
+  signs. A mid-session encoder-link death (USB blip,
+  or a second process on the port — only ONE process may hold it) is
+  caught with a reconnect-and-resume prompt instead of a traceback.
+  A manual-only session ends with the hand deliberately limp (no
+  auto-neutral).
+  Per capture, the operator braces one finger at its abd hard stop
+  toward the neighbour, brings the neighbour to a just-touch, and
+  presses ENTER;
+  the encoder stream is averaged over ~0.8 s, gated on stillness and
+  flexion posture, and checked live against the mesh manifold (the
+  printout says how far the pair reads into/short of the mesh under the
+  current calibration — a misplaced encoder shows up right there). No
+  motor ever drives a finger against another, and a hand-guided
+  just-touch sits closer to the manifolds' zero-force surface than a
+  motorized stall does. Combinations with no fitted manifold are skipped
+  upfront.
+- **abd-block** (`--modes abd`) — the motorized variant: park one finger
+  at its abduction stop (the stop is stiffness, nothing more: both
+  encoders are READ at contact, no hardstop angle is assumed), drive the
+  neighbour in under a weak current limit until its encoder stalls.
+  Either abd class puts the pair on a mesh contact manifold precomputed
+  from the description URDF (`build_contact_manifold.py`, table
+  committed as `contact_manifolds_right.yaml`; skin surfaces, sigma
   = fit + print + skin compliance ≈ 1.6–3.4°). Pairwise both directions
   at TWO flexion postures — one contact curve pins only an offset
   combination; the second posture's differing slope separates the pair
@@ -266,7 +308,10 @@ determine:
   a sensor-placement issue, to be fixed at the source).
 - **tip-press** — full hands: torque off, press the prompted fingertip
   pair together by hand; auto-captures when both pads localise >0.35 N
-  with still encoders (per-pad contact centroid + forces). Pad-point
+  with the pair's joints still (per-pad contact centroid + forces; live
+  force/hold readout, ENTER skips a pair). Pads face palmward, so the
+  pairs are thumb-to-each-finger — the thumb chain is the hub, and the
+  achievable pair set's identifiability is pinned in tests. Pad-point
   coincidence residual with force-dependent sigma — the Phase-3 residual
   pulled forward, hand-guided.
 - **The wrist is constrained by neither** (no self-contact crosses it);
@@ -275,17 +320,29 @@ determine:
 
 ```bash
 uv run python tools/abs_calibration/record_contacts.py CONFIG --out SESSION \
-    --modes abd,tip        # --dry-run first: prints the derived directions
+    # default --modes abd-manual,tip; --dry-run first: prints the
+    # capture plan and the derived directions
 uv run python tools/abs_calibration/solve_session.py SESSION \
-    --manifolds tools/abs_calibration/contact_manifolds_right.yaml
+    --manifolds tools/abs_calibration/contact_manifolds_right.yaml \
+    --offsets-only
 ```
 
 Approach directions are derived from the packaged kinematic model per
 pair (the dry-run prints them; on the right hand, toward-the-thumb is
 the decreasing-angle direction for every finger, matching the hardstop
-calibration's first drive). Also **not yet run on hardware**; the stall
-thresholds are the expected first-session tweak (single constants, loud
-failures).
+calibration's first drive). Also **not yet run on hardware**; for the
+motorized abd mode the stall thresholds are the expected first-session
+tweak (single constants, loud failures).
+
+Mesh findings (2026-08-13 rebuild with the unsigned distance metric —
+the earlier signed metric was an artifact generator, see
+`surface_distance`, and its "unreachable" verdicts and fitted ranges
+were wrong): **all 24 manifolds build** — every pair, both directions,
+all four posture families; all 12 manual captures are live. Fit rms
+0.02–0.22 deg (worst 0.99), sigma ≈1.7 deg dominated by the print/
+compliance/eps allowances. The fitted ranges cover the braced-at-stop
+region the protocol actually uses. The free pip's influence on the
+flexed curves is exactly zero (spread 0.00 deg over pip = −15/45/90).
 
 ### Validation on rendered images (`validate_camera_layer.py`)
 
