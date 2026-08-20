@@ -407,12 +407,15 @@ def test_motor_family_falls_back_to_the_trial_probe(monkeypatch):
 
 
 def test_pin_detected_ports_overrides_a_config_pinned_family():
-    """A bundled model pins dynamixel; a detected Feetech chain must win, and
-    the model's baud rate must be dropped with it."""
-    config = hand_factory.OrcaHandConfig.from_config_path(
-        model_name="orcahand-right", model_version="v2"
+    """A config pinning dynamixel must lose to a detected Feetech chain, and
+    the pinned baud rate must be dropped with it."""
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v2"
+        ),
+        motor_type="dynamixel",
+        baudrate=1_000_000,
     )
-    assert config.motor_type == "dynamixel"
 
     detection = hand_factory.HandDetection(
         model_name="orcahand-right", side="right", has_tactile=False,
@@ -424,8 +427,12 @@ def test_pin_detected_ports_overrides_a_config_pinned_family():
 
 
 def test_pin_detected_ports_keeps_a_matching_family():
-    config = hand_factory.OrcaHandConfig.from_config_path(
-        model_name="orcahand-right", model_version="v1"
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v1"
+        ),
+        motor_type="dynamixel",
+        baudrate=3_000_000,
     )
     detection = hand_factory.HandDetection(
         model_name="orcahand-right", side="right", has_tactile=False,

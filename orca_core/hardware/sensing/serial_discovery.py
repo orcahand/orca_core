@@ -11,6 +11,7 @@ candidate", never stealing bytes from a link another client already holds.
 
 import errno
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -204,8 +205,9 @@ def _probe_orca_id(
         return None
 
 
-# EACCES is deliberately absent: on Linux it means missing device
-# permissions, not a port another process holds.
+# EACCES is deliberately absent on POSIX: there it means missing device
+# permissions, not a port another process holds. Windows has no equivalent
+# EBUSY/EAGAIN signal for a busy COM port; see the platform branch below.
 _PORT_BUSY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY})
 
 
@@ -222,7 +224,16 @@ def port_in_use(port: str) -> bool:
         with serial.Serial(port, timeout=0, exclusive=True):
             return False
     except OSError as exc:
-        return exc.errno in _PORT_BUSY_ERRNOS
+        if exc.errno in _PORT_BUSY_ERRNOS:
+            return True
+        if sys.platform == "win32":
+            # pyserial wraps the underlying WinError in SerialException
+            # without preserving it as .errno/.winerror — the only signal
+            # left is the message pyserial formats from repr(WinError()).
+            # A busy COM port raises PermissionError (winerror 5); an
+            # absent one raises FileNotFoundError (winerror 2) instead.
+            return "PermissionError" in str(exc)
+        return False
 
 
 def oh_board_ports() -> "list[str]":

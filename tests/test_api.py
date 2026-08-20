@@ -248,6 +248,8 @@ def test_disconnect_and_reconnect(api_env):
 
 def test_set_config(api_env):
     client, mock_hand, config_dir = api_env
+    with open(config_dir / "config.yaml", "a", encoding="utf-8") as f:
+        f.write("motor_type: dynamixel\n")
     resp = client.post("/config", json=str(config_dir / "config.yaml"))
     assert resp.status_code == 200
     assert isinstance(api.hand, OrcaHand)

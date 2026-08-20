@@ -38,6 +38,7 @@ from .constants import (
     DYNAMIXEL,
     MODE_MAP,
     MOTOR_BAUD_RATES,
+    MOTOR_PORT_CLOSE_SETTLE_S,
     MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST,
     WRIST_MODE_VALUE,
@@ -278,6 +279,8 @@ class OrcaHand(BaseHand):
             client.disconnect()
         except Exception:
             pass
+        else:
+            time.sleep(MOTOR_PORT_CLOSE_SETTLE_S)
 
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True

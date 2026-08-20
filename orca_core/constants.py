@@ -55,6 +55,13 @@ ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 
+MOTOR_PORT_CLOSE_SETTLE_S = 0.5
+"""Pause after closing the motor serial port before it's safe to reopen. Some
+USB-CDC adapters (observed on CH340/CH343-family chips) briefly deny a reopen
+right after close; without this, a health-check-triggered reconnect can lose
+that race and get stuck denied on every subsequent attempt within the same
+process, since nothing else ever prompts the OS to release the handle."""
+
 MOTOR_TORQUE_DISABLE_SETTLE_S = 0.1
 """Let the torque-disable write land before the port closes under it."""
 

@@ -1,6 +1,5 @@
-motor_type: dynamixel
+# motor_type and baudrate are auto-detected at connect; set them here to pin a driver
 port: auto
-baudrate: 1000000
 max_current: 300
 type: right
 control_mode: current_based_position
