@@ -45,6 +45,7 @@ from .hand_config import (
 from .hardware.sensing.constants import (
     DEFAULT_ENCODER_BAUDRATE,
     JOINT_ENCODER_POLARITY_BY_SIDE,
+    LEGACY_FINGER_TO_SENSOR_ID,
 )
 from .hardware.sensing.serial_discovery import (
     OrcaBoardInfo,
@@ -171,7 +172,9 @@ def detect_hand() -> HandDetection:
 def _pin_detected_ports(config, detection: HandDetection):
     """Point the config at the ports detection already found, so connect()
     doesn't have to re-discover them. Fields with nothing detected keep
-    their configured (typically ``auto``) values."""
+    their configured (typically ``auto``) values. Tactile hands with no OH
+    board identity also get the legacy tactile wiring in place of the
+    config's declared (OH-board) ``finger_to_sensor_id``."""
     if detection.motor_port is not None:
         config = dataclasses.replace(config, port=detection.motor_port)
     if detection.has_encoders and detection.sensing_port is not None:
@@ -182,6 +185,14 @@ def _pin_detected_ports(config, detection: HandDetection):
         sensor_port = detection.tactile_port or detection.sensing_port
         if sensor_port is not None:
             config = dataclasses.replace(config, sensor_port=sensor_port)
+        if detection.identity is None:
+            # No OH board answered at all, so tactile came from a standalone
+            # adapter: pre-OH-board hardware, wired differently from the
+            # config's declared (OH-board) finger_to_sensor_id.
+            config = dataclasses.replace(
+                config,
+                finger_to_sensor_id=dict(LEGACY_FINGER_TO_SENSOR_ID[detection.side]),
+            )
     return config
 
 

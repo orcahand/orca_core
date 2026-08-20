@@ -46,6 +46,44 @@ def test_load_hand_selects_class_from_config(model, expected):
     assert type(hand) is expected
 
 
+# ----- legacy tactile wiring (no OH board identity) ------------------------
+
+
+@pytest.mark.parametrize("side, model", [("right", "orcahand-touch-right"), ("left", "orcahand-touch-left")])
+def test_pin_detected_ports_uses_legacy_wiring_with_no_oh_board_identity(side, model):
+    from orca_core.hand_factory import HandDetection, _pin_detected_ports
+    from orca_core.hand_config import OrcaHandTouchConfig
+    from orca_core.hardware.sensing.constants import LEGACY_FINGER_TO_SENSOR_ID
+
+    config = OrcaHandTouchConfig.from_config_path(config_path=_config(model))
+    detection = HandDetection(
+        model_name=model, side=side, has_tactile=True, has_encoders=False,
+        tactile_port="/dev/fake-tactile", identity=None,
+    )
+
+    pinned = _pin_detected_ports(config, detection)
+
+    assert pinned.finger_to_sensor_id == LEGACY_FINGER_TO_SENSOR_ID[side]
+
+
+def test_pin_detected_ports_keeps_declared_wiring_with_oh_board_identity():
+    from orca_core.hand_factory import HandDetection, _pin_detected_ports
+    from orca_core.hand_config import OrcaHandTouchConfig
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    config = OrcaHandTouchConfig.from_config_path(config_path=_config("orcahand-touch-right"))
+    declared = dict(config.finger_to_sensor_id)
+    detection = HandDetection(
+        model_name="orcahand-touch-right", side="right", has_tactile=True, has_encoders=False,
+        sensing_port="/dev/fake-sensing",
+        identity=OrcaBoardInfo(role="sensor", side="right"),
+    )
+
+    pinned = _pin_detected_ports(config, detection)
+
+    assert pinned.finger_to_sensor_id == declared
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [

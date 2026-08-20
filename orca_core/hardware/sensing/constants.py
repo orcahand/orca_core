@@ -29,6 +29,16 @@ DEFAULT_FINGER_TO_SENSOR_ID = {
     "thumb": 0, "index": 1, "middle": 2, "ring": 3, "pinky": 4,
 }
 
+LEGACY_FINGER_TO_SENSOR_ID = {
+    "right": {"thumb": 1, "index": 3, "middle": 0, "ring": 2, "pinky": 4},
+    "left": {"thumb": 2, "index": 4, "middle": 0, "ring": 1, "pinky": 3},
+}
+"""Tactile wiring for touch-only hands with a standalone tactile adapter and
+no OH board. hand_factory applies this in place of a config's declared
+finger_to_sensor_id when detection finds tactile with no OH board identity —
+OH-board hands (all full/joint hands, and current and future touch hands)
+keep DEFAULT_FINGER_TO_SENSOR_ID from their config.yaml instead."""
+
 # Default taxel counts per finger (must match sensor model configs)
 DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
