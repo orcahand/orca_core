@@ -36,6 +36,7 @@ from .utils.utils import (
 from .constants import (
     CALIBRATED,
     MODE_MAP,
+    MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
     CURRENT,
@@ -331,7 +332,7 @@ class OrcaHand(BaseHand):
                     failure = (
                         f"torque disable was not acknowledged by motor IDs {failed_ids}"
                     )
-                time.sleep(0.1)
+                time.sleep(MOTOR_TORQUE_DISABLE_SETTLE_S)
             except Exception as e:
                 failure = f"torque disable failed: {e}"
             finally:
