@@ -55,6 +55,9 @@ ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 
+MOTOR_TORQUE_DISABLE_SETTLE_S = 0.1
+"""Let the torque-disable write land before the port closes under it."""
+
 # The union of control modes across motor families; a family accepts only the
 # subset in its client's ``supported_modes``. PWM control mode (id 2) is
 # omitted because it bypasses PID controllers entirely.
