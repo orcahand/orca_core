@@ -255,10 +255,17 @@ LINK_DEFAULT_BAUDRATE = DEFAULT_ENCODER_BAUDRATE
 LINK_DEFAULT_RESPONSE_TIMEOUT_S = 0.5
 """Default wait for a register response before ``send_register_request`` raises."""
 
-TACTILE_REGISTER_ATTEMPTS = 3
+TACTILE_REGISTER_ATTEMPTS = 5
 """Times a tactile register read/write is attempted before giving up. A single
 round-trip is occasionally lost on a busy link; retrying recovers it. Reads are
 pure and the register writes are idempotent, so re-sending is safe."""
+
+TACTILE_PORT_OPEN_SETTLE_S = 2.0
+"""Pause after opening a fresh tactile serial link before the first register
+request. Some USB-CDC sensor adapters reset on DTR assertion (the underlying
+effect of opening the port), and a register request sent before that reset
+finishes gets no reply — this loses the race with
+:data:`TACTILE_REGISTER_ATTEMPTS`'s retries often enough to matter."""
 
 LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 """How long ``disconnect`` waits for the demuxer thread to exit."""

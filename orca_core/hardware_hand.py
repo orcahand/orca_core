@@ -38,6 +38,7 @@ from .constants import (
     DYNAMIXEL,
     MODE_MAP,
     MOTOR_BAUD_RATES,
+    MOTOR_PORT_CLOSE_SETTLE_S,
     MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -86,6 +87,7 @@ class OrcaHand(BaseHand):
 
     # Waits that let real serial hardware settle. Mock classes zero them.
     _torque_disable_settle_s = MOTOR_TORQUE_DISABLE_SETTLE_S
+    _port_close_settle_s = MOTOR_PORT_CLOSE_SETTLE_S
 
     def __init__(
         self,
@@ -281,6 +283,8 @@ class OrcaHand(BaseHand):
             client.disconnect()
         except Exception:
             pass
+        else:
+            time.sleep(self._port_close_settle_s)
 
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True
@@ -1375,6 +1379,7 @@ class MockMotorResolutionMixin:
 
     _persist_calibration = False
     _torque_disable_settle_s = 0.0
+    _port_close_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

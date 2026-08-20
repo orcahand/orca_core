@@ -29,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from typing import Dict, List, Optional, TYPE_CHECKING
 
@@ -43,7 +44,10 @@ from .control.joint_loop import JointLoopThread
 from .hand_config import JointGains, OrcaHandTouchConfig
 from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
-from .hardware.sensing.constants import JOINT_ENCODER_POLARITY_BY_SIDE
+from .hardware.sensing.constants import (
+    JOINT_ENCODER_POLARITY_BY_SIDE,
+    TACTILE_PORT_OPEN_SETTLE_S,
+)
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
 from .hardware.sensing.types import (
@@ -89,6 +93,10 @@ class OrcaHandTouch(OrcaHand):
 
     config_cls = OrcaHandTouchConfig
 
+    # Wait after opening the sensor port, before the first register request.
+    # Mock classes zero it: an in-memory link asserts no DTR and never resets.
+    _tactile_port_open_settle_s = TACTILE_PORT_OPEN_SETTLE_S
+
     def __init__(
         self,
         config_path: str | None = None,
@@ -130,6 +138,7 @@ class OrcaHandTouch(OrcaHand):
         """Open a link on ``port`` at ``baudrate`` and connect a tactile client."""
         link = self._create_tactile_link(port, baudrate)
         link.connect()
+        time.sleep(self._tactile_port_open_settle_s)
         self._tactile_link = link
         self._attach_tactile_client(link)
 
@@ -1150,6 +1159,8 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
     clients: no serial I/O, no port discovery, and register reads served
     from an in-memory sensor state (all fingers connected).
     """
+
+    _tactile_port_open_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -30,6 +30,8 @@ class _FakePortsHandTouch(OrcaHandTouch):
     ports named in ``good_ports`` get a register responder, so any other port
     opens fine but never answers (a wrong-device stand-in)."""
 
+    _tactile_port_open_settle_s = 0.0
+
     def __init__(self, config: OrcaHandTouchConfig, good_ports: set[str]):
         super().__init__(config=config)
         self._good_ports = good_ports
