@@ -1157,7 +1157,9 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
         # or probe real serial ports.
         replacements = {}
         if self.config.sensor_port == "auto":
-            replacements["sensor_port"] = "mock"
+            # id(self), not a shared literal: two mock hands in one process
+            # must not claim the same port_registry key.
+            replacements["sensor_port"] = f"mock-{id(self):x}"
         if self.config.sensor_baudrate == "auto":
             from .hardware.sensing.constants import DEFAULT_SENSOR_BAUDRATE
 
@@ -1221,8 +1223,13 @@ class MockOrcaHandJointFeedback(MockMotorResolutionMixin, OrcaHandJointFeedback)
         super().__init__(*args, **kwargs)
         self._encoder_pump: Optional[_MockEncoderFramePump] = None
         if self.config.encoder_serial_port == "auto":
+            # id(self), not a shared literal: two mock hands in one process
+            # must not claim the same port_registry key. A full hand (which
+            # also runs MockOrcaHandTouch.__init__ on this same instance)
+            # gets the same id(self)-derived value for sensor_port, keeping
+            # the two equal so the shared-link path still engages.
             self.config = dataclasses.replace(
-                self.config, encoder_serial_port="mock"
+                self.config, encoder_serial_port=f"mock-{id(self):x}"
             )
 
     def _install_mock_calibration(self) -> None:

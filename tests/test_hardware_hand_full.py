@@ -101,6 +101,23 @@ def test_full_connect_shares_one_link_for_both_streams(full_config):
         hand.disconnect()
 
 
+def test_two_full_hands_get_distinct_mock_ports(full_config):
+    """A shared literal mock port would make the second connect() raise
+    PortAlreadyClaimed (orca_core/hardware/port_registry.py) — each hand
+    instance must get its own."""
+    hand_a = make_full_hand(full_config)
+    hand_b = make_full_hand(full_config)
+    try:
+        ok_a, msg_a = hand_a.connect()
+        ok_b, msg_b = hand_b.connect()
+        assert ok_a, msg_a
+        assert ok_b, msg_b
+        assert hand_a.config.encoder_serial_port != hand_b.config.encoder_serial_port
+    finally:
+        hand_a.disconnect()
+        hand_b.disconnect()
+
+
 def test_full_disconnect_tears_down_cleanly(full_config):
     hand = make_full_hand(full_config)
     hand.connect()

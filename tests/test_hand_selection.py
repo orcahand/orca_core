@@ -9,6 +9,7 @@ from orca_core import (
     AmbiguousHandError,
     HandNotFoundError,
     HandSelector,
+    MockOrcaHand,
     OrcaHand,
     hand_store,
     load_hand,
@@ -245,6 +246,61 @@ def test_load_hands_detects_once_however_many_hands(monkeypatch, tmp_path):
     monkeypatch.setattr(hand_factory, "detect_hands", counted)
     load_hands()
     assert len(calls) == 1
+
+
+# ----- explicit configs -----------------------------------------------------
+
+def test_load_hands_configs_never_probes_the_bus(monkeypatch, tmp_path):
+    """configs= names each hand explicitly, so there is nothing to detect."""
+    import orca_core.hand_factory as hand_factory
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+
+    def explode():
+        raise AssertionError("must not probe hardware")
+
+    monkeypatch.setattr(hand_factory, "detect_hands", explode)
+
+    fleet = load_hands(configs=[_model(), _model()], mock=True)
+
+    assert len(fleet) == 2
+    assert [type(h) for h in fleet] == [MockOrcaHand, MockOrcaHand]
+
+
+def test_load_hands_configs_has_no_upper_bound():
+    fleet = load_hands(configs=[_model()] * 5, mock=True)
+    assert len(fleet) == 5
+
+
+def test_load_hands_configs_and_select_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="configs"):
+        load_hands(configs=[_model()], select=HandSelector(hand_id="ser-0001"))
+
+
+def test_load_hands_configs_resolve_each_hands_own_pinned_port(monkeypatch, tmp_path):
+    """configs= is built on the existing single-hand load_hand(), so two real
+    legacy hands detect_hands() can't tell apart (see
+    test_two_ambiguous_legacy_hands_still_load_from_their_own_pinned_configs)
+    still resolve cleanly from their own pinned ports — nothing new to build
+    for real hardware disambiguation."""
+    from tests._helpers import fake_serial_port
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path))
+    feetech_vid = KNOWN_VIDS["feetech"][0]
+    monkeypatch.setattr(
+        "serial.tools.list_ports.comports",
+        lambda: [
+            fake_serial_port("/dev/cu.a-motor", feetech_vid),
+            fake_serial_port("/dev/cu.b-motor", feetech_vid),
+        ],
+    )
+
+    fleet = load_hands(configs=[
+        _pinned_config(tmp_path, "/dev/cu.a-motor"),
+        _pinned_config(tmp_path, "/dev/cu.b-motor"),
+    ])
+
+    assert [h.config.port for h in fleet] == ["/dev/cu.a-motor", "/dev/cu.b-motor"]
 
 
 # ----- per-hand state ------------------------------------------------------

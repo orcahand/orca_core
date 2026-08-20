@@ -731,6 +731,7 @@ def load_hands(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     select: Optional[HandSelector] = None,
+    configs: Optional["list[str]"] = None,
 ) -> HandFleet:
     """Construct every attached hand, one per controller board.
 
@@ -750,7 +751,32 @@ def load_hands(
             :func:`load_hand` this never raises on several matches — that is
             the point — but it does raise :class:`HandNotFoundError` when a
             selector matches nothing.
+        configs: Build exactly these hands, one per ``config.yaml`` path, and
+            skip detection entirely — for driving several hands (real or
+            ``mock``) named explicitly rather than discovered, e.g. several
+            benches wired to one machine. Each is resolved through
+            :func:`load_hand`, so a real hand's own pinned ``port:`` (or lack
+            of one) still decides whether it resolves cleanly or refuses
+            ambiguously, exactly as it would for one hand. No count limit.
+            Mutually exclusive with ``select``.
     """
+    if configs is not None:
+        if select is not None:
+            raise ValueError(
+                "select= narrows detected hands; configs= names them "
+                "explicitly. Drop one of the two."
+            )
+        hands = [
+            load_hand(
+                config_path=c,
+                mock=mock,
+                engage_feedback=engage_feedback,
+                engage_sensors=engage_sensors,
+            )
+            for c in configs
+        ]
+        return HandFleet(tuple(hands))
+
     detections = detect_hands()
     # Counted before ``select`` narrows the list: what a port search can stray
     # onto is what is attached, not what this caller asked for.
