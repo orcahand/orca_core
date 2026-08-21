@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import sys
 import threading
@@ -34,18 +33,15 @@ from dataclasses import dataclass, field
 from tkinter import ttk
 
 from orca_core.constants import FINGER_NAMES
-from orca_core.hardware.dynamixel_client import DYNAMIXEL_MODELS
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
     JointEncoderClient,
 )
 from orca_core.hardware.sensing.constants import (
-    AUTO_ENC_ANGLE_ERROR_BIT,
     AUTO_ENC_ANGLE_MASK,
     AUTO_ENC_NUM_JOINTS,
     ENCODER_LSB_DEG,
-    ENCODER_SLOT_TO_JOINT,
     JOINT_TO_ENCODER_SLOT,
 )
 from orca_core.hardware.sensing.health import EncoderStreamHealth
@@ -99,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start-mode", choices=list(MODES), default="Resultant",
                    help="Tactile mode to start in.")
     p.add_argument("--motor-port", default=None,
-                   help="Motor serial port. Default: autodetect (any usbmodem that answers pings).")
+                   help="Motor serial port. Default: autodetect (any USB serial port that answers pings).")
     return p.parse_args()
 
 
@@ -374,8 +370,9 @@ class MotorBus(threading.Thread):
     def _candidates(self) -> list[str]:
         if self._fixed_port:
             return [self._fixed_port]
+        import serial.tools.list_ports
         sensor_port = self._sensor_port_fn()
-        ports = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+        ports = sorted(p.device for p in serial.tools.list_ports.comports() if p.vid is not None)
         return [p for p in ports if p != sensor_port]
 
     def _open_bus(self) -> None:
