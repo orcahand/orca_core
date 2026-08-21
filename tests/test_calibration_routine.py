@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from orca_core import MockOrcaHand
-from orca_core.maintenance import calibration_routine
+from orca_core.maintenance import calibration_routine, motor_reads
 from orca_core.utils.utils import read_yaml, write_yaml_atomic
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,7 +35,7 @@ def connected_hand(calib_dir):
 
 
 # ---------------------------------------------------------------------------
-# _read_motor_pos_checked
+# read_motor_pos_checked
 # ---------------------------------------------------------------------------
 
 
@@ -61,7 +61,7 @@ class _StubReadHand:
 
 def test_read_motor_pos_checked_retries_until_fresh():
     hand = _StubReadHand(failing_reads=2)
-    pos = calibration_routine._read_motor_pos_checked(hand, retries=5)
+    pos = motor_reads.read_motor_pos_checked(hand, retries=5, retry_interval=0.0)
     assert hand.reads == 3
     np.testing.assert_array_equal(pos, np.array([0.1, 0.2]))
 
@@ -69,7 +69,7 @@ def test_read_motor_pos_checked_retries_until_fresh():
 def test_read_motor_pos_checked_raises_on_persistent_stale_reads():
     hand = _StubReadHand(failing_reads=99)
     with pytest.raises(RuntimeError, match="no status packets"):
-        calibration_routine._read_motor_pos_checked(hand, retries=3)
+        motor_reads.read_motor_pos_checked(hand, retries=3, retry_interval=0.0)
     assert hand.reads == 3
 
 
@@ -322,3 +322,57 @@ def test_write_yaml_atomic_converts_numpy_arrays(tmp_path):
         "limits": [1.0, 2.0],
         "per_motor": {1: [0.5, 0.6]},
     }
+
+
+# ---------------------------------------------------------------------------
+# wrist exemption from the torque-release re-read
+# ---------------------------------------------------------------------------
+
+
+def _stub_hand(joint_by_motor, supports_multi_turn):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        config=SimpleNamespace(motor_to_joint_dict=joint_by_motor),
+        motor_client=SimpleNamespace(supports_multi_turn=supports_multi_turn),
+    )
+
+
+@pytest.mark.parametrize(
+    ("joint", "supports_multi_turn", "expected"),
+    [
+        ("wrist", True, True),      # multi-turn wrist: released re-read is meaningless
+        ("wrist", False, False),    # single-turn wrist: an ordinary servo
+        ("wrist_flex", True, False),  # not the wrist, despite the prefix
+        ("index_pip", True, False),
+    ],
+)
+def test_skips_torque_release_is_capability_gated(joint, supports_multi_turn, expected):
+    hand = _stub_hand({1: joint}, supports_multi_turn)
+    assert calibration_routine._skips_torque_release(hand, 1) is expected
+
+
+def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypatch):
+    """On a family needing offset calibration, the wrist must be captured like
+    every finger motor, or its two limits land in a different frame."""
+    from orca_core.utils import update_yaml
+
+    config_path = tmp_path / "config.yaml"
+    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), config_path)
+    update_yaml(str(config_path), "motor_type", "feetech")
+
+    hand = MockOrcaHand(config_path=str(config_path))
+    assert hand.connect()[0]
+    try:
+        offsets = []
+        monkeypatch.setattr(
+            hand.motor_client,
+            "calibrate_offset",
+            lambda motor_id, upper=True: offsets.append(motor_id) or True,
+        )
+        wrist_motor = hand.config.joint_to_motor_map["wrist"]
+        hand.calibrate(joints=["wrist"], force_wrist=True, persist=False)
+        assert wrist_motor in offsets
+        assert all(limit is not None for limit in hand.motor_limits_dict[wrist_motor])
+    finally:
+        hand.disconnect()

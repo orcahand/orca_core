@@ -20,8 +20,8 @@ import numpy as np
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
-from .hardware.motor_factory import create_motor_client
-from .hardware.motor_client import MotorClient
+from .hardware.motor_factory import create_mock_motor_client, create_motor_client
+from .hardware.motor_client import MotorClient, MotorRead
 from .hardware.motor_resolution import persist_resolved_driver, trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -35,11 +35,15 @@ from .utils.utils import (
 
 from .constants import (
     CALIBRATED,
+    DYNAMIXEL,
     MODE_MAP,
+    MOTOR_BAUD_RATES,
+    MOTOR_PORT_CLOSE_SETTLE_S,
+    MOTOR_TORQUE_DISABLE_SETTLE_S,
+    WRIST,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
     CURRENT,
-    WRIST,
     NUM_STEPS,
     POSITION,
     STEP_SIZE,
@@ -101,6 +105,7 @@ class OrcaHand(BaseHand):
         self._motor_client: MotorClient = None
         self._motor_lock: RLock = RLock()
         self._uncalibrated_warned: set = set()
+        self._single_turn_wrist_warned: bool = False
 
         self._task_thread: threading.Thread = None
         self._task_stop_event = threading.Event()
@@ -146,6 +151,28 @@ class OrcaHand(BaseHand):
         return self.calibration.joint_to_motor_ratios_dict
 
     @property
+    def effective_joint_roms_dict(self) -> Dict[str, list]:
+        """Config ROMs overlaid with this hand's encoder-measured ROMs.
+
+        The joint↔motor map is calibrated and evaluated in these degrees, so
+        that on an encoder-equipped hand a commanded degree and a measured
+        degree are the same unit. Joints without a measured ROM — every joint
+        on a hand without encoders — fall back to the config nominal.
+
+        This is the map's frame of reference, not a command limit: config ROMs
+        remain the clamp applied by :meth:`OrcaHandConfig.clamp_joint_positions`
+        and the denominator of :meth:`pose_from_fractions`.
+        """
+        measured = self.calibration.joint_roms_measured_dict
+        if not measured:
+            return self.config.joint_roms_dict
+        roms = dict(self.config.joint_roms_dict)
+        for joint, rom in measured.items():
+            if joint in roms:
+                roms[joint] = list(rom)
+        return roms
+
+    @property
     def calibrated(self) -> bool:
         return self.calibration.calibrated
 
@@ -161,6 +188,17 @@ class OrcaHand(BaseHand):
         traffic must go through the hand's lock-fenced methods instead.
         """
         return self._motor_client
+
+    @property
+    def last_read_ok(self) -> bool:
+        """Whether the most recent motor read returned fresh data.
+
+        ``False`` means the bus answered nothing and the last
+        :meth:`get_motor_pos` / :meth:`get_motor_current` returned the client's
+        stale cache. Qualifies only the single most recent read: check it right
+        after the read it describes, before another can run.
+        """
+        return self._motor_client.last_read_ok
 
     def _create_motor_client(self) -> MotorClient:
         return create_motor_client(
@@ -187,11 +225,14 @@ class OrcaHand(BaseHand):
         self.config = dataclasses.replace(
             self.config, motor_type=motor_type, baudrate=baudrate
         )
+        # The control mode could only be checked against the union of families
+        # until now; recheck against the one actually on the bus.
+        self.config.validate_control_mode()
         return True
 
-    def _persist_resolved_driver(self, existing: "OrcaHandConfig") -> None:
-        """Write driver fields the connect resolved (vs ``existing``) to config.yaml."""
-        persist_resolved_driver(existing, self.config)
+    def _persist_resolved_driver(self) -> None:
+        """Write the driver fields this connect resolved back to config.yaml."""
+        persist_resolved_driver(self.config)
 
     def _connect_on_port(self, port: str, base_config: "OrcaHandConfig" = None) -> None:
         """Resolve the motor driver for ``port`` and open the client on it.
@@ -221,7 +262,7 @@ class OrcaHand(BaseHand):
         """
         try:
             self._connect_on_port(port, base_config)
-            self._persist_resolved_driver(base_config)
+            self._persist_resolved_driver()
             return None
         except Exception as e:
             self._discard_motor_client()
@@ -238,6 +279,8 @@ class OrcaHand(BaseHand):
             client.disconnect()
         except Exception:
             pass
+        else:
+            time.sleep(MOTOR_PORT_CLOSE_SETTLE_S)
 
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True
@@ -248,8 +291,9 @@ class OrcaHand(BaseHand):
         ``config.yaml`` win when present; a missing port is auto-detected via
         USB vendor ID (interactive picker as a last resort) and a missing
         motor_type/baudrate is found by pinging each candidate family from
-        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Resolved values are
-        persisted back to ``config.yaml``.
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Values the probe had to
+        resolve are persisted back to ``config.yaml``, which never overwrites
+        what that file pins or touches a packaged model.
 
         Idempotent: calling ``connect()`` on an already-connected hand is a
         no-op that returns success. Call :meth:`disconnect` first to force a
@@ -275,12 +319,21 @@ class OrcaHand(BaseHand):
         # ``port: auto`` keeps the tracked config hardware-agnostic; if no
         # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
+        unresolved = None
         if first_port == "auto":
             detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
-            if detected is not None:
+            if detected is None:
+                # Opening the literal "auto" reports a missing-file error that
+                # reads like a config typo; name the real failure instead.
+                unresolved = (
+                    "no motor bus detected: no controller board answered "
+                    "ORCA_ID? and no single known USB adapter is attached "
+                    "(a port held open by another process cannot be probed)"
+                )
+            else:
                 first_port = detected
 
-        error = self._try_port(first_port, existing_config)
+        error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "
@@ -331,7 +384,7 @@ class OrcaHand(BaseHand):
                     failure = (
                         f"torque disable was not acknowledged by motor IDs {failed_ids}"
                     )
-                time.sleep(0.1)
+                time.sleep(MOTOR_TORQUE_DISABLE_SETTLE_S)
             except Exception as e:
                 failure = f"torque disable failed: {e}"
             finally:
@@ -421,10 +474,11 @@ class OrcaHand(BaseHand):
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
         """Switch the operating mode of the specified motors.
 
-        The wrist motor is always kept in ``multi_turn_position`` mode (4) when
-        *mode* would otherwise be ``current_based_position`` (5) or
-        ``current`` (0), because those modes are incompatible with the wrist
-        joint's range of motion.
+        On motor families that offer multi-turn position control, the wrist
+        motor is kept in ``multi_turn_position`` mode (4) when *mode* would
+        otherwise be ``current_based_position`` (5) or ``current`` (0),
+        because those modes are incompatible with the wrist joint's range of
+        motion. Single-turn families take the requested mode for the wrist too.
 
         Args:
             mode: One of ``"current"``, ``"velocity"``, ``"position"``,
@@ -432,12 +486,17 @@ class OrcaHand(BaseHand):
             motor_ids: Motors to reconfigure. Defaults to all motors.
 
         Raises:
-            ValueError: If *mode* is not recognised or *motor_ids* contains
-                unknown IDs.
+            ValueError: If *mode* is not recognised, is unsupported by the
+                connected motor family, or *motor_ids* contains unknown IDs.
         """
         mode_value = MODE_MAP.get(mode)
         if mode_value is None:
             raise ValueError("Invalid control mode.")
+        if mode not in self._motor_client.supported_modes:
+            raise ValueError(
+                f"{self.config.motor_type} motors do not support control mode "
+                f"{mode!r}; supported: {sorted(self._motor_client.supported_modes)}."
+            )
 
         # Holds the lock for the whole torque-off/mode-write/torque-on sequence
         # so it can't interleave with other bus traffic.
@@ -449,7 +508,9 @@ class OrcaHand(BaseHand):
 
             if mode_value in (MODE_MAP[CURRENT_BASED_POSITION], MODE_MAP[CURRENT]):
                 wrist_motor_id = self.config.joint_to_motor_map.get("wrist")
-                if wrist_motor_id is not None:
+                if wrist_motor_id is not None and not self._motor_client.supports_multi_turn:
+                    self._warn_single_turn_wrist(mode)
+                elif wrist_motor_id is not None:
                     motor_ids_without_wrist = [
                         motor_id for motor_id in motor_ids if motor_id != wrist_motor_id
                     ]
@@ -466,6 +527,19 @@ class OrcaHand(BaseHand):
 
             self._motor_client.set_operating_mode(motor_ids, mode_value)
 
+    def _warn_single_turn_wrist(self, mode: str) -> None:
+        """Warn once that the wrist stays in ``mode`` for lack of multi-turn."""
+        if self._single_turn_wrist_warned:
+            return
+        self._single_turn_wrist_warned = True
+        rom = self.config.joint_roms_dict.get(WRIST)
+        span = f"{rom[0]}..{rom[1]} deg" if rom else "its configured ROM"
+        logger.warning(
+            "%s motors have no multi-turn mode: the wrist stays in %r. Its ROM "
+            "(%s) is only reachable within one turn of the motor's zero.",
+            self.config.motor_type, mode, span,
+        )
+
     def get_motor_pos(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read raw motor positions from the bus.
 
@@ -476,6 +550,10 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor positions in radians as an array or dict.
+
+        Note:
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            velocity or current too for the same single transaction.
         """
         with self._motor_lock:
             motor_pos = self._motor_client.read_position_velocity_current().position
@@ -496,6 +574,10 @@ class OrcaHand(BaseHand):
 
         Returns:
             Motor currents (mA) as an array, or dict.
+
+        Note:
+            One bus round trip per motor; :meth:`get_motor_state` returns
+            position or velocity too for the same single transaction.
         """
         with self._motor_lock:
             motor_current = self._motor_client.read_position_velocity_current().current
@@ -507,6 +589,20 @@ class OrcaHand(BaseHand):
                 }
 
             return motor_current
+
+    def get_motor_state(self) -> MotorRead:
+        """Read position, velocity, and current in a single bus transaction.
+
+        The per-quantity accessors each cost a full round trip to every motor,
+        so wanting two of them should be one snapshot rather than two calls.
+
+        Returns:
+            A :class:`~orca_core.hardware.motor_client.MotorRead`: positions
+            (radians), velocities, and currents (mA), each an array ordered by
+            :attr:`~orca_core.OrcaHandConfig.motor_ids`.
+        """
+        with self._motor_lock:
+            return self._motor_client.read_position_velocity_current()
 
     def wait_for_motion(self, timeout: float = 5.0) -> None:
         """Block until all motors have settled at their commanded position.
@@ -522,8 +618,10 @@ class OrcaHand(BaseHand):
         """
         if not self._motor_client.waits_for_motion:
             return
-        with self._motor_lock:
-            self._motor_client.wait_for_motion_complete(timeout=timeout)
+        # Deliberately unlocked: the client serializes its own bus access per
+        # poll, so holding the motor lock for the whole wait would only stall
+        # the joint loop for up to ``timeout``.
+        self._motor_client.wait_for_motion_complete(timeout=timeout)
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
@@ -595,6 +693,9 @@ class OrcaHand(BaseHand):
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
+            # The mode switch drops torque; let asynchronously travelling
+            # motors arrive first so they don't go limp mid-motion.
+            self.wait_for_motion()
             self.set_control_mode(control_mode)
 
     def is_calibrated(
@@ -667,8 +768,8 @@ class OrcaHand(BaseHand):
         A joint qualifies when it has an encoder slot in the wire protocol, a
         driving motor on this hand, and an entry in
         ``config.joint_encoder_joints`` (the ``["all"]`` sentinel selects
-        every slotted, motor-driven joint; the wrist never qualifies). Empty
-        when the config field is unset. Available before ``connect()``.
+        every slotted, motor-driven joint, wrist included). Empty when the
+        config field is unset. Available before ``connect()``.
         """
         return self._encoder_backed_joints()
 
@@ -676,7 +777,7 @@ class OrcaHand(BaseHand):
         """Joints with a protocol slot, a driving motor on this hand, and an
         entry in ``config.joint_encoder_joints``. Returns ``[]`` when the
         config field is ``None``. The sentinel ``["all"]`` selects every
-        slotted, motor-driven joint. Wrist is always excluded.
+        slotted, motor-driven joint, wrist included.
         """
         from .hardware.sensing.constants import (
             ENCODER_JOINTS_ALL,
@@ -690,7 +791,7 @@ class OrcaHand(BaseHand):
         available = [
             joint
             for joint in JOINT_TO_ENCODER_SLOT
-            if joint != WRIST and joint in self.config.joint_to_motor_map
+            if joint in self.config.joint_to_motor_map
         ]
         if any(str(j).lower() == ENCODER_JOINTS_ALL for j in configured):
             return available
@@ -810,6 +911,9 @@ class OrcaHand(BaseHand):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
+        # The mode switch drops torque; let asynchronously travelling motors
+        # arrive first so they don't go limp mid-motion.
+        self.wait_for_motion()
         self.set_control_mode(control_mode)
     
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
@@ -846,7 +950,17 @@ class OrcaHand(BaseHand):
         the raw reading back into the expected operating range. Motors with no
         configured limits, or whose positions are within tolerance, receive an
         offset of 0.
+
+        Motor families whose position is bounded to a single turn cannot wrap:
+        every motor gets a 0 offset there, and an out-of-limits reading is a
+        real fault rather than a wrap to correct.
         """
+        if self._motor_client.position_range_rad is not None:
+            self._wrap_offsets_dict = {
+                motor_id: 0.0 for motor_id in self.config.motor_ids
+            }
+            return
+
         motor_pos = self._read_motor_pos_for_offsets()
 
         lower_limit = np.array(
@@ -970,6 +1084,7 @@ class OrcaHand(BaseHand):
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
+        joint_roms = self.effective_joint_roms_dict
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
             motor_id = self.config.motor_ids[idx]
@@ -984,13 +1099,13 @@ class OrcaHand(BaseHand):
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
                 if self.config.joint_inversion_dict.get(joint_name, False):
                     joint_pos[joint_name] = (
-                        self.config.joint_roms_dict[joint_name][1]
+                        joint_roms[joint_name][1]
                         - (wrapped_pos - self.motor_limits_dict[motor_id][0])
                         / self.calibration.joint_to_motor_ratios_dict[motor_id]
                     )
                 else:
                     joint_pos[joint_name] = (
-                        self.config.joint_roms_dict[joint_name][0]
+                        joint_roms[joint_name][0]
                         + (wrapped_pos - self.motor_limits_dict[motor_id][0])
                         / self.calibration.joint_to_motor_ratios_dict[motor_id]
                     )
@@ -1000,6 +1115,7 @@ class OrcaHand(BaseHand):
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
+        joint_roms = self.effective_joint_roms_dict
         motor_pos = [None] * len(self.config.motor_ids)
 
         for joint_name, pos in joint_pos.items():
@@ -1023,13 +1139,13 @@ class OrcaHand(BaseHand):
             if self.config.joint_inversion_dict.get(joint_name, False):
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
                     self.motor_limits_dict[motor_id][0]
-                    + (self.config.joint_roms_dict[joint_name][1] - pos)
+                    + (joint_roms[joint_name][1] - pos)
                     * self.calibration.joint_to_motor_ratios_dict[motor_id]
                 )
             else:
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
                     self.motor_limits_dict[motor_id][0]
-                    + (pos - self.config.joint_roms_dict[joint_name][0])
+                    + (pos - joint_roms[joint_name][0])
                     * self.calibration.joint_to_motor_ratios_dict[motor_id]
                 )
 
@@ -1280,22 +1396,26 @@ class MockMotorResolutionMixin:
         return super().connect(interactive, **kwargs)
 
     def _create_motor_client(self) -> MotorClient:
-        from .hardware.mock_dynamixel_client import MockDynamixelClient
-
-        return MockDynamixelClient(
-            self.config.motor_ids, self.config.port, self.config.baudrate
+        return create_mock_motor_client(
+            self.config.motor_type or DYNAMIXEL,
+            self.config.motor_ids,
+            self.config.port,
+            self.config.baudrate,
         )
 
     def _resolve_motor_driver(self, port: str) -> bool:
+        # A config naming its family is authoritative; only an unpinned one
+        # falls back, so a Feetech mock keeps Feetech semantics.
         if self.config.motor_type is None or self.config.baudrate is None:
             self.config = dataclasses.replace(
                 self.config,
-                motor_type=self.config.motor_type or "dynamixel",
-                baudrate=self.config.baudrate or 1_000_000,
+                motor_type=self.config.motor_type or DYNAMIXEL,
+                baudrate=self.config.baudrate
+                or MOTOR_BAUD_RATES[self.config.motor_type or DYNAMIXEL][0],
             )
         return True
 
-    def _persist_resolved_driver(self, existing) -> None:
+    def _persist_resolved_driver(self) -> None:
         pass
 
 

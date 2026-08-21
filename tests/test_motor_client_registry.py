@@ -5,11 +5,16 @@ port is actually open: registered on successful connect(), never on
 construction or failed connect, and removed on disconnect(). The atexit
 cleanup handlers must survive one client failing so the remaining clients
 still get their torque disabled.
+
+Also pins the motor-family factory: every family resolves to a real and a
+mock client, and an unknown family is a ValueError rather than a silent
+Dynamixel fallback.
 """
 
 import sys
 import types
 
+import numpy as np
 import pytest
 
 import orca_core.hardware.feetech_client as feetech_client_module
@@ -21,6 +26,11 @@ from orca_core.hardware.feetech_client import (
     COMM_SUCCESS,
     FeetechClient,
     feetech_cleanup_handler,
+)
+from orca_core.hardware.motor_factory import (
+    create_mock_motor_client,
+    mock_motor_client_class,
+    motor_client_class,
 )
 
 # ---------------------------------------------------------------------------
@@ -274,6 +284,13 @@ def test_feetech_failure_after_open_closes_port_before_raising(
     assert feetech_registry == set()
 
 
+def test_feetech_scan_for_motors_is_an_instance_method(feetech_registry):
+    """maintenance.motor_chain.scan_motors calls it on a constructed client."""
+    client = _make_feetech()
+    assert client.scan_for_motors(port="/dev/fake", id_range=(1, 1),
+                                  baud_rates=[]) == []
+
+
 def test_feetech_cleanup_handler_survives_a_failing_client(feetech_registry):
     bad, good = _make_feetech("/dev/bad"), _make_feetech("/dev/good")
     bad.connect()
@@ -291,3 +308,70 @@ def test_feetech_cleanup_handler_survives_a_failing_client(feetech_registry):
 
     assert not good.port_handler.is_open, "good client must still be closed"
     assert good not in feetech_registry
+
+
+# ---------------------------------------------------------------------------
+# Motor-family factory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "motor_type, real_name, mock_name",
+    [
+        ("dynamixel", "DynamixelClient", "MockDynamixelClient"),
+        ("feetech", "FeetechClient", "MockFeetechClient"),
+    ],
+)
+def test_factory_resolves_every_family(motor_type, real_name, mock_name):
+    assert motor_client_class(motor_type).__name__ == real_name
+    assert mock_motor_client_class(motor_type).__name__ == mock_name
+
+
+@pytest.mark.parametrize(
+    "factory", [motor_client_class, mock_motor_client_class]
+)
+def test_factory_rejects_an_unknown_family(factory):
+    with pytest.raises(ValueError, match="Unknown motor_type"):
+        factory("stepper")
+
+
+def test_create_mock_motor_client_builds_without_connecting():
+    client = create_mock_motor_client("feetech", [1, 2], "mock", 1_000_000)
+    try:
+        assert not client.is_connected
+        assert client.motor_ids == [1, 2]
+        assert client.port_name == "mock"
+        assert client.baudrate == 1_000_000
+    finally:
+        type(client).OPEN_CLIENTS.discard(client)
+
+
+def test_mock_clients_carry_their_family_capabilities():
+    """A mock hand must behave like the family it stands in for."""
+    for motor_type in ("dynamixel", "feetech"):
+        real = motor_client_class(motor_type)
+        mock = mock_motor_client_class(motor_type)
+        for attribute in (
+            "motor_type",
+            "waits_for_motion",
+            "supports_multi_turn",
+            "supported_modes",
+            "position_range_rad",
+            "factory_default_id",
+            "factory_default_baudrate",
+            "baud_rate_map",
+            "requires_unpowered_hotplug",
+        ):
+            assert getattr(mock, attribute) == getattr(real, attribute), (
+                f"{mock.__name__}.{attribute}"
+            )
+
+
+def test_mock_feetech_clamps_commands_into_its_position_range():
+    client = create_mock_motor_client("feetech", [1], "mock", 1_000_000)
+    with client:
+        low, high = client.position_range_rad
+        client.write_desired_pos([1], np.array([high + 1.0]))
+        assert client._pos[1] == pytest.approx(high)
+        client.write_desired_pos([1], np.array([low - 1.0]))
+        assert client._pos[1] == pytest.approx(low)

@@ -540,7 +540,10 @@ def phase_encoder_stream(client, link, expected_slots, duration_s):
     last_ts = None
     try:
         while time.monotonic() - started < duration_s:
-            reading = client.get_latest()
+            # Unfiltered: the rail-stuck verdict and the per-slot span are read
+            # off raw_counts, and the smoothing behind get_latest() would pull a
+            # floating slot away from its rails and shrink every span.
+            reading = client.get_latest_unfiltered()
             if reading is not None and reading.timestamp != last_ts:
                 health.update(reading)
                 last_ts = reading.timestamp

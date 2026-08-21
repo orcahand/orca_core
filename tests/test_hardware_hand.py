@@ -309,7 +309,7 @@ def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
         created.append(client)
         return client
 
-    def failing_persist(existing):
+    def failing_persist():
         raise RuntimeError("post-connect failure")
 
     monkeypatch.setattr(hand, "_create_motor_client", create_and_record)
@@ -329,7 +329,7 @@ def test_failed_connect_logs_instead_of_printing(tmp_path, monkeypatch, capsys, 
     shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
 
-    def failing_persist(existing):
+    def failing_persist():
         raise RuntimeError("post-connect failure")
 
     monkeypatch.setattr(hand, "_persist_resolved_driver", failing_persist)

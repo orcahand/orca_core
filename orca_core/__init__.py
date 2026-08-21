@@ -9,6 +9,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import BaseHandConfig
 from .hand_config import HandConfigValidationError
+from .hand_config import JointGains
 from .hand_config import OrcaHandConfig
 from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
@@ -24,6 +25,7 @@ from .hardware_hand_sensing import (
 )
 from .hand_factory import HandDetection, detect_hand, load_hand
 from .hardware.joint_encoder_client import EncodersNotAvailableError
+from .hardware.motor_client import MotorRead
 from .hardware.sensing.types import LinkHealth, TaxelData
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform, frames
@@ -34,6 +36,7 @@ __all__ = [
     "BaseHand",
     "BaseHandConfig",
     "HandConfigValidationError",
+    "JointGains",
     "OrcaHandConfig",
     "OrcaHandTouchConfig",
     "OrcaHand",
@@ -47,6 +50,7 @@ __all__ = [
     "JointFeedbackConnectError",
     "EncodersNotAvailableError",
     "LinkHealth",
+    "MotorRead",
     "load_hand",
     "detect_hand",
     "HandDetection",

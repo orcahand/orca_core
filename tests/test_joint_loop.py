@@ -57,7 +57,6 @@ def _make_loop(
     controller.set_gains(
         Kp=Kp, Ki=Ki,
         correction_max_deg=correction_max_deg,
-        i_clamp_deg=correction_max_deg,
     )
     return JointLoopThread(hand, encoder_source, controller, target_hz=target_hz)
 
@@ -283,6 +282,108 @@ def test_motor_pos_matches_open_loop_kinematics(calibrated_hand):
         assert loop_motor[idx] == pytest.approx(expected, abs=1e-9)
 
 
+def _bias_for(loop, joint):
+    """The feed-forward bias prime_for_step computed for ``joint``."""
+    return loop._motor_bias[loop._joint_names.index(joint)]
+
+
+def test_wrist_motor_command_clamped_to_calibrated_travel(calibrated_hand):
+    """A large wrist error must not push the commanded motor position past
+    the calibrated travel plus the margin: the wrist motor runs in
+    multi_turn_position mode with no current cap. Fingers under the same
+    error stay unclamped (tendon-stretch over-travel is deliberate)."""
+    from orca_core.constants import WRIST
+    from orca_core.control.constants import WRIST_MOTOR_TARGET_MARGIN_DEG
+
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, correction_max_deg=60.0)
+    loop.prime_for_step()
+
+    # Big errors on both joints: the finger's command exceeds what a
+    # wrist-style bound would allow, proving fingers pass through unclamped.
+    roms = calibrated_hand.config.joint_roms_dict
+    finger = next(j for j in loop._joint_names if j != WRIST)
+    loop.set_target({WRIST: roms[WRIST][1], finger: 40.0})
+    loop.step_once(dt=0.01)
+
+    correction = loop.get_correction()
+    wrist_mid = calibrated_hand.config.joint_to_motor_map[WRIST]
+    limits = calibrated_hand.calibration.motor_limits_dict[wrist_mid]
+    ratio = calibrated_hand.calibration.joint_to_motor_ratios_dict[wrist_mid]
+    wrap = calibrated_hand._wrap_offsets_dict.get(wrist_mid, 0.0)
+    margin = WRIST_MOTOR_TARGET_MARGIN_DEG * abs(ratio)
+    bound_lower = limits[0] - margin + wrap
+    bound_upper = limits[1] + margin + wrap
+
+    unclamped = (
+        _expected_motor_pos(
+            calibrated_hand, WRIST, roms[WRIST][1] + correction[WRIST]
+        )
+        + _bias_for(loop, WRIST)
+    )
+    assert unclamped < bound_lower, "test must actually engage the clamp"
+    written = calibrated_hand._motor_client._pos[wrist_mid]
+    assert written == pytest.approx(bound_lower, abs=1e-9)
+
+    finger_mid = calibrated_hand.config.joint_to_motor_map[finger]
+    finger_limits = calibrated_hand.calibration.motor_limits_dict[finger_mid]
+    finger_ratio = calibrated_hand.calibration.joint_to_motor_ratios_dict[
+        finger_mid
+    ]
+    finger_margin = WRIST_MOTOR_TARGET_MARGIN_DEG * abs(finger_ratio)
+    finger_expected = (
+        _expected_motor_pos(calibrated_hand, finger, 40.0 + correction[finger])
+        + _bias_for(loop, finger)
+    )
+    assert not (
+        finger_limits[0] - finger_margin
+        <= finger_expected
+        <= finger_limits[1] + finger_margin
+    ), "finger scenario must exceed a would-be clamp to prove pass-through"
+    assert calibrated_hand._motor_client._pos[finger_mid] == pytest.approx(
+        finger_expected, abs=1e-9
+    )
+
+    # Opposite direction engages the upper bound.
+    loop.set_target({WRIST: roms[WRIST][0]})
+    loop.step_once(dt=0.01)
+    correction = loop.get_correction()
+    unclamped_upper = (
+        _expected_motor_pos(
+            calibrated_hand, WRIST, roms[WRIST][0] + correction[WRIST]
+        )
+        + _bias_for(loop, WRIST)
+    )
+    assert unclamped_upper > bound_upper
+    assert calibrated_hand._motor_client._pos[wrist_mid] == pytest.approx(
+        bound_upper, abs=1e-9
+    )
+
+
+def test_clamped_joint_warns_by_name_with_rate_limit(calibrated_hand, caplog):
+    """A joint held short of its target by the clamp is otherwise invisible —
+    only an unlogged counter moves — so it must say so, naming the joint, and
+    rate-limited so a persistently unreachable target doesn't drown the log."""
+    from orca_core.constants import WRIST
+
+    encoder = _static_at_zero(calibrated_hand)
+    loop = _make_loop(calibrated_hand, encoder, Kp=1.0, correction_max_deg=60.0)
+    loop.prime_for_step()
+    loop.set_target({WRIST: calibrated_hand.config.joint_roms_dict[WRIST][1]})
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(50):
+            loop.step_once(dt=0.001)
+
+    assert loop.get_stats()["cycles_clamped"] == 50
+    clamp_records = [
+        r for r in caplog.records
+        if "clamped" in r.getMessage() and r.levelno == logging.WARNING
+    ]
+    assert 1 <= len(clamp_records) <= 2, "rate limit must collapse the repeats"
+    assert WRIST in clamp_records[0].getMessage()
+
+
 def test_jitter_monitor_estops_after_pathological_streak(calibrated_hand):
     encoder = _static_at_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder)
@@ -445,15 +546,17 @@ def test_anchor_reads_motor_flag_under_motor_lock(calibrated_hand):
     assert lock_owned_at_flag_read and all(lock_owned_at_flag_read)
 
 
-def test_snapshot_rejects_unvalidated_hand_side(calibrated_hand, monkeypatch):
-    """A hand side without a validated encoder polarity table must fail the
-    snapshot instead of silently decoding with right-hand signs."""
+def test_snapshot_rejects_unrecognised_hand_side(calibrated_hand, monkeypatch):
+    """A hand side without a measured encoder polarity table must fail the
+    snapshot instead of silently decoding with another side's signs."""
     import dataclasses as dc
 
-    monkeypatch.setattr(
-        calibrated_hand, "config", dc.replace(calibrated_hand.config, type="left")
-    )
+    # Build the reading while the side is still valid; the snapshot is the
+    # gate under test.
     encoder = _static_at_zero(calibrated_hand)
+    monkeypatch.setattr(
+        calibrated_hand, "config", dc.replace(calibrated_hand.config, type="middle")
+    )
     loop = _make_loop(calibrated_hand, encoder)
     with pytest.raises(ValueError, match="polarity"):
         loop.prime_for_step()

@@ -16,6 +16,7 @@ from typing import Optional, Sequence, Union, Tuple
 import numpy as np
 
 from ..constants import DYNAMIXEL
+from .dynamixel_client import DynamixelClient
 from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -81,6 +82,10 @@ class MockDynamixelClient(MotorClient):
     """
 
     motor_type = DYNAMIXEL
+    factory_default_id = DynamixelClient.factory_default_id
+    factory_default_baudrate = DynamixelClient.factory_default_baudrate
+    baud_rate_map = DynamixelClient.baud_rate_map
+    requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.
@@ -527,17 +532,20 @@ if __name__ == '__main__':
     parser.add_argument(
         '-d',
         '--device',
-        default='/dev/cu.usbserial-FT62AFSR',
-        help='The Dynamixel device to connect to.')
+        default=None,
+        help='The Dynamixel device. Default: auto-detect the motor adapter.')
     parser.add_argument(
         '-b', '--baud', default=1000000, help='The baudrate to connect with.')
+    from ..utils.utils import auto_detect_port
+
     parsed_args = parser.parse_args()
     motors = [int(motor) for motor in parsed_args.motors.split(',')]
     
     way_points = [np.zeros(len(motors)), np.full(len(motors), np.pi)]
 
-    with MockDynamixelClient(motors, parsed_args.device,
-                         parsed_args.baud) as dxl_client:
+    device = parsed_args.device or auto_detect_port('dynamixel')
+
+    with MockDynamixelClient(motors, device, parsed_args.baud) as dxl_client:
         for step in itertools.count():
             if step > 0 and step % 50 == 0:
                 way_point = way_points[(step // 100) % len(way_points)]

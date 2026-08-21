@@ -4,6 +4,7 @@ import os
 import shutil
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,10 +43,17 @@ def api_env(tmp_path_factory):
 
 
 def test_status(api_env):
-    client, _, _ = api_env
+    client, hand, _ = api_env
     resp = client.get("/status")
     assert resp.status_code == 200
-    assert resp.json() == {"connected": True, "calibrated": True}
+    body = resp.json()
+    assert body["connected"] is True and body["calibrated"] is True
+    # A client must be able to tell which hand it was actually given.
+    assert body["hand_class"] == "MockOrcaHand"
+    assert body["type"] == hand.config.type
+    assert body["motor_type"] == hand.config.motor_type
+    assert body["port"] == hand.config.port
+    assert body["tactile"] is False and body["joint_feedback"] is False
 
 
 def test_connect_when_already_connected(api_env):
@@ -62,6 +70,19 @@ def test_torque_enable_disable(api_env):
         "/torque/enable", json={"motor_ids": hand.config.motor_ids[:2]}
     ).status_code == 200
     assert client.post("/torque/disable").status_code == 200
+def test_torque_reports_unacked_motors(api_env, monkeypatch):
+    """Unacked writes are routine on a long chain; the caller must be told
+    which motors did not take the command."""
+    client, hand, _ = api_env
+    monkeypatch.setattr(hand, "enable_torque", lambda motor_ids=None: [3, 7])
+    resp = client.post("/torque/enable")
+    assert resp.status_code == 207
+    assert resp.json()["failed_motor_ids"] == [3, 7]
+
+    monkeypatch.setattr(hand, "disable_torque", lambda motor_ids=None: [])
+    resp = client.post("/torque/disable")
+    assert resp.status_code == 200
+    assert resp.json()["failed_motor_ids"] == []
 
 
 def test_set_max_current(api_env):
@@ -227,9 +248,15 @@ def test_disconnect_and_reconnect(api_env):
 
 def test_set_config(api_env):
     client, mock_hand, config_dir = api_env
+    with open(config_dir / "config.yaml", "a", encoding="utf-8") as f:
+        f.write("motor_type: dynamixel\n")
     resp = client.post("/config", json=str(config_dir / "config.yaml"))
     assert resp.status_code == 200
     assert isinstance(api.hand, OrcaHand)
+    body = resp.json()
+    assert body["hand_class"] == "OrcaHand"
+    assert body["type"] == "right"
+    assert body["motor_type"] == "dynamixel"
     api.hand = mock_hand
 
 
@@ -310,41 +337,68 @@ def test_control_endpoints_return_409_when_disconnected(disconnected_client):
     assert resp.status_code == 409
 
 
-def test_set_config_does_not_build_default_hand(monkeypatch):
-    """POST /config on a fresh server builds only the requested hand."""
-    constructed = []
+def test_set_config_binds_the_class_the_config_declares(monkeypatch, tmp_path):
+    """POST /config goes through load_hand, so a touch/joint/full config binds
+    its own class instead of being downgraded to a motor-only hand."""
+    loaded = []
 
-    def _factory(*args, **kwargs):
-        constructed.append(kwargs)
-        return MockOrcaHand.__new__(MockOrcaHand)
+    def _fake_load_hand(**kwargs):
+        loaded.append(kwargs)
+        return _StubHand()
 
     monkeypatch.setattr(api, "hand", None)
-    monkeypatch.setattr(api, "OrcaHand", _factory)
+    monkeypatch.setattr(api, "load_hand", _fake_load_hand)
     client = TestClient(api.app)
     resp = client.post("/config", json="/some/config.yaml")
     assert resp.status_code == 200
-    assert constructed == [{"config_path": "/some/config.yaml"}]
+    assert loaded == [{"config_path": "/some/config.yaml"}]
 
 
-def test_hand_is_constructed_lazily_on_first_use(monkeypatch):
-    created = []
+class _StubHand:
+    """Minimal stand-in for a constructed, unconnected hand."""
 
-    class _StubHand:
-        def is_connected(self):
-            return False
+    config = SimpleNamespace(type="right", motor_type="feetech", port="/dev/cu.x")
 
-        def is_calibrated(self):
-            return False
+    def is_connected(self):
+        return False
 
-    def _factory(*args, **kwargs):
-        stub = _StubHand()
-        created.append(stub)
-        return stub
+    def is_calibrated(self):
+        return False
+
+
+def test_status_reports_no_hand_without_probing_the_ports(monkeypatch):
+    """Detection does serial I/O, so a read-only endpoint must never trigger it."""
+    def _must_not_run(**kwargs):
+        raise AssertionError("GET /status ran hardware detection")
 
     monkeypatch.setattr(api, "hand", None)
-    monkeypatch.setattr(api, "OrcaHand", _factory)
+    monkeypatch.setattr(api, "load_hand", _must_not_run)
     client = TestClient(api.app)
     resp = client.get("/status")
     assert resp.status_code == 200
     assert resp.json() == {"connected": False, "calibrated": False}
+    assert api.hand is None
+
+
+def test_connect_binds_the_detected_hand(monkeypatch):
+    created = []
+
+    def _fake_load_hand(**kwargs):
+        stub = _StubHand()
+        stub.connect = lambda interactive=True: (True, "connected")
+        created.append(stub)
+        return stub
+
+    monkeypatch.setattr(api, "hand", None)
+    monkeypatch.setattr(api, "load_hand", _fake_load_hand)
+    client = TestClient(api.app)
+    assert client.post("/connect").status_code == 200
     assert len(created) == 1 and api.hand is created[0]
+
+
+def test_read_endpoints_409_with_no_hand_bound(monkeypatch):
+    monkeypatch.setattr(api, "hand", None)
+    client = TestClient(api.app)
+    assert client.get("/motors/position").status_code == 409
+    assert client.get("/calibrate/status").status_code == 409
+

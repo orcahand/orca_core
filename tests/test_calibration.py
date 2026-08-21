@@ -158,6 +158,25 @@ def test_is_calibrated_with_joint_feedback_requires_encoder_block(calib_dir):
     assert hand.is_calibrated(use_joint_feedback=True) is False
 
 
+def test_is_calibrated_joint_feedback_requires_wrist_anchor(calib_dir):
+    """A calibration made before the wrist joined the loop (finger anchors
+    only) reports uncalibrated — the signal to recalibrate and capture the
+    wrist anchor."""
+    import dataclasses as dc
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    _populate_motor_calibration(hand)
+    finger_dict = {
+        joint: JointEncoderCal(enc_at_anchor_count=0)
+        for joint in hand._encoder_backed_joints()
+        if joint != "wrist"
+    }
+    hand.calibration = dc.replace(
+        hand.calibration, joint_encoder_calibration_dict=finger_dict
+    )
+    assert hand.is_calibrated(use_joint_feedback=True) is False
+
+
 # ---------------------------------------------------------------------------
 # OrcaHand._raw_to_joint_angle
 # ---------------------------------------------------------------------------
@@ -284,18 +303,17 @@ def test_encoder_backed_joints_respects_config_subset(calib_dir):
 
 def test_encoder_backed_joints_all_selects_every_slotted_motor_joint(calib_dir):
     """The ``["all"]`` default expands to every joint that has both an encoder
-    slot and a driving motor, excluding the wrist."""
+    slot and a driving motor, wrist included."""
     from orca_core.hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
 
     config_path = calib_dir / "config.yaml"
     update_yaml(str(config_path), "joint_encoder_joints", ["all"])
     hand = MockOrcaHand(config_path=str(config_path))
     expected = {
-        j
-        for j in JOINT_TO_ENCODER_SLOT
-        if j != "wrist" and j in hand.config.joint_to_motor_map
+        j for j in JOINT_TO_ENCODER_SLOT if j in hand.config.joint_to_motor_map
     }
     assert set(hand._encoder_backed_joints()) == expected
+    assert "wrist" in hand._encoder_backed_joints()
 
 
 def test_encoder_backed_joints_empty_when_field_unset(tmp_path):
@@ -422,10 +440,16 @@ def test_failed_anchor_sample_keeps_previous_anchor(calib_dir, monkeypatch):
     hand.connect()
 
     failing_slot = JOINT_TO_ENCODER_SLOT["ring_pip"]
+    seen_slots = set()
 
     def fake_sample(client, *, slot, **kwargs):
         if slot == failing_slot:
             raise JointEncoderCalibrationError("no frames")
+        # First sample (flex hardstop) 5000, second (extend) far away, so the
+        # healthy slot passes the sweep-tracking guard.
+        if slot in seen_slots:
+            return 9000
+        seen_slots.add(slot)
         return 5000
 
     monkeypatch.setattr(
@@ -551,6 +575,8 @@ def test_calibrate_reports_limits_via_events_not_stdout(calib_dir, capsys):
 
 
 def test_second_calibrate_skips_wrist_with_event(calib_dir):
+    """No encoder client → the anchor-needed override stays inert and a
+    calibrated wrist is skipped as before."""
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
     hand.calibrate(joints=["wrist"])
@@ -559,6 +585,155 @@ def test_second_calibrate_skips_wrist_with_event(calib_dir):
     events = []
     hand.calibrate(joints=["thumb_cmc"], progress_callback=events.append)
     assert any(e["event"] == "wrist_skipped" for e in events)
+
+
+def test_calibrate_records_wrist_anchor_with_event(calib_dir):
+    """A full calibrate with the encoder pass active anchors the wrist at
+    its FLEX hardstop and persists the anchor."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+
+    wrist_events = [
+        e
+        for e in events
+        if e["event"] == "encoder_anchor_recorded" and e["joint"] == "wrist"
+    ]
+    assert len(wrist_events) == 1
+    assert wrist_events[0]["anchor_angle_deg"] == pytest.approx(
+        hand.config.joint_roms_dict["wrist"][1]
+    )
+    anchor = hand.calibration.joint_encoder_calibration_dict["wrist"]
+    assert anchor.enc_at_anchor_count != 0, (
+        "anchor must come from the synthesized slot, not a dead default"
+    )
+
+
+def test_wrist_steps_rerun_when_anchor_missing(calib_dir):
+    """A motor-calibrated wrist without an encoder anchor must not be
+    skipped while the encoder pass is active: the steps re-run to capture
+    the anchor."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(joints=["wrist"])
+    assert hand.calibration.wrist_calibrated
+    assert "wrist" not in hand.calibration.joint_encoder_calibration_dict
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+    events = []
+    hand.calibrate(joint_encoder_client=encoder, progress_callback=events.append)
+
+    assert not any(e["event"] == "wrist_skipped" for e in events)
+    anchor = hand.calibration.joint_encoder_calibration_dict["wrist"]
+    assert anchor.enc_at_anchor_count != 0
+
+
+def test_subset_calibrate_emits_wrist_skipped_when_wrist_excluded(calib_dir):
+    """A joints= restriction that excludes the wrist keeps the plain skip
+    (with its event) even while the wrist anchor is missing."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(joints=["wrist"])
+    assert "wrist" not in hand.calibration.joint_encoder_calibration_dict
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+    events = []
+    hand.calibrate(
+        joints=["thumb_cmc"],
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+    )
+    assert any(e["event"] == "wrist_skipped" for e in events)
+    assert "wrist" not in hand.calibration.joint_encoder_calibration_dict
+
+
+def test_dead_slot_gets_no_anchor_and_loses_a_stale_one(calib_dir):
+    """A slot that reads a constant through the sweep passes the parity check
+    but must not be anchored: the wrist (no prior anchor) stays unanchored,
+    and a stale anchor on a dead finger slot is dropped, both with a failure
+    event. Healthy slots anchor normally."""
+    import dataclasses as dc
+
+    from orca_core.hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibration = dc.replace(
+        hand.calibration,
+        joint_encoder_calibration_dict={
+            "ring_pip": JointEncoderCal(enc_at_anchor_count=7)
+        },
+    )
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        dead_slots={
+            JOINT_TO_ENCODER_SLOT["wrist"], JOINT_TO_ENCODER_SLOT["ring_pip"]
+        },
+    )
+
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+
+    anchored = hand.calibration.joint_encoder_calibration_dict
+    assert "wrist" not in anchored
+    assert "ring_pip" not in anchored
+    assert "ring_mcp" in anchored
+    rejected = {
+        e["joint"]
+        for e in events
+        if e["event"] == "encoder_anchor_failed" and "did not track" in e["error"]
+    }
+    assert rejected == {"wrist", "ring_pip"}
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert "ring_pip" not in raw["joint_encoder_calibration"]
+
+
+def test_wrist_skipped_when_anchor_already_present(calib_dir):
+    """Once the anchor exists, a calibrated wrist is skipped again and the
+    anchor is left untouched."""
+    from tests._encoder_helpers import MockJointEncoderSource
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client, hand.config.joint_to_motor_map
+    )
+    hand.calibrate(joint_encoder_client=encoder)
+    anchor = hand.calibration.joint_encoder_calibration_dict["wrist"]
+
+    events = []
+    hand.calibrate(
+        joints=["thumb_cmc"],
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+    )
+    assert any(e["event"] == "wrist_skipped" for e in events)
+    assert hand.calibration.joint_encoder_calibration_dict["wrist"] == anchor
 
 
 # ---------------------------------------------------------------------------
@@ -578,16 +753,15 @@ def test_validator_rejects_unknown_joint_in_joint_encoder_joints(tmp_path):
         MockOrcaHand(config_path=str(config_path))
 
 
-def test_validator_rejects_wrist_in_joint_encoder_joints(tmp_path):
-    from orca_core.hand_config import HandConfigValidationError
-
+def test_validator_accepts_wrist_in_joint_encoder_joints(tmp_path):
+    """The wrist has an encoder slot and may be selected explicitly."""
     src_config = os.path.join(MODEL_DIR, "config.yaml")
     config_path = tmp_path / "config.yaml"
     shutil.copy(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", ["wrist"])
 
-    with pytest.raises(HandConfigValidationError, match="wrist"):
-        MockOrcaHand(config_path=str(config_path))
+    hand = MockOrcaHand(config_path=str(config_path))
+    assert hand._encoder_backed_joints() == ["wrist"]
 
 
 
@@ -659,3 +833,218 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     assert hand.calibration.joint_to_motor_ratios_dict == pre_ratios
     assert hand.calibration.joint_encoder_calibration_dict == pre_encoders
     assert not calib_path.exists(), "aborted mid-drive run must not write calibration"
+
+
+# ---------------------------------------------------------------------------
+# Encoder-measured joint ROMs
+# ---------------------------------------------------------------------------
+
+
+def _calibrate_with_measured_roms(calib_dir, span_scale=1.0, dead_slots=frozenset()):
+    """Run a full mock calibration whose synthetic encoder measures each
+    joint's configured ROM span scaled by ``span_scale``."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, span_scale
+        ),
+        dead_slots=dead_slots,
+    )
+    events = []
+    hand.calibrate(
+        joint_encoder_client=encoder,
+        progress_callback=events.append,
+        persist=True,
+    )
+    return hand, events
+
+
+def test_measured_rom_matches_config_when_travel_is_nominal(calib_dir):
+    """A hand whose hardstops sit exactly at the configured ROM measures that
+    ROM back, so the map is unchanged."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir)
+
+    measured = hand.calibration.joint_roms_measured_dict
+    assert set(measured) == set(hand.encoder_backed_joints)
+    for joint, rom in measured.items():
+        assert rom == pytest.approx(hand.config.joint_roms_dict[joint], abs=0.05)
+
+
+def test_measured_rom_moves_only_the_lower_endpoint(calib_dir):
+    """The anchor pose (flex hardstop) defines the encoder frame's upper
+    endpoint, so a short-travelling joint moves its lower endpoint only."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    for joint, (lower, upper) in hand.calibration.joint_roms_measured_dict.items():
+        config_lower, config_upper = hand.config.joint_roms_dict[joint]
+        assert upper == pytest.approx(config_upper, abs=1e-9)
+        expected_span = (config_upper - config_lower) * 0.95
+        assert upper - lower == pytest.approx(expected_span, abs=0.05)
+        assert lower > config_lower
+
+
+def test_measured_rom_sets_the_ratio_and_the_map_frame(calib_dir):
+    """The ratio is fitted against the measured span, so commanding a measured
+    ROM endpoint lands on the corresponding motor limit."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    joint = "index_pip"
+    motor_id = hand.config.joint_to_motor_map[joint]
+    lower, upper = hand.calibration.joint_roms_measured_dict[joint]
+    motor_lower, motor_upper = hand.motor_limits_dict[motor_id]
+
+    ratio = hand.joint_to_motor_ratios_dict[motor_id]
+    assert ratio == pytest.approx((motor_upper - motor_lower) / (upper - lower))
+
+    idx = hand.config.motor_id_to_idx_dict[motor_id]
+    inverted = hand.config.joint_inversion_dict.get(joint, False)
+    at_lower = hand._joint_to_motor_pos({joint: lower})[idx]
+    at_upper = hand._joint_to_motor_pos({joint: upper})[idx]
+    assert at_lower == pytest.approx(motor_upper if inverted else motor_lower)
+    assert at_upper == pytest.approx(motor_lower if inverted else motor_upper)
+
+
+def test_measured_rom_beyond_tolerance_is_rejected(calib_dir):
+    """A span implying a hardstop far off nominal is more likely a fault than
+    a tolerance: the config ROM is kept and the ratio falls back to it."""
+    hand, events = _calibrate_with_measured_roms(calib_dir, span_scale=0.5)
+
+    assert hand.calibration.joint_roms_measured_dict == {}
+    assert hand.effective_joint_roms_dict == hand.config.joint_roms_dict
+    rejected = {e["joint"] for e in events if e["event"] == "measured_rom_rejected"}
+    assert rejected == set(hand.encoder_backed_joints)
+
+    joint = "index_pip"
+    motor_id = hand.config.joint_to_motor_map[joint]
+    config_lower, config_upper = hand.config.joint_roms_dict[joint]
+    motor_lower, motor_upper = hand.motor_limits_dict[motor_id]
+    assert hand.joint_to_motor_ratios_dict[motor_id] == pytest.approx(
+        (motor_upper - motor_lower) / (config_upper - config_lower)
+    )
+
+
+def test_measured_rom_persists_and_reloads(calib_dir):
+    """The measured ROMs survive a round trip through calibration.yaml."""
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+
+    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    assert set(raw["joint_roms_measured"]) == set(
+        hand.calibration.joint_roms_measured_dict
+    )
+
+    reloaded = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    assert (
+        reloaded.calibration.joint_roms_measured_dict
+        == hand.calibration.joint_roms_measured_dict
+    )
+    assert reloaded.effective_joint_roms_dict == hand.effective_joint_roms_dict
+
+
+def test_measured_rom_dropped_for_a_slot_that_fails_the_sweep(calib_dir):
+    """A dead slot yields no anchor, and no measured ROM from the same pair
+    of samples either."""
+    hand, _ = _calibrate_with_measured_roms(
+        calib_dir, dead_slots={JOINT_TO_ENCODER_SLOT["ring_pip"]}
+    )
+
+    assert "ring_pip" not in hand.calibration.joint_roms_measured_dict
+    assert "ring_mcp" in hand.calibration.joint_roms_measured_dict
+    assert hand.effective_joint_roms_dict["ring_pip"] == (
+        hand.config.joint_roms_dict["ring_pip"]
+    )
+
+
+def test_slot_going_dead_drops_its_stale_measured_rom(calib_dir):
+    """A slot that measured a ROM once and later fails the sweep loses that
+    ROM: the map must not keep trusting a span from an encoder now proven
+    dead, the same way the stale anchor is dropped."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+    assert "ring_pip" in hand.calibration.joint_roms_measured_dict
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, 0.95
+        ),
+        dead_slots={JOINT_TO_ENCODER_SLOT["ring_pip"]},
+    )
+    hand.calibrate(joint_encoder_client=encoder, persist=True)
+
+    assert "ring_pip" not in hand.calibration.joint_roms_measured_dict
+    assert "ring_pip" not in hand.calibration.joint_encoder_calibration_dict
+    assert "ring_pip" not in read_yaml(str(calib_dir / "calibration.yaml"))[
+        "joint_roms_measured"
+    ]
+    assert "middle_pip" in hand.calibration.joint_roms_measured_dict
+
+
+def test_partial_recalibration_keeps_untouched_measured_roms(calib_dir):
+    """Recalibrating a subset rewrites only those joints' measured ROMs."""
+    from tests._encoder_helpers import (
+        MockJointEncoderSource,
+        rom_consistent_counts_per_rad,
+    )
+
+    hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
+    before = dict(hand.calibration.joint_roms_measured_dict)
+
+    encoder = MockJointEncoderSource(
+        hand._motor_client,
+        hand.config.joint_to_motor_map,
+        counts_per_rad=rom_consistent_counts_per_rad(
+            hand.config.joint_roms_dict, 0.98
+        ),
+    )
+    hand.calibrate(joint_encoder_client=encoder, joints=["index_pip"], persist=True)
+
+    after = hand.calibration.joint_roms_measured_dict
+    assert after["index_pip"] != before["index_pip"]
+    assert after["middle_pip"] == before["middle_pip"]
+    assert read_yaml(str(calib_dir / "calibration.yaml"))["joint_roms_measured"][
+        "middle_pip"
+    ] == pytest.approx(before["middle_pip"])
+
+
+def test_open_loop_calibration_records_no_measured_roms(calib_dir):
+    """Without an encoder client there is nothing to measure the span with, so
+    the map stays on the config ROMs."""
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    hand.connect()
+    hand.calibrate(persist=True)
+
+    assert hand.calibration.joint_roms_measured_dict == {}
+    assert hand.effective_joint_roms_dict == hand.config.joint_roms_dict
+    assert "joint_roms_measured" not in read_yaml(
+        str(calib_dir / "calibration.yaml")
+    )
+
+
+def test_calibration_result_drops_malformed_measured_rom_entries(tmp_path):
+    path = tmp_path / "calibration.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "joint_roms_measured": {
+                    "index_pip": [-12.0, 107.0],
+                    "middle_pip": [107.0],
+                    "ring_pip": "nonsense",
+                }
+            }
+        )
+    )
+    result = CalibrationResult.from_calibration_path(str(path), motor_ids=[1])
+    assert result.joint_roms_measured_dict == {"index_pip": [-12.0, 107.0]}

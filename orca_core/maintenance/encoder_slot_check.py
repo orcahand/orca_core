@@ -34,7 +34,7 @@ from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, WRIST
-from .calibration_routine import _read_motor_pos_checked
+from .motor_reads import read_motor_pos_checked
 from ..hardware.sensing.constants import (
     ENCODER_COUNTS_PER_REV,
     ENCODER_LSB_DEG,
@@ -248,7 +248,7 @@ def run_slot_check(
                 else hand.config.calibration_current
             )
 
-            start_pos = float(_read_motor_pos_checked(hand)[idx])
+            start_pos = float(read_motor_pos_checked(hand)[idx])
             base = _sample_median_counts(joint_encoder_client)
             entry = None
             if base is None:

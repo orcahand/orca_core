@@ -12,6 +12,7 @@ from orca_core.hardware.sensing.constants import (
     ENCODER_SLOT_TO_JOINT,
     JOINT_ENCODER_POLARITY,
     JOINT_ENCODER_POLARITY_BY_SIDE,
+    JOINT_ENCODER_POLARITY_LEFT,
     JOINT_TO_ENCODER_SLOT,
 )
 
@@ -63,17 +64,43 @@ def test_right_hand_encoder_polarity_matches_the_validated_assembly():
         "pinky_abd": 1,
         "pinky_mcp": 1,
         "pinky_pip": -1,
-        "wrist": 1,
+        "wrist": -1,
     }
 
 
-def test_only_the_right_side_has_a_validated_polarity_table():
-    assert set(JOINT_ENCODER_POLARITY_BY_SIDE) == {"right"}
+def test_left_hand_encoder_polarity_matches_the_measured_assembly():
+    """Mirroring flips the abduction-type axes; flexion axes and the wrist keep
+    their right-hand sign."""
+    assert JOINT_ENCODER_POLARITY_LEFT == {
+        "thumb_cmc": 1,
+        "thumb_abd": 1,
+        "thumb_mcp": 1,
+        "thumb_dip": -1,
+        "index_abd": -1,
+        "index_mcp": 1,
+        "index_pip": -1,
+        "middle_abd": -1,
+        "middle_mcp": 1,
+        "middle_pip": -1,
+        "ring_abd": -1,
+        "ring_mcp": 1,
+        "ring_pip": -1,
+        "pinky_abd": -1,
+        "pinky_mcp": 1,
+        "pinky_pip": -1,
+        "wrist": -1,
+    }
+
+
+def test_both_hand_sides_have_a_measured_polarity_table():
+    assert set(JOINT_ENCODER_POLARITY_BY_SIDE) == {"right", "left"}
     assert JOINT_ENCODER_POLARITY_BY_SIDE["right"] is JOINT_ENCODER_POLARITY
+    assert JOINT_ENCODER_POLARITY_BY_SIDE["left"] is JOINT_ENCODER_POLARITY_LEFT
 
 
 def test_every_polarity_entry_has_an_encoder_slot():
-    assert set(JOINT_ENCODER_POLARITY) <= set(JOINT_TO_ENCODER_SLOT)
+    for table in JOINT_ENCODER_POLARITY_BY_SIDE.values():
+        assert set(table) <= set(JOINT_TO_ENCODER_SLOT)
 
 
 def test_feetech_position_direction_is_inverted():

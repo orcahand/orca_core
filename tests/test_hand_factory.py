@@ -14,6 +14,7 @@ import pytest
 
 from orca_core import load_hand
 from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
+from orca_core.utils import cli
 from orca_core import MockOrcaHand, MockOrcaHandTouch
 from orca_core.hardware_hand_sensing import (
     MockOrcaHandFull,
@@ -61,23 +62,28 @@ def test_load_hand_engage_feedback_false_returns_motor_only(model, expected):
 
 
 @pytest.mark.parametrize(
-    ("model", "expected", "fallback_model"),
+    ("model", "expected"),
     [
-        ("orcahand-joint-left", MockOrcaHandJointFeedback, "orcahand-left"),
-        ("orcahand-full-left", MockOrcaHandFull, "orcahand-touch-left"),
+        ("orcahand-joint-left", MockOrcaHandJointFeedback),
+        ("orcahand-full-left", MockOrcaHandFull),
     ],
 )
-def test_load_hand_warns_on_left_feedback_config(
-    caplog, model, expected, fallback_model
+def test_load_hand_warns_on_side_without_a_polarity_table(
+    caplog, tmp_path, model, expected
 ):
-    """Left feedback configs still map to the feedback classes (connect()
-    gates the loop), but the factory must warn and name the escape hatches."""
+    """A side with no measured table still maps to the feedback classes
+    (connect() gates the loop), but the factory must warn and name the escape
+    hatch."""
+    config_path = tmp_path / "config.yaml"
+    with open(_config(model)) as f:
+        config_path.write_text(f.read().replace("type: left", "type: middle"))
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
-        hand = load_hand(config_path=_config(model), mock=True)
+        hand = load_hand(config_path=str(config_path), mock=True)
     assert type(hand) is expected
     messages = [r.getMessage() for r in caplog.records]
     assert any(
-        "engage_feedback=False" in m and fallback_model in m for m in messages
+        "engage_feedback=False" in m and "left" in m and "right" in m
+        for m in messages
     )
 
 
@@ -85,6 +91,7 @@ def test_load_hand_warns_on_left_feedback_config(
     "kwargs",
     [
         {"config_path": _config("orcahand-joint-right")},
+        {"config_path": _config("orcahand-joint-left")},
         {"config_path": _config("orcahand-joint-left"), "engage_feedback": False},
     ],
 )
@@ -93,7 +100,7 @@ def test_load_hand_does_not_warn_when_loop_can_engage_or_is_suppressed(
 ):
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
         load_hand(mock=True, **kwargs)
-    assert not [r for r in caplog.records if "unvalidated" in r.getMessage()]
+    assert not [r for r in caplog.records if "unavailable" in r.getMessage()]
 
 
 def test_load_hand_carries_full_config_when_feedback_suppressed(tmp_path):
@@ -113,6 +120,64 @@ def test_load_hand_respects_explicit_feedback_override(tmp_path):
     update_yaml(str(config_path), "use_joint_feedback", False)
     hand = load_hand(config_path=str(config_path), mock=True)
     assert type(hand) is MockOrcaHand
+
+
+# ----- cli.create_hand delegates to load_hand -----------------------------
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("orcahand-right", MockOrcaHand),
+        ("orcahand-touch-right", MockOrcaHandTouch),
+        ("orcahand-joint-right", MockOrcaHandJointFeedback),
+        ("orcahand-full-right", MockOrcaHandFull),
+    ],
+)
+def test_create_hand_reaches_the_declared_class(model, expected):
+    """Scripts built on create_hand must get the config's class, not a
+    motor-only hand built from the bundled right-hand model."""
+    assert type(cli.create_hand(_config(model), use_mock=True)) is expected
+
+
+def test_create_hand_forwards_its_selection_arguments(monkeypatch):
+    seen = {}
+
+    def _fake_load_hand(**kwargs):
+        seen.update(kwargs)
+        return load_hand(config_path=_config("orcahand-right"), mock=True)
+
+    monkeypatch.setattr(cli, "load_hand", _fake_load_hand)
+    cli.create_hand(
+        None, use_mock=True, model_name="orcahand-left", engage_feedback=False
+    )
+    assert seen == {
+        "config_path": None,
+        "mock": True,
+        "model_name": "orcahand-left",
+        "engage_feedback": False,
+        "engage_sensors": True,
+    }
+
+
+def test_create_hand_prints_the_resolved_hand(capsys):
+    cli.create_hand(_config("orcahand-touch-right"), use_mock=True)
+    out = capsys.readouterr().out
+    assert "MockOrcaHandTouch" in out and "orcahand-touch-right" in out
+
+
+def test_add_hand_arguments_defaults_to_autodetection():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    cli.add_hand_arguments(parser)
+    args = parser.parse_args([])
+    assert (args.config_path, args.model_name) == (None, None)
+    assert args.mock is False and args.engage_feedback is True
+
+    args = parser.parse_args(["--mock", "--model-name", "orcahand-left",
+                              "--no-engage-feedback"])
+    assert args.model_name == "orcahand-left"
+    assert args.mock is True and args.engage_feedback is False
 
 
 # ----- joint_feedback_enabled policy resolution ---------------------------

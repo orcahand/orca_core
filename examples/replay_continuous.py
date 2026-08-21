@@ -9,7 +9,7 @@ import yaml
 from orca_core.utils.cli import (
     add_hand_arguments,
     connect_hand,
-    create_hand,
+    create_hand_from_args,
     resolve_input_path,
     shutdown_hand,
 )
@@ -43,10 +43,10 @@ def main() -> int:
         print("Replay file does not contain any recorded frames.")
         return 1
 
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.mock)
+        hand.init_joints()
 
         expected_joint_ids = metadata.get("joint_ids")
         if expected_joint_ids is not None and expected_joint_ids != hand.config.joint_ids:

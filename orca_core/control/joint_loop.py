@@ -7,6 +7,10 @@ Each cycle reads joint angles from a ``JointEncoderClient``, asks the
 target on the motor encoder; this thread trims the residual offset
 between motor angle and joint angle.
 
+Measurements come off the client's unfiltered stream; the smoothing behind
+``get_latest()`` is for display, and its phase lag would cost the loop
+stability margin.
+
 Encoder-freshness watchdog (the motor PID keeps holding the last
 commanded position even without host updates, so the higher tiers do not
 drop torque):
@@ -37,6 +41,7 @@ from ..hardware.sensing.constants import (
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
 from .joint_controller import JointController
 from .constants import (
+    CLAMP_WARN_INTERVAL_S,
     DEFAULT_LOOP_HZ,
     FRESHNESS_WARN_INTERVAL_S,
     JITTER_ESTOP_CONSECUTIVE,
@@ -48,6 +53,7 @@ from .constants import (
     WATCHDOG_HOLD_MS,
     WATCHDOG_STOP_LOOP_MS,
     WATCHDOG_WARN_MS,
+    WRIST_MOTOR_TARGET_MARGIN_DEG,
 )
 
 
@@ -113,6 +119,7 @@ class JointLoopThread:
             "cycles_held_base": 0,
             "cycles_paused": 0,
             "cycles_exception": 0,
+            "cycles_clamped": 0,
             "commands_sent": 0,
             "e_stops": 0,
             "joints_flagged_invalid": 0,
@@ -121,6 +128,7 @@ class JointLoopThread:
         }
         self._last_freshness_warn_time: float = 0.0
         self._last_exception_log_time: float = 0.0
+        self._last_clamp_warn_time: float = 0.0
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
 
@@ -190,7 +198,7 @@ class JointLoopThread:
 
         self._stats["last_dt_s"] = float(dt)
 
-        reading = self._encoder_client.get_latest()
+        reading = self._encoder_client.get_latest_unfiltered()
         if reading is None:
             self._stats["cycles_no_reading"] += 1
             return
@@ -228,7 +236,7 @@ class JointLoopThread:
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
             motor_targets = self._joint_to_motor_pos(target) + motor_bias
-            self._hand.write_motor_pos(self._motor_ids, motor_targets)
+            self._write_motor_targets(motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
             return
@@ -246,7 +254,7 @@ class JointLoopThread:
 
         correction = self._controller.step(target, measured, dt)
         motor_targets = self._joint_to_motor_pos(target + correction) + motor_bias
-        self._hand.write_motor_pos(self._motor_ids, motor_targets)
+        self._write_motor_targets(motor_targets)
 
         with self._lock:
             self._latest_measured = measured.copy()
@@ -334,26 +342,30 @@ class JointLoopThread:
 
     def _snapshot_calibration(self) -> None:
         """Freeze the joint set and the kinematics arrays for one loop run.
-        Wrist is excluded; joints without an encoder calibration entry are
-        skipped.
+        Joints without an encoder calibration entry are skipped.
 
         Raises:
             RuntimeError: no encoder-backed joints to control, or a selected
                 joint lacks motor limits or a nonzero joint-to-motor ratio.
             ValueError: controller size disagrees with the resolved set.
-            KeyError: the hand's side has no validated encoder polarity table.
+            ValueError: the hand's side has no measured encoder polarity table.
         """
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map
         inversion = self._hand.config.joint_inversion_dict
-        joint_roms = self._hand.config.joint_roms_dict
+        # The map runs in the hand's effective (encoder-measured where
+        # available) ROM frame; the encoder anchor angle is the config ROM
+        # upper by definition — it is the assumed absolute reference the
+        # measured span is laid out from, not something the sweep measures.
+        joint_roms = self._hand.effective_joint_roms_dict
+        config_roms = self._hand.config.joint_roms_dict
         motor_limits = self._hand.motor_limits_dict
         ratios = self._hand.calibration.joint_to_motor_ratios_dict
         polarity = joint_encoder_polarity_for_side(self._hand.config.type)
 
         joints = [
             j for j in JOINT_TO_ENCODER_SLOT
-            if j != WRIST and j in joint_to_motor and j in encoder_dict
+            if j in joint_to_motor and j in encoder_dict
         ]
         if self._configured_joints is not None:
             missing = [j for j in self._configured_joints if j not in joints]
@@ -399,7 +411,7 @@ class JointLoopThread:
             [polarity[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
-            [joint_roms[j][1] for j in joints], dtype=np.float64
+            [config_roms[j][1] for j in joints], dtype=np.float64
         )
         self._motor_ids = [joint_to_motor[j] for j in joints]
         self._motor_limits_lower = np.array(
@@ -420,6 +432,25 @@ class JointLoopThread:
         self._wrap_offsets = np.array(
             [self._hand._wrap_offsets_dict.get(mid, 0.0) for mid in self._motor_ids],
             dtype=np.float64,
+        )
+        # The wrist motor runs in multi_turn_position mode (no current cap),
+        # so its commanded position is clamped to the calibrated travel plus
+        # a small margin; other joints deliberately over-travel to take up
+        # tendon stretch and stay unclamped.
+        motor_limits_upper = np.array(
+            [motor_limits[mid][1] for mid in self._motor_ids], dtype=np.float64
+        )
+        is_wrist = np.array([j == WRIST for j in joints], dtype=bool)
+        margin = WRIST_MOTOR_TARGET_MARGIN_DEG * np.abs(self._joint_to_motor_ratios)
+        self._motor_target_lower = np.where(
+            is_wrist,
+            self._motor_limits_lower - margin + self._wrap_offsets,
+            -np.inf,
+        )
+        self._motor_target_upper = np.where(
+            is_wrist,
+            motor_limits_upper + margin + self._wrap_offsets,
+            np.inf,
         )
         self._target_deg = np.zeros(len(joints), dtype=np.float64)
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
@@ -445,6 +476,46 @@ class JointLoopThread:
         motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
         return motor_pos + self._wrap_offsets
 
+    def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
+        """Write motor targets, clamping joints with a bounded travel
+        (currently the wrist) to their snapshot limits.
+
+        The bounds are absolute motor positions, so they bound the whole
+        command — feed-forward bias included. A bias larger than the margin
+        therefore pins the joint short of its target for as long as it stands,
+        which is the safe outcome but an invisible one: warn so a wrist that
+        stops responding reads as a stale calibration rather than a dead loop.
+        """
+        clamped = (
+            (motor_targets < self._motor_target_lower)
+            | (motor_targets > self._motor_target_upper)
+        )
+        if np.any(clamped):
+            self._stats["cycles_clamped"] += 1
+            self._maybe_log_clamp_warning(clamped)
+        np.clip(
+            motor_targets,
+            self._motor_target_lower,
+            self._motor_target_upper,
+            out=motor_targets,
+        )
+        self._hand.write_motor_pos(self._motor_ids, motor_targets)
+
+    def _maybe_log_clamp_warning(self, clamped: np.ndarray) -> None:
+        now = time.monotonic()
+        if now - self._last_clamp_warn_time < CLAMP_WARN_INTERVAL_S:
+            return
+        joints = [
+            self._joint_names[i] for i in np.flatnonzero(clamped)
+        ]
+        logger.warning(
+            "joint(s) %s commanded past their calibrated motor travel and were "
+            "clamped; they will hold short of target. Recalibrate if this "
+            "persists — the motor limits no longer match where the joint is.",
+            ", ".join(joints),
+        )
+        self._last_clamp_warn_time = now
+
     def _measure_joint_angles_for_anchor(
         self, retries: int = 5, retry_interval: float = 0.05
     ) -> np.ndarray:
@@ -453,7 +524,7 @@ class JointLoopThread:
         reading would latch a bogus target the PI then drives toward, so
         retry and raise on persistent failure rather than anchor to garbage."""
         for _ in range(retries):
-            reading = self._encoder_client.get_latest()
+            reading = self._encoder_client.get_latest_unfiltered()
             if (
                 reading is not None
                 and float(reading.freshness_ms) <= WATCHDOG_HOLD_MS

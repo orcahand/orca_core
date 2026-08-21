@@ -16,8 +16,8 @@ from orca_core.hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
     ENCODER_COUNTS_PER_REV,
     ENCODER_LSB_DEG,
-    JOINT_ENCODER_POLARITY,
     JOINT_TO_ENCODER_SLOT,
+    joint_encoder_polarity_for_side,
 )
 from orca_core.hardware.sensing.types import EncoderReading
 from orca_core import MockOrcaHand
@@ -26,7 +26,7 @@ from orca_core import MockOrcaHand
 def make_calibrated_hand(config_path: str) -> MockOrcaHand:
     """Connect a ``MockOrcaHand`` and install motor + encoder calibration
     with anchor_count=0 entries for every encoder-backed joint. Polarity is
-    looked up from ``JOINT_ENCODER_POLARITY`` at angle-decode time."""
+    looked up from the hand side's polarity table at angle-decode time."""
     hand = MockOrcaHand(config_path=config_path)
     hand.connect()
     motor_limits = {mid: [-0.5, 0.5] for mid in hand.config.motor_ids}
@@ -60,9 +60,10 @@ def encoder_reading_from_joint_angles(
     """
     raw = np.zeros(AUTO_ENC_NUM_JOINTS, dtype=np.uint16)
     encoder_dict = hand.calibration.joint_encoder_calibration_dict
+    polarity_table = joint_encoder_polarity_for_side(hand.config.type)
     for joint, angle_deg in joint_angles_deg.items():
         slot = JOINT_TO_ENCODER_SLOT[joint]
-        polarity = JOINT_ENCODER_POLARITY[joint]
+        polarity = polarity_table[joint]
         anchor_count = encoder_dict[joint].enc_at_anchor_count
         anchor_angle_deg = hand.config.joint_roms_dict[joint][1]
         delta_counts = int(round((angle_deg - anchor_angle_deg) / (polarity * ENCODER_LSB_DEG)))
@@ -93,10 +94,12 @@ class StaticEncoderSource:
     def set_reading(self, reading: EncoderReading | None) -> None:
         self._reading = reading
 
-    def get_latest(self) -> EncoderReading | None:
+    def get_latest_unfiltered(self) -> EncoderReading | None:
         if self._reading is None:
             return None
         return dc.replace(
             self._reading,
             timestamp=time.monotonic() - self.freshness_ms / 1000.0,
         )
+
+    get_latest = get_latest_unfiltered

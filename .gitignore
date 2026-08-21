@@ -136,3 +136,10 @@ soak_logs/
 
 # Scratch worktrees created by agent sessions
 .claude/
+
+# Personal Claude Code instructions (see CLAUDE.local.md)
+CLAUDE.local.md
+
+# Recordings from examples/record_*.py (per-hand captures, not shared assets;
+# curated sequences live in examples/sequences/)
+replay_sequences/

@@ -93,6 +93,15 @@ FORCE_ROUND_DECIMALS = 1
 # resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
+# Headroom on each taxel's measured dither when it becomes a noise gate. The
+# capture window is a few seconds, so its worst observed excursion is not the
+# taxel's worst: sizing a gate at exactly that still leaves the noisiest taxels
+# flickering, always the same ones within a run. The scale is multiplicative on
+# purpose — it widens noisy taxels without costing quiet ones any sensitivity.
+# These are the knobs to turn if dither still shows through after zeroing.
+NOISE_GATE_SCALE = 1.5
+NOISE_GATE_MARGIN_N = RESOLUTION_N_PER_LSB
+
 # Byte sizes per data element
 BYTES_PER_RESULTANT = 6  # 3 axes × 2-byte slot (low byte = data, high byte = padding)
 BYTES_PER_TAXEL = 3      # fx(int8) + fy(int8) + fz(uint8)
@@ -177,28 +186,42 @@ ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 # slotted, motor-driven joint (the sensing-hand default); an explicit list narrows it.
 ENCODER_JOINTS_ALL = "all"
 
-# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation.
-# Validated on right-hand assemblies only; mirroring changes mounting senses.
+# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation:
+# +1 when raw counts rise as the joint moves toward its flex hardstop (ROM upper,
+# where the calibration anchor is sampled). Measured per side on hardware.
 JOINT_ENCODER_POLARITY = {
     "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
     "index_abd": 1, "index_mcp": 1, "index_pip": -1,
     "middle_abd": 1, "middle_mcp": 1, "middle_pip": -1,
     "ring_abd": 1, "ring_mcp": 1, "ring_pip": -1,
     "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
-    "wrist": 1,
+    "wrist": -1,
 }
 
-# Polarity tables by hand side; a side is absent until its table is validated
-# on hardware ("left" deliberately has none yet).
-JOINT_ENCODER_POLARITY_BY_SIDE = {"right": JOINT_ENCODER_POLARITY}
+# The mirrored assembly flips the abduction-type axes (thumb_cmc, thumb_abd and
+# every finger abd) and leaves the flexion axes and the wrist alone.
+JOINT_ENCODER_POLARITY_LEFT = {
+    "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": 1, "thumb_dip": -1,
+    "index_abd": -1, "index_mcp": 1, "index_pip": -1,
+    "middle_abd": -1, "middle_mcp": 1, "middle_pip": -1,
+    "ring_abd": -1, "ring_mcp": 1, "ring_pip": -1,
+    "pinky_abd": -1, "pinky_mcp": 1, "pinky_pip": -1,
+    "wrist": -1,
+}
+
+# Polarity tables by hand side; a side is absent until its table is measured
+# on hardware, so an unrecognised 'type:' never decodes with borrowed signs.
+JOINT_ENCODER_POLARITY_BY_SIDE = {
+    "right": JOINT_ENCODER_POLARITY,
+    "left": JOINT_ENCODER_POLARITY_LEFT,
+}
 
 
 def joint_encoder_polarity_for_side(side):
     """Per-joint encoder polarity table for hands of ``side``.
 
-    Raises ``ValueError`` for sides without a validated table (currently
-    everything but ``"right"``), so closed-loop consumers fail loudly
-    instead of decoding with wrong signs.
+    Raises ``ValueError`` for sides without a measured table, so closed-loop
+    consumers fail loudly instead of decoding with wrong signs.
     """
     try:
         return JOINT_ENCODER_POLARITY_BY_SIDE[side]
@@ -232,10 +255,17 @@ LINK_DEFAULT_BAUDRATE = DEFAULT_ENCODER_BAUDRATE
 LINK_DEFAULT_RESPONSE_TIMEOUT_S = 0.5
 """Default wait for a register response before ``send_register_request`` raises."""
 
-TACTILE_REGISTER_ATTEMPTS = 3
+TACTILE_REGISTER_ATTEMPTS = 5
 """Times a tactile register read/write is attempted before giving up. A single
 round-trip is occasionally lost on a busy link; retrying recovers it. Reads are
 pure and the register writes are idempotent, so re-sending is safe."""
+
+TACTILE_PORT_OPEN_SETTLE_S = 2.0
+"""Pause after opening a fresh tactile serial link before the first register
+request. Some USB-CDC sensor adapters reset on DTR assertion (the underlying
+effect of opening the port), and a register request sent before that reset
+finishes gets no reply — this loses the race with
+:data:`TACTILE_REGISTER_ATTEMPTS`'s retries often enough to matter."""
 
 LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 """How long ``disconnect`` waits for the demuxer thread to exit."""
@@ -243,6 +273,11 @@ LINK_DEMUX_JOIN_TIMEOUT_S = 1.0
 ENCODER_FIRST_FRAME_TIMEOUT_S = 0.1
 """How long ``JointEncoderClient.start_stream`` waits for the first valid
 AA A9 frame before raising ``EncodersNotAvailableError``."""
+
+ENCODER_FILTER_CUTOFF_HZ = 5.0
+"""Cutoff of the low-pass ``JointEncoderClient`` applies to the count stream.
+Only display and monitoring consumers see this — the control loop and the
+calibration sweep read the unfiltered stream."""
 
 # ---------------------------------------------------------------------------
 # Auto-stream timing
