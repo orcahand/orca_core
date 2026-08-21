@@ -768,6 +768,31 @@ class OrcaHandJointFeedback(OrcaHand):
         self._refuse_routine_while_loop_runs("calibrate")
         return super().calibrate(*args, **kwargs)
 
+    def calibrate_joint_encoder_manual(
+        self,
+        joint: str,
+        true_angle_deg: float,
+        joint_encoder_client=None,
+        persist: bool | None = None,
+    ) -> int:
+        """Manually re-anchor one joint (see :meth:`OrcaHand.calibrate_joint_encoder_manual`).
+
+        Safe while the joint loop runs — sampling is read-only. A
+        loop-controlled joint gets the new anchor hot-swapped into the running
+        loop (with a rebase, so the hand holds its pose in the corrected
+        frame). A joint the loop skipped at connect stays open-loop until the
+        next reconnect.
+        """
+        anchor = super().calibrate_joint_encoder_manual(
+            joint,
+            true_angle_deg,
+            joint_encoder_client=joint_encoder_client,
+            persist=persist,
+        )
+        if self._loop is not None and joint in self._loop.joint_names:
+            self._loop.update_anchor(joint, anchor)
+        return anchor
+
     def tension(self, *args, **kwargs):
         """Refuse to run tendon tensioning while the joint loop is running
         (it would fight for the same motors)."""

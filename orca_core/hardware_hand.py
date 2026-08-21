@@ -23,7 +23,7 @@ from .hand_config import OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import MotorClient, MotorRead
 from .hardware.motor_resolution import persist_resolved_driver, trial_probe
-from .maintenance.calibration_routine import run_calibration
+from .maintenance.calibration_routine import persist_calibration, run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
 from .utils.utils import (
     auto_detect_port,
@@ -906,6 +906,95 @@ class OrcaHand(BaseHand):
         )
         if result is not None:
             self.calibration = result
+
+    def calibrate_joint_encoder_manual(
+        self,
+        joint: str,
+        true_angle_deg: float,
+        joint_encoder_client=None,
+        persist: bool | None = None,
+    ) -> int:
+        """Manually re-anchor one joint's encoder calibration at a known pose.
+
+        The joint must currently sit at ``true_angle_deg`` (ground truth
+        supplied by the operator, e.g. matched by eye against a rendered
+        model). The current encoder count is sampled and a new
+        ``enc_at_anchor_count`` is derived such that the encoder decodes this
+        pose as ``true_angle_deg``. Only this joint's anchor changes; motor
+        limits, ratios, and every other joint are untouched.
+
+        Args:
+            joint: An encoder-backed joint name.
+            true_angle_deg: The joint's actual angle right now, in degrees,
+                within the configured ROM.
+            joint_encoder_client: Client to sample from; defaults to the
+                hand's own connected encoder client, when it has one.
+            persist: Whether the updated anchor is written to
+                ``calibration.yaml``. ``None`` defers to the class default
+                (real hands persist, ``Mock*`` hands don't).
+
+        Returns:
+            The new anchor count.
+
+        Raises:
+            ValueError: unknown/non-encoder-backed joint, angle outside the
+                ROM, or a hand side without a polarity table.
+            RuntimeError: no encoder client available.
+            JointEncoderCalibrationError: the encoder stream produced no
+                valid samples.
+        """
+        from .calibration import JointEncoderCal
+        from .hardware.joint_encoder_client import sample_anchor_count_from_client
+        from .hardware.sensing.constants import (
+            JOINT_TO_ENCODER_SLOT,
+            joint_encoder_polarity_for_side,
+        )
+        from .hardware.sensing.encoder_protocol import anchor_count_for_joint_angle
+
+        if persist is None:
+            persist = self._persist_calibration
+        client = joint_encoder_client or getattr(self, "_encoder_client", None)
+        if client is None:
+            raise RuntimeError(
+                "no joint encoder client available: connect a sensing hand "
+                "with feedback, or pass joint_encoder_client explicitly"
+            )
+        if joint not in self._encoder_backed_joints():
+            raise ValueError(
+                f"joint {joint!r} is not encoder-backed on this hand "
+                f"(encoder-backed: {self._encoder_backed_joints()})"
+            )
+        polarity = joint_encoder_polarity_for_side(self.config.type)[joint]
+        rom_lower, rom_upper = self.config.joint_roms_dict[joint]
+        if not (rom_lower <= true_angle_deg <= rom_upper):
+            raise ValueError(
+                f"true_angle_deg {true_angle_deg:.2f} is outside the "
+                f"configured ROM [{rom_lower}, {rom_upper}] of joint {joint!r}"
+            )
+
+        count_now = sample_anchor_count_from_client(
+            client, slot=JOINT_TO_ENCODER_SLOT[joint]
+        )
+        anchor = anchor_count_for_joint_angle(
+            count_now, polarity, float(true_angle_deg), float(rom_upper)
+        )
+
+        encoder_cal = dict(self.calibration.joint_encoder_calibration_dict)
+        encoder_cal[joint] = JointEncoderCal(enc_at_anchor_count=anchor)
+        self.calibration = dataclasses.replace(
+            self.calibration, joint_encoder_calibration_dict=encoder_cal
+        )
+        if persist:
+            persist_calibration(
+                self.config.calibration_path,
+                result=self.calibration,
+                include_encoder=True,
+            )
+        logger.info(
+            "joint %s manually re-anchored: count %d at %.2f deg -> anchor %d",
+            joint, count_now, true_angle_deg, anchor,
+        )
+        return anchor
 
     def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
         control_mode = self.config.control_mode

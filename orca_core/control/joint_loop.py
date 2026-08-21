@@ -152,6 +152,20 @@ class JointLoopThread:
         disabled to hand-pose the hand) so re-enabling torque doesn't lurch."""
         self._anchor_to_current_pose()
 
+    def update_anchor(self, joint: str, anchor_count: int) -> None:
+        """Hot-swap one joint's encoder anchor (manual recalibration) into the
+        running loop's snapshot, then rebase so the target follows the
+        corrected frame — without a rebase the joint would lurch toward where
+        the old anchor thought the target was."""
+        with self._lock:
+            if joint not in self._joint_names:
+                raise ValueError(
+                    f"joint {joint!r} is not controlled by this loop "
+                    f"(controlled: {self._joint_names})"
+                )
+            self._anchors[self._joint_names.index(joint)] = int(anchor_count)
+        self._anchor_to_current_pose()
+
     def _anchor_to_current_pose(self) -> None:
         measured = self._measure_joint_angles_for_anchor()
         motor_now = self._read_motor_pos_now()

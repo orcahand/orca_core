@@ -210,7 +210,7 @@ def _build_calibration_result(
     )
 
 
-def _persist_calibration(
+def persist_calibration(
     calibration_path: str, *, result: CalibrationResult, include_encoder: bool
 ) -> None:
     """Persist ``result`` to ``calibration.yaml`` in one atomic replace.
@@ -667,7 +667,7 @@ def _drive_calibration(
         # Persist partial progress after every step so an interrupted run
         # never loses the work already done.
         if persist:
-            _persist_calibration(
+            persist_calibration(
                 hand.config.calibration_path,
                 result=hand.calibration,
                 include_encoder=encoder_pass_active,
@@ -705,7 +705,7 @@ def _drive_calibration(
     )
     hand.calibration = final_result
     if persist:
-        _persist_calibration(
+        persist_calibration(
             hand.config.calibration_path,
             result=final_result,
             include_encoder=encoder_pass_active,
