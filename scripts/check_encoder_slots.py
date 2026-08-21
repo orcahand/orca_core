@@ -9,7 +9,6 @@ import argparse
 import dataclasses
 import sys
 
-from orca_core import MockOrcaHandFull, OrcaHand, detect_hand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -17,6 +16,7 @@ from orca_core.hardware.joint_encoder_client import (
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 from orca_core.maintenance.encoder_slot_check import run_slot_check
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 
 
 def _open_encoder_client(encoder_port_override, baudrate):
@@ -99,28 +99,22 @@ def _print_summary(result) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n")[0],
+        epilog="--mock runs the health scan only: the mock encoder stream is "
+               "static by design, so identity has nothing to wiggle.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("config_path", nargs="?", default=None,
-                        help="Path to the hand config.yaml.")
+    add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument("--joints", nargs="+", help="Restrict to these joints.")
     parser.add_argument("--health-only", action="store_true",
                         help="Skip the identity wiggle (no motor motion).")
     parser.add_argument("--encoder-port", default=None,
                         help="Override config encoder_serial_port.")
-    parser.add_argument("--mock", action="store_true",
-                        help="Use MockOrcaHandFull (health only: the mock "
-                             "encoder stream is static by design).")
     args = parser.parse_args()
 
-    model_name = None
-    if args.config_path is None and not args.mock:
-        detection = detect_hand()
-        model_name = detection.model_name
-        print(f"Detected hand: {detection.model_name}")
-
-    hand_cls = MockOrcaHandFull if args.mock else OrcaHand
-    hand = hand_cls(config_path=args.config_path, model_name=model_name)
+    # On hardware a motor-only hand: the routine opens its own encoder stream,
+    # and a second reader on the port would corrupt it. The mock has no port to
+    # open, so there it reads the hand's own encoder client instead.
+    hand = create_hand_from_args(args, engage_feedback=args.mock, engage_sensors=False)
 
     if not hand.config.joint_feedback_enabled:
         print("This hand has no joint encoders (use_joint_feedback is off).",
@@ -147,8 +141,6 @@ def main() -> int:
         if args.mock:
             client = hand._encoder_client
         else:
-            # Motor-only connect (OrcaHand): the routine opens its own encoder
-            # stream; a second reader on the port would corrupt it.
             link, client = _open_encoder_client(
                 hand.config.encoder_serial_port, hand.config.encoder_baudrate
             )
