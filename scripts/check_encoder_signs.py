@@ -19,7 +19,6 @@ import argparse
 import sys
 import time
 
-from orca_core import OrcaHand, detect_hand
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -30,6 +29,7 @@ from orca_core.hardware.sensing.constants import (
     joint_encoder_polarity_for_side,
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 
 
 REFRESH_S = 0.2
@@ -80,21 +80,18 @@ def _render(joints, polarity, encoder_angles, motor_angles, raw):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("config_path", nargs="?", default=None,
-                        help="Path to the hand config.yaml (default: autodetect).")
+    add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument("--encoder-port", default=None,
                         help="Override config encoder_serial_port.")
     parser.add_argument("--hold", action="store_true",
                         help="Keep torque enabled instead of releasing it.")
     args = parser.parse_args()
 
-    # A motor-only hand, whatever the model: the loop must not run while its
-    # inputs are unverified, and a tactile connect would hold the sensing CDC
-    # this script needs for its own encoder link.
-    if args.config_path:
-        hand = OrcaHand(config_path=args.config_path)
-    else:
-        hand = OrcaHand(model_name=detect_hand().model_name)
+    # On hardware a motor-only hand, whatever the model: the loop must not run
+    # while its inputs are unverified, and a tactile connect would hold the
+    # sensing CDC this script needs for its own encoder link. The mock has no
+    # port to open, so there it reads the hand's own encoder client instead.
+    hand = create_hand_from_args(args, engage_feedback=args.mock, engage_sensors=False)
     joints = hand.encoder_backed_joints
     if not joints:
         print("This hand declares no encoder-backed joints.")
@@ -121,8 +118,11 @@ def main():
 
     link = client = None
     try:
-        port = args.encoder_port or hand.config.encoder_serial_port
-        link, client = _open_encoder_client(port, hand.config.encoder_baudrate)
+        if args.mock:
+            client = hand._encoder_client
+        else:
+            port = args.encoder_port or hand.config.encoder_serial_port
+            link, client = _open_encoder_client(port, hand.config.encoder_baudrate)
 
         if not args.hold:
             hand.disable_torque()
@@ -144,7 +144,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        if client is not None:
+        if client is not None and not args.mock:
             try:
                 client.stop_stream()
             except Exception:
