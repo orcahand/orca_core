@@ -50,6 +50,16 @@ ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_PRESENT_TEMPERATURE = 146
 ADDR_PRESENT_INPUT_VOLTAGE = 144
 
+# Hardware Error Status bits, X-series control table.
+HARDWARE_ERROR_BITS = {
+    0x01: 'input_voltage',
+    0x04: 'overheating',
+    0x08: 'motor_encoder',
+    0x10: 'electrical_shock',
+    0x20: 'overload',
+}
+OVERLOAD_ERROR_BIT = 0x20
+
 # Data Byte Length
 LEN_OPERATING_MODE = 1
 LEN_PRESENT_POSITION = 4
@@ -142,6 +152,7 @@ class DynamixelClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
+    hardware_error_bits = HARDWARE_ERROR_BITS
 
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.
@@ -535,7 +546,6 @@ class DynamixelClient(MotorClient):
 
         Returns list of motor IDs that were rebooted.
         """
-        OVERLOAD_BIT = 0x20
         rebooted = []
         with self._bus_lock:
             for mid in motor_ids:
@@ -547,7 +557,7 @@ class DynamixelClient(MotorClient):
                         'Could not read hardware error status for motor %d; '
                         'skipping overload check.', mid)
                     continue
-                if error_status & OVERLOAD_BIT:
+                if error_status & OVERLOAD_ERROR_BIT:
                     logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
                     self.reboot_motor(mid)
                     rebooted.append(mid)
@@ -622,8 +632,7 @@ class DynamixelClient(MotorClient):
                     'Could not read hardware error status for motor %d; '
                     'skipping alert recovery.', motor_id)
                 return
-            OVERLOAD_BIT = 0x20
-            if error_status & OVERLOAD_BIT:
+            if error_status & OVERLOAD_ERROR_BIT:
                 import os as _os
                 _os.write(2, f'\033[91m⚠ OVERLOAD on motor {motor_id} (error=0x{error_status:02X}) — rebooting and recovering...\033[0m\n'.encode())
                 logging.warning(f'Motor {motor_id} overload detected (error=0x{error_status:02X}), rebooting...')

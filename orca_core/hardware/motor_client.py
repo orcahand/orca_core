@@ -110,6 +110,21 @@ class MotorClient(ABC):
     bus; chain assembly power-cycles the adapter between motors when this is set.
     """
 
+    hardware_error_bits: ClassVar[dict] = {}
+    """Bit mask → the fault it names, in this family's hardware error byte.
+
+    The byte itself is family-specific, so a caller reporting one decodes it
+    through :meth:`decode_hardware_error` rather than knowing the layout.
+    """
+
+    @classmethod
+    def decode_hardware_error(cls, error_byte: int) -> "list[str]":
+        """Name every fault set in an error byte read from this family."""
+        return [
+            name for bit, name in sorted(cls.hardware_error_bits.items())
+            if error_byte & bit
+        ]
+
     @classmethod
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""
@@ -250,6 +265,32 @@ class MotorClient(ABC):
             An array of voltages in volts.
         """
         raise NotImplementedError(f"{type(self).__name__} cannot read supply voltage")
+
+    def read_hardware_error(self, motor_id: int) -> "int | None":
+        """Read one motor's hardware error byte.
+
+        Optional, like :meth:`read_voltage`. Decode it with
+        :meth:`decode_hardware_error`; the bit layout is family-specific.
+
+        Returns:
+            The raw error byte, or ``None`` if the read failed. ``None`` is
+            not ``0x00``: a motor that did not answer has not been shown to
+            be healthy.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot read hardware errors")
+
+    def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> "list[int]":
+        """Reboot every motor in ``motor_ids`` that is latching an overload.
+
+        Optional, and separate from :meth:`read_hardware_error` because
+        recovering a motor needs a family-specific reboot the error read does
+        not. Implementations restore operating mode and torque afterwards,
+        since a reboot clears them.
+
+        Returns:
+            The motor IDs that were rebooted.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot reboot motors")
 
     @abstractmethod
     def write_desired_pos(

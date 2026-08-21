@@ -76,6 +76,7 @@ ORCA_HAND = BASE_HAND | {
     "enable_torque",
     "encoder_backed_joints",
     "get_motor_current",
+    "get_motor_errors",
     "get_motor_pos",
     "get_motor_temp",
     "get_motor_voltage",

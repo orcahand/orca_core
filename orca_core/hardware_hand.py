@@ -595,6 +595,32 @@ class OrcaHand(BaseHand):
 
             return motor_voltage
 
+    def get_motor_errors(self) -> Dict[int, Union[int, None]]:
+        """Read each motor's hardware error byte.
+
+        Decode a byte through ``motor_client.decode_hardware_error()``; the
+        bit layout belongs to the motor family. There is no array form and no
+        ``as_dict`` switch: a motor that did not answer has no numeric value,
+        and ``None`` must not read as a clean ``0x00``.
+
+        This is one bus transaction per motor, so the lock is taken per motor
+        rather than across the sweep — the bytes are latched, so a
+        non-simultaneous snapshot loses nothing, and a 17-motor sweep cannot
+        stall the joint control loop.
+
+        Returns:
+            ``{motor_id: error byte}``, ``None`` where the read failed.
+
+        Raises:
+            NotImplementedError: If this motor family cannot report hardware
+                errors.
+        """
+        errors: Dict[int, Union[int, None]] = {}
+        for motor_id in self.config.motor_ids:
+            with self._motor_lock:
+                errors[motor_id] = self._motor_client.read_hardware_error(motor_id)
+        return errors
+
     def _get_joint_positions(self) -> OrcaJointPositions:
         motor_pos = self.get_motor_pos()
         return OrcaJointPositions.from_dict(self._motor_to_joint_pos(motor_pos))

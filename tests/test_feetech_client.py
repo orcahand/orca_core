@@ -65,6 +65,7 @@ class FakePacketHandler:
     def __init__(self, positions: dict[int, int]):
         self.positions = dict(positions)
         self.voltage_raw = 118  # 0.1 V per count
+        self.status_error = 0
         self.unavailable_ids: set[int] = set()
         self.sync_fails = False
         self.log: list[str] = []
@@ -98,6 +99,12 @@ class FakePacketHandler:
         if address == SMS_STS_PRESENT_VOLTAGE:
             return self.voltage_raw, COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
+
+    def ping(self, motor_id):
+        self._record("ping")
+        if motor_id in self.unavailable_ids:
+            return 0, 1, 0
+        return 4106, COMM_SUCCESS, self.status_error
 
     def write1ByteTxRx(self, motor_id, address, value):
         self._record("write1")
@@ -180,6 +187,22 @@ def test_read_voltage_falls_back_per_motor(client):
     handler.sync_fails = True
     np.testing.assert_allclose(feetech.read_voltage(), [11.8, 11.8, 11.8])
     assert handler.log.count("read1") == 3
+
+
+def test_read_hardware_error_returns_the_status_byte(client):
+    """This family reports faults in the status byte of a reply, so a ping
+    is what a single-motor error read costs."""
+    feetech, handler = client
+    handler.status_error = 0x20
+    assert feetech.read_hardware_error(2) == 0x20
+    assert handler.log == ["ping"]
+    assert FeetechClient.decode_hardware_error(0x20) == ["overload"]
+
+
+def test_read_hardware_error_returns_none_when_the_motor_is_silent(client):
+    feetech, handler = client
+    handler.unavailable_ids = {2}
+    assert feetech.read_hardware_error(2) is None
 
 
 def test_partial_sync_read_keeps_cache_and_flags_not_ok(client):

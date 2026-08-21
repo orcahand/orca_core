@@ -37,6 +37,19 @@ ADDR_PRESENT_INPUT_VOLTAGE = 144
 # Nominal bus supply the simulated motors report.
 MOCK_SUPPLY_VOLTAGE = 12.0
 
+# Ambient the simulated motors report until something sets a warmer one.
+MOCK_AMBIENT_TEMP_C = 25.0
+
+# Mirrors the X-series control table the simulated motors stand in for.
+HARDWARE_ERROR_BITS = {
+    0x01: 'input_voltage',
+    0x04: 'overheating',
+    0x08: 'motor_encoder',
+    0x10: 'electrical_shock',
+    0x20: 'overload',
+}
+OVERLOAD_ERROR_BIT = 0x20
+
 # Data Byte Length
 LEN_OPERATING_MODE = 1
 LEN_PRESENT_POSITION = 4
@@ -86,6 +99,7 @@ class MockDynamixelClient(MotorClient):
     """
 
     motor_type = DYNAMIXEL
+    hardware_error_bits = HARDWARE_ERROR_BITS
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.
@@ -132,8 +146,10 @@ class MockDynamixelClient(MotorClient):
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
-        self._temp = {mid: 0.0 for mid in self.motor_ids}
+        self._temp = {mid: MOCK_AMBIENT_TEMP_C for mid in self.motor_ids}
         self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
+        # Clean bus by default; tests set a byte to simulate a faulted motor.
+        self._hardware_error = {mid: 0 for mid in self.motor_ids}
         
         # This is specific to the ORCA Hand and simulates the hardstops
         self._max_motor_pos = 1.0
@@ -258,15 +274,57 @@ class MockDynamixelClient(MotorClient):
         return True
 
     def read_temperature(self) -> np.ndarray:
-        """Reads and returns the simulated temperatures."""
+        """Reads and returns the simulated temperatures.
+
+        Deterministic, and settable per motor through ``_temp``, so a caller
+        that scores temperature spread can be tested.
+        """
         self.check_connected()
-        temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
-        return temp_array
+        return np.array([self._temp[mid] for mid in self.motor_ids])
 
     def read_voltage(self) -> np.ndarray:
         """Reads and returns the simulated supply voltages."""
         self.check_connected()
         return np.full(len(self.motor_ids), MOCK_SUPPLY_VOLTAGE)
+
+    def scan_for_motors(self, port: str, id_range: tuple,
+                        baud_rates: Optional[list] = None) -> list:
+        """Reports the simulated motors whose IDs fall inside ``id_range``.
+
+        Needs no connection, mirroring the real clients: the scan opens and
+        closes the port itself.
+        """
+        baud_rate = (baud_rates or [self.baudrate])[0]
+        return [
+            {'id': mid, 'baud_rate': baud_rate, 'model_name': 'MockDynamixel'}
+            for mid in self.motor_ids
+            if id_range[0] <= mid <= id_range[1]
+        ]
+
+    def read_hardware_error(self, motor_id: int) -> Optional[int]:
+        """Reads the simulated hardware error byte.
+
+        An unknown ID reads as None, matching a real client's silent motor.
+        """
+        self.check_connected()
+        return self._hardware_error.get(motor_id)
+
+    def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> "list[int]":
+        """Reboots every simulated motor latching an overload.
+
+        A reboot clears the error byte, as it does on real hardware.
+        """
+        self.check_connected()
+        rebooted = []
+        for mid in motor_ids:
+            error_status = self._hardware_error.get(mid)
+            if error_status is not None and error_status & OVERLOAD_ERROR_BIT:
+                logging.warning(
+                    'Motor %d overload detected (error=0x%02X), rebooting...',
+                    mid, error_status)
+                self._hardware_error[mid] = 0
+                rebooted.append(mid)
+        return rebooted
 
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):

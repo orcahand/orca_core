@@ -37,7 +37,21 @@ from .feetech import (
     SMS_STS_GOAL_SPEED_L,
     SMS_STS_ID,
     SMS_STS_BAUD_RATE,
+    ERRBIT_VOLTAGE,
+    ERRBIT_ANGLE,
+    ERRBIT_OVERHEAT,
+    ERRBIT_OVERELE,
+    ERRBIT_OVERLOAD,
 )
+
+# Status-byte bits, as the SCServo protocol defines them.
+HARDWARE_ERROR_BITS = {
+    ERRBIT_VOLTAGE: 'input_voltage',
+    ERRBIT_ANGLE: 'angle_sensor',
+    ERRBIT_OVERHEAT: 'overheating',
+    ERRBIT_OVERELE: 'overcurrent',
+    ERRBIT_OVERLOAD: 'overload',
+}
 
 # Map host-facing baud rates to the firmware's register code.
 FEETECH_BAUD_RATE_MAP: dict[int, int] = {
@@ -112,6 +126,7 @@ class FeetechClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 1_000_000
     baud_rate_map = FEETECH_BAUD_RATE_MAP
+    hardware_error_bits = HARDWARE_ERROR_BITS
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
@@ -624,6 +639,33 @@ class FeetechClient(MotorClient):
                     )
 
         return voltages
+
+    def read_hardware_error(self, motor_id: int) -> Optional[int]:
+        """Reads one motor's status byte, the reply to a ping.
+
+        This family reports faults in the status byte of every reply rather
+        than in a latched register, so a ping is the cheapest way to ask a
+        single motor for one.
+
+        Returns:
+            The raw status byte, or None if the motor did not answer.
+        """
+        self._check_connected()
+
+        with self._bus_lock:
+            _, result, error = self.packet_handler.ping(motor_id)
+            if result != COMM_SUCCESS:
+                self._flush_input_buffer()
+                logging.warning(
+                    'Failed to read hardware error for motor %d: result=%d',
+                    motor_id, result
+                )
+                return None
+            return int(error)
+
+    # check_overload_and_reboot stays unimplemented: this family's only reset
+    # instruction is a factory reset, which would clear the motor's assigned
+    # ID and settings.
 
     def wait_for_motion_complete(
         self,

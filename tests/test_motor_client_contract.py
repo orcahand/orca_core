@@ -53,6 +53,10 @@ def connected_mock():
         pytest.param(lambda c: c.write_profile_velocity([1], np.zeros(1)), id="write_profile_velocity"),
         pytest.param(lambda c: c.read_temperature(), id="read_temperature"),
         pytest.param(lambda c: c.read_voltage(), id="read_voltage"),
+        pytest.param(lambda c: c.read_hardware_error(1), id="read_hardware_error"),
+        pytest.param(
+            lambda c: c.check_overload_and_reboot([1]), id="check_overload_and_reboot"
+        ),
         pytest.param(lambda c: c.read_status_is_done_moving(), id="read_status_is_done_moving"),
         pytest.param(lambda c: c.sync_write([1], [0], 116, 4), id="sync_write"),
         pytest.param(lambda c: c.write_byte([1], 0, 64), id="write_byte"),
@@ -191,6 +195,65 @@ def test_mock_voltage_is_one_reading_per_motor(connected_mock):
     voltage = connected_mock.read_voltage()
     assert voltage.shape == (2,)
     assert np.all(voltage > 0)
+
+
+# ----- Hardware error reporting ---------------------------------------------
+
+
+def test_every_family_reads_hardware_errors():
+    """Optional in the contract, so a new family is never blocked over
+    telemetry, but every family we ship reports it."""
+    assert "read_hardware_error" not in MotorClient.__abstractmethods__
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient):
+        assert cls.read_hardware_error is not MotorClient.read_hardware_error, cls.__name__
+
+
+def test_unsupported_error_capabilities_name_the_client():
+    client = MockDynamixelClient([1], port="mock")
+    with pytest.raises(NotImplementedError, match="MockDynamixelClient cannot read"):
+        MotorClient.read_hardware_error(client, 1)
+    with pytest.raises(NotImplementedError, match="MockDynamixelClient cannot reboot"):
+        MotorClient.check_overload_and_reboot(client, [1])
+
+
+def test_feetech_cannot_reboot_a_motor():
+    """This family's only reset instruction is a factory reset, which would
+    clear the motor's assigned ID, so the capability is declined rather than
+    faked."""
+    assert FeetechClient.check_overload_and_reboot is MotorClient.check_overload_and_reboot
+
+
+def test_every_family_names_its_error_bits():
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient):
+        assert cls.hardware_error_bits, cls.__name__
+        assert "overload" in cls.hardware_error_bits.values(), cls.__name__
+
+
+def test_error_bits_are_decoded_into_names_not_read_by_callers():
+    """A caller reporting an error byte must not have to know the family's
+    bit layout, which differs between them."""
+    assert DynamixelClient.decode_hardware_error(0x00) == []
+    assert DynamixelClient.decode_hardware_error(0x21) == ["input_voltage", "overload"]
+    assert FeetechClient.decode_hardware_error(0x02) == ["angle_sensor"]
+
+
+def test_mock_reads_a_clean_error_byte_per_motor(connected_mock):
+    assert connected_mock.read_hardware_error(1) == 0
+
+
+def test_mock_unknown_motor_reads_none_not_clean(connected_mock):
+    """None is 'the motor did not answer', which is not the same claim as
+    'the motor reports no fault'."""
+    assert connected_mock.read_hardware_error(99) is None
+
+
+def test_mock_reboots_only_the_overloaded_motors_and_clears_them(connected_mock):
+    connected_mock._hardware_error[1] = 0x20
+    connected_mock._hardware_error[2] = 0x04
+
+    assert connected_mock.check_overload_and_reboot([1, 2]) == [1]
+    assert connected_mock.read_hardware_error(1) == 0
+    assert connected_mock.read_hardware_error(2) == 0x04, "overheat is not an overload"
 
 
 def test_set_torque_enabled_signature_is_uniform_across_family():

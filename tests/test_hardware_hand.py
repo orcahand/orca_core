@@ -72,6 +72,22 @@ def test_get_motor_voltage_keys_by_motor_id(mock_hand):
     )
 
 
+def test_get_motor_errors_keys_by_motor_id(mock_hand):
+    errors = mock_hand.get_motor_errors()
+    assert list(errors) == list(mock_hand.config.motor_ids)
+    assert set(errors.values()) == {0}
+
+
+def test_get_motor_errors_reports_a_faulted_motor_by_name(mock_hand):
+    faulted = mock_hand.config.motor_ids[0]
+    mock_hand._motor_client._hardware_error[faulted] = 0x20
+
+    errors = mock_hand.get_motor_errors()
+
+    assert errors[faulted] == 0x20
+    assert mock_hand.motor_client.decode_hardware_error(errors[faulted]) == ["overload"]
+
+
 def test_disconnect_disables_torque_and_discards_client(mock_hand):
     client = mock_hand._motor_client
     mock_hand.disconnect()
