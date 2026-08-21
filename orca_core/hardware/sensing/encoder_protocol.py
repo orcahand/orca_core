@@ -11,6 +11,7 @@ from orca_core.hardware.sensing.constants import (
     AUTO_ENC_FRAME_SIZE,
     AUTO_ENC_PAYLOAD_BYTES,
     AUTO_ENC_PAYLOAD_OFFSET,
+    ENCODER_COUNTS_PER_REV,
     ENCODER_LSB_DEG,
     PROTOCOL_HEADER_AUTO_ENC,
 )
@@ -91,5 +92,26 @@ def encoder_to_joint_angle(
     delta_deg = np.where(delta_deg > 180.0, delta_deg - 360.0, delta_deg)
     delta_deg = np.where(delta_deg <= -180.0, delta_deg + 360.0, delta_deg)
     return polarity.astype(np.float64) * delta_deg + anchor_angle_deg
+
+
+def anchor_count_for_joint_angle(
+    raw_count: int,
+    polarity: int,
+    joint_angle_deg: float,
+    anchor_angle_deg: float,
+) -> int:
+    """Anchor count under which :func:`encoder_to_joint_angle` decodes
+    ``raw_count`` as ``joint_angle_deg``.
+
+    Inverse of the decode for a single joint: used by manual re-anchoring,
+    where the joint sits at a known ``joint_angle_deg`` (ground truth supplied
+    by the operator) instead of at the anchor pose itself. Exact up to the
+    encoder LSB as long as ``joint_angle_deg`` is within half a turn of
+    ``anchor_angle_deg`` — true for any joint ROM under 180°.
+    """
+    delta_counts = round(
+        polarity * (joint_angle_deg - anchor_angle_deg) / ENCODER_LSB_DEG
+    )
+    return (int(raw_count) - delta_counts) % ENCODER_COUNTS_PER_REV
 
 
