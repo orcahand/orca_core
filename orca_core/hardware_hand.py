@@ -55,6 +55,15 @@ from .joint_position import OrcaJointPositions
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
+# How encoder-measured joint travel is laid onto the config ROM (see
+# effective_joint_roms_dict). "anchor" pins the flex hardstop to the config
+# upper and moves only the lower endpoint; "centered" splits the measured
+# excess/deficit equally onto both endpoints. Persisted in calibration.yaml.
+ROM_FRAME_KEY = "rom_frame"
+ROM_FRAME_ANCHOR = "anchor"
+ROM_FRAME_CENTERED = "centered"
+ROM_FRAMES = (ROM_FRAME_ANCHOR, ROM_FRAME_CENTERED)
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +124,12 @@ class OrcaHand(BaseHand):
         self.calibration = CalibrationResult.from_calibration_path(
             self.config.calibration_path, self.config.motor_ids
         )
+        stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
+            ROM_FRAME_KEY
+        )
+        self._rom_frame = (
+            stored_frame if stored_frame in ROM_FRAMES else ROM_FRAME_ANCHOR
+        )
         self._sanity_check()
         self.is_calibrated(verbose=True)
 
@@ -167,10 +182,44 @@ class OrcaHand(BaseHand):
         if not measured:
             return self.config.joint_roms_dict
         roms = dict(self.config.joint_roms_dict)
+        centered = self._rom_frame == ROM_FRAME_CENTERED
         for joint, rom in measured.items():
-            if joint in roms:
+            if joint not in roms:
+                continue
+            if centered:
+                # Same measured span, but the excess/deficit vs the config
+                # nominal is split equally onto both endpoints instead of
+                # all landing on the lower one.
+                lower, upper = roms[joint]
+                half = ((rom[1] - rom[0]) - (upper - lower)) / 2.0
+                roms[joint] = [lower - half, upper + half]
+            else:
                 roms[joint] = list(rom)
         return roms
+
+    @property
+    def rom_frame(self) -> str:
+        """How measured joint travel is laid onto the config ROM: ``"anchor"``
+        (flex hardstop pinned to the config upper) or ``"centered"`` (the
+        measured-vs-config delta split equally onto both endpoints)."""
+        return self._rom_frame
+
+    def set_rom_frame(self, mode: str, persist: bool | None = None) -> None:
+        """Switch the ROM frame for the joint↔motor map and encoder decode.
+
+        Takes effect immediately for open-loop estimates and encoder decoding;
+        a running joint-feedback loop keeps its snapshot until reconnect.
+        Persisted to ``calibration.yaml`` so the choice survives restarts.
+        """
+        if mode not in ROM_FRAMES:
+            raise ValueError(
+                f"unknown rom frame {mode!r}; expected one of {ROM_FRAMES}"
+            )
+        self._rom_frame = mode
+        if persist is None:
+            persist = self._persist_calibration
+        if persist:
+            update_yaml(self.config.calibration_path, ROM_FRAME_KEY, mode)
 
     @property
     def calibrated(self) -> bool:
@@ -832,8 +881,13 @@ class OrcaHand(BaseHand):
         slots = np.array([JOINT_TO_ENCODER_SLOT[j] for j in joints], dtype=np.int64)
         anchors = np.array([encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64)
         polarities = np.array([polarity_table[j] for j in joints], dtype=np.int64)
+        # The anchor is sampled at the flex hardstop; the active ROM frame
+        # decides what angle that hardstop is labeled with (config upper in
+        # the anchor frame, config upper + half the measured delta when
+        # centered), so decode and joint↔motor map agree in either frame.
+        effective_roms = self.effective_joint_roms_dict
         anchor_angles = np.array(
-            [self.config.joint_roms_dict[j][1] for j in joints], dtype=np.float64
+            [effective_roms[j][1] for j in joints], dtype=np.float64
         )
 
         slot_counts = raw_counts[slots]
@@ -975,8 +1029,13 @@ class OrcaHand(BaseHand):
         count_now = sample_anchor_count_from_client(
             client, slot=JOINT_TO_ENCODER_SLOT[joint]
         )
+        # The anchor angle must match what the decode uses — the effective
+        # (frame-dependent) ROM upper, not necessarily the config upper.
         anchor = anchor_count_for_joint_angle(
-            count_now, polarity, float(true_angle_deg), float(rom_upper)
+            count_now,
+            polarity,
+            float(true_angle_deg),
+            float(self.effective_joint_roms_dict[joint][1]),
         )
 
         encoder_cal = dict(self.calibration.joint_encoder_calibration_dict)

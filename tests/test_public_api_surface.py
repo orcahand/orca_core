@@ -90,6 +90,8 @@ ORCA_HAND = BASE_HAND | {
     "last_read_ok",
     "motor_client",
     "motor_limits_dict",
+    "rom_frame",
+    "set_rom_frame",
     "set_control_mode",
     "set_max_current",
     "stop_task",
