@@ -60,12 +60,15 @@ def main() -> int:
             raise ValueError("Replay joint order does not match the connected hand configuration.")
 
         interp_func = linear_interp if args.mode == "linear" else ease_in_out
+        wrist_idx = hand.config.joint_ids.index("wrist")
         print(f"Starting waypoint replay from {replay_path}")
 
         while True:
             for index, start in enumerate(waypoints):
                 if not args.loop and index == len(waypoints) - 1:
-                    hand.set_joint_positions(np.asarray(start, dtype=np.float64))
+                    final = np.asarray(start, dtype=np.float64)
+                    final[wrist_idx] = 0.0
+                    hand.set_joint_positions(final)
                     return 0
                 end = waypoints[(index + 1) % len(waypoints)]
                 n_steps = max(1, int(args.transition_time / args.step_time))
@@ -74,6 +77,7 @@ def main() -> int:
                 for step in range(n_steps + 1):
                     alpha = interp_func(step / n_steps)
                     pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
+                    pose[wrist_idx] = 0.0
                     hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
 
                     target_time = start_time + step * args.step_time
