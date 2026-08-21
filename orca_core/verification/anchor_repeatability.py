@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -36,6 +36,7 @@ from ..hardware.joint_encoder_client import (
 )
 from ..hardware.sensing.constants import ENCODER_LSB_DEG, JOINT_TO_ENCODER_SLOT
 from ..maintenance.calibration_routine import run_calibration
+from .step_result import flat_measurements
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -91,11 +92,15 @@ class JointAnchorStats:
     measured_span_spread_deg: float | None = None
     span_error_deg: float | None = None
     spans_rejected: int = 0
+    messages: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class AnchorRepeatabilityResult:
-    """Every joint's anchor statistics plus the thresholds that judged them."""
+    """Every joint's anchor statistics plus the thresholds that judged them.
+
+    Implements :class:`~orca_core.verification.StepResult`.
+    """
 
     repeats: int
     completed_passes: int
@@ -110,6 +115,36 @@ class AnchorRepeatabilityResult:
             for stats in self.joints
             if stats.verdict in (VERDICT_POOR, VERDICT_UNRELIABLE, VERDICT_NO_DATA)
         ]
+
+    @property
+    def passed(self) -> bool:
+        return not self.failed
+
+    @property
+    def messages(self) -> List[str]:
+        return [message for stats in self.joints for message in stats.messages]
+
+    def measurements(self) -> Dict[str, float]:
+        """Per joint: the anchor spread the verdict rests on, how many passes
+        it came from, and the span those same passes measured."""
+        metrics = {
+            "anchor_spread_p2p_deg": lambda s: s.peak_to_peak_deg,
+            "anchor_spread_std_deg": lambda s: s.std_deg,
+            "anchor_mean_count": lambda s: s.mean_count,
+            "anchored_passes": lambda s: s.anchored_passes,
+            "sample_failures": lambda s: s.sample_failures,
+            "nominal_span_deg": lambda s: s.nominal_span_deg,
+            "measured_span_mean_deg": lambda s: s.measured_span_mean_deg,
+            "measured_span_spread_deg": lambda s: s.measured_span_spread_deg,
+            "span_error_deg": lambda s: s.span_error_deg,
+            "spans_rejected": lambda s: s.spans_rejected,
+        }
+        measurements: Dict[str, float] = {}
+        for metric, pick in metrics.items():
+            measurements.update(
+                flat_measurements(metric, {s.joint: pick(s) for s in self.joints})
+            )
+        return measurements
 
 
 def _verdict_for(spread_deg: float, good_deg: float, marginal_deg: float) -> str:
@@ -130,7 +165,8 @@ def _run_one_pass(
     baseline,
     joints: List[str] | None,
     joint_encoder_client,
-    failures: Dict[str, int],
+    failures: Dict[str, List[str]],
+    rejections: Dict[str, List[float]],
     index: int,
     progress_callback: Optional[ProgressCallback],
     should_stop: ShouldStop,
@@ -155,8 +191,11 @@ def _run_one_pass(
         name = event.get("event")
         if name == "measured_rom_rejected":
             rejected_spans[event["joint"]] = float(event["span_deg"])
+            rejections.setdefault(event["joint"], []).append(
+                float(event["deviation_deg"])
+            )
         elif name == "encoder_anchor_failed":
-            failures[event["joint"]] = failures.get(event["joint"], 0) + 1
+            failures.setdefault(event["joint"], []).append(str(event["error"]))
         _emit(progress_callback, "calibration_event", index=index, payload=dict(event))
 
     result = run_calibration(
@@ -235,7 +274,8 @@ def run_anchor_repeatability(
 
     baseline = hand.calibration
     passes: List[Pass] = []
-    failures: Dict[str, int] = {}
+    failures: Dict[str, List[str]] = {}
+    rejections: Dict[str, List[float]] = {}
 
     def _restore_hand() -> None:
         hand.calibration = baseline
@@ -253,6 +293,7 @@ def run_anchor_repeatability(
                 joints=joints,
                 joint_encoder_client=joint_encoder_client,
                 failures=failures,
+                rejections=rejections,
                 index=index,
                 progress_callback=progress_callback,
                 should_stop=should_stop,
@@ -284,6 +325,7 @@ def run_anchor_repeatability(
         joints=_analyse(
             passes,
             failures=failures,
+            rejections=rejections,
             nominal_spans={
                 joint: float(rom[1] - rom[0])
                 for joint, rom in hand.config.joint_roms_dict.items()
@@ -308,7 +350,8 @@ def run_anchor_repeatability(
 def _analyse(
     passes: List[Pass],
     *,
-    failures: Dict[str, int],
+    failures: Dict[str, List[str]],
+    rejections: Dict[str, List[float]],
     nominal_spans: Dict[str, float],
     spread_good_deg: float,
     spread_marginal_deg: float,
@@ -319,7 +362,8 @@ def _analyse(
 
     for joint in joint_names:
         counts = [p[joint][0] for p in passes if joint in p]
-        n_failed = failures.get(joint, 0)
+        reasons = failures.get(joint, [])
+        n_failed = len(reasons)
         nominal = nominal_spans.get(joint)
 
         mean_count = std_deg = peak_to_peak = None
@@ -347,6 +391,7 @@ def _analyse(
             if nominal:
                 span_error = round(span_mean - nominal, 3)
 
+        spans_rejected = sum(1 for p in passes if joint in p and p[joint][2])
         stats.append(
             JointAnchorStats(
                 joint=joint,
@@ -361,9 +406,64 @@ def _analyse(
                 measured_span_mean_deg=span_mean,
                 measured_span_spread_deg=span_spread,
                 span_error_deg=span_error,
-                spans_rejected=sum(
-                    1 for p in passes if joint in p and p[joint][2]
+                spans_rejected=spans_rejected,
+                messages=_messages_for(
+                    joint=joint,
+                    verdict=verdict,
+                    reasons=reasons,
+                    total_passes=len(passes),
+                    anchored_passes=len(counts),
+                    peak_to_peak=peak_to_peak,
+                    spread_marginal_deg=spread_marginal_deg,
+                    spans_rejected=spans_rejected,
+                    rejection_deviations=rejections.get(joint, []),
                 ),
             )
         )
     return stats
+
+
+def _messages_for(
+    *,
+    joint: str,
+    verdict: str,
+    reasons: List[str],
+    total_passes: int,
+    anchored_passes: int,
+    peak_to_peak: float | None,
+    spread_marginal_deg: float,
+    spans_rejected: int,
+    rejection_deviations: List[float],
+) -> List[str]:
+    """Text for one joint: the anchor verdict, then any rejected span.
+
+    A rejected span does not decide this step's verdict — that is J2's — but
+    it leaves the joint on a configured ROM known to be wrong, so it is
+    reported here rather than surviving only as a number.
+    """
+    messages: List[str] = []
+    if verdict == VERDICT_UNRELIABLE:
+        messages.append(
+            f"Joint {joint} failed its anchor sample on {len(reasons)} of "
+            f"{total_passes} passes: {'; '.join(dict.fromkeys(reasons))}"
+        )
+    elif verdict == VERDICT_NO_DATA:
+        messages.append(
+            f"Joint {joint} produced an anchor count on {anchored_passes} of "
+            f"{total_passes} passes; at least two are needed to measure spread."
+        )
+    elif verdict == VERDICT_POOR:
+        messages.append(
+            f"Joint {joint} anchor moved {peak_to_peak:.2f}° peak-to-peak "
+            f"across {anchored_passes} calibration passes (limit "
+            f"{spread_marginal_deg:.2f}°)."
+        )
+
+    if spans_rejected and rejection_deviations:
+        worst = max(rejection_deviations, key=abs)
+        messages.append(
+            f"Joint {joint} had its encoder-measured span rejected on "
+            f"{spans_rejected} of {total_passes} passes, worst by {worst:+.1f}° "
+            f"at the lower hardstop; the joint keeps its configured ROM."
+        )
+    return messages

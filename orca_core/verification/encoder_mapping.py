@@ -43,6 +43,7 @@ from ..hardware.sensing.constants import (
     JOINT_TO_ENCODER_SLOT,
     joint_encoder_polarity_for_side,
 )
+from .step_result import flat_measurements
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -143,7 +144,10 @@ class JointSweep:
 
 @dataclass(frozen=True)
 class EncoderMappingResult:
-    """Every joint's sweep plus the thresholds that judged them."""
+    """Every joint's sweep plus the thresholds that judged them.
+
+    Implements :class:`~orca_core.verification.StepResult`.
+    """
 
     side: str
     sweeps: List[JointSweep]
@@ -152,6 +156,42 @@ class EncoderMappingResult:
     @property
     def failed(self) -> List[JointSweep]:
         return [sweep for sweep in self.sweeps if not sweep.ok]
+
+    @property
+    def passed(self) -> bool:
+        return not self.failed
+
+    @property
+    def messages(self) -> List[str]:
+        return [message for sweep in self.sweeps for message in sweep.messages]
+
+    def measurements(self) -> Dict[str, float]:
+        """Per joint: what was commanded, what its slot did, and the worst
+        motion seen on any other slot while it moved."""
+        return {
+            **flat_measurements(
+                "commanded_deg", {s.joint: s.commanded_deg for s in self.sweeps}
+            ),
+            **flat_measurements(
+                "measured_deg", {s.joint: s.measured_deg for s in self.sweeps}
+            ),
+            **flat_measurements(
+                "crosstalk_max_deg",
+                {s.joint: _worst_crosstalk(s) for s in self.sweeps},
+            ),
+            **flat_measurements(
+                "angle_error_samples",
+                {s.joint: s.angle_error_samples.get(s.slot) for s in self.sweeps},
+            ),
+        }
+
+
+def _worst_crosstalk(sweep: JointSweep) -> float | None:
+    """Largest travel on a slot other than the driven joint's."""
+    return max(
+        (abs(delta) for slot, delta in sweep.slot_deltas.items() if slot != sweep.slot),
+        default=None,
+    )
 
 
 def _sample_all_slots(
