@@ -93,6 +93,10 @@ class OrcaHandTouch(OrcaHand):
 
     config_cls = OrcaHandTouchConfig
 
+    # Wait after opening the sensor port, before the first register request.
+    # Mock classes zero it: an in-memory link asserts no DTR and never resets.
+    _tactile_port_open_settle_s = TACTILE_PORT_OPEN_SETTLE_S
+
     def __init__(
         self,
         config_path: str | None = None,
@@ -134,7 +138,7 @@ class OrcaHandTouch(OrcaHand):
         """Open a link on ``port`` at ``baudrate`` and connect a tactile client."""
         link = self._create_tactile_link(port, baudrate)
         link.connect()
-        time.sleep(TACTILE_PORT_OPEN_SETTLE_S)
+        time.sleep(self._tactile_port_open_settle_s)
         self._tactile_link = link
         self._attach_tactile_client(link)
 
@@ -1155,6 +1159,8 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
     clients: no serial I/O, no port discovery, and register reads served
     from an in-memory sensor state (all fingers connected).
     """
+
+    _tactile_port_open_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

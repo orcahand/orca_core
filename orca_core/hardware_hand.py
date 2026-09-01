@@ -85,6 +85,11 @@ class OrcaHand(BaseHand):
     # default and the stale-flag demote). Mock classes flip it off.
     _persist_calibration = True
 
+    # Waits that let real serial hardware settle. Mock classes zero them:
+    # an in-memory bus has no port to reopen and no motors to coast down.
+    _port_close_settle_s = MOTOR_PORT_CLOSE_SETTLE_S
+    _torque_disable_settle_s = MOTOR_TORQUE_DISABLE_SETTLE_S
+
     def __init__(
         self,
         config_path: str | None = None,
@@ -280,7 +285,7 @@ class OrcaHand(BaseHand):
         except Exception:
             pass
         else:
-            time.sleep(MOTOR_PORT_CLOSE_SETTLE_S)
+            time.sleep(self._port_close_settle_s)
 
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True
@@ -384,7 +389,7 @@ class OrcaHand(BaseHand):
                     failure = (
                         f"torque disable was not acknowledged by motor IDs {failed_ids}"
                     )
-                time.sleep(MOTOR_TORQUE_DISABLE_SETTLE_S)
+                time.sleep(self._torque_disable_settle_s)
             except Exception as e:
                 failure = f"torque disable failed: {e}"
             finally:
@@ -1338,6 +1343,8 @@ class MockMotorResolutionMixin:
     """
 
     _persist_calibration = False
+    _port_close_settle_s = 0.0
+    _torque_disable_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

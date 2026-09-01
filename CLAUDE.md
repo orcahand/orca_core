@@ -177,8 +177,20 @@ uv sync --group dev
 ### Testing
 
 ```bash
-uv run pytest tests/
+uv run pytest tests/          # whole suite, fanned across cores (~3s)
+uv run pytest tests/ -n0      # serial: readable output when debugging a failure
 ```
+
+`addopts = "-n auto"` in `pyproject.toml` makes the suite parallel by default.
+
+Mock backends must never wait on hardware. The settle waits real hands need
+(`_port_close_settle_s`, `_torque_disable_settle_s`, `_tactile_port_open_settle_s`)
+are class attributes the `Mock*` classes set to `0.0`, and routines that pace
+themselves against `time.time()` run on the virtual clock in `tests/conftest.py`
+— its `sleep` advances a counter that `time()` reads back, so a routine observes
+the durations it asked for at no wall-clock cost. Assert on durations via the
+`virtual_clock` fixture, never on real elapsed time; to hold a background task
+mid-flight, block it on an event rather than sleeping and hoping.
 
 ### Downstream consumers
 

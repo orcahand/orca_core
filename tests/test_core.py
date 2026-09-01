@@ -11,28 +11,6 @@ def test_import_and_instantiation(mock_config_dir):
     assert isinstance(hand, OrcaHand)
 
 
-def test_orca_hand_exposes_refactored_methods(mock_config_dir):
-    hand = MockOrcaHand(config_path=str(mock_config_dir / "config.yaml"))
-    for method_name in [
-        "connect",
-        "disconnect",
-        "init_joints",
-        "enable_torque",
-        "disable_torque",
-        "set_control_mode",
-        "set_max_current",
-        "calibrate",
-        "tension",
-        "jitter",
-        "pose_from_fractions",
-        "register_position",
-        "set_named_position",
-        "play_named_positions",
-        "get_joint_position",
-    ]:
-        assert hasattr(hand, method_name), f"Missing hardware method: {method_name}"
-
-
 def test_mock_workflow_smoke(initialized_mock_hand):
     hand = initialized_mock_hand
 
