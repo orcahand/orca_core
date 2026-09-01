@@ -1,4 +1,4 @@
-"""Pins the hand-class MRO and the deprecated module paths.
+"""Pins the hand-class MRO and the class-level seams it resolves.
 
 The OrcaHandFull diamond is load-bearing: base-tuple order decides which
 class serves each seam, and the mock diamond must put the mixin before any
@@ -20,6 +20,7 @@ from orca_core import (
     OrcaHandTouch,
 )
 from orca_core.base_hand import BaseHand
+from orca_core.constants import MOTOR_TORQUE_DISABLE_SETTLE_S
 from orca_core.hardware_hand import MockMotorResolutionMixin
 
 
@@ -93,3 +94,15 @@ def test_every_declared_export_is_bound_at_the_package_root():
     """``__all__`` and the actual bindings must not drift apart."""
     for name in orca_core.__all__:
         assert hasattr(orca_core, name), name
+
+
+def test_real_hands_keep_their_torque_disable_settle():
+    """Zeroing this on a production class would race a real serial port."""
+    assert OrcaHand._torque_disable_settle_s == MOTOR_TORQUE_DISABLE_SETTLE_S
+    assert MOTOR_TORQUE_DISABLE_SETTLE_S > 0
+
+
+@pytest.mark.parametrize("cls", [MockOrcaHand, MockOrcaHandTouch, MockOrcaHandFull])
+def test_mock_hands_wait_on_nothing(cls):
+    """Mock backends have no port to settle; waiting for one only costs time."""
+    assert cls._torque_disable_settle_s == 0.0

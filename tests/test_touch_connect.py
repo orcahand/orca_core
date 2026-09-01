@@ -14,6 +14,7 @@ from orca_core.hand_config import OrcaHandTouchConfig
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.serial_discovery import SensingPorts
 from orca_core.hardware.sensing.tactile_mock import TactileMockState, install_tactile_mock
+from orca_core.hardware.tactile_client import TactileClient
 
 from tests._helpers import wait_until
 
@@ -40,6 +41,23 @@ class _FakePortsHandTouch(OrcaHandTouch):
         if port in self._good_ports:
             install_tactile_mock(link, TactileMockState())
         return link
+
+    def _create_tactile_client(self, link) -> TactileClient:
+        return _ImpatientTactileClient(
+            link, finger_to_sensor_id=self.config.finger_to_sensor_id
+        )
+
+
+class _ImpatientTactileClient(TactileClient):
+    """Tactile client with the register retry ladder compressed.
+
+    What the fallback tests pin down is that a port which never answers gets
+    skipped — how long production waits before concluding that is tuning, and
+    waiting it out for real costs seconds per test.
+    """
+
+    def _send_register_request(self, request, response_timeout_s, attempts=2):
+        return super()._send_register_request(request, 0.01, attempts)
 
 
 def _touch_config(sensor_port: str) -> OrcaHandTouchConfig:
