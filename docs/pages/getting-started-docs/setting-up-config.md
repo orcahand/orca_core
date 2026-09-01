@@ -171,3 +171,67 @@ calibration_sequence:
 If you want to specify the sequence or calibrate only specific joints you can adapt the sequence. If you are unsure, leave this section as is. An incomplete or incorrect sequence may lead to errors when executing commands later.
 
 ---
+
+### 8. Motor Travel Baseline
+
+```yaml
+joint_motor_travel:
+  index_mcp: 122.96
+  index_pip: 102.13
+  ...
+calibration_travel_margin: 0.25
+calibration_retry_current: 450
+calibration_travel_retries: 1
+```
+
+`joint_motor_travel` records how far each joint's motor turns between that
+joint's two hardstops, in degrees. It is keyed by **joint name**, not motor ID:
+the travel is set by the joint's tendon spool diameter, so it belongs to the
+joint, and calibration looks up whichever motor `joint_to_motor_map` assigns to
+it. A hand whose motor IDs were assigned in a different order still reads the
+right value.
+
+Calibration uses it as a sanity check. After a joint has been driven onto both
+of its hardstops, the routine compares the travel it just measured against this
+baseline. An over-tensioned tendon makes the drive stall *before* the hardstop,
+so the two limits come out too close together and every angle derived from them
+is wrong. When the measurement falls more than `calibration_travel_margin`
+(a fraction, default `0.25`) below the baseline, that joint alone is re-driven
+at a higher current, then the nominal calibration current is restored for the
+rest of the run. Travel *above* the baseline is reported but never re-driven —
+more current cannot shorten a span; that points at a slipped tendon or a stale
+baseline.
+
+- `calibration_travel_margin` — accepted fractional deviation. Default `0.25`.
+- `calibration_retry_current` — current (mA) the last re-drive uses. Must exceed
+  `calibration_current`. Omit it and it defaults to 1.5x `calibration_current`.
+- `calibration_travel_retries` — how many re-drives to attempt. Default `1`.
+  With more than one, the current ramps evenly from `calibration_current` up to
+  `calibration_retry_current`, so a joint that only needs a nudge is not driven
+  at the full retry current on the first try. Set `0` to report the shortfall
+  and never re-drive.
+
+**What should be changed?**
+
+Generate `joint_motor_travel` rather than writing it by hand, on a freshly
+tensioned hand:
+
+```bash
+python scripts/measure_travel.py /path/to/orcahand-right/config.yaml
+```
+
+That drives every joint onto both hardstops, prints the measured travel per
+joint, and writes the block. Add `--dry-run` to review the numbers first, or
+`--from-calibration` to derive them from an existing clean `calibration.yaml`
+without moving the hand. Compare joints that share a design — the four `_pip`
+joints, the four `_mcp` joints — as a cross-check: one that reads well below its
+siblings is usually over-tensioned rather than genuinely shorter.
+
+Each calibration run also writes what it actually measured to
+`calibration.yaml` under `motor_travel_measured:`, so successive runs can be
+compared.
+
+A joint omitted from `joint_motor_travel` has its travel measured and logged,
+but not checked, and is never re-driven.
+
+---

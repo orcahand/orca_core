@@ -124,6 +124,29 @@ class MotorClient(ABC):
     max_operating_temp_c: ClassVar[float] = 70.0
     """Maximum rated operating temperature in degrees Celsius (XC330/XC430, HLS3930/HLS3915)."""
 
+    hardware_error_bits: ClassVar["tuple[tuple[int, str], ...]"] = (
+        (0x01, "input_voltage"),
+        (0x04, "overheating"),
+        (0x08, "motor_encoder"),
+        (0x10, "electrical_shock"),
+        (0x20, "overload"),
+    )
+    """Hardware Error Status bits, as ``(mask, name)``.
+
+    Every bit in the motor's Shutdown mask latches torque off until the motor
+    is rebooted: it keeps answering the bus and acknowledges torque-enable
+    writes, but never energizes. Callers that drive a motor and infer
+    something from whether it moved must check this first, or they will read
+    "did not move" as a mechanical fact.
+    """
+
+    @classmethod
+    def decode_hardware_error(cls, value: "int | None") -> "list[str] | None":
+        """Names of the latched error bits in ``value``; ``None`` if unread."""
+        if value is None:
+            return None
+        return [name for bit, name in cls.hardware_error_bits if value & bit]
+
     @classmethod
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""

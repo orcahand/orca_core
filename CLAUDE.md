@@ -12,6 +12,7 @@ orca_core/
 ├── maintenance/                  # Interaction-free hardware routines (callback-driven)
 │   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
 │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
+│   ├── motor_travel.py              # per-joint motor-travel baselines (config.yaml joint_motor_travel)
 │   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
@@ -214,6 +215,9 @@ uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
 
+# Record the per-joint motor-travel baseline calibration checks against
+uv run python scripts/measure_travel.py orca_core/models/v2/orcahand-right/config.yaml
+
 # Manual control (sliders; --motor-space for per-motor tendon bring-up)
 uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/config.yaml
 
@@ -229,6 +233,13 @@ uv run python scripts/monitor_sensors.py
 
 All hand-specific settings are in `config.yaml`:
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
+- `joint_motor_travel:` - motor-shaft travel between each joint's hardstops, in degrees, **keyed by
+  joint name** (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
+  routine resolves the motor through `joint_to_motor_map` at the point of use). Calibration re-drives
+  a joint that measures more than `calibration_travel_margin` short of its baseline at a higher
+  current (`calibration_retry_current`, `calibration_travel_retries`) - the fix for an
+  over-tensioned hand whose joints stall before their hardstops. Generate it with
+  `scripts/measure_travel.py`, never by hand.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)
