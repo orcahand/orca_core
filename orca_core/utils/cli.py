@@ -135,7 +135,63 @@ def print_calibration_progress(event: dict) -> None:
             f"  WARNING: torque release failed for motor {event['motor']} "
             f"({event['joint']}); limit not recorded"
         )
+    elif name == "travel_checked":
+        low, high = event["bounds_deg"]
+        mark = "ok" if event["within_margin"] else "OUT OF MARGIN"
+        print(
+            f"  {event['joint']} motor travel {event['travel_deg']:.1f} deg "
+            f"vs {event['expected_deg']:.1f} deg baseline "
+            f"({event['deviation'] * 100:+.0f}%, accept {low:.1f}-{high:.1f}) [{mark}]"
+        )
+    elif name == "travel_baseline_missing":
+        print(
+            f"  {event['joint']} motor travel {event['travel_deg']:.1f} deg "
+            f"(no joint_motor_travel baseline; not checked)"
+        )
+    elif name == "travel_excess":
+        print(
+            f"  WARNING: {event['joint']} travelled {event['travel_deg']:.1f} deg, "
+            f"{event['deviation'] * 100:+.0f}% past its "
+            f"{event['expected_deg']:.1f} deg baseline; check the tendon for slip."
+        )
+    elif name == "travel_retry_started":
+        print(
+            f"  {event['joint']} fell short; re-driving at "
+            f"{event['current']:.0f} mA "
+            f"(attempt {event['attempt']}/{event['attempts']})"
+        )
+    elif name == "travel_retry_succeeded":
+        print(
+            f"  {event['joint']} recovered to {event['travel_deg']:.1f} deg "
+            f"at {event['current']:.0f} mA "
+            f"({event['deviation'] * 100:+.0f}% vs baseline)"
+        )
+    elif name == "travel_retry_exhausted":
+        print(
+            f"  WARNING: {event['joint']} still short at "
+            f"{event['travel_deg']:.1f} deg of {event['expected_deg']:.1f} deg "
+            f"after {event['attempts']} re-drive(s); calibrated over a "
+            f"shortened range."
+        )
+    elif name == "travel_retry_unavailable":
+        print(
+            f"  WARNING: {event['joint']} short at {event['travel_deg']:.1f} deg "
+            f"of {event['expected_deg']:.1f} deg; its control mode ignores the "
+            f"current cap, so no re-drive can help."
+        )
+    elif name == "travel_retry_disabled":
+        print(
+            f"  WARNING: {event['joint']} short at {event['travel_deg']:.1f} deg "
+            f"of {event['expected_deg']:.1f} deg; re-drive disabled "
+            f"(calibration_travel_retries: 0)."
+        )
     elif name == "calibration_done":
+        boosted = event.get("boosted_joints") or {}
+        if boosted:
+            joints = ", ".join(
+                f"{j} @ {c:.0f} mA" for j, c in sorted(boosted.items())
+            )
+            print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
     elif name == "calibration_aborted":
         print("Calibration aborted.")

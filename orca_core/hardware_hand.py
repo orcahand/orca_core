@@ -38,6 +38,7 @@ from .constants import (
     DYNAMIXEL,
     MODE_MAP,
     MOTOR_BAUD_RATES,
+    MIN_MOTOR_TRAVEL_RAD,
     MOTOR_PORT_CLOSE_SETTLE_S,
     MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST,
@@ -902,12 +903,16 @@ class OrcaHand(BaseHand):
         joint_encoder_client=None,
         progress_callback=None,
         persist: bool | None = None,
+        manual: bool = False,
+        prompt_callback=None,
     ):
         """Run the joint calibration routine.
 
         Drives each joint to its mechanical limits per ``calibration_sequence``
         and persists motor limits + joint-to-motor ratios to
-        ``calibration.yaml`` after every step.
+        ``calibration.yaml`` after every step. A joint whose measured motor
+        travel falls short of its ``joint_motor_travel`` baseline is re-driven
+        at a higher current before its limits are committed.
 
         Args:
             blocking: When ``True``, run to completion before returning.
@@ -922,10 +927,21 @@ class OrcaHand(BaseHand):
                 ``step_started``, ``limit_recorded``, ``joint_calibrated``,
                 ``encoder_anchor_recorded``, ``encoder_anchor_failed``,
                 ``offset_calibration_failed``, ``wrist_skipped``,
-                ``step_done``, ``calibration_done``, ``calibration_aborted``,
+                ``travel_checked``, ``travel_baseline_missing``,
+                ``travel_excess``, ``travel_retry_started``,
+                ``travel_retry_succeeded``, ``travel_retry_exhausted``,
+                ``travel_retry_disabled``, ``travel_retry_unavailable``,
+                ``step_done``,
+                ``calibration_done``, ``calibration_aborted``,
                 and ``cleanup_failed``. Called from the calibrating thread;
                 must be fast and non-blocking. Exceptions raised by the
                 callback are swallowed.
+            manual: Capture each hardstop from a pose the operator sets by
+                hand rather than driving the motors onto it. Torque stays off
+                for the whole run and ``prompt_callback`` is required. Use it
+                for a joint whose motor cannot reach its own hardstop.
+            prompt_callback: Blocking ``callable(dict) -> str`` used only in
+                manual mode; return ``"record"``, ``"skip"`` or ``"abort"``.
             persist: Whether results are written to ``calibration.yaml``
                 (in-memory ``self.calibration`` updates either way). ``None``
                 (default) defers to the class: real hands persist, ``Mock*``
@@ -942,6 +958,8 @@ class OrcaHand(BaseHand):
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
                 persist=persist,
+                manual=manual,
+                prompt_callback=prompt_callback,
             )
         else:
             self._start_task(
@@ -951,6 +969,8 @@ class OrcaHand(BaseHand):
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
                 persist=persist,
+                manual=manual,
+                prompt_callback=prompt_callback,
             )
 
     def _calibrate_and_apply(self, **kwargs):
@@ -1121,6 +1141,21 @@ class OrcaHand(BaseHand):
         offsets = {}
         for idx, motor_id in enumerate(self.config.motor_ids):
             if lower_limit[idx] is None or higher_limit[idx] is None:
+                offsets[motor_id] = 0.0
+                continue
+
+            # Limits that sit on top of each other are a failed sweep, not a
+            # range. Measuring "distance outside the limits" against a single
+            # point makes almost any real position look like a wrap, and a
+            # spurious 2pi shift corrupts every angle this motor reports. Leave
+            # such a motor unshifted; its joint already reads as uncalibrated.
+            if abs(higher_limit[idx] - lower_limit[idx]) < MIN_MOTOR_TRAVEL_RAD:
+                logger.warning(
+                    "motor %d has a degenerate limit pair (%.4f, %.4f); "
+                    "skipping wrap detection for it and leaving its position "
+                    "unshifted. Re-calibrate this joint.",
+                    motor_id, lower_limit[idx], higher_limit[idx],
+                )
                 offsets[motor_id] = 0.0
                 continue
 

@@ -51,6 +51,12 @@ class CalibrationResult:
             endpoint equals the config ROM upper — it is the anchor pose the
             encoder frame is pinned to, so only the lower endpoint moves. Empty
             for hands without joint encoders; config ROMs are the fallback.
+        motor_travel_measured_dict: Maps joint name → the motor-shaft travel,
+            in degrees, recorded between that joint's two hardstops. Keyed by
+            joint rather than by motor because the travel is set by the joint's
+            tendon spool. Compared against the ``joint_motor_travel`` baseline
+            in ``config.yaml`` to catch a joint that stalled short of its
+            hardstop; see :mod:`orca_core.maintenance.motor_travel`.
         calibrated: ``True`` when all joints have been fully calibrated.
         wrist_calibrated: ``True`` when the wrist joint has been calibrated.
     """
@@ -61,6 +67,7 @@ class CalibrationResult:
     wrist_calibrated: bool
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] = field(default_factory=dict)
     joint_roms_measured_dict: Dict[str, List[float]] = field(default_factory=dict)
+    motor_travel_measured_dict: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, motor_ids: List[int]) -> "CalibrationResult":
@@ -72,6 +79,7 @@ class CalibrationResult:
             wrist_calibrated=False,
             joint_encoder_calibration_dict={},
             joint_roms_measured_dict={},
+            motor_travel_measured_dict={},
         )
 
     @classmethod
@@ -119,6 +127,17 @@ class CalibrationResult:
                 continue
             joint_roms_measured_dict[joint] = [float(rom[0]), float(rom[1])]
 
+        travel_raw = calibration.get("motor_travel_measured", {}) or {}
+        motor_travel_measured_dict = {}
+        for joint, travel in travel_raw.items():
+            try:
+                motor_travel_measured_dict[joint] = float(travel)
+            except (TypeError, ValueError):
+                print(
+                    f"\033[93mWarning: dropping malformed motor_travel_measured "
+                    f"entry for {joint}: {travel!r}\033[0m"
+                )
+
         return cls(
             motor_limits_dict=motor_limits_dict,
             joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
@@ -126,6 +145,7 @@ class CalibrationResult:
             wrist_calibrated=calibration.get("wrist_calibrated", False) or False,
             joint_encoder_calibration_dict=joint_encoder_calibration_dict,
             joint_roms_measured_dict=joint_roms_measured_dict,
+            motor_travel_measured_dict=motor_travel_measured_dict,
         )
 
 

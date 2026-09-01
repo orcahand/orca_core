@@ -1,6 +1,11 @@
 # motor_type and baudrate are auto-detected at connect; set them here to pin a driver
 port: auto
 max_current: 300
+# Ceiling for the calibration short-travel re-drive alone (mA). Above
+# max_current on purpose: freeing a joint from an over-tensioned tendon needs
+# more torque than the hand may use in normal operation, and the routine puts
+# max_current back the moment calibration ends.
+calibration_max_current: 500
 type: right
 control_mode: current_based_position
 motor_ids:
@@ -199,3 +204,32 @@ calibration_sequence:
 - step: 16
   joints:
     wrist: extend
+# Re-drive attempts for a joint that finishes short of its joint_motor_travel
+# baseline. Each attempt clears the joint's limits and re-sweeps it
+# flex-then-extend at a raised current; that re-sweep is the mid-sweep
+# direction reversal previously seen on the thumb, so watch the thumb on the
+# first run after changing this. Several attempts rather than one so the
+# current ramps in gradually instead of jumping straight to the top.
+calibration_travel_retries: 3
+
+# Motor-shaft travel between each joint's hardstops, in degrees, measured by
+# scripts/measure_travel.py. Calibration reports a joint that falls more than
+# calibration_travel_margin short of its entry.
+joint_motor_travel:
+  wrist: 167.17
+  thumb_cmc: 38.76
+  thumb_abd: 43.33
+  thumb_mcp: 118.39
+  thumb_dip: 102.92
+  index_abd: 44.74
+  index_mcp: 122.96
+  index_pip: 102.13
+  middle_abd: 43.95
+  middle_mcp: 133.15
+  middle_pip: 102.83
+  ring_abd: 43.86
+  ring_mcp: 129.11
+  ring_pip: 100.99
+  pinky_abd: 50.36
+  pinky_mcp: 110.83
+  pinky_pip: 88.42
