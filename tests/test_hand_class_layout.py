@@ -1,4 +1,4 @@
-"""Pins the hand-class MRO and the deprecated module paths.
+"""Pins the hand-class MRO and the class-level seams it resolves.
 
 The OrcaHandFull diamond is load-bearing: base-tuple order decides which
 class serves each seam, and the mock diamond must put the mixin before any
@@ -20,6 +20,8 @@ from orca_core import (
     OrcaHandTouch,
 )
 from orca_core.base_hand import BaseHand
+from orca_core.constants import MOTOR_PORT_CLOSE_SETTLE_S, MOTOR_TORQUE_DISABLE_SETTLE_S
+from orca_core.hardware.sensing.constants import TACTILE_PORT_OPEN_SETTLE_S
 from orca_core.hardware_hand import MockMotorResolutionMixin
 
 
@@ -93,3 +95,37 @@ def test_every_declared_export_is_bound_at_the_package_root():
     """``__all__`` and the actual bindings must not drift apart."""
     for name in orca_core.__all__:
         assert hasattr(orca_core, name), name
+
+
+@pytest.mark.parametrize(
+    "attr, expected",
+    [
+        ("_port_close_settle_s", MOTOR_PORT_CLOSE_SETTLE_S),
+        ("_torque_disable_settle_s", MOTOR_TORQUE_DISABLE_SETTLE_S),
+    ],
+)
+def test_real_hands_keep_their_hardware_settle_waits(attr, expected):
+    """Zeroing these on a production class would race a real serial port."""
+    assert getattr(OrcaHand, attr) == expected
+    assert expected > 0
+
+
+def test_real_touch_hand_keeps_the_tactile_port_settle():
+    assert OrcaHandTouch._tactile_port_open_settle_s == TACTILE_PORT_OPEN_SETTLE_S
+    assert TACTILE_PORT_OPEN_SETTLE_S > 0
+
+
+@pytest.mark.parametrize(
+    "cls, attr",
+    [
+        (MockOrcaHand, "_port_close_settle_s"),
+        (MockOrcaHand, "_torque_disable_settle_s"),
+        (MockOrcaHandFull, "_port_close_settle_s"),
+        (MockOrcaHandFull, "_torque_disable_settle_s"),
+        (MockOrcaHandTouch, "_tactile_port_open_settle_s"),
+        (MockOrcaHandFull, "_tactile_port_open_settle_s"),
+    ],
+)
+def test_mock_hands_wait_on_nothing(cls, attr):
+    """Mock backends have no port to settle; waiting for one only costs time."""
+    assert getattr(cls, attr) == 0.0

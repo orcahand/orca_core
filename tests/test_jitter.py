@@ -1,9 +1,33 @@
-import time
+import contextlib
 import inspect
+import threading
 
 import numpy as np
 import pytest
 from unittest.mock import patch
+
+
+@contextlib.contextmanager
+def _held_mid_jitter(hand):
+    """Park the jitter task inside its first motor write until released.
+
+    Lets a test observe a non-blocking task while it is genuinely running,
+    without leaning on wall-clock duration to keep it alive.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    original = hand._motor_client.write_desired_pos
+
+    def blocking_write(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=5.0)
+        return original(*args, **kwargs)
+
+    with patch.object(hand._motor_client, "write_desired_pos", blocking_write):
+        try:
+            yield entered, release
+        finally:
+            release.set()
 
 
 @pytest.fixture
@@ -30,18 +54,12 @@ def test_default_frequency_is_fast(connected_mock_hand):
     assert default_freq >= 10.0
 
 
-def test_duration_respected(connected_mock_hand):
-    start = time.time()
-    connected_mock_hand.jitter(duration=1.0, amplitude=2.0)
-    elapsed = time.time() - start
-    assert elapsed == pytest.approx(1.0, abs=0.3)
-
-
-def test_short_duration(connected_mock_hand):
-    start = time.time()
-    connected_mock_hand.jitter(duration=0.3, amplitude=2.0)
-    elapsed = time.time() - start
-    assert elapsed < 1.0
+@pytest.mark.parametrize("duration", [0.3, 1.0])
+def test_duration_respected(connected_mock_hand, virtual_clock, duration):
+    start = virtual_clock.time()
+    connected_mock_hand.jitter(duration=duration, amplitude=2.0)
+    elapsed = virtual_clock.time() - start
+    assert elapsed == pytest.approx(duration, abs=0.05)
 
 
 def test_custom_motor_ids(connected_mock_hand):
@@ -109,30 +127,33 @@ def test_returns_to_start_position(connected_mock_hand):
 
 
 def test_non_blocking_runs_in_background(connected_mock_hand):
-    connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
-    time.sleep(0.2)
-    assert connected_mock_hand._task_thread.is_alive()
-    connected_mock_hand.stop_task()
-    time.sleep(0.2)
+    with _held_mid_jitter(connected_mock_hand) as (entered, release):
+        connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
+        assert entered.wait(timeout=5.0), "jitter never reached a motor write"
+        assert connected_mock_hand._task_thread.is_alive()
+        release.set()
+    assert connected_mock_hand.stop_task(timeout=5.0)
     assert not connected_mock_hand._task_thread.is_alive()
 
 
 def test_early_stop_returns_to_start(connected_mock_hand):
     positions_before = connected_mock_hand.get_motor_pos()
-    connected_mock_hand.jitter(amplitude=5.0, duration=10.0, blocking=False)
-    time.sleep(0.3)
-    connected_mock_hand.stop_task()
-    time.sleep(0.2)
+    with _held_mid_jitter(connected_mock_hand) as (entered, release):
+        connected_mock_hand.jitter(amplitude=5.0, duration=10.0, blocking=False)
+        assert entered.wait(timeout=5.0), "jitter never reached a motor write"
+        release.set()
+    assert connected_mock_hand.stop_task(timeout=5.0)
     positions_after = connected_mock_hand.get_motor_pos()
     np.testing.assert_allclose(positions_after, positions_before, atol=1e-6)
 
 
 def test_second_jitter_rejected(connected_mock_hand):
-    connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
-    time.sleep(0.1)
-    connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
-    assert connected_mock_hand._task_thread.is_alive()
-    assert connected_mock_hand._current_task == "_jitter"
-    connected_mock_hand.stop_task()
-    time.sleep(0.2)
+    with _held_mid_jitter(connected_mock_hand) as (entered, release):
+        connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
+        assert entered.wait(timeout=5.0), "jitter never reached a motor write"
+        connected_mock_hand.jitter(amplitude=5.0, duration=5.0, blocking=False)
+        assert connected_mock_hand._task_thread.is_alive()
+        assert connected_mock_hand._current_task == "_jitter"
+        release.set()
+    assert connected_mock_hand.stop_task(timeout=5.0)
     assert not connected_mock_hand._task_thread.is_alive()

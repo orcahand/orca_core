@@ -1,7 +1,7 @@
 """Hand behaviour that differs on a single-turn motor family (Feetech).
 
-Every one of these paths used to be unreachable in tests: the mock hand always
-built a Dynamixel client regardless of what the config declared.
+Exercised through a mock hand whose config pins ``motor_type: feetech``, so
+the family-specific branches run without Dynamixel hardware.
 """
 
 import os

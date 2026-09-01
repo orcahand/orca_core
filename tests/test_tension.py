@@ -1,8 +1,24 @@
 import os
 import shutil
-import time
+import threading
 
 import pytest
+
+
+def _holding(hand, move_motors=True):
+    """Start a background tension and wait until it parks in the hold phase.
+
+    The hold phase runs until explicitly stopped, so reaching it is the
+    deterministic signal that the task is up — no sleeping on a guess.
+    """
+    reached = threading.Event()
+
+    def on_event(event):
+        if event.get("phase") == "holding":
+            reached.set()
+
+    hand.tension(move_motors=move_motors, blocking=False, progress_callback=on_event)
+    assert reached.wait(timeout=10.0), "tension never reached the holding phase"
 
 
 def test_tension_move_motors_false(connected_mock_hand):
@@ -13,30 +29,29 @@ def test_tension_move_motors_false(connected_mock_hand):
 
 
 def test_tension_move_motors_true(connected_mock_hand):
-    connected_mock_hand.tension(move_motors=True, blocking=False)
-    time.sleep(1)
+    _holding(connected_mock_hand, move_motors=True)
     assert connected_mock_hand._task_thread.is_alive()
-    connected_mock_hand.stop_task()
-    time.sleep(0.1)
+    assert connected_mock_hand.stop_task(timeout=10.0)
     assert not connected_mock_hand._task_thread.is_alive()
 
 
-def test_tension_interrupt_after_3_seconds(connected_mock_hand):
-    connected_mock_hand.tension(move_motors=True, blocking=False)
-    time.sleep(3)
-    assert connected_mock_hand._task_thread.is_alive(), "Tension task should still be running"
-    connected_mock_hand.stop_task()
-    time.sleep(0.1)
-    assert not connected_mock_hand._task_thread.is_alive(), "Tension task should have stopped"
+def test_tension_holds_until_stopped(connected_mock_hand):
+    """The hold phase must not self-terminate; only stop_task() ends it."""
+    _holding(connected_mock_hand, move_motors=True)
+    for _ in range(100):
+        assert connected_mock_hand._task_thread.is_alive(), (
+            "tension task ended on its own"
+        )
+    assert connected_mock_hand.stop_task(timeout=10.0)
+    assert not connected_mock_hand._task_thread.is_alive()
 
 
 def test_second_tension_is_rejected(connected_mock_hand):
-    connected_mock_hand.tension(move_motors=True, blocking=False)
+    _holding(connected_mock_hand, move_motors=True)
     connected_mock_hand.tension(move_motors=True, blocking=False)
     assert connected_mock_hand._task_thread.is_alive()
     assert connected_mock_hand._current_task == "_tension"
-    connected_mock_hand.stop_task()
-    time.sleep(0.1)
+    assert connected_mock_hand.stop_task(timeout=10.0)
     assert not connected_mock_hand._task_thread.is_alive()
 
 
