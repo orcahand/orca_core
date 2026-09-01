@@ -20,6 +20,27 @@ python scripts/calibrate.py /path/to/orcahand-right/config.yaml
 ```
 </details>
 
+<details>
+<summary><strong>measure_travel.py</strong></summary>
+
+Measures how far each joint's motor turns between that joint's two hardstops and writes the result to `config.yaml` as the `joint_motor_travel` baseline. Calibration then compares every fresh measurement against that baseline and re-drives, at a higher current, any joint that falls short — the signature of an over-tensioned tendon. Run it on a freshly tensioned hand.
+
+<br><strong>Args:</strong><br>
+<ul>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. Omit to autodetect the connected hand.</li><br>
+    <li><strong>--from-calibration</strong> (<strong>action</strong>, optional): Derive the baseline from the stored `calibration.yaml` instead of sweeping. Moves nothing and needs no motor bus.</li><br>
+    <li><strong>--current</strong> (<strong>int</strong>, optional): Calibration current (mA) for the sweep. Raise it above the config value so a stiff joint still reaches its hardstop.</li><br>
+    <li><strong>--force-wrist</strong> (<strong>action</strong>, optional): Include the wrist even if it is already calibrated.</li><br>
+    <li><strong>--dry-run</strong> (<strong>action</strong>, optional): Print the measured travel without writing `config.yaml`.</li><br>
+    <li><strong>--replace</strong> (<strong>action</strong>, optional): Replace the stored baseline instead of updating only the joints measured in this run.</li>
+</ul>
+
+<strong>Example:</strong>
+```bash
+python scripts/measure_travel.py /path/to/orcahand-right/config.yaml --dry-run
+```
+</details>
+
 ### Motor and Joint Check Scripts
 
 <details>
@@ -233,19 +254,21 @@ python scripts/tension.py /path/to/orcahand-left/config.yaml --no-move-motors
 <details>
 <summary><strong>stress_test.py</strong></summary>
 
-Cycles the hand between fixed OPEN and CLOSE poses while monitoring motor temperatures, aborting if any motor exceeds the safe operating temperature. Supports <code>--mock</code>.
+Cycles <code>thumb_mcp</code> and <code>thumb_dip</code> across their full configured ROM while every other joint is held fully outwards at its ROM limit, monitoring motor temperatures and aborting if any motor exceeds the safe operating temperature. Supports <code>--mock</code>.
 
 <br><strong>Args:</strong><br>
 <ul>
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, uses the default config path.</li><br>
     <li><strong>--num-steps</strong>: Interpolation steps per move.</li><br>
     <li><strong>--step-size</strong>: Sleep between interpolation steps in seconds.</li><br>
-    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li>
+    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li><br>
+    <li><strong>--freeze-abduction</strong>: Leave every <code>*_abd</code> joint out of the commanded pose so it holds wherever it already is, instead of fanning the fingers out.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
 python scripts/stress_test.py /path/to/orcahand-right/config.yaml --hold 1
+python scripts/stress_test.py --freeze-abduction
 ```
 </details>
 
