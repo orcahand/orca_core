@@ -22,7 +22,39 @@ SUPPORTED_MOTOR_TYPES = [DYNAMIXEL, FEETECH]
 JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 JOINT_ROMS_MEASURED = "joint_roms_measured"
+JOINT_MOTOR_TRAVEL = "joint_motor_travel"
+MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
+
+# Current the calibration routine retries a short-travel joint at, as a
+# multiple of ``calibration_current``, when config.yaml pins no explicit
+# ``calibration_retry_current``.
+DEFAULT_RETRY_CURRENT_SCALE = 1.5
+
+# Ceiling the calibration short-travel re-drive may escalate to (mA).
+# Deliberately independent of ``max_current``: the re-drive needs more
+# torque than normal operation to break a joint past an over-tensioned
+# tendon, and it is bounded in time — the routine restores max_current
+# the moment calibration ends, so nothing else ever sees this current.
+DEFAULT_CALIBRATION_MAX_CURRENT = 500
+
+# A calibration sweep that ends with its two motor limits this close together
+# did not find two hardstops: the motor never turned. Committing such a pair
+# writes a zero (or near-zero) joint-to-motor ratio, which silently makes the
+# joint uncommandable, and leaves the wrap detector comparing live positions
+# against a single point — so the corruption survives into every later run.
+# Rejected instead, leaving the joint's previous calibration in place.
+MIN_MOTOR_TRAVEL_RAD = 0.05  # ~2.9 deg of motor shaft
+
+# Wall-clock backstop for one drive step. A motor whose tendon is disconnected
+# spins freely, never stabilises, and would otherwise drive until stopped.
+DRIVE_STEP_TIMEOUT_S = 30.0
+
+# Fraction of its ``joint_motor_travel`` baseline below which a joint is
+# treated as not having moved at all rather than as short-travelled. Raising
+# the current cannot help a joint that never left its starting point, so the
+# re-drive is skipped and the limits are rejected.
+MIN_TRAVEL_FRACTION = 0.1
 
 KNOWN_VIDS: dict[str, list[int]] = {
     DYNAMIXEL: [

@@ -14,9 +14,12 @@ from typing import Dict, List, Literal
 
 from .constants import (
     CONTROL_MODES,
+    DEFAULT_CALIBRATION_MAX_CURRENT,
     DEFAULT_MODEL_NAME,
+    DEFAULT_RETRY_CURRENT_SCALE,
     FINGER_NAMES,
     JOINT_IDS,
+    JOINT_MOTOR_TRAVEL,
     JOINT_ROM_DICT,
     JOINT_TO_MOTOR_MAP,
     MOTOR_IDS,
@@ -363,6 +366,22 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_threshold: float = 0.01  # rad
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
+    # Motor-shaft travel between a joint's two hardstops, in degrees, keyed by
+    # joint name. The travel a joint's motor makes is set by that joint's
+    # tendon spool diameter, so it belongs to the joint and is resolved to a
+    # motor only where it is used - motor IDs differ per hand.
+    joint_motor_travel_dict: Dict[str, float] = field(default_factory=dict)
+    # Fraction of the expected travel a measured travel may deviate by before
+    # the calibration routine re-drives the joint at a higher current.
+    calibration_travel_margin: float = 0.25
+    # Current the re-drive uses (mA). None derives it from calibration_current.
+    calibration_retry_current: int | None = None
+    calibration_travel_retries: int = 1
+    # Ceiling for the re-drive only (mA), independent of max_current: getting a
+    # joint past an over-tensioned tendon takes more torque than the hand is
+    # allowed to use in normal operation, and the routine restores max_current
+    # as soon as it finishes.
+    calibration_max_current: int = DEFAULT_CALIBRATION_MAX_CURRENT
     use_joint_feedback: bool | None = None
     # Joint names or the ["all"] sentinel (every slotted joint, wrist
     # included); an explicit finger-only list leaves the wrist open-loop.
@@ -394,6 +413,50 @@ class OrcaHandConfig(BaseHandConfig):
     def joint_gains_dict(self) -> Dict[str, JointGains]:
         """Resolved gains for every configured joint, overrides applied."""
         return {joint: self.joint_gains_for(joint) for joint in self.joint_ids}
+
+    @property
+    def calibration_retry_current_resolved(self) -> int:
+        """Current (mA) a short-travel joint is re-driven at.
+
+        An over-tensioned tendon stalls the drive before the hardstop, so the
+        re-drive needs more torque than the nominal calibration pass. Config
+        may pin it outright; otherwise it scales off ``calibration_current``.
+        """
+        if self.calibration_retry_current is not None:
+            return self.calibration_retry_current
+        return int(round(self.calibration_current * DEFAULT_RETRY_CURRENT_SCALE))
+
+    def retry_current_for_attempt(self, attempt: int) -> float:
+        """Current (mA) for 1-based re-drive ``attempt``.
+
+        Successive attempts ramp evenly from the nominal calibration current up
+        to :attr:`calibration_retry_current_resolved`, so a hand that only
+        needs a nudge is not driven at the full retry current on the first try.
+        With the default single retry there is no room to ramp and the one
+        attempt goes straight to the top — set ``calibration_travel_retries``
+        above 1 to get the gradual approach.
+
+        Capped at :attr:`calibration_max_current`, *not* at ``max_current``.
+        The whole point of the re-drive is to break a joint past whatever
+        stalled it, which routinely needs more torque than the hand is allowed
+        in normal operation; capping at ``max_current`` would make the retry
+        repeat the pass that already failed on any hand whose
+        ``calibration_current`` equals its ceiling. The elevated current is
+        bounded in time — the routine restores ``max_current`` when
+        calibration ends — so it never leaks into ordinary motor commands.
+        """
+        if attempt < 1 or attempt > self.calibration_travel_retries:
+            raise ValueError(
+                f"attempt {attempt} is outside 1..{self.calibration_travel_retries}"
+            )
+        base = float(self.calibration_current)
+        top = float(self.calibration_retry_current_resolved)
+        ramped = base + (top - base) * attempt / self.calibration_travel_retries
+        return min(ramped, float(self.calibration_max_current))
+
+    def expected_motor_travel_deg(self, joint: str) -> float | None:
+        """Baseline motor travel for ``joint``, or ``None`` if unmeasured."""
+        return self.joint_motor_travel_dict.get(joint)
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -492,6 +555,33 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["calibration_num_stable"] = int(config["calibration_num_stable"])
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
+        if JOINT_MOTOR_TRAVEL in config:
+            raw_travel = config[JOINT_MOTOR_TRAVEL] or {}
+            if not isinstance(raw_travel, dict):
+                raise HandConfigValidationError(
+                    f"{JOINT_MOTOR_TRAVEL} must be a mapping of joint name to "
+                    f"motor travel in degrees, got {raw_travel!r}"
+                )
+            kwargs["joint_motor_travel_dict"] = {
+                str(joint): float(travel) for joint, travel in raw_travel.items()
+            }
+        if "calibration_travel_margin" in config:
+            kwargs["calibration_travel_margin"] = float(
+                config["calibration_travel_margin"]
+            )
+        if "calibration_retry_current" in config:
+            raw_retry = config["calibration_retry_current"]
+            kwargs["calibration_retry_current"] = (
+                None if raw_retry is None else int(raw_retry)
+            )
+        if "calibration_travel_retries" in config:
+            kwargs["calibration_travel_retries"] = int(
+                config["calibration_travel_retries"]
+            )
+        if "calibration_max_current" in config:
+            kwargs["calibration_max_current"] = int(
+                config["calibration_max_current"]
+            )
         if "use_joint_feedback" in config:
             raw_ujf = config["use_joint_feedback"]
             kwargs["use_joint_feedback"] = None if raw_ujf is None else bool(raw_ujf)
@@ -560,6 +650,8 @@ class OrcaHandConfig(BaseHandConfig):
                 "Max current should be greater than the calibration current."
             )
 
+        self._validate_travel_check()
+
         for joint, motor_id in self.joint_to_motor_map.items():
             if joint not in self.joint_ids:
                 raise HandConfigValidationError(f"Joint {joint} is not defined.")
@@ -607,6 +699,54 @@ class OrcaHandConfig(BaseHandConfig):
                     raise HandConfigValidationError(
                         f"joint_encoder_joints contains {joint!r}, which has no encoder slot."
                     )
+
+    def _validate_travel_check(self) -> None:
+        """Validate the dynamic short-travel re-drive settings."""
+        for joint, travel in self.joint_motor_travel_dict.items():
+            if joint not in self.joint_ids:
+                raise HandConfigValidationError(
+                    f"{JOINT_MOTOR_TRAVEL} names joint {joint!r}, which is not "
+                    f"in joint_ids."
+                )
+            if not math.isfinite(travel) or travel <= 0:
+                raise HandConfigValidationError(
+                    f"{JOINT_MOTOR_TRAVEL}[{joint}] must be a positive number "
+                    f"of degrees, got {travel!r}"
+                )
+
+        margin = self.calibration_travel_margin
+        if not math.isfinite(margin) or not 0 < margin < 1:
+            raise HandConfigValidationError(
+                "calibration_travel_margin must be a fraction in (0, 1), got "
+                f"{margin!r}"
+            )
+
+        if self.calibration_travel_retries < 0:
+            raise HandConfigValidationError(
+                "calibration_travel_retries must be non-negative, got "
+                f"{self.calibration_travel_retries!r}"
+            )
+
+        # The re-drive ceiling has to leave room above the nominal pass, or
+        # every attempt clamps back onto the current that already stalled.
+        if self.calibration_max_current < self.calibration_current:
+            raise HandConfigValidationError(
+                "calibration_max_current must be at least calibration_current "
+                f"({self.calibration_current}), got "
+                f"{self.calibration_max_current}."
+            )
+
+        # A retry current at or below the nominal one would re-drive with no
+        # more torque than the pass that already stalled short.
+        if (
+            self.calibration_retry_current is not None
+            and self.calibration_retry_current <= self.calibration_current
+        ):
+            raise HandConfigValidationError(
+                "calibration_retry_current must exceed calibration_current "
+                f"({self.calibration_current}), got "
+                f"{self.calibration_retry_current}."
+            )
 
     def __post_init__(self) -> None:
         self.validate_config()
