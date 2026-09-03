@@ -171,7 +171,7 @@ AUTO_ENC_ANGLE_MASK = 0x3FFF
 ENCODER_COUNTS_PER_REV = 16384
 ENCODER_LSB_DEG = 360.0 / ENCODER_COUNTS_PER_REV
 
-# Joint name → encoder slot.
+# Joint name → encoder slot, this is commented out by javid, the prototype hand I have swaps the slots, reminder to delete this.
 JOINT_TO_ENCODER_SLOT = {
     "thumb_dip":  0, "thumb_mcp":  1, "thumb_abd":  2, "thumb_cmc":  3,
     "index_pip":  4, "index_mcp":  5, "index_abd":  6,
@@ -179,7 +179,9 @@ JOINT_TO_ENCODER_SLOT = {
     "ring_pip":  10, "ring_mcp":  11, "ring_abd":  12,
     "pinky_pip": 13, "pinky_mcp": 14, "pinky_abd": 15,
     "wrist":     16,
-}
+} 
+
+
 ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 
 # Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry selects every
@@ -190,11 +192,14 @@ ENCODER_JOINTS_ALL = "all"
 # +1 when raw counts rise as the joint moves toward its flex hardstop (ROM upper,
 # where the calibration anchor is sampled). Measured per side on hardware.
 JOINT_ENCODER_POLARITY = {
-    "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
-    "index_abd": 1, "index_mcp": 1, "index_pip": -1,
-    "middle_abd": 1, "middle_mcp": 1, "middle_pip": -1,
-    "ring_abd": 1, "ring_mcp": 1, "ring_pip": -1,
-    "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
+    # Every finger joint here is inverted relative to the production wiring:
+    # this bench hand's finger encoders are mounted mirrored, so their counts
+    # fall as the joint flexes. The wrist is a separate assembly and unaffected.
+    "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": -1, "thumb_dip": 1,
+    "index_abd": -1, "index_mcp": -1, "index_pip": 1,
+    "middle_abd": -1, "middle_mcp": -1, "middle_pip": 1,
+    "ring_abd": -1, "ring_mcp": -1, "ring_pip": 1,
+    "pinky_abd": -1, "pinky_mcp": -1, "pinky_pip": 1,
     "wrist": -1,
 }
 

@@ -1,4 +1,3 @@
-# motor_type and baudrate are auto-detected at connect; set them here to pin a driver
 port: auto
 max_current: 300
 type: right
@@ -39,24 +38,26 @@ joint_ids:
 - pinky_abd
 - pinky_mcp
 - pinky_pip
+
 joint_to_motor_map:
-  thumb_cmc: 2
-  thumb_abd: 5
-  thumb_mcp: 4
-  thumb_dip: 3
-  index_abd: 15
-  index_mcp: 16
-  index_pip: -17
-  middle_abd: 14
-  middle_mcp: 9
-  middle_pip: -10
-  ring_abd: 13
-  ring_mcp: -12
-  ring_pip: -11
-  pinky_abd: -6
-  pinky_mcp: 7
-  pinky_pip: 8
+  thumb_cmc: 17
+  thumb_abd: 14
+  thumb_mcp: 15
+  thumb_dip: 16
+  index_abd: 4
+  index_mcp: 3
+  index_pip: 2
+  middle_abd: 5
+  middle_mcp: 10
+  middle_pip: 9
+  ring_abd: 6
+  ring_mcp: -7
+  ring_pip: 8
+  pinky_abd: -13
+  pinky_mcp: 12
+  pinky_pip: -11
   wrist: -1
+  
 joint_roms:
   wrist:
   - -65
@@ -132,6 +133,13 @@ calibration_step_size: 0.15
 calibration_step_period: 0.0001
 calibration_num_stable: 10
 calibration_threshold: 0.01
+# thumb_cmc has the least stability margin of any joint here: halved from
+# its 0.35 default to test whether the ~13 Hz oscillation on it is fed by
+# the loop or is mechanical. It only ever uses ~1.7 deg of its 15 deg
+# correction budget, so the authority given up is small.
+joint_control_gains:
+  joints:
+    thumb_cmc: {kp: 0.175}
 use_joint_feedback: true
 joint_encoder_joints:
 - all
@@ -212,3 +220,21 @@ sensors:
     middle: 2
     ring: 3
     pinky: 4
+joint_motor_travel:
+  wrist: 137.35
+  thumb_cmc: 115.4
+  thumb_abd: 35.6
+  thumb_mcp: 25.4
+  thumb_dip: 124.63
+  index_abd: 54.05
+  index_mcp: 107.67
+  index_pip: 16.35
+  middle_abd: 41.75
+  middle_mcp: 96.06
+  middle_pip: 140.45
+  ring_abd: 48.34
+  ring_mcp: 118.83
+  ring_pip: 90.97
+  pinky_abd: 42.45
+  pinky_mcp: 125.6
+  pinky_pip: 101.78

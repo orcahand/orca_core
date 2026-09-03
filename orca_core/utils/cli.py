@@ -7,6 +7,9 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import select
+import sys
+import threading
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
@@ -197,6 +200,179 @@ def print_calibration_progress(event: dict) -> None:
         print("Calibration aborted.")
     elif name == "cleanup_failed":
         print(f"WARNING: cleanup after abort failed: {event['error']}")
+
+
+def pose_without(hand, pose, skip=()) -> dict:
+    """A ``{joint: angle}`` pose from an array aligned with ``joint_ids``,
+    leaving out ``skip``.
+
+    Joints omitted from the mapping are never commanded and hold whatever pose
+    they are in, which is how a recording made on a whole hand is replayed on
+    one with a joint out of action.
+
+    Raises:
+        ValueError: ``skip`` names a joint the hand does not have, or ``pose``
+            is not aligned with ``joint_ids``.
+    """
+    joint_ids = list(hand.config.joint_ids)
+    if len(pose) != len(joint_ids):
+        raise ValueError(
+            f"pose has {len(pose)} values but the hand has {len(joint_ids)} joints"
+        )
+    unknown = [j for j in skip if j not in joint_ids]
+    if unknown:
+        raise ValueError(
+            f"unknown joint(s) {', '.join(unknown)}; this hand has "
+            f"{', '.join(joint_ids)}"
+        )
+    skipped = set(skip)
+    return {
+        joint: float(value)
+        for joint, value in zip(joint_ids, pose)
+        if joint not in skipped
+    }
+
+
+class KeyListener:
+    """Deliver single keypresses to a callback while a script runs.
+
+    Puts the terminal in cbreak so keys arrive without Enter and are not
+    echoed, and restores it on :meth:`stop`. Ctrl-C keeps working — cbreak
+    leaves signal generation on — so a long run is still interruptible.
+
+    Inert when stdin is not a terminal (piped input, a service) or on a
+    platform without ``termios``, so a script driven non-interactively behaves
+    exactly as it did before rather than failing.
+    """
+
+    def __init__(self, on_key):
+        self._on_key = on_key
+        self._thread = None
+        self._stop = threading.Event()
+        self._fd = None
+        self._saved = None
+
+    @property
+    def listening(self) -> bool:
+        return self._thread is not None
+
+    def start(self) -> "KeyListener":
+        try:
+            import termios
+            import tty
+        except ImportError:
+            return self
+        if not sys.stdin.isatty():
+            return self
+        self._fd = sys.stdin.fileno()
+        try:
+            self._saved = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+        except Exception:
+            self._fd = self._saved = None
+            return self
+        self._thread = threading.Thread(target=self._pump, name="keys", daemon=True)
+        self._thread.start()
+        return self
+
+    def _pump(self) -> None:
+        while not self._stop.is_set():
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if not ready:
+                    continue
+                key = sys.stdin.read(1)
+            except Exception:
+                return
+            if key:
+                try:
+                    self._on_key(key)
+                except Exception:
+                    pass
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+        if self._fd is not None and self._saved is not None:
+            try:
+                import termios
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved)
+            except Exception:
+                pass
+            self._fd = self._saved = None
+
+
+def print_pacing_report(stats, csv_path=None) -> None:
+    """Print a command-cadence summary from :class:`PacingMonitor.stats`.
+
+    ``stats`` may be ``None`` when too few commands were issued to measure.
+    """
+    if stats is None:
+        print("\nNo pacing data: too few commands issued to measure a cadence.")
+        return
+    ms = lambda seconds: f"{seconds * 1000:.1f}"
+    print("\nCommand pacing")
+    print(f"  commands         {stats.commands} at a {ms(stats.target_period_s)} ms target")
+    print(
+        f"  interval         median {ms(stats.interval_median_s)}  "
+        f"p95 {ms(stats.interval_p95_s)}  p99 {ms(stats.interval_p99_s)}  "
+        f"max {ms(stats.interval_max_s)} ms"
+    )
+    print(
+        f"  command call     median {ms(stats.call_median_s)}  "
+        f"p95 {ms(stats.call_p95_s)}  max {ms(stats.call_max_s)} ms"
+    )
+    print(f"  late / stalled   {stats.late} / {stats.stalls}")
+    if stats.loop_cycles_overrun is not None:
+        print(
+            f"  joint loop       {stats.loop_cycles_overrun} overrun cycles, "
+            f"{stats.loop_cycles_exception} exceptions during the run"
+        )
+    print(f"  verdict          {stats.verdict}")
+    if csv_path is not None:
+        print(f"  written to       {csv_path}")
+
+
+def print_trace_report(summary, csv_path=None) -> None:
+    """Print a joint-loop trace summary from :class:`LoopTracer.summary`."""
+    if summary is None:
+        print("\nNo trace data captured.")
+        return
+    print("\nJoint-loop trace")
+    print(
+        f"  samples          {summary.samples} over {summary.duration_s:.1f} s "
+        f"({summary.achieved_hz:.0f} Hz achieved)"
+    )
+    print(
+        f"  loop counters    overrun {summary.cycles_overrun}  "
+        f"exception {summary.cycles_exception}  no-reading {summary.cycles_no_reading}  "
+        f"held {summary.cycles_held}  e-stops {summary.e_stops}"
+    )
+    clamp = summary.correction_clamp_deg
+    print(f"  correction clamp {'unknown' if clamp is None else f'{clamp:.1f} deg'}")
+    print(
+        f"  {'joint':<12} {'|corr| max':>10} {'|corr| p99':>10} "
+        f"{'at clamp':>9} {'max jump':>9} {'still':>8} {'temp max':>9}"
+    )
+    for joint in summary.joints:
+        temp = "-" if joint.temp_max_c is None else f"{joint.temp_max_c:.0f}C"
+        print(
+            f"  {joint.joint:<12} {joint.corr_max_abs:10.2f} {joint.corr_p99_abs:10.2f} "
+            f"{joint.near_clamp_fraction * 100:8.1f}% {joint.angle_max_jump_deg:9.2f} "
+            f"{joint.angle_still_longest_s:7.2f}s {temp:>9}"
+        )
+    print(
+        "  a correction riding near the clamp then snapping back is the "
+        "integrator winding up against stiction"
+    )
+    if summary.marks:
+        print(f"  observed         {len(summary.marks)} marker(s):")
+        for at, label in summary.marks:
+            print(f"                     t={at:8.2f} s  {label}")
+    if csv_path is not None:
+        print(f"  written to       {csv_path}")
 
 
 def shutdown_hand(hand) -> None:
