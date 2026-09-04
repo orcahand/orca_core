@@ -127,7 +127,7 @@ def test_supported_mode_is_accepted(feetech_hand):
     assert set(feetech_hand.motor_client._operating_mode.values()) == {0}
 
 
-# ----- motion waits ---------------------------------------------------------
+# ----- the neutral move keeps the configured mode ---------------------------
 
 class _WaitRecorder:
     """Records the order of wait_for_motion and set_control_mode calls."""
@@ -143,21 +143,26 @@ class _WaitRecorder:
         )[1]
 
 
-def test_init_joints_waits_before_the_mode_switch(feetech_hand):
+def test_init_joints_drives_neutral_in_the_configured_mode(feetech_hand):
+    """The neutral move is not special-cased into plain position control.
+
+    Position mode applies no current limit, so a neutral target a joint cannot
+    reach would be pursued with whatever torque the motor has; and the mode
+    write itself needs torque off, dropping the hand limp on the way in and
+    out. Neutral is driven like every other motion instead.
+    """
     recorder = _WaitRecorder(feetech_hand)
     feetech_hand.init_joints(force_calibrate=False)
-    assert "wait" in recorder.calls
-    assert recorder.calls.index("wait") < len(recorder.calls) - 1
-    assert recorder.calls[-1].startswith("mode:")
+    modes = [call for call in recorder.calls if call.startswith("mode:")]
+    assert f"mode:{POSITION}" not in modes
+    assert modes in ([], [f"mode:{feetech_hand.config.control_mode}"])
 
 
-def test_set_neutral_position_waits_before_the_mode_switch(feetech_hand):
+def test_set_neutral_position_changes_no_mode(feetech_hand):
     feetech_hand.init_joints(move_to_neutral=False)
     recorder = _WaitRecorder(feetech_hand)
     feetech_hand.set_neutral_position(num_steps=2)
-    assert recorder.calls[0] == f"mode:{POSITION}"
-    assert recorder.calls[1] == "wait"
-    assert recorder.calls[2].startswith("mode:")
+    assert [call for call in recorder.calls if call.startswith("mode:")] == []
 
 
 def _lock_is_free(lock) -> bool:
