@@ -46,7 +46,6 @@ from .constants import (
     CURRENT,
     WRIST,
     NUM_STEPS,
-    POSITION,
     STEP_SIZE,
 )
 
@@ -706,19 +705,6 @@ class OrcaHand(BaseHand):
         # the joint loop for up to ``timeout``.
         self._motor_client.wait_for_motion_complete(timeout=timeout)
 
-    def _settle_before_mode_switch(self) -> None:
-        """Let travelling motors arrive before a mode switch drops torque.
-
-        A motor blocked short of its goal never reports settled, so a timeout
-        is logged rather than raised: the switch must still happen.
-        """
-        try:
-            self.wait_for_motion()
-        except MotionTimeoutError as exc:
-            logger.warning(
-                "%s; switching control mode with motors still short of their goal.", exc
-            )
-
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
 
@@ -783,14 +769,11 @@ class OrcaHand(BaseHand):
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
-            control_mode = self.config.control_mode
-            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
+ 
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
-            self._settle_before_mode_switch()
-            self.set_control_mode(control_mode)
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -1119,12 +1102,6 @@ class OrcaHand(BaseHand):
         )
         return anchor
 
-    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)
-        super().set_neutral_position(num_steps, step_size)
-        self._settle_before_mode_switch()
-        self.set_control_mode(control_mode)
     
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
         """Read motor positions for wrap-offset detection, rejecting a read the
