@@ -51,6 +51,7 @@ ADDR_PRESENT_TEMPERATURE = 146
 
 # Data Byte Length
 LEN_OPERATING_MODE = 1
+LEN_HARDWARE_ERROR_STATUS = 1
 LEN_PRESENT_POSITION = 4
 LEN_PRESENT_VELOCITY = 4
 LEN_PRESENT_CURRENT = 2
@@ -65,7 +66,13 @@ LEN_PRESENT_TEMPERATURE = 1
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 # See http://emanual.robotis.com/docs/en/dxl/x/xh430-v210/#goal-velocity
 DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
-DEFAULT_CUR_SCALE = 1.34
+# The current registers are already in mA, the unit the control table and
+# the Dynamixel Wizard both use, so readings need no conversion.
+DEFAULT_CUR_SCALE = 1.0
+
+# A rebooting motor is off the bus while its firmware restarts; writes sent
+# before it answers again are lost.
+MOTOR_REBOOT_SETTLE_S = 0.3
 
 # Baud rate mapping for Dynamixel motors, see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/#baud-rate
 BAUD_RATE_MAP = {
@@ -123,10 +130,10 @@ class DynamixelClient(MotorClient):
 
         Some methods hold the lock for longer than a single transaction:
         ``set_torque_enabled`` keeps it across its retry loop (including the
-        ``retry_interval`` sleeps between failed attempts), and hardware-alert
-        recovery (``_handle_hardware_alert``, ``check_overload_and_reboot``)
-        holds it across the motor reboot sequence. Other threads block on the
-        bus for that duration.
+        ``retry_interval`` sleeps between failed attempts), and
+        ``check_overload_and_reboot`` holds it across the motor reboot
+        sequence. Other threads block on the bus for that duration, which is
+        why reboots are driven by explicit calls rather than by reads.
 
         On any failed transaction (comm error/timeout), the OS receive buffer
         is flushed before the lock is released, so a late status reply can
@@ -200,7 +207,11 @@ class DynamixelClient(MotorClient):
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
         self._operating_modes = {}
-        self._recovering = set()
+        # Last Goal Current written per motor, re-applied after a reboot.
+        self._goal_currents: Dict[int, int] = {}
+        # Motors seen with the Alert bit set, drained by take_hardware_alerts().
+        self._hardware_alerts: Dict[int, int] = {}
+        self._alerts_lock = threading.Lock()
 
     @property
     def is_connected(self) -> bool:
@@ -244,6 +255,10 @@ class DynamixelClient(MotorClient):
                     except Exception:
                         pass  # Not critical if it fails
 
+                # Probed before any reboot below, so a motor still coming
+                # back up cannot be mistaken for firmware without support.
+                self._probe_fast_sync_read()
+
                 # Clear any pre-existing hardware errors.
                 self.check_overload_and_reboot(self.motor_ids)
 
@@ -257,6 +272,24 @@ class DynamixelClient(MotorClient):
                 except Exception:
                     pass
                 raise
+
+    def _probe_fast_sync_read(self) -> None:
+        """Adopt fast sync read on every reader whose motors answer it."""
+        readers = (self._pos_vel_cur_reader, self._temp_reader,
+                   self._moving_status_reader)
+        adopted = 0
+        for reader in readers:
+            try:
+                adopted += bool(reader.probe_fast_sync_read())
+            except Exception:
+                logging.debug('fast sync read probe failed', exc_info=True)
+        if adopted == len(readers):
+            logging.info('Fast sync read supported: reads cost one bus '
+                         'turnaround instead of one per motor')
+        else:
+            logging.info('Fast sync read unavailable on %d of %d readers; '
+                         'using per-motor sync read',
+                         len(readers) - adopted, len(readers))
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -414,8 +447,14 @@ class DynamixelClient(MotorClient):
         return times
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
+        """Write Goal Current (102) in mA — the bound the position controller
+        clips its output to, not the hardware ceiling (Current Limit, 38)."""
         assert len(motor_ids) == len(current)
         self.sync_write(motor_ids, current, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
+        # Goal Current lives in RAM, which a reboot wipes. Remembering it is
+        # what lets reboot_motor put the ceiling back.
+        for motor_id, value in zip(motor_ids, current):
+            self._goal_currents[int(motor_id)] = int(value)
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)
@@ -492,13 +531,31 @@ class DynamixelClient(MotorClient):
         return times
 
     def reboot_motor(self, motor_id: int):
-        """Reboots a single motor using the Protocol 2.0 reboot instruction."""
+        """Reboot one motor and put its RAM settings back.
+
+        A reboot clears RAM to defaults, and the current ceiling lives there
+        (Goal Current, unlike Operating Mode, which is EEPROM and survives).
+        Without this a recovered motor runs uncapped until something calls
+        set_max_current again, drawing far more than its configured limit.
+        Torque is deliberately left off: re-energizing is the caller's call.
+        """
         with self._bus_lock:
             comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
             success = self.handle_packet_result(
                 comm_result, dxl_error, motor_id, context='reboot')
             if not success:
                 self._flush_input_buffer()
+                return
+            self._restore_ram_after_reboot(motor_id)
+
+    def _restore_ram_after_reboot(self, motor_id: int) -> None:
+        """Re-apply the RAM settings a reboot cleared, once the motor answers."""
+        goal_current = self._goal_currents.get(int(motor_id))
+        if goal_current is None:
+            return
+        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        self.sync_write([motor_id], [goal_current], ADDR_GOAL_CURRENT,
+                        LEN_GOAL_CURRENT)
 
     def read_hardware_error(self, motor_id: int) -> Optional[int]:
         """Reads the Hardware Error Status register (address 70).
@@ -513,6 +570,45 @@ class DynamixelClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return value
+
+    def read_hardware_errors(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, Optional[int]]":
+        """Hardware Error Status for every motor in one GroupSyncRead.
+
+        Same address and length for all of them, which is exactly what sync
+        read is for: seventeen round trips collapse into one transaction. A
+        motor that does not answer comes back ``None`` rather than failing the
+        whole sweep, and a failed transaction falls back to reading each motor
+        individually so a single bad reply cannot blind the caller.
+        """
+        motor_ids = [int(mid) for mid in motor_ids]
+        if not motor_ids:
+            return {}
+        with self._bus_lock:
+            reader = self.dxl.GroupSyncRead(
+                self.port_handler, self.packet_handler,
+                ADDR_HARDWARE_ERROR_STATUS, LEN_HARDWARE_ERROR_STATUS)
+            try:
+                for mid in motor_ids:
+                    if not reader.addParam(mid):
+                        return super().read_hardware_errors(motor_ids)
+                comm_result = reader.txRxPacket()
+                if comm_result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    return super().read_hardware_errors(motor_ids)
+                out: "dict[int, Optional[int]]" = {}
+                for mid in motor_ids:
+                    if reader.isAvailable(mid, ADDR_HARDWARE_ERROR_STATUS,
+                                          LEN_HARDWARE_ERROR_STATUS):
+                        out[mid] = reader.getData(
+                            mid, ADDR_HARDWARE_ERROR_STATUS,
+                            LEN_HARDWARE_ERROR_STATUS)
+                    else:
+                        out[mid] = None
+                return out
+            finally:
+                reader.clearParam()
 
     def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> list:
         """Checks for overload errors and reboots affected motors.
@@ -564,10 +660,9 @@ class DynamixelClient(MotorClient):
                              context: Optional[str] = None):
         """Handles the result from a communication request.
 
-        Reactively detects the Alert bit (0x80) in dxl_error, which the motor
-        sets on every status packet when a hardware error (e.g. overload) is
-        present. When detected, the affected motor is rebooted and restored
-        without any periodic polling.
+        Records the Alert bit (0x80) in dxl_error, which the motor sets on
+        every status packet while a hardware error is latched. Recovery is not
+        run from here: see :meth:`take_hardware_alerts`.
         """
         error_message = None
         if comm_result != self.dxl.COMM_SUCCESS:
@@ -575,7 +670,7 @@ class DynamixelClient(MotorClient):
         elif dxl_error is not None:
             # Alert bit (bit 7) means a hardware error is latched
             if dxl_error & 0x80 and dxl_id is not None:
-                self._handle_hardware_alert(dxl_id)
+                self._note_hardware_alert(dxl_id, dxl_error)
             if dxl_error & 0x7F:
                 error_message = self.packet_handler.getRxPacketError(dxl_error)
         if error_message:
@@ -588,40 +683,24 @@ class DynamixelClient(MotorClient):
             return False
         return True
 
-    def _handle_hardware_alert(self, motor_id: int):
-        """Reads the error register and reboots the motor if overloaded, under the bus lock."""
-        with self._bus_lock:
-            self._handle_hardware_alert_locked(motor_id)
+    def _note_hardware_alert(self, motor_id: int, dxl_error: int) -> None:
+        """Record that a motor is carrying a latched fault.
 
-    def _handle_hardware_alert_locked(self, motor_id: int):
-        if motor_id in self._recovering:
-            return
-        self._recovering.add(motor_id)
-        try:
-            error_status = self.read_hardware_error(motor_id)
-            if error_status is None:
-                error_status = self.read_hardware_error(motor_id)
-            if error_status is None:
-                logging.warning(
-                    'Could not read hardware error status for motor %d; '
-                    'skipping alert recovery.', motor_id)
-                return
-            OVERLOAD_BIT = 0x20
-            if error_status & OVERLOAD_BIT:
-                import os as _os
-                _os.write(2, f'\033[91m⚠ OVERLOAD on motor {motor_id} (error=0x{error_status:02X}) — rebooting and recovering...\033[0m\n'.encode())
-                logging.warning(f'Motor {motor_id} overload detected (error=0x{error_status:02X}), rebooting...')
-                self.reboot_motor(motor_id)
-                time.sleep(0.3)
-                mode = self._operating_modes.get(motor_id)
-                if mode is not None:
-                    self.set_torque_enabled([motor_id], False, retries=0)
-                    self.sync_write([motor_id], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-                    self.set_torque_enabled([motor_id], True, retries=0)
-                else:
-                    self.set_torque_enabled([motor_id], True, retries=0)
-        finally:
-            self._recovering.discard(motor_id)
+        Costs nothing: the byte arrived in a status packet the caller already
+        paid for. Recovery is deliberately not run from here — a reboot takes
+        the bus for a third of a second, and the instant a motor faults is
+        the worst time to restart it. Callers drain this with
+        :meth:`take_hardware_alerts` and decide.
+        """
+        with self._alerts_lock:
+            self._hardware_alerts[int(motor_id)] = int(dxl_error)
+
+    def take_hardware_alerts(self) -> "dict[int, int]":
+        """Motors seen carrying the Alert bit since the last call, and clear."""
+        with self._alerts_lock:
+            alerts = dict(self._hardware_alerts)
+            self._hardware_alerts.clear()
+        return alerts
 
     def convert_to_unsigned(self, value: int, size: int) -> int:
         """Converts the given value to its unsigned representation."""
@@ -702,18 +781,23 @@ class DynamixelClient(MotorClient):
         self.disconnect()
 
 
-class _AlertCaptureBulkRead:
-    """Wraps GroupBulkRead to capture per-motor error bytes from status packets.
+class _AlertCaptureSyncRead:
+    """Wraps GroupSyncRead to capture per-motor error bytes from status packets.
 
-    The stock GroupBulkRead discards the error byte returned by each motor's
+    Every reader here fetches the same register span from every motor, which is
+    exactly what sync read is for: the request names the address and length once
+    and costs one byte per motor, where a bulk read repeats all three per motor.
+
+    The stock GroupSyncRead discards the error byte returned by each motor's
     status packet. This wrapper stores them in ``motor_errors`` so callers can
     detect the Alert bit (0x80) without any extra bus traffic.
     """
 
     ALERT_BIT = 0x80
 
-    def __init__(self, port_handler, packet_handler, dxl):
-        self._inner = dxl.GroupBulkRead(port_handler, packet_handler)
+    def __init__(self, port_handler, packet_handler, dxl, address, size):
+        self._inner = dxl.GroupSyncRead(port_handler, packet_handler,
+                                        address, size)
         self._dxl = dxl
         self.motor_errors = {}
 
@@ -726,6 +810,53 @@ class _AlertCaptureBulkRead:
             return result
         return self._rxPacket()
 
+    def txRxPacketFast(self):
+        """Fast sync read: one request answered by a single packet for all motors.
+
+        A bus turnaround per motor dominates read time, and this spends one for
+        the whole group. It needs servo firmware that implements the
+        instruction, so callers probe once and keep the per-motor form when it
+        goes unanswered.
+        """
+        result = self._inner.fastSyncReadTxPacket()
+        if result != self._dxl.COMM_SUCCESS:
+            return result
+        return self._fastRxPacket()
+
+    def _fastRxPacket(self):
+        inner = self._inner
+        inner.last_result = False
+        self.motor_errors = {}
+
+        if not inner.data_dict:
+            return self._dxl.COMM_NOT_AVAILABLE
+
+        size = inner.data_length
+        count = len(inner.data_dict)
+        # Each motor contributes error(1) + id(1) + data + crc(2) to the packet.
+        stride = size + 4
+        raw, result, _ = inner.ph.fastSyncReadRx(
+            inner.port, self._dxl.BROADCAST_ID, stride * count)
+        if result != self._dxl.COMM_SUCCESS:
+            return result
+
+        raw = bytearray(raw)
+        if len(raw) < stride * count:
+            return self._dxl.COMM_RX_CORRUPT
+
+        expected = set(inner.data_dict)
+        at = 0
+        for _ in range(count):
+            motor_id = raw[at + 1]
+            if motor_id not in expected:
+                return self._dxl.COMM_RX_CORRUPT
+            self.motor_errors[motor_id] = raw[at]
+            inner.data_dict[motor_id] = bytearray(raw[at + 2:at + 2 + size])
+            at += stride
+
+        inner.last_result = True
+        return self._dxl.COMM_SUCCESS
+
     def _rxPacket(self):
         inner = self._inner
         inner.last_result = False
@@ -737,8 +868,8 @@ class _AlertCaptureBulkRead:
 
         for dxl_id in inner.data_dict:
             data, result, error = inner.ph.readRx(
-                inner.port, dxl_id, inner.data_dict[dxl_id][2])
-            inner.data_dict[dxl_id][0] = data
+                inner.port, dxl_id, inner.data_length)
+            inner.data_dict[dxl_id] = data
             self.motor_errors[dxl_id] = error or 0
             if result != self._dxl.COMM_SUCCESS:
                 return result
@@ -751,7 +882,8 @@ class _AlertCaptureBulkRead:
 class DynamixelReader:
     """Reads data from Dynamixel motors.
 
-    This wraps a GroupBulkRead from the DynamixelSDK.
+    All motors are read at the same address and length, so this wraps a
+    GroupSyncRead from the DynamixelSDK.
     """
 
     def __init__(self, client: DynamixelClient, motor_ids: Sequence[int],
@@ -766,30 +898,58 @@ class DynamixelReader:
         # are rate limited, so a dead motor cannot stall reads while the bus lock is held.
         self._fallback_skip_until: Dict[int, float] = {}
         self._last_full_fallback = 0.0
+        # Set by probe_fast_sync_read() at connect time; older servo firmware
+        # ignores the instruction, so it is never assumed.
+        self._fast_sync_read = False
         self._initialize_data()
 
-        self.operation = _AlertCaptureBulkRead(client.port_handler,
+        self.operation = _AlertCaptureSyncRead(client.port_handler,
                                                client.packet_handler,
-                                               client.dxl)
+                                               client.dxl, address, size)
 
         for motor_id in motor_ids:
-            success = self.operation.addParam(motor_id, address, size)
+            success = self.operation.addParam(motor_id)
             if not success:
                 raise OSError(
-                    '[Motor ID: {}] Could not add parameter to bulk read.'
+                    '[Motor ID: {}] Could not add parameter to sync read.'
                     .format(motor_id))
+
+    def probe_fast_sync_read(self) -> bool:
+        """Try one fast sync read and adopt it if every motor answered.
+
+        Alerts are deliberately not acted on here: a motor may still be
+        carrying a latched error from before this client existed, and connect
+        time is not the moment to reboot it.
+        """
+        with self.client._bus_lock:
+            self._fast_sync_read = False
+            if self.operation.txRxPacketFast() != self.client.dxl.COMM_SUCCESS:
+                self.client._flush_input_buffer()
+                return False
+            if any(not self.operation.isAvailable(m, self.address, self.size)
+                   for m in self.motor_ids):
+                return False
+            self._fast_sync_read = True
+            return True
 
     def read(self, retries: int = 1):
         """Reads data from the motors, holding the bus lock for the whole transaction."""
         self.client.check_connected()
         with self.client._bus_lock:
             success = False
+            attempt = 0
             while not success and retries >= 0:
-                comm_result = self.operation.txRxPacket()
+                # Only the first attempt goes fast: if the grouped reply is
+                # ever malformed, retrying per motor is what recovers it.
+                if self._fast_sync_read and attempt == 0:
+                    comm_result = self.operation.txRxPacketFast()
+                else:
+                    comm_result = self.operation.txRxPacket()
                 success = self.client.handle_packet_result(
                     comm_result, context='read')
                 if not success:
                     self.client._flush_input_buffer()
+                attempt += 1
                 retries -= 1
 
             if not success:
@@ -801,16 +961,19 @@ class DynamixelReader:
                     return self._get_data()
                 self._last_full_fallback = now
                 logging.warning(
-                    'Bulk read failed; falling back to per-motor reads for %d motor(s)',
+                    'Sync read failed; falling back to per-motor reads for %d motor(s)',
                     len(self.motor_ids))
                 still_failed = self._run_bounded_fallback(list(self.motor_ids))
                 self.last_read_ok = not still_failed
                 return self._get_data()
 
-            # Check for Alert bits in the status packets we already received.
+            # Alert bits ride along in the status packets we already have.
+            # They are recorded, never acted on here: rebooting from a read
+            # would stall the bus mid-motion and reboot a motor at the moment
+            # it faulted, which is the worst moment to do it.
             for motor_id, error in self.operation.motor_errors.items():
-                if error & _AlertCaptureBulkRead.ALERT_BIT:
-                    self.client._handle_hardware_alert(motor_id)
+                if error & _AlertCaptureSyncRead.ALERT_BIT:
+                    self.client._note_hardware_alert(motor_id, error)
 
             errored_ids = []
             for i, motor_id in enumerate(self.motor_ids):
@@ -828,7 +991,7 @@ class DynamixelReader:
                     continue
 
             if errored_ids:
-                logging.warning('Bulk read missing data for %s; per-motor fallback',
+                logging.warning('Sync read missing data for %s; per-motor fallback',
                                 str(errored_ids))
                 errored_ids = self._run_bounded_fallback(errored_ids)
 
@@ -853,7 +1016,7 @@ class DynamixelReader:
         return still_failed + cooling
 
     def _read_per_motor_fallback(self, motor_ids: Sequence[int]) -> List[int]:
-        """Read each motor individually after a failed bulk read.
+        """Read each motor individually after a failed sync read.
 
         Returns the IDs whose data could still not be refreshed (their cached
         values are kept). Base implementation cannot read individual motors,
