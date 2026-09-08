@@ -147,6 +147,36 @@ class MotorClient(ABC):
             return None
         return [name for bit, name in cls.hardware_error_bits if value & bit]
 
+    def read_hardware_error(self, motor_id: int) -> "int | None":
+        """Latched Hardware Error Status for one motor, or ``None`` if unread.
+
+        Clients that cannot read it report ``None``.
+        """
+        return None
+
+    def read_hardware_errors(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, int | None]":
+        """Latched Hardware Error Status for several motors at once.
+
+        The bus is half-duplex, so every read blocks commands for its whole
+        round trip; a family that can fetch one register from many motors in a
+        single transaction should override this to do so. The default falls
+        back to one round trip per motor.
+        """
+        return {int(mid): self.read_hardware_error(mid) for mid in motor_ids}
+
+    def take_hardware_alerts(self) -> "dict[int, int]":
+        """Motors seen carrying a latched fault since the last call, and clear.
+
+        Status packets already carry each motor's error byte, so a family that
+        can see it should report it here rather than paying for a second read.
+        Recovery is the caller's decision: a reboot holds the bus for a third
+        of a second, and the moment a motor faults is the worst time to
+        restart it. Families that cannot see it report nothing.
+        """
+        return {}
+
     @classmethod
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""

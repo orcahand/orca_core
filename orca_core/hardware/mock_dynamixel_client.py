@@ -50,7 +50,9 @@ LEN_PRESENT_TEMPERATURE = 1
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 # See http://emanual.robotis.com/docs/en/dxl/x/xh430-v210/#goal-velocity
 DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
-DEFAULT_CUR_SCALE = 1.34
+# The current registers are already in mA, the unit the control table and
+# the Dynamixel Wizard both use, so readings need no conversion.
+DEFAULT_CUR_SCALE = 1.0
 
 
 def dynamixel_cleanup_handler():
@@ -387,7 +389,8 @@ class MockDynamixelClient(MotorClient):
 class DynamixelReader:
     """Reads data from Dynamixel motors.
 
-    This wraps a GroupBulkRead from the DynamixelSDK.
+    All motors are read at the same address and length, so this wraps a
+    GroupSyncRead from the DynamixelSDK.
     """
 
     def __init__(self, client: MockDynamixelClient, motor_ids: Sequence[int],
@@ -401,14 +404,15 @@ class DynamixelReader:
         self.last_read_ok = True
         self._initialize_data()
 
-        self.operation = self.client.dxl.GroupBulkRead(client.port_handler,
-                                                       client.packet_handler)
+        self.operation = self.client.dxl.GroupSyncRead(client.port_handler,
+                                                       client.packet_handler,
+                                                       address, size)
 
         for motor_id in motor_ids:
-            success = self.operation.addParam(motor_id, address, size)
+            success = self.operation.addParam(motor_id)
             if not success:
                 raise OSError(
-                    '[Motor ID: {}] Could not add parameter to bulk read.'
+                    '[Motor ID: {}] Could not add parameter to sync read.'
                     .format(motor_id))
 
     def read(self, retries: int = 1):
@@ -437,7 +441,7 @@ class DynamixelReader:
             self._update_data(i, motor_id)
 
         if errored_ids:
-            logging.error('Bulk read data is unavailable for: %s',
+            logging.error('Sync read data is unavailable for: %s',
                           str(errored_ids))
 
         return self._get_data()
