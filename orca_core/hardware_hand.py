@@ -46,7 +46,6 @@ from .constants import (
     CURRENT_BASED_POSITION,
     CURRENT,
     NUM_STEPS,
-    POSITION,
     STEP_SIZE,
 )
 
@@ -496,11 +495,21 @@ class OrcaHand(BaseHand):
         return failed_ids
 
     def set_max_current(self, current: Union[float, List[float]]):
-        """Set the maximum allowable current for the motors.
+        """Write Goal Current (control table 102) on every motor.
+
+        In current-based position mode this bounds what the servo's position
+        controller may draw: its output current is clipped here, so a motor
+        draws up to this value and never aims for it. Brief excursions above
+        it are ordinary current-loop overshoot.
+
+        This is not the hardware ceiling. That is Current Limit (control table
+        38, EEPROM), which orca_core never writes and which also caps what Goal
+        Current can be set to. Goal Current is RAM, so a reboot clears it back
+        to the Current Limit until it is written again.
 
         Args:
-            current: Either a single float applied to all motors, or a list of
-                per-motor current values (mA). If a list, its length must match
+            current: Either a single value applied to all motors, or a list of
+                per-motor values in mA. If a list, its length must match
                 the number of configured motors.
 
         Raises:
@@ -716,9 +725,13 @@ class OrcaHand(BaseHand):
     def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
-        Enables torque, sets the configured control mode and current limit,
+        Enables torque, sets the configured control mode and Goal Current,
         runs calibration if needed, computes wrap offsets, and optionally
         moves to the neutral position.
+
+        This is the only place Goal Current is written: ``connect()`` leaves
+        actuation untouched, so a hand that is connected but never initialized
+        runs at whatever Goal Current its motors powered up with.
 
         Args:
             force_calibrate: Force a fresh calibration even if the hand is
@@ -737,16 +750,13 @@ class OrcaHand(BaseHand):
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
-            control_mode = self.config.control_mode
-            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
+            # Neutral is commanded in the configured control mode: switching to
+            # POSITION for it dropped torque twice and drove without a current
+            # limit, which is what made the hand clench on its way there.
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
-            # The mode switch drops torque; let asynchronously travelling
-            # motors arrive first so they don't go limp mid-motion.
-            self.wait_for_motion()
-            self.set_control_mode(control_mode)
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -1075,14 +1085,6 @@ class OrcaHand(BaseHand):
         )
         return anchor
 
-    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)
-        super().set_neutral_position(num_steps, step_size)
-        # The mode switch drops torque; let asynchronously travelling motors
-        # arrive first so they don't go limp mid-motion.
-        self.wait_for_motion()
-        self.set_control_mode(control_mode)
     
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
         """Read motor positions for wrap-offset detection, rejecting a read the
