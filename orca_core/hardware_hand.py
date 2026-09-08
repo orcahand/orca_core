@@ -748,9 +748,13 @@ class OrcaHand(BaseHand):
     def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
-        Enables torque, sets the configured control mode and current limit,
+        Enables torque, sets the configured control mode and Goal Current,
         runs calibration if needed, computes wrap offsets, and optionally
         moves to the neutral position.
+
+        This is the only place Goal Current is written: ``connect()`` leaves
+        actuation untouched, so a hand that is connected but never initialized
+        runs at whatever Goal Current its motors powered up with.
 
         Args:
             force_calibrate: Force a fresh calibration even if the hand is
@@ -769,7 +773,9 @@ class OrcaHand(BaseHand):
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
- 
+            # Neutral is commanded in the configured control mode: switching to
+            # POSITION for it dropped torque twice and drove without a current
+            # limit, which is what made the hand clench on its way there.
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS

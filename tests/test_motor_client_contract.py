@@ -271,3 +271,38 @@ def test_every_family_declares_its_current_defaults(real, mock, expected):
         assert isinstance(cls.default_calibration_current_ma, int)
     assert (mock.default_max_current_ma, mock.default_calibration_current_ma) == (
         real.default_max_current_ma, real.default_calibration_current_ma)
+
+
+def test_read_hardware_errors_is_uniform_across_family():
+    """Every client answers for a whole chain in one call.
+
+    The bus is half-duplex, so a caller sweeping latched errors must not be
+    forced into a round trip per motor. Families that cannot batch inherit the
+    ABC's per-motor fallback, but the entry point is the same everywhere.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "read_hardware_errors"), cls.__name__
+
+    # A family with no batch primitive still answers, via the ABC default.
+    per_motor = types.SimpleNamespace(
+        read_hardware_error=lambda motor_id: 0x20 if motor_id == 2 else 0,
+    )
+    fallback = MotorClient.read_hardware_errors(per_motor, [1, 2])
+    assert fallback == {1: 0, 2: 0x20}
+    assert MotorClient.read_hardware_errors(per_motor, []) == {}
+
+
+def test_take_hardware_alerts_is_uniform_across_family():
+    """Noticing a latched fault is free; acting on it is the caller's call.
+
+    Every client offers the same drain, so a front-end never has to know which
+    family it is talking to. Families that cannot see the byte report nothing
+    rather than making the caller pay for a second read.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "take_hardware_alerts"), cls.__name__
+
+    blind = types.SimpleNamespace()
+    assert MotorClient.take_hardware_alerts(blind) == {}

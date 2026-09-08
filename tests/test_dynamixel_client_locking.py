@@ -19,12 +19,14 @@ from orca_core.hardware.dynamixel_client import DynamixelClient
 COMM_SUCCESS = 0
 COMM_RX_FAIL = -3001
 COMM_NOT_AVAILABLE = -3002
+COMM_RX_CORRUPT = -3003
+BROADCAST_ID = 254
 
 
 class FakeBus:
     """Shared state of the fake wire.
 
-    A bulk read is a multi-step transaction: one txPacket followed by one
+    A sync read is a multi-step transaction: one txPacket followed by one
     readRx per motor. While it is open, any port operation from a different
     thread counts as a violation (this is exactly what collapses the real
     bus).
@@ -38,7 +40,11 @@ class FakeBus:
         self.log = []
         self.op_delay = 0.0
         # Failure injection.
-        self.bulk_tx_results = []  # queue of comm results for bulk txPacket
+        self.sync_tx_results = []  # queue of comm results for sync-read txPacket
+        self.fast_supported = False   # servo firmware answers fast sync read
+        self.fast_rx_corrupt = False  # answers, but with an unparseable packet
+        self.fast_errors = {}         # motor_id -> error byte in the fast reply
+        self._fast_frame = ([], 0)    # ids and data size of the pending request
         self.write1_hook = None    # callable(motor_id) -> (comm, err)
         self.read1_hook = None     # callable(motor_id) -> (value, comm, err)
         self.read2_hook = None     # callable(motor_id, address) -> (value, comm, err)
@@ -56,23 +62,33 @@ class FakeBus:
         if self.op_delay:
             time.sleep(self.op_delay)
 
-    def bulk_tx(self, result, expected_reads):
+    def sync_read_tx(self, result, expected_reads):
         with self._meta:
             self._check_owner()
-            self.log.append('bulk_tx')
+            self.log.append('sync_read_tx')
             if result == COMM_SUCCESS and expected_reads > 0:
                 self._owner = threading.get_ident()
                 self._reads_left = expected_reads
         if self.op_delay:
             time.sleep(self.op_delay)
 
-    def bulk_rx(self):
+    def sync_read_rx(self):
         with self._meta:
             self._check_owner()
-            self.log.append('bulk_rx')
+            self.log.append('sync_read_rx')
             self._reads_left -= 1
             if self._reads_left <= 0:
                 self._owner = None
+        if self.op_delay:
+            time.sleep(self.op_delay)
+
+    def fast_read_rx(self):
+        """The whole group answers in one turnaround."""
+        with self._meta:
+            self._check_owner()
+            self.log.append('fast_read_rx')
+            self._reads_left = 0
+            self._owner = None
         if self.op_delay:
             time.sleep(self.op_delay)
 
@@ -144,8 +160,23 @@ def make_fake_sdk(bus):
             return 1220, COMM_SUCCESS, 0
 
         def readRx(self, port, motor_id, length):
-            bus.bulk_rx()
+            bus.sync_read_rx()
             return bytes(length), COMM_SUCCESS, 0
+
+        def fastSyncReadRx(self, port, dxl_id, length):
+            bus.fast_read_rx()
+            if not bus.fast_supported:
+                return [], COMM_RX_FAIL, 0
+            if bus.fast_rx_corrupt:
+                return bytes(length), COMM_SUCCESS, 0
+            motor_ids, size = bus._fast_frame
+            frame = bytearray()
+            for motor_id in motor_ids:
+                frame.append(bus.fast_errors.get(motor_id, 0))
+                frame.append(motor_id)
+                frame.extend(bytes(size))
+                frame.extend(b'\x00\x00')  # CRC
+            return bytes(frame), COMM_SUCCESS, 0
 
         def getTxRxResult(self, comm_result):
             return 'comm_result={}'.format(comm_result)
@@ -153,24 +184,31 @@ def make_fake_sdk(bus):
         def getRxPacketError(self, dxl_error):
             return 'dxl_error={}'.format(dxl_error)
 
-    class GroupBulkRead:
-        def __init__(self, port, packet_handler):
+    class GroupSyncRead:
+        def __init__(self, port, packet_handler, address, size):
             self.port = port
             self.ph = packet_handler
+            self.start_address = address
+            self.data_length = size
             self.data_dict = {}
             self.last_result = False
 
-        def addParam(self, motor_id, address, size):
-            self.data_dict[motor_id] = [None, address, size]
+        def addParam(self, motor_id):
+            self.data_dict[motor_id] = []
             return True
 
         def txPacket(self):
-            if bus.bulk_tx_results:
-                result = bus.bulk_tx_results.pop(0)
+            if bus.sync_tx_results:
+                result = bus.sync_tx_results.pop(0)
             else:
                 result = COMM_SUCCESS
-            bus.bulk_tx(result, expected_reads=len(self.data_dict))
+            bus.sync_read_tx(result, expected_reads=len(self.data_dict))
             return result
+
+        def fastSyncReadTxPacket(self):
+            bus._fast_frame = (list(self.data_dict), self.data_length)
+            bus.sync_read_tx(COMM_SUCCESS, expected_reads=1)
+            return COMM_SUCCESS
 
         def isAvailable(self, motor_id, address, size):
             return True
@@ -197,9 +235,11 @@ def make_fake_sdk(bus):
     sdk.COMM_SUCCESS = COMM_SUCCESS
     sdk.COMM_RX_FAIL = COMM_RX_FAIL
     sdk.COMM_NOT_AVAILABLE = COMM_NOT_AVAILABLE
+    sdk.COMM_RX_CORRUPT = COMM_RX_CORRUPT
+    sdk.BROADCAST_ID = BROADCAST_ID
     sdk.PortHandler = PortHandler
     sdk.PacketHandler = PacketHandler
-    sdk.GroupBulkRead = GroupBulkRead
+    sdk.GroupSyncRead = GroupSyncRead
     sdk.GroupSyncWrite = GroupSyncWrite
     return sdk
 
@@ -285,27 +325,27 @@ def test_guard_detects_unserialized_access(client, bus):
 
 
 def test_failed_read_flushes_rx_before_retry(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL]
+    bus.sync_tx_results = [COMM_RX_FAIL]
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     assert reader.last_read_ok is True
-    assert bus.events('bulk_tx', 'flush') == ['bulk_tx', 'flush', 'bulk_tx']
+    assert bus.events('sync_read_tx', 'flush') == ['sync_read_tx', 'flush', 'sync_read_tx']
 
 
 def test_read_flushes_rx_after_final_failure(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.sync_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
     # Per-motor fallback also fails, so the cache stays stale.
     bus.read4_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
     bus.read2_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     assert reader.last_read_ok is False
-    assert bus.events('bulk_tx', 'flush') == [
-        'bulk_tx', 'flush', 'bulk_tx', 'flush']
+    assert bus.events('sync_read_tx', 'flush') == [
+        'sync_read_tx', 'flush', 'sync_read_tx', 'flush']
 
 
-def test_bulk_failure_recovers_via_per_motor_fallback(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+def test_sync_read_failure_recovers_via_per_motor_fallback(client, bus):
+    bus.sync_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
     bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
     bus.read2_hook = lambda motor_id, address: (100, COMM_SUCCESS, 0)
     reader = client._pos_vel_cur_reader
@@ -318,7 +358,7 @@ def test_bulk_failure_recovers_via_per_motor_fallback(client, bus):
 
 
 def test_partial_fallback_failure_marks_read_not_ok(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.sync_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
     # Motor 1 answers individually; motor 2 stays silent.
     bus.read4_hook = lambda motor_id, address: (
         (2048, COMM_SUCCESS, 0) if motor_id == 1 else (0, COMM_RX_FAIL, 0))
@@ -452,23 +492,154 @@ def test_check_overload_retries_once_then_skips_on_no_reply(
 
 
 def test_full_fallback_is_rate_limited(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL] * 4  # two reads x two attempts
+    bus.sync_tx_results = [COMM_RX_FAIL] * 4  # two reads x two attempts
     bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
     bus.read2_hook = lambda motor_id, address: (100, COMM_SUCCESS, 0)
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     first_sweep_reads = len(bus.events('read4'))
     assert first_sweep_reads > 0
-    # Immediately after, another total bulk failure must NOT sweep again.
+    # Immediately after, another total sync-read failure must NOT sweep again.
     reader.read(retries=1)
     assert len(bus.events('read4')) == first_sweep_reads
     assert reader.last_read_ok is False
 
 
 def test_failed_motor_enters_cooldown(client, bus):
-    bus.bulk_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
+    bus.sync_tx_results = [COMM_RX_FAIL, COMM_RX_FAIL]
     bus.read4_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
     bus.read2_hook = lambda motor_id, address: (0, COMM_RX_FAIL, 0)
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     assert set(reader._fallback_skip_until) == set(reader.motor_ids)
+
+
+# ----- fast sync read ------------------------------------------------------
+
+
+def _probe(client, bus):
+    """Run the connect-time probe without opening a port."""
+    client._probe_fast_sync_read()
+    bus.log.clear()
+
+
+def test_fast_sync_read_costs_one_turnaround_for_the_whole_group(client, bus):
+    bus.fast_supported = True
+    _probe(client, bus)
+
+    client.read_position_velocity_current()
+
+    assert bus.events('fast_read_rx', 'sync_read_rx') == ['fast_read_rx']
+
+
+def test_unsupported_firmware_keeps_the_per_motor_sync_read(client, bus):
+    bus.fast_supported = False
+    _probe(client, bus)
+
+    client.read_position_velocity_current()
+
+    assert bus.events('fast_read_rx') == []
+    assert bus.events('sync_read_rx') == ['sync_read_rx'] * 2
+
+
+def test_probe_failure_flushes_the_unanswered_request(client, bus):
+    bus.fast_supported = False
+    client._probe_fast_sync_read()
+
+    assert 'flush' in bus.log
+    assert not client._pos_vel_cur_reader._fast_sync_read
+
+
+def test_a_corrupt_fast_reply_falls_back_to_per_motor_reads(client, bus):
+    bus.fast_supported = True
+    _probe(client, bus)
+    bus.fast_rx_corrupt = True
+
+    client.read_position_velocity_current()
+
+    # The fast attempt is spent once, then the retry reads motor by motor.
+    assert bus.events('fast_read_rx') == ['fast_read_rx']
+    assert bus.events('sync_read_rx') == ['sync_read_rx'] * 2
+
+
+def test_alerts_in_the_fast_reply_are_recorded(client, bus):
+    bus.fast_supported = True
+    _probe(client, bus)
+    bus.fast_errors = {2: 0x80}
+
+    client.read_position_velocity_current()
+
+    assert client.take_hardware_alerts() == {2: 0x80}
+    assert client.take_hardware_alerts() == {}  # draining clears
+
+
+def test_a_read_never_reboots_the_motor_it_found_faulted(client, bus):
+    """A reboot holds the bus for 300 ms and restarts the motor at the instant
+    it faulted. Reads record; explicit recovery calls act."""
+    bus.fast_supported = True
+    _probe(client, bus)
+    bus.fast_errors = {1: 0x80, 2: 0x80}
+
+    client.read_position_velocity_current()
+
+    assert bus.events('reboot') == []
+    assert set(client.take_hardware_alerts()) == {1, 2}
+
+
+def test_alerts_on_a_single_motor_write_are_recorded_too(client, bus):
+    """Not just the group read: any transaction routed through
+    handle_packet_result feeds the same record, writes included."""
+    bus.write1_hook = lambda motor_id: (COMM_SUCCESS, 0x80)
+
+    client.write_byte([1], 1, 64)
+
+    assert client.take_hardware_alerts() == {1: 0x80}
+    assert bus.events('reboot') == []
+
+
+# ----- reboot restores the current ceiling ---------------------------------
+
+
+def test_reboot_puts_the_current_ceiling_back(client, bus, monkeypatch):
+    """Goal Current is RAM and a reboot wipes it. A motor that came back
+    uncapped would draw far more than its configured limit."""
+    _patch_sleep(monkeypatch)
+    client.write_desired_current([1, 2], np.array([300, 300]))
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append((list(ids), list(vals), addr)))
+
+    client.reboot_motor(1)
+
+    assert writes == [([1], [300], 102)]
+
+
+def test_reboot_restores_nothing_for_a_motor_with_no_ceiling_set(
+        client, bus, monkeypatch):
+    _patch_sleep(monkeypatch)
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append(addr))
+
+    client.reboot_motor(1)
+
+    assert writes == []
+
+
+def test_a_failed_reboot_does_not_write_to_a_motor_that_never_restarted(
+        client, bus, monkeypatch):
+    _patch_sleep(monkeypatch)
+    client.write_desired_current([1], np.array([300]))
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append(addr))
+    bus.write1_hook = None
+
+    def failed_reboot(port, motor_id):
+        bus.instant('reboot')
+        return COMM_RX_FAIL, 0
+
+    monkeypatch.setattr(client.packet_handler, 'reboot', failed_reboot)
+    client.reboot_motor(1)
+
+    assert writes == []
