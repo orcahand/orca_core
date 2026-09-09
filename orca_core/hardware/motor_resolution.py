@@ -108,18 +108,67 @@ def persist_resolved_driver(
     )
 
 
+def _edit_scalar_lines(text: str, updates: dict) -> "str | None":
+    """Rewrite top-level scalar keys in ``text`` in place.
+
+    Everything the update does not name is preserved byte for byte, comments
+    included -- a load-and-redump would silently drop every comment in the
+    model config, and connecting a hand should not cost the file its
+    documentation.
+
+    Only the simple case is handled: a top-level ``key: scalar`` on one line,
+    or a key that is absent and can be appended. Returns ``None`` for anything
+    else (a block value, a duplicated key), leaving the caller to fall back on
+    a full rewrite rather than risk a bad edit.
+    """
+    lines = text.splitlines(keepends=True)
+    remaining = dict(updates)
+    for index, line in enumerate(lines):
+        if line[:1].isspace() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition(":")
+        if not sep or key.strip() not in remaining:
+            continue
+        name = key.strip()
+        if not value.strip() or value.strip().startswith("#"):
+            return None  # block value or comment-only: not a scalar we own
+        ending = "\n" if line.endswith("\n") else ""
+        lines[index] = yaml.safe_dump(
+            {name: remaining.pop(name)}, default_flow_style=False,
+            sort_keys=False).strip() + ending
+    out = "".join(lines)
+    for name, value in remaining.items():
+        if out and not out.endswith("\n"):
+            out += "\n"
+        out += yaml.safe_dump({name: value}, default_flow_style=False,
+                              sort_keys=False)
+    return out
+
+
 def _atomic_yaml_update(path: str, updates: dict) -> None:
     """Apply ``updates`` to the yaml mapping at ``path`` in one atomic replace.
 
-    Unrelated keys are preserved. The rewrite goes through a temp file in the
-    same directory plus ``os.replace``, so a crash mid-write can never leave a
-    half-written config behind.
+    Unrelated keys and comments are preserved. The rewrite goes through a temp
+    file in the same directory plus ``os.replace``, so a crash mid-write can
+    never leave a half-written config behind.
     """
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise PermissionError(f"{path} is not writable")
     with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
+        original = f.read()
+    data = yaml.safe_load(original) or {}
     data.update(updates)
+
+    # Preferred path: touch only the lines that change. Verified by parsing
+    # the result -- an edit that does not reproduce the intended mapping is
+    # discarded rather than written.
+    edited = _edit_scalar_lines(original, updates)
+    if edited is not None:
+        try:
+            if (yaml.safe_load(edited) or {}) != data:
+                edited = None
+        except yaml.YAMLError:
+            edited = None
     directory = os.path.dirname(os.path.abspath(path))
     fd, tmp_path = tempfile.mkstemp(
         dir=directory, prefix=".config-", suffix=".yaml"
@@ -130,7 +179,11 @@ def _atomic_yaml_update(path: str, updates: dict) -> None:
         except OSError:
             pass
         with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+            if edited is not None:
+                f.write(edited)
+            else:
+                yaml.safe_dump(data, f, default_flow_style=False,
+                               sort_keys=False)
         os.replace(tmp_path, path)
     except BaseException:
         try:

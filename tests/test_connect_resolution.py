@@ -383,3 +383,54 @@ def test_failed_connect_restores_config(mock_hand, monkeypatch):
     assert mock_hand.config.motor_type is None
     assert mock_hand.config.baudrate is None
     assert mock_hand.config.port == original_port
+
+
+# ----- the config rewrite keeps the file's documentation --------------------
+
+
+def test_persisting_a_probe_result_keeps_comments_and_unrelated_keys(tmp_path):
+    """Connecting a hand writes the resolved driver fields back. A
+    load-and-redump would drop every comment in the model config, so the
+    rewrite edits only the lines it owns."""
+    import yaml
+    from orca_core.hardware.motor_resolution import _atomic_yaml_update
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "# why this hand pins nothing\n"
+        "port: auto\n"
+        "max_current: 300\n"
+        "# the map is per-hand\n"
+        "joint_to_motor_map:\n"
+        "  index_abd: 4   # inline\n"
+    )
+
+    _atomic_yaml_update(str(path), {"port": "/dev/cu.x",
+                                    "motor_type": "dynamixel"})
+
+    out = path.read_text()
+    assert "# why this hand pins nothing" in out
+    assert "# the map is per-hand" in out
+    assert "# inline" in out
+    data = yaml.safe_load(out)
+    assert data["port"] == "/dev/cu.x"
+    assert data["motor_type"] == "dynamixel"
+    assert data["max_current"] == 300
+    assert data["joint_to_motor_map"] == {"index_abd": 4}
+
+
+def test_an_unhandled_layout_still_writes_correct_values(tmp_path):
+    """The line editor bails on anything it cannot edit confidently; the full
+    rewrite then takes over, so the values land even when comments cannot."""
+    import yaml
+    from orca_core.hardware.motor_resolution import _atomic_yaml_update
+
+    path = tmp_path / "config.yaml"
+    # A block-valued key with the same name as an update: not a scalar line.
+    path.write_text("port:\n  - auto\nmax_current: 300\n")
+
+    _atomic_yaml_update(str(path), {"port": "/dev/cu.x"})
+
+    data = yaml.safe_load(path.read_text())
+    assert data["port"] == "/dev/cu.x"
+    assert data["max_current"] == 300
