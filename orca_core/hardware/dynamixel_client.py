@@ -38,9 +38,22 @@ ADDR_BAUD_RATE = 8
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
+# Position-PID and feedforward gains occupy one contiguous block, 80..91,
+# with 86 reserved -- so all five read back in a single 12-byte transaction.
+ADDR_POSITION_D_GAIN = 80
+ADDR_POSITION_I_GAIN = 82
+ADDR_POSITION_P_GAIN = 84
+ADDR_FEEDFORWARD_2ND_GAIN = 88
+ADDR_FEEDFORWARD_1ST_GAIN = 90
+ADDR_GAIN_BLOCK = ADDR_POSITION_D_GAIN
+LEN_GAIN_BLOCK = 12
 ADDR_GOAL_PWM = 100
 ADDR_GOAL_CURRENT = 102
+ADDR_PROFILE_ACCELERATION = 108
 ADDR_PROFILE_VELOCITY = 112
+# 108..115 is contiguous, so both limits read back in one transaction.
+ADDR_PROFILE_BLOCK = ADDR_PROFILE_ACCELERATION
+LEN_PROFILE_BLOCK = 8
 ADDR_PRESENT_POSITION = 132
 ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_CURRENT = 126
@@ -57,6 +70,7 @@ LEN_PRESENT_VELOCITY = 4
 LEN_PRESENT_CURRENT = 2
 LEN_PRESENT_POS_VEL_CUR = 10
 LEN_GOAL_POSITION = 4
+LEN_GAIN = 2
 LEN_GOAL_PWM = 2
 LEN_GOAL_CURRENT = 2
 LEN_PROFILE_VELOCITY = 4
@@ -68,6 +82,11 @@ DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
 DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
 # The current registers are already in mA, the unit the control table and
 # the Dynamixel Wizard both use, so readings need no conversion.
+# Profile Acceleration is 214.577 rev/min^2 per unit; Profile Velocity
+# shares DEFAULT_VEL_SCALE's 0.229 rev/min. Both converted here so callers
+# work in SI, the way positions and currents already do.
+PROFILE_ACC_SCALE = 214.577 * 2.0 * np.pi / 3600.0  # rad/s^2 per unit
+
 DEFAULT_CUR_SCALE = 1.0
 
 # A rebooting motor is off the bus while its firmware restarts; writes sent
@@ -114,6 +133,8 @@ def unsigned_to_signed(value: int, size: int) -> int:
         value = -((1 << bit_size) - value)
     return value
 
+
+from .motor_client import ServoGains, ServoProfile
 
 class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
@@ -207,8 +228,11 @@ class DynamixelClient(MotorClient):
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
         self._sync_writers = {}
         self._operating_modes = {}
-        # Last Goal Current written per motor, re-applied after a reboot.
-        self._goal_currents: Dict[int, int] = {}
+        # RAM registers worth restoring after a reboot, per motor:
+        # {motor_id: {(address, size): value}}. A reboot clears RAM, so
+        # anything written here that the caller expects to persist has to be
+        # replayed -- the current ceiling and the servo gains both do.
+        self._ram_settings: Dict[int, Dict[Tuple[int, int], int]] = {}
         # Motors seen with the Alert bit set, drained by take_hardware_alerts().
         self._hardware_alerts: Dict[int, int] = {}
         self._alerts_lock = threading.Lock()
@@ -453,8 +477,8 @@ class DynamixelClient(MotorClient):
         self.sync_write(motor_ids, current, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
         # Goal Current lives in RAM, which a reboot wipes. Remembering it is
         # what lets reboot_motor put the ceiling back.
-        for motor_id, value in zip(motor_ids, current):
-            self._goal_currents[int(motor_id)] = int(value)
+        self._remember_ram(motor_ids, current, ADDR_GOAL_CURRENT,
+                           LEN_GOAL_CURRENT)
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)
@@ -548,14 +572,154 @@ class DynamixelClient(MotorClient):
                 return
             self._restore_ram_after_reboot(motor_id)
 
+    def _remember_ram(self, motor_ids: Sequence[int],
+                      values: Sequence[Union[int, float]],
+                      address: int, size: int) -> None:
+        """Record a RAM write so a later reboot can replay it."""
+        for motor_id, value in zip(motor_ids, values):
+            settings = self._ram_settings.setdefault(int(motor_id), {})
+            settings[(address, size)] = int(value)
+
     def _restore_ram_after_reboot(self, motor_id: int) -> None:
         """Re-apply the RAM settings a reboot cleared, once the motor answers."""
-        goal_current = self._goal_currents.get(int(motor_id))
-        if goal_current is None:
+        settings = self._ram_settings.get(int(motor_id))
+        if not settings:
             return
         time.sleep(MOTOR_REBOOT_SETTLE_S)
-        self.sync_write([motor_id], [goal_current], ADDR_GOAL_CURRENT,
-                        LEN_GOAL_CURRENT)
+        for (address, size), value in settings.items():
+            self.sync_write([motor_id], [value], address, size)
+
+    # Field name -> (address, size) within the gain block.
+    _GAIN_REGISTERS = (
+        ("kp", ADDR_POSITION_P_GAIN),
+        ("ki", ADDR_POSITION_I_GAIN),
+        ("kd", ADDR_POSITION_D_GAIN),
+        ("ff_1st", ADDR_FEEDFORWARD_1ST_GAIN),
+        ("ff_2nd", ADDR_FEEDFORWARD_2ND_GAIN),
+    )
+
+    def read_servo_gains(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, Optional[ServoGains]]":
+        """Read every motor's gain block in one sync read.
+
+        The five gains sit contiguously in 80..91 (86 is reserved), so this
+        costs one transaction rather than five per motor. A motor that does
+        not answer comes back ``None``.
+        """
+        motor_ids = [int(mid) for mid in motor_ids]
+        if not motor_ids:
+            return {}
+        out: "dict[int, Optional[ServoGains]]" = {mid: None for mid in motor_ids}
+        with self._bus_lock:
+            reader = self.dxl.GroupSyncRead(
+                self.port_handler, self.packet_handler,
+                ADDR_GAIN_BLOCK, LEN_GAIN_BLOCK)
+            try:
+                for mid in motor_ids:
+                    if not reader.addParam(mid):
+                        return out
+                if reader.txRxPacket() != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    return out
+                for mid in motor_ids:
+                    if not reader.isAvailable(mid, ADDR_GAIN_BLOCK,
+                                              LEN_GAIN_BLOCK):
+                        continue
+                    out[mid] = ServoGains(**{
+                        field: int(reader.getData(mid, address, LEN_GAIN))
+                        for field, address in self._GAIN_REGISTERS
+                    })
+            finally:
+                reader.clearParam()
+        return out
+
+    def write_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Write the gain block, one sync write per register that changed.
+
+        Fields left ``None`` are not written at all, so a caller can nudge one
+        gain without having to restate the rest. Every value written is
+        remembered for replay after a reboot, since these are RAM.
+        """
+        if not gains:
+            return
+        with self._bus_lock:
+            for field, address in self._GAIN_REGISTERS:
+                ids, values = [], []
+                for motor_id, entry in gains.items():
+                    value = getattr(entry, field)
+                    if value is not None:
+                        ids.append(int(motor_id))
+                        values.append(int(value))
+                if ids:
+                    self.sync_write(ids, values, address, LEN_GAIN)
+                    self._remember_ram(ids, values, address, LEN_GAIN)
+
+    def read_servo_profile(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, Optional[ServoProfile]]":
+        """Read both trajectory limits for every motor in one sync read."""
+        motor_ids = [int(mid) for mid in motor_ids]
+        if not motor_ids:
+            return {}
+        out: "dict[int, Optional[ServoProfile]]" = {m: None for m in motor_ids}
+        vel_scale = self._pos_vel_cur_reader.vel_scale
+        with self._bus_lock:
+            reader = self.dxl.GroupSyncRead(
+                self.port_handler, self.packet_handler,
+                ADDR_PROFILE_BLOCK, LEN_PROFILE_BLOCK)
+            try:
+                for mid in motor_ids:
+                    if not reader.addParam(mid):
+                        return out
+                if reader.txRxPacket() != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    return out
+                for mid in motor_ids:
+                    if not reader.isAvailable(mid, ADDR_PROFILE_BLOCK,
+                                              LEN_PROFILE_BLOCK):
+                        continue
+                    acc = reader.getData(mid, ADDR_PROFILE_ACCELERATION,
+                                         LEN_PROFILE_VELOCITY)
+                    vel = reader.getData(mid, ADDR_PROFILE_VELOCITY,
+                                         LEN_PROFILE_VELOCITY)
+                    out[mid] = ServoProfile(
+                        velocity_rad_s=float(vel) * vel_scale,
+                        acceleration_rad_s2=float(acc) * PROFILE_ACC_SCALE,
+                    )
+            finally:
+                reader.clearParam()
+        return out
+
+    def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Write the trajectory limits, converting SI to register units.
+
+        Values round to the nearest unit and clamp at zero, so a small
+        positive request can never become "unlimited" by truncation.
+        """
+        if not profiles:
+            return
+        vel_scale = self._pos_vel_cur_reader.vel_scale
+        fields = (
+            ("acceleration_rad_s2", ADDR_PROFILE_ACCELERATION, PROFILE_ACC_SCALE),
+            ("velocity_rad_s", ADDR_PROFILE_VELOCITY, vel_scale),
+        )
+        with self._bus_lock:
+            for field, address, scale in fields:
+                ids, values = [], []
+                for motor_id, entry in profiles.items():
+                    value = getattr(entry, field)
+                    if value is None:
+                        continue
+                    raw = max(0, int(round(float(value) / scale)))
+                    if value > 0 and raw == 0:
+                        raw = 1  # never round a real limit into "unlimited"
+                    ids.append(int(motor_id))
+                    values.append(raw)
+                if ids:
+                    self.sync_write(ids, values, address, LEN_PROFILE_VELOCITY)
+                    self._remember_ram(ids, values, address,
+                                       LEN_PROFILE_VELOCITY)
 
     def read_hardware_error(self, motor_id: int) -> Optional[int]:
         """Reads the Hardware Error Status register (address 70).

@@ -67,6 +67,8 @@ ROM_FRAMES = (ROM_FRAME_ANCHOR, ROM_FRAME_CENTERED)
 logger = logging.getLogger(__name__)
 
 
+from .hardware.motor_client import ServoGains, ServoProfile
+
 class OrcaHand(BaseHand):
     """ORCA hand class.
 
@@ -530,6 +532,47 @@ class OrcaHand(BaseHand):
                 self.config.motor_ids, current * np.ones(len(self.config.motor_ids))
             )
 
+    def get_servo_gains(self) -> "dict[int, ServoGains | None]":
+        """Read every motor's own position-PID and feedforward gains.
+
+        These are the servo's internal gains, not the host outer-loop PI that
+        :meth:`OrcaHandJointFeedback.get_pid_gains` returns. Motors whose
+        family does not expose them report ``None``.
+        """
+        with self._motor_lock:
+            return self._motor_client.read_servo_gains(self.config.motor_ids)
+
+    def set_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set servo gains per motor, leaving ``None`` fields untouched.
+
+        RAM registers, so they do not survive a power cycle: re-apply them
+        whenever the hand is brought up. The client replays them itself after
+        a motor reboot.
+        """
+        unknown = set(gains) - set(self.config.motor_ids)
+        if unknown:
+            raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
+        with self._motor_lock:
+            self._motor_client.write_servo_gains(gains)
+
+    def get_servo_profile(self) -> "dict[int, ServoProfile | None]":
+        """Read each motor's trajectory limits (SI units, 0.0 = disabled)."""
+        with self._motor_lock:
+            return self._motor_client.read_servo_profile(self.config.motor_ids)
+
+    def set_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set trajectory limits per motor, leaving ``None`` fields untouched.
+
+        A non-zero limit rate-limits *streamed* targets as well as
+        point-to-point moves, so it shapes teleop and replay too. RAM
+        registers: re-apply on bring-up.
+        """
+        unknown = set(profiles) - set(self.config.motor_ids)
+        if unknown:
+            raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
+        with self._motor_lock:
+            self._motor_client.write_servo_profile(profiles)
+
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
         """Switch the operating mode of the specified motors.
 
@@ -750,9 +793,7 @@ class OrcaHand(BaseHand):
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
-            # Neutral is commanded in the configured control mode: switching to
-            # POSITION for it dropped torque twice and drove without a current
-            # limit, which is what made the hand clench on its way there.
+ 
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS

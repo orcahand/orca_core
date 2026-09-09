@@ -9,6 +9,7 @@
 """Abstract base class for motor communication clients."""
 
 import logging
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
@@ -38,6 +39,56 @@ class MotorRead(NamedTuple):
     position: np.ndarray
     velocity: np.ndarray
     current: np.ndarray
+
+
+@dataclass(frozen=True)
+class ServoGains:
+    """One motor's internal position-PID and feedforward gains.
+
+    Feedforward acts on the *desired trajectory*, not on error: ``ff_1st``
+    scales its velocity and ``ff_2nd`` its acceleration, supplying the command
+    a move needs before any error has accumulated. Both are therefore near
+    useless while Profile Velocity and Acceleration are zero -- a Goal
+    Position write is then a step, and a step has no trajectory to
+    differentiate.
+
+    ``None`` means "leave this one alone" on a write, and "not reported" on a
+    read.
+    """
+
+    kp: "int | None" = None
+    ki: "int | None" = None
+    kd: "int | None" = None
+    ff_1st: "int | None" = None
+    """Velocity feedforward: cancels the lag of tracking a moving target."""
+    ff_2nd: "int | None" = None
+    """Acceleration feedforward: acts at profile corners and reversals."""
+
+
+@dataclass(frozen=True)
+class ServoProfile:
+    """One motor's trajectory-shaping limits, in SI units.
+
+    The servo generates its own trajectory toward Goal Position: acceleration
+    ramps up to the velocity cap, giving a trapezoid. ``0.0`` disables a
+    limit -- no cap, or instantaneous acceleration -- which is the factory
+    state and makes a Goal Position write a step.
+
+    This is a slew-rate limiter, not a filter: motion that stays under the cap
+    passes through untouched. With a *streamed* target it therefore behaves as
+    a rate limit on the command, which is a genuine safety property for teleop
+    and an unwanted lag inside a tuned closed loop. On encoder hands it also
+    fights the outer PI, which integrates the error the profile is holding.
+
+    A profile is also what makes the feedforward gains in :class:`ServoGains`
+    do anything: they act on this trajectory's derivatives, and a step has
+    none. ``None`` means "leave this one alone".
+    """
+
+    velocity_rad_s: "float | None" = None
+    """Speed cap. 0.0 = uncapped."""
+    acceleration_rad_s2: "float | None" = None
+    """Ramp rate toward the cap. 0.0 = instantaneous."""
 
 
 class MotorClient(ABC):
@@ -146,6 +197,40 @@ class MotorClient(ABC):
         if value is None:
             return None
         return [name for bit, name in cls.hardware_error_bits if value & bit]
+
+    def read_servo_gains(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoGains | None]":
+        """The servo's own position-PID and feedforward gains, per motor.
+
+        Distinct from the host outer-loop PI in ``control/constants.py``:
+        these live inside the servo and close the loop the host trims. A
+        family that does not expose them reports ``None`` for every motor.
+        """
+        return {int(mid): None for mid in motor_ids}
+
+    def write_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set the servo position-PID and feedforward gains, per motor.
+
+        These are RAM registers, so a reboot clears them; clients that
+        implement this must remember what was written and restore it the way
+        the current ceiling is restored. Fields left ``None`` are untouched.
+        """
+        return None
+
+    def read_servo_profile(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile | None]":
+        """Per-motor trajectory limits. ``None`` where unsupported."""
+        return {int(mid): None for mid in motor_ids}
+
+    def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set per-motor trajectory limits; ``None`` fields are untouched.
+
+        RAM registers, so implementations must remember what they wrote and
+        replay it after a reboot, as they do for the current ceiling.
+        """
+        return None
 
     def read_hardware_error(self, motor_id: int) -> "int | None":
         """Latched Hardware Error Status for one motor, or ``None`` if unread.
