@@ -643,3 +643,65 @@ def test_a_failed_reboot_does_not_write_to_a_motor_that_never_restarted(
     client.reboot_motor(1)
 
     assert writes == []
+
+
+def test_reboot_restores_every_remembered_ram_register(client, bus, monkeypatch):
+    """Gains are RAM like the current ceiling, so a reboot must replay both.
+    Tuning a joint and having it silently revert is worse than never tuning."""
+    from orca_core.hardware.motor_client import ServoGains
+
+    _patch_sleep(monkeypatch)
+    client.write_desired_current([1], np.array([300]))
+    client.write_servo_gains({1: ServoGains(kp=1200, ff_1st=50)})
+
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append((addr, list(vals))))
+    client.reboot_motor(1)
+
+    replayed = dict(writes)
+    assert replayed[102] == [300]   # Goal Current
+    assert replayed[84] == [1200]   # Position P Gain
+    assert replayed[90] == [50]     # Feedforward 1st Gain
+    # Gains never written are not invented on the motor's behalf.
+    assert 80 not in replayed and 82 not in replayed
+
+
+def test_profile_limits_convert_to_register_units_and_survive_reboot(
+        client, bus, monkeypatch):
+    """SI in, register units on the wire — and replayed after a reboot like
+    every other RAM setting."""
+    from orca_core.hardware.dynamixel_client import PROFILE_ACC_SCALE
+    from orca_core.hardware.motor_client import ServoProfile
+
+    _patch_sleep(monkeypatch)
+    writes = []
+    real = client.sync_write
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda i, v, a, s: (writes.append((a, list(v))),
+                                            real(i, v, a, s))[1])
+    vel_scale = client._pos_vel_cur_reader.vel_scale
+    client.write_servo_profile({1: ServoProfile(velocity_rad_s=2.0,
+                                                acceleration_rad_s2=5.0)})
+
+    sent = dict(writes)
+    assert sent[112] == [round(2.0 / vel_scale)]
+    assert sent[108] == [round(5.0 / PROFILE_ACC_SCALE)]
+
+    writes.clear()
+    client.reboot_motor(1)
+    assert set(dict(writes)) == {108, 112}
+
+
+def test_a_small_limit_never_rounds_into_unlimited(client, bus, monkeypatch):
+    """0 means "no limit" on the motor, so truncating a real request to 0
+    would silently remove the cap the caller asked for."""
+    from orca_core.hardware.motor_client import ServoProfile
+
+    _patch_sleep(monkeypatch)
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda i, v, a, s: writes.append((a, list(v))))
+    client.write_servo_profile({1: ServoProfile(velocity_rad_s=1e-6)})
+
+    assert dict(writes)[112] == [1]

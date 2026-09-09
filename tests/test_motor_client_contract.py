@@ -28,7 +28,7 @@ from orca_core.hardware.mock_feetech_client import (
     MockFeetechClient,
     feetech_cleanup_handler as mock_feetech_cleanup_handler,
 )
-from orca_core.hardware.motor_client import MotorClient
+from orca_core.hardware.motor_client import MotorClient, ServoGains
 
 # (mock class, its module, its atexit cleanup handler) for every family.
 MOCK_FAMILIES = [
@@ -306,3 +306,29 @@ def test_take_hardware_alerts_is_uniform_across_family():
 
     blind = types.SimpleNamespace()
     assert MotorClient.take_hardware_alerts(blind) == {}
+
+
+def test_servo_gains_are_uniform_across_family():
+    """Every client answers the same way, so a front-end never branches on
+    motor family. Families that cannot reach the registers report None
+    rather than raising."""
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "read_servo_gains"), cls.__name__
+        assert hasattr(cls, "write_servo_gains"), cls.__name__
+
+    blind = types.SimpleNamespace()
+    assert MotorClient.read_servo_gains(blind, [1, 2]) == {1: None, 2: None}
+    assert MotorClient.write_servo_gains(blind, {1: ServoGains(kp=1)}) is None
+
+
+def test_partial_gain_writes_leave_the_other_fields_alone(connected_mock):
+    """A caller nudging one gain must not silently zero the rest."""
+    if not isinstance(connected_mock, MockDynamixelClient):
+        pytest.skip("gain registers are Dynamixel-only for now")
+    before = connected_mock.read_servo_gains([1])[1]
+    connected_mock.write_servo_gains({1: ServoGains(kp=1234)})
+    after = connected_mock.read_servo_gains([1])[1]
+    assert after.kp == 1234
+    assert (after.ki, after.kd, after.ff_1st, after.ff_2nd) == (
+        before.ki, before.kd, before.ff_1st, before.ff_2nd)
