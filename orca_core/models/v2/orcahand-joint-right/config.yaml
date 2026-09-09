@@ -75,8 +75,8 @@ joint_roms:
   - -15
   - 107
   index_abd:
-  - -30
-  - 25
+  - -25
+  - 30
   index_mcp:
   - -25
   - 100
