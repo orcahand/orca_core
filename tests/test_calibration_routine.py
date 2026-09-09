@@ -186,6 +186,47 @@ def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir)
     assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
 
 
+def test_wrist_anchors_first_hardstop_before_reverse_stroke(connected_hand, monkeypatch):
+    hand = connected_hand
+    calls, events = [], []
+    wrist = hand.config.joint_to_motor_map["wrist"]
+    def offset(motor_id, upper=True):
+        calls.append((motor_id, upper))
+        return True
+    _force_offset_calibration(hand, monkeypatch, offset)
+    reread = []
+    def fresh_limit(_hand):
+        reread.append(len(calls))
+        positions = hand.get_motor_pos().copy()
+        positions[hand.config.motor_id_to_idx_dict[wrist]] = -5.5
+        return positions
+    monkeypatch.setattr(calibration_routine, "_read_motor_pos_checked", fresh_limit)
+    def on_event(event):
+        events.append({**event, "offset_count": len(calls)})
+    hand.calibrate(joints=["wrist"], force_wrist=True, progress_callback=on_event)
+    assert len(calls) == 2 and calls[0][1] != calls[1][1]
+    assert reread == [2]
+    limits = [e for e in events if e["event"] == "limit_recorded"]
+    assert len(limits) == 2 and limits[0]["limit"] == -5.5
+    assert all(e["offset_count"] == 2 for e in limits)
+
+
+def test_failed_wrist_hardstop_offset_aborts_without_saving(connected_hand, calib_dir, monkeypatch):
+    hand = connected_hand
+    calls = []
+    def offset(motor_id, upper=True):
+        calls.append(motor_id)
+        return len(calls) == 1
+    _force_offset_calibration(hand, monkeypatch, offset)
+    events = []
+    with pytest.raises(RuntimeError, match="wrist hardstop offset"):
+        hand.calibrate(joints=["wrist"], force_wrist=True,
+                       progress_callback=events.append, persist=True)
+    assert not (calib_dir / "calibration.yaml").exists()
+    assert not any(e["event"] == "limit_recorded" for e in events)
+    assert any(e["event"] == "offset_calibration_failed" for e in events)
+
+
 def test_final_offset_failure_records_no_limit(connected_hand, monkeypatch):
     """A failed post-release offset calibration must not record a limit taken
     in the un-shifted motor frame."""
