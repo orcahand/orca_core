@@ -77,6 +77,10 @@ def unsigned_to_signed(value: int, size: int) -> int:
     return value
 
 
+from dataclasses import asdict, replace
+
+from .motor_client import ServoGains, ServoProfile
+
 class MockDynamixelClient(MotorClient):
     """Mock client for simulating communication with Dynamixel motors.
 
@@ -136,6 +140,15 @@ class MockDynamixelClient(MotorClient):
         self._cur = {mid: 0.0 for mid in self.motor_ids}
         self._temp = {mid: 0.0 for mid in self.motor_ids}
         self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
+        # Factory-default position P gain; the rest start at zero, matching a
+        # servo straight out of the box.
+        self._servo_gains = {mid: ServoGains(kp=800, ki=0, kd=0,
+                                             ff_1st=0, ff_2nd=0)
+                             for mid in self.motor_ids}
+        # Factory state: no profile at all, so Goal Position is a step.
+        self._servo_profile = {mid: ServoProfile(velocity_rad_s=0.0,
+                                                 acceleration_rad_s2=0.0)
+                               for mid in self.motor_ids}
         
         # This is specific to the ORCA Hand and simulates the hardstops
         self._max_motor_pos = 1.0
@@ -265,6 +278,39 @@ class MockDynamixelClient(MotorClient):
         temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
         return temp_array
 
+    def read_servo_gains(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}
+
+    def write_servo_gains(self, gains) -> None:
+        """Merge the named fields, leaving ``None`` fields as they were."""
+        self.check_connected()
+        for motor_id, entry in gains.items():
+            motor_id = int(motor_id)
+            current = self._servo_gains.get(motor_id)
+            if current is None:
+                continue
+            self._servo_gains[motor_id] = replace(current, **{
+                field: value
+                for field, value in asdict(entry).items() if value is not None
+            })
+
+    def read_servo_profile(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(m): self._servo_profile.get(int(m)) for m in motor_ids}
+
+    def write_servo_profile(self, profiles) -> None:
+        self.check_connected()
+        for motor_id, entry in profiles.items():
+            motor_id = int(motor_id)
+            current = self._servo_profile.get(motor_id)
+            if current is None:
+                continue
+            self._servo_profile[motor_id] = replace(current, **{
+                field: value
+                for field, value in asdict(entry).items() if value is not None
+            })
+
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):
         """Writes the given desired positions.
@@ -275,6 +321,10 @@ class MockDynamixelClient(MotorClient):
         """
         assert len(motor_ids) == len(positions)
         self.check_connected()
+        # The real client stamps these inside sync_write; the mock writes
+        # straight to its dict, so it stamps the equivalent point. The
+        # intervals are meaningless -- this only keeps the tooling runnable
+        # without hardware.
 
         for mid in motor_ids:
             if mid not in self._pos:
