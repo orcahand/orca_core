@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -29,7 +28,7 @@ from typing import Callable, Optional
 from ..constants import FINGER, MOTOR_MODELS, SUPPORTED_MOTOR_TYPES, WRIST
 from ..hardware.motor_client import MotorClient
 from ..hardware.motor_factory import create_motor_client, motor_client_class
-from ..utils.utils import auto_detect_port
+from ..utils.utils import auto_detect_port, serial_port_exists
 
 logger = logging.getLogger(__name__)
 
@@ -152,13 +151,13 @@ def resolve_port(port: Optional[str], motor_type: Optional[str] = None) -> Optio
     Never prompts. A front-end that wants to offer the user a choice should
     call this first and fall back to its own picker.
     """
-    if port and os.path.exists(port):
+    if serial_port_exists(port):
         return port
     try:
         detected = auto_detect_port(motor_type)
     except Exception:
         return None
-    return detected if detected and os.path.exists(detected) else None
+    return detected if serial_port_exists(detected) else None
 
 
 def _deregister_client(client: MotorClient) -> None:
@@ -262,7 +261,7 @@ def wait_for_port(
     """
     _emit(progress_callback, "waiting_for_port", port=port, present=present)
     deadline = None if timeout is None else time.monotonic() + timeout
-    while os.path.exists(port) != present:
+    while serial_port_exists(port) != present:
         _check_stop(should_stop)
         if deadline is not None and time.monotonic() > deadline:
             raise MotorChainError(

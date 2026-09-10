@@ -215,6 +215,7 @@ def diagnose_encoder_link(
         causes.append(LikelyCause(
             code=LINK_CAUSE_NO_BYTES,
             description="Zero bytes received. Board unpowered, cable unplugged, or\n"
-                        "wrong serial port — try `ls /dev/cu.usbmodem*`.",
+                        "wrong serial port — list ports with "
+                        "`python -m serial.tools.list_ports -v`.",
         ))
     return causes

@@ -36,7 +36,7 @@ The bundled configs ship with `port: auto` and a `baudrate` pinned for the hand 
 Override any of them explicitly if you need to:
 
 ```yaml
-port: /dev/cu.usbmodemXXXX  # when multiple adapters are connected
+port: /dev/cu.usbmodemXXXX  # when multiple adapters are connected (COM3 on Windows)
 baudrate: 1000000           # when motors are configured for a non-default rate
 motor_type: feetech         # when probing might misidentify the bus
 ```

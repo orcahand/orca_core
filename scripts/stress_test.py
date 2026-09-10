@@ -3,6 +3,7 @@
 import argparse
 import time
 
+from orca_core.utils import enable_ansi_escapes
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
 
 from orca_core.constants import NUM_STEPS, STEP_SIZE
@@ -105,6 +106,7 @@ JOINT_CLOSE = {
 
 
 def main() -> int:
+    enable_ansi_escapes()
     parser = argparse.ArgumentParser(
         description="Open/close cycle stress test with temperature monitoring."
     )

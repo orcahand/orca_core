@@ -14,7 +14,7 @@ run ``scripts/check_sensors.py`` instead.
 
 Usage:
     uv run python scripts/monitor_sensors.py                # autodetect the port
-    uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
+    uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX   # COM3 on Windows
 """
 from __future__ import annotations
 
