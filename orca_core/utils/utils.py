@@ -8,6 +8,7 @@
 
 import logging
 import os
+import sys
 import tempfile
 import yaml
 import numpy as np
@@ -340,20 +341,79 @@ def find_single_usb_serial_port() -> "str | None":
     return None
 
 
+def serial_port_exists(port: str) -> bool:
+    """Return True if ``port`` is currently attached.
+
+    Ports are device files on Linux and macOS, so ``os.path.exists`` answers.
+    Windows COM ports are not files; there pyserial's enumeration is asked.
+    """
+    if not port:
+        return False
+    if sys.platform != "win32":
+        return os.path.exists(port)
+    import serial.tools.list_ports
+
+    wanted = port.casefold()
+    return any(p.device.casefold() == wanted for p in serial.tools.list_ports.comports())
+
+
+def enable_ansi_escapes() -> None:
+    """Let the Windows console honour ANSI colour and cursor codes. No-op elsewhere."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    enable_virtual_terminal_processing = 0x0004
+    for std_handle in (-11, -12):  # stdout, stderr
+        handle = kernel32.GetStdHandle(std_handle)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | enable_virtual_terminal_processing)
+
+
+def _choose_port_plain() -> "str | None":
+    """Numbered-list port picker for terminals without ``curses``."""
+    import serial.tools.list_ports
+
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        print("No USB devices found!")
+        return None
+    print("Choose a device (number, or q to quit):")
+    for i, port in enumerate(ports, 1):
+        print(f"{i:2d}. {port.device}  {port.description or 'No description'}  "
+              f"({port.manufacturer or 'Unknown manufacturer'})")
+    while True:
+        try:
+            answer = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if answer.lower() == "q":
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(ports):
+            return ports[int(answer) - 1].device
+        print(f"Enter a number between 1 and {len(ports)}, or q.")
+
+
 def get_and_choose_port() -> str:
     """Present an interactive terminal menu for USB port selection.
 
     Uses ``curses`` to render an arrow-key-navigable list of all detected
     serial ports. The user selects a port with Enter or quits with ``q`` /
-    Escape.
+    Escape. Falls back to a numbered prompt where ``curses`` is unavailable
+    (Windows).
 
     Returns:
         Device string of the selected port (e.g. ``"/dev/ttyUSB0"``), or
         ``None`` if the user cancels or no ports are found.
     """
-    import curses
+    try:
+        import curses
+    except ImportError:  # python.org Windows builds ship without curses
+        return _choose_port_plain()
     import serial.tools.list_ports
-    
+
     def draw_menu(stdscr, ports, selected_idx):
         stdscr.clear()
         height, width = stdscr.getmaxyx()

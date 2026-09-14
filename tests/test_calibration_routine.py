@@ -3,6 +3,7 @@ offset-calibration failures, and the atomic YAML persistence helper."""
 
 import os
 import shutil
+import sys
 import threading
 
 import numpy as np
@@ -286,6 +287,7 @@ def test_write_yaml_atomic_failed_write_keeps_original(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["calibration.yaml"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")
 def test_write_yaml_atomic_preserves_permissions(tmp_path):
     path = tmp_path / "calibration.yaml"
     path.write_text("calibrated: false\n")
@@ -303,7 +305,8 @@ def test_write_yaml_atomic_preserves_symlink(tmp_path):
     write_yaml_atomic(str(link), {"calibrated": True})
 
     assert link.is_symlink(), "symlink was replaced by a regular file"
-    assert os.readlink(str(link)) == str(target), "symlink was repointed"
+    # samefile rather than string equality: Windows spells the target \\?\C:\...
+    assert os.path.samefile(os.readlink(str(link)), str(target)), "symlink was repointed"
     assert read_yaml(str(target)) == {"calibrated": True}
     assert read_yaml(str(link)) == {"calibrated": True}
     assert sorted(p.name for p in tmp_path.iterdir()) == [

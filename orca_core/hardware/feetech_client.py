@@ -132,7 +132,10 @@ class FeetechClient(MotorClient):
 
         Args:
             motor_ids: All motor IDs being used by the client.
-            port: The serial port to connect to.
+            port: The serial port to connect to. e.g.
+                - Linux: /dev/ttyUSB0
+                - Mac: /dev/tty.usbserial-*
+                - Windows: COM1
             baudrate: The baudrate to communicate with.
             lazy_connect: If True, automatically connects when calling a method
                 that requires a connection, if not already connected.

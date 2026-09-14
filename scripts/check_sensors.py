@@ -23,7 +23,7 @@ orca_ui: https://github.com/orcahand/orca_ui
 Usage:
     uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
     uv run python scripts/check_sensors.py CONFIG --encoder-duration 20
-    uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
+    uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX   # COM3 on Windows
 """
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ from orca_core.hardware.sensing.health import (
     diagnose_encoder_link,
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
+from orca_core.utils import enable_ansi_escapes
 
 # Thresholds and taxel layouts are intentionally script-local — they only
 # drive pass/fail decisions and the ASCII renderer here, not the runtime API.
@@ -161,7 +162,7 @@ def wait_for_frame(getter, timeout=2.0):
 def _redraw_in_place(prev_lines: int, lines: list[str]) -> int:
     """Move the cursor up `prev_lines`, clear each line, write the new ones,
     and flush. Returns the number of lines just written. Uses ANSI escape
-    sequences (works on macOS / Linux terminals; Windows cmd not supported)."""
+    sequences; main() enables them on the Windows console."""
     if prev_lines:
         sys.stdout.write(f"\033[{prev_lines}F")  # cursor up N lines, to col 0
     for ln in lines:
@@ -683,6 +684,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    enable_ansi_escapes()
     args = parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
