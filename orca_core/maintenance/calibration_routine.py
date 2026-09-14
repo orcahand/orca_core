@@ -469,6 +469,23 @@ def _drive_calibration(
                         # torque release); other motors are re-read post-release.
                         if WRIST in hand.config.motor_to_joint_dict[motor_id]:
                             avg_limit = float(np.mean(position_buffers[motor_id]))
+                            if (
+                                hand.motor_client.requires_offset_calibration
+                                and motor_id not in motors_with_final_offset
+                            ):
+                                # Anchor the first hardstop before reversing so
+                                # the opposite stroke has the full servo window.
+                                if not hand.motor_client.calibrate_offset(
+                                    motor_id, upper=(directions[motor_id] > 0)
+                                ):
+                                    _emit(progress_callback, "offset_calibration_failed",
+                                          motor=motor_id, joint=WRIST)
+                                    raise RuntimeError(
+                                        "wrist hardstop offset calibration failed"
+                                    )
+                                time.sleep(TINY_SLEEP)
+                                avg_limit = float(_read_motor_pos_checked(hand)[idx])
+                                motors_with_final_offset.add(motor_id)
                             bound = 1 if directions[motor_id] == 1 else 0
                             pending_limits[motor_id][bound] = avg_limit
                             _emit(
