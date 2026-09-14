@@ -6,7 +6,8 @@ on:
       - main
 
 jobs:
-  test:
+  test-matrix:
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -31,3 +32,11 @@ jobs:
       - name: Run Tests
         run: |
           uv run pytest
+
+  # Single check named "test" for the main ruleset; passes only if every matrix leg passed.
+  test:
+    needs: test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test-matrix.result }}" = "success"
