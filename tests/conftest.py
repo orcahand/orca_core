@@ -1,3 +1,4 @@
+import os
 import time
 
 import pytest
@@ -63,8 +64,7 @@ def _isolated_hand_store(monkeypatch, tmp_path_factory):
 
     ``load_hand`` records identity and resolves calibration under
     ``${ORCA_HOME:-~/.orca}``, keyed by whatever hand id the fixtures hand it.
-    Without this the suite writes into the store of a physically attached
-    hand — and would copy a calibration left beside a packaged model into it.
+    Without this the suite writes into the store of a physically attached hand.
     Tests that set ``ORCA_HOME`` themselves override this.
     """
     from orca_core import hand_store
@@ -72,6 +72,26 @@ def _isolated_hand_store(monkeypatch, tmp_path_factory):
     monkeypatch.setenv(
         hand_store.ORCA_HOME_ENV, str(tmp_path_factory.mktemp("orca-home"))
     )
+
+
+@pytest.fixture(autouse=True)
+def _ignore_calibrations_beside_packaged_models(monkeypatch):
+    """Hide a ``calibration.yaml`` a hardware session left beside a packaged model.
+
+    Those files are gitignored, so CI never has them; without this, ``load_hand``
+    adopts one and a test's outcome depends on the developer's checkout.
+    """
+    from orca_core import hand_store
+
+    models_dir = os.path.realpath(os.path.join(os.path.dirname(hand_store.__file__), "models"))
+    resolve = hand_store.resolve_calibration_path
+
+    def resolve_ignoring_packaged(hand_id, packaged_fallback, board_id=None):
+        if os.path.realpath(packaged_fallback).startswith(models_dir + os.sep):
+            packaged_fallback = os.path.join(hand_store.hands_root(), "no-packaged-calibration.yaml")
+        return resolve(hand_id, packaged_fallback, board_id=board_id)
+
+    monkeypatch.setattr(hand_store, "resolve_calibration_path", resolve_ignoring_packaged)
 
 
 @pytest.fixture(autouse=True)
