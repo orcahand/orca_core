@@ -29,7 +29,13 @@ from orca_core.maintenance import (
     resolve_port,
     valid_baudrates,
 )
-from orca_core.utils import get_and_choose_port, get_model_path, read_yaml
+from orca_core.utils import (
+    enable_ansi_escapes,
+    get_and_choose_port,
+    get_model_path,
+    read_yaml,
+    serial_port_exists,
+)
 
 RED, GREEN, BLUE, PURPLE, YELLOW = '\033[91m', '\033[92m', '\033[94m', '\033[95m', '\033[93m'
 ORANGE, BOLD, RESET = '\033[38;5;208m', '\033[1m', '\033[0m'
@@ -58,6 +64,13 @@ def _banner(title: str) -> None:
 
 def play_success_beep() -> None:
     """Best-effort audible cue when a motor finishes configuration."""
+    try:
+        import winsound
+    except ImportError:
+        pass
+    else:
+        winsound.Beep(800, 100)
+        return
     for cmd in (
         ['paplay', '/usr/share/sounds/freedesktop/stereo/complete.oga'],
         ['beep', '-f', '800', '-l', '100'],
@@ -107,6 +120,9 @@ def on_progress(event: dict) -> None:
         print(f"{GREEN}✓ Found default motor{RESET}")
     elif name == "wrong_motor_detected":
         print(f"{RED}❌ {event['error']} — swap it for the correct motor.{RESET}")
+    elif name == "duplicate_default_motor":
+        print(f"{RED}❌ A factory-default motor still answers (at {event['baudrate']:,} bps) "
+              f"after programming ID {event['target_id']}.{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")
@@ -143,7 +159,7 @@ def _resolve_port(configured_port: str, motor_type: str | None) -> str:
         return port
     print(f"{YELLOW}⚠ Port {configured_port} not found.{RESET}")
     chosen = get_and_choose_port()
-    if chosen and os.path.exists(chosen):
+    if serial_port_exists(chosen):
         print(f"{GREEN}✓ Using selected port: {chosen}{RESET}")
         return chosen
     raise SystemExit(f"{RED}❌ No valid port found. Check your USB connection.{RESET}")
@@ -186,6 +202,7 @@ def _loop_until_interrupt(label: str, once) -> int:
 
 
 def main() -> int:
+    enable_ansi_escapes()
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -203,7 +220,11 @@ def main() -> int:
     config = _load_config(args.config_path)
     port = _resolve_port(config.get('port', '/dev/ttyUSB0'), args.motor_type)
     motor_type = _resolve_motor_type(args.motor_type, port)
-    plan = plan_motor_chain(config, port, motor_type)
+    try:
+        plan = plan_motor_chain(config, port, motor_type)
+    except MotorChainError as exc:
+        print(f"{RED}❌ {exc}{RESET}")
+        return 1
     label = motor_type.capitalize()
 
     if args.reset:

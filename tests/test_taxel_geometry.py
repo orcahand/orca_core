@@ -1,6 +1,7 @@
 """Tests for static taxel geometry loading and its wiring into the tactile config."""
 
 import numpy as np
+import pytest
 
 from orca_core.constants import FINGER_NAMES
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
@@ -10,9 +11,12 @@ from orca_core.hardware.sensing.taxel_geometry import (
     load_all_taxel_geometry,
     load_taxel_geometry,
 )
+from orca_core.hardware.sensing.tactile_mock import (
+    TactileMockState,
+    feed_taxels_frame,
+    install_tactile_mock,
+)
 from orca_core.hardware.tactile_client import TactileClient
-
-from tests._tactile_helpers import TactileMockState, feed_taxels_frame, install_tactile_mock
 
 
 def _make_client(connected_fingers=None):
@@ -55,11 +59,16 @@ class TestLoadGeometry:
             positions[0], [4.03569563e-3, 28.08244307e-3, 3.72577291e-3]
         )
 
-    def test_cache_returns_equal_data(self):
-        assert np.array_equal(
-            load_taxel_geometry("index").positions,
-            load_taxel_geometry("index").positions,
+    def test_cache_returns_the_same_array_object(self):
+        assert (
+            load_taxel_geometry("index").positions
+            is load_taxel_geometry("index").positions
         )
+
+    def test_cached_positions_are_read_only(self):
+        """Callers share the cached array, so it must not be writable."""
+        with pytest.raises(ValueError):
+            load_taxel_geometry("index").positions[0, 0] = 1.0
 
 
 class TestConfigWiring:

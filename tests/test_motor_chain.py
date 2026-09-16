@@ -6,6 +6,8 @@ without hardware. The module under test is family-agnostic, so the family facts
 come from the real client classes via ``motor_client_class``.
 """
 
+import contextlib
+
 import pytest
 
 from orca_core.constants import DYNAMIXEL, FEETECH
@@ -120,6 +122,63 @@ def test_plan_without_finger_motors_raises():
                             "/dev/fake", DYNAMIXEL)
 
 
+# --- v1-style layout: the wrist ID comes from the config map ----------------
+
+
+V1_CFG = {
+    "motor_ids": list(range(1, 18)),
+    "joint_to_motor_map": {"wrist": -17, "thumb_pip": -1},
+    "baudrate": 3_000_000,
+}
+
+
+def test_plan_takes_the_wrist_id_from_the_config_map():
+    plan = mc.plan_motor_chain(V1_CFG, "/dev/fake", DYNAMIXEL)
+    assert plan.wrist_id == 17
+    assert 17 not in plan.finger_ids
+    assert plan.finger_ids == sorted(range(1, 17), reverse=True)
+    assert plan.model_for(17) == "XC430"
+    assert plan.model_for(1) == "XC330"
+    assert plan.all_target_ids == sorted(range(1, 18), reverse=True)
+
+
+def test_plan_rejects_a_wrist_motor_missing_from_motor_ids():
+    cfg = {**DYNA_CFG, "joint_to_motor_map": {"wrist": -19}}
+    with pytest.raises(mc.MotorChainError, match="wrist motor 19"):
+        mc.plan_motor_chain(cfg, "/dev/fake", DYNAMIXEL)
+
+
+def test_scan_accepts_a_prefix_led_by_a_highest_id_wrist(monkeypatch):
+    plan = mc.plan_motor_chain(V1_CFG, "/dev/fake", DYNAMIXEL)
+    FakeBus([motor(17, "XC430", 3_000_000), motor(16, "XC330", 3_000_000)]).install(monkeypatch)
+    scan = mc.scan_configured_motors(plan)
+    assert scan.valid_ids == [17, 16]
+    assert scan.invalid_ids == []
+
+
+def test_scan_rejects_a_finger_model_in_a_highest_id_wrist_slot(monkeypatch):
+    plan = mc.plan_motor_chain(V1_CFG, "/dev/fake", DYNAMIXEL)
+    FakeBus([motor(17, "XC330", 3_000_000)]).install(monkeypatch)
+    scan = mc.scan_configured_motors(plan)
+    assert scan.valid_ids == []
+    assert scan.invalid_ids == [17]
+
+
+def test_configure_chain_programs_a_highest_id_wrist_first(monkeypatch):
+    cfg = {"motor_ids": [1, 2, 3], "joint_to_motor_map": {"wrist": -3}, "baudrate": 1_000_000}
+    plan = mc.plan_motor_chain(cfg, "/dev/fake", DYNAMIXEL)
+    bus = _wire(monkeypatch, plan)
+    bus.plug("XC430", "XC330", "XC330")  # wrist attaches to the board, then the fingers
+    events = []
+
+    configured = mc.configure_motor_chain(plan, progress_callback=events.append, poll_interval=0)
+
+    assert configured == [3, 2, 1]
+    steps = [(e["target_id"], e["expected_model"], e["attaches_to"])
+             for e in events if e["event"] == "step_started"]
+    assert steps == [(3, "XC430", "board"), (2, "XC330", "motor 3"), (1, "XC330", "motor 2")]
+
+
 # --- scan_configured_motors -------------------------------------------------
 
 
@@ -209,6 +268,183 @@ def test_find_default_motor_returns_none_on_empty_bus(monkeypatch):
     assert mc.find_default_motor(dyna_plan(), "XC330") is None
 
 
+# --- configure_default_motor ------------------------------------------------
+
+
+class FakeSessionClient:
+    """Records ID/baud writes issued through a config session."""
+
+    def __init__(self):
+        self.calls = []
+        self.baud_ok = True
+        self.id_ok = True
+
+    def change_motor_baudrate(self, motor_id, new_baud):
+        self.calls.append(("baud", motor_id, new_baud))
+        return self.baud_ok
+
+    def change_motor_id(self, current_id, new_id):
+        self.calls.append(("id", current_id, new_id))
+        return self.id_ok
+
+
+def _wire_sessions(monkeypatch, client, scan=lambda *a, **k: []):
+    """Route _config_session through ``client``, recording each session's baud."""
+    session_bauds = []
+
+    @contextlib.contextmanager
+    def fake_session(motor_type, motor_ids, port, baudrate):
+        session_bauds.append(baudrate)
+        yield client
+
+    monkeypatch.setattr(mc, "_config_session", fake_session)
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    monkeypatch.setattr(mc.time, "sleep", lambda _s: None)
+    return session_bauds
+
+
+def test_configure_default_motor_changes_baud_before_id(monkeypatch):
+    """The ID write must happen at the target baud: an interruption then leaves
+    the motor at (default ID, target baud), which the prescan can still see."""
+    plan = dyna_plan()
+    client = FakeSessionClient()
+    session_bauds = _wire_sessions(monkeypatch, client)
+
+    mc.configure_default_motor(plan, target_id=3)
+
+    assert client.calls == [("baud", plan.default_id, plan.target_baud),
+                            ("id", plan.default_id, 3)]
+    assert session_bauds == [plan.default_baud, plan.target_baud]
+
+
+def test_a_failed_baud_change_never_touches_the_id(monkeypatch):
+    plan = dyna_plan()
+    client = FakeSessionClient()
+    client.baud_ok = False
+    _wire_sessions(monkeypatch, client)
+
+    with pytest.raises(mc.MotorChainError, match="baud"):
+        mc.configure_default_motor(plan, target_id=3)
+    assert not any(call[0] == "id" for call in client.calls)
+
+
+def test_matching_bauds_skip_the_baud_write(monkeypatch):
+    plan = mc.plan_motor_chain({**DYNA_CFG, "baudrate": 1_000_000}, "/dev/fake", FEETECH)
+    client = FakeSessionClient()
+    _wire_sessions(monkeypatch, client)
+
+    mc.configure_default_motor(plan, target_id=3)
+    assert client.calls == [("id", plan.default_id, 3)]
+
+
+def test_a_leftover_default_motor_after_programming_is_refused(monkeypatch):
+    """Two default motors on the bus accept the same writes; the survivor at the
+    default ID is the only detectable symptom, so the step must fail loudly."""
+    plan = dyna_plan()
+    client = FakeSessionClient()
+
+    def scan(motor_type, port, baudrate, id_range):
+        if id_range == (plan.default_id, plan.default_id) and baudrate == plan.default_baud:
+            return [motor(plan.default_id, "XC330", plan.default_baud)]
+        return []
+
+    _wire_sessions(monkeypatch, client, scan=scan)
+    events = []
+
+    with pytest.raises(mc.MotorChainError, match="factory-default motor still answers"):
+        mc.configure_default_motor(plan, target_id=3, progress_callback=events.append)
+    assert [e["event"] for e in events] == ["duplicate_default_motor"]
+    assert events[0]["target_id"] == 3
+
+
+def test_a_wrist_programmed_to_the_default_id_is_not_a_duplicate(monkeypatch):
+    plan = dyna_plan()  # wrist_id == 1 == the factory-default ID
+    client = FakeSessionClient()
+    _wire_sessions(monkeypatch, client,
+                   scan=lambda *a, **k: pytest.fail("probed the default ID"))
+
+    mc.configure_default_motor(plan, target_id=plan.default_id)
+
+
+def test_prescan_surfaces_a_motor_stranded_at_the_default_id(monkeypatch):
+    """A run interrupted between the baud and ID writes leaves the motor at
+    (default ID, target baud); the resume prescan must report it, not skip it."""
+    plan = dyna_plan()
+    FakeBus([motor(1, "XC330", plan.target_baud)]).install(monkeypatch)
+    scan = mc.scan_configured_motors(plan)
+    assert scan.valid_ids == []
+    assert scan.invalid_ids == [1]
+
+
+# --- exit-time cleanup registry ---------------------------------------------
+
+
+class StubPortHandler:
+    def __init__(self):
+        self.closed = False
+
+    def closePort(self):
+        self.closed = True
+
+
+class StubClient:
+    """Mimics the client families' registry contract: register in __init__,
+    deregister only through disconnect()."""
+
+    OPEN_CLIENTS = set()
+
+    def __init__(self):
+        self.port_handler = StubPortHandler()
+        self._connected = False
+        self.OPEN_CLIENTS.add(self)
+
+    def connect(self):
+        self._connected = True
+
+    def scan_for_motors(self, port, id_range, baud_rates=None):
+        return []
+
+
+@pytest.fixture
+def stub_clients(monkeypatch):
+    StubClient.OPEN_CLIENTS.clear()
+    created = []
+
+    def factory(motor_type, motor_ids, port, baudrate):
+        client = StubClient()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(mc, "create_motor_client", factory)
+    return created
+
+
+def test_config_session_clients_never_reach_the_exit_cleanup(stub_clients):
+    """The session bypasses disconnect(), so it must scrub the connected flag
+    and the registry itself — a stale entry makes the atexit torque-disable
+    handler write to a closed port."""
+    with mc._config_session(DYNAMIXEL, [1], "/dev/fake", 57600) as client:
+        assert client._connected
+    assert client.port_handler.closed
+    assert client._connected is False
+    assert client not in StubClient.OPEN_CLIENTS
+
+
+def test_scan_polling_does_not_accumulate_clients(stub_clients):
+    for _ in range(5):
+        mc.scan_motors(DYNAMIXEL, "/dev/fake", 57600, (1, 1))
+    assert len(stub_clients) == 5
+    assert StubClient.OPEN_CLIENTS == set()
+
+
+def test_scan_motors_leaves_the_real_dynamixel_registry_unchanged():
+    from orca_core.hardware.dynamixel_client import DynamixelClient
+
+    before = set(DynamixelClient.OPEN_CLIENTS)
+    mc.scan_motors(DYNAMIXEL, "/dev/nonexistent-orca-chain-test", 57600, (1, 1))
+    assert set(DynamixelClient.OPEN_CLIENTS) == before
+
+
 # --- configure_motor_chain --------------------------------------------------
 
 
@@ -222,7 +458,7 @@ def _wire(monkeypatch, plan):
     bus = FakeBus(plan=plan)
     bus.install(monkeypatch)
 
-    def fake_configure(p, target_id):
+    def fake_configure(p, target_id, progress_callback=None):
         fresh = bus._default_motor()
         assert fresh, "configure called with no default motor on the bus"
         fresh[0].update(id=target_id, baud_rate=p.target_baud)

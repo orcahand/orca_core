@@ -24,7 +24,7 @@ from orca_core.hardware.sensing.constants import (
 )
 
 from tests._encoder_helpers import feed_encoder_frame
-from tests.conftest import wait_until
+from tests._helpers import wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -220,4 +220,23 @@ def test_failed_start_clears_publish_flag(encoder_link_and_client):
     # If publish were still active, this frame would set ``latest``.
     feed_encoder_frame(link)
     wait_until(lambda: client.get_stats().frames_ok >= 1)
+    assert client.get_latest() is None
+
+
+def test_frame_in_timeout_race_window_is_not_published(
+    encoder_link_and_client, monkeypatch
+):
+    """A frame landing between the first-frame wait timing out and the
+    cleanup must not stay visible via get_latest() after the failed start."""
+    link, client = encoder_link_and_client
+
+    def racy_wait(timeout):
+        feed_encoder_frame(link)
+        wait_until(lambda: client.get_stats().frames_ok >= 1)
+        return False  # the wait had already timed out when the frame landed
+
+    monkeypatch.setattr(client._first_frame_event, "wait", racy_wait)
+    with pytest.raises(EncodersNotAvailableError):
+        client.start_stream(timeout=0.05)
+
     assert client.get_latest() is None

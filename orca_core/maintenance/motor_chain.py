@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -29,13 +28,12 @@ from typing import Callable, Optional
 from ..constants import FINGER, MOTOR_MODELS, SUPPORTED_MOTOR_TYPES, WRIST
 from ..hardware.motor_client import MotorClient
 from ..hardware.motor_factory import create_motor_client, motor_client_class
-from ..utils.utils import auto_detect_port
+from ..utils.utils import auto_detect_port, serial_port_exists
 
 logger = logging.getLogger(__name__)
 
-# Timings local to chain assembly: how often to poll for a USB device node,
-# how often to re-scan for a freshly plugged motor, and how long a motor takes
-# to settle after its ID is rewritten.
+# Timings local to chain assembly: USB device-node polling, re-scan for a freshly
+# plugged motor, and settle time after a motor's ID is rewritten.
 PORT_POLL_INTERVAL_S = 0.3
 PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
@@ -103,7 +101,9 @@ class MotorChainPlan:
 
     @property
     def all_target_ids(self) -> list[int]:
-        return self.finger_ids + ([self.wrist_id] if self.wrist_id is not None else [])
+        """Configuration order: descending IDs, the order motors daisy-chain from the board."""
+        ids = self.finger_ids + ([self.wrist_id] if self.wrist_id is not None else [])
+        return sorted(ids, reverse=True)
 
     @property
     def total_motors(self) -> int:
@@ -151,13 +151,24 @@ def resolve_port(port: Optional[str], motor_type: Optional[str] = None) -> Optio
     Never prompts. A front-end that wants to offer the user a choice should
     call this first and fall back to its own picker.
     """
-    if port and os.path.exists(port):
+    if serial_port_exists(port):
         return port
     try:
         detected = auto_detect_port(motor_type)
     except Exception:
         return None
-    return detected if detected and os.path.exists(detected) else None
+    return detected if serial_port_exists(detected) else None
+
+
+def _deregister_client(client: MotorClient) -> None:
+    """Remove a client from its family's exit-time cleanup registry.
+
+    Clients that bypass ``disconnect()`` must never reach the atexit
+    torque-disable handler: it would write to a closed (or never-opened) port.
+    """
+    if hasattr(client, "_connected"):
+        client._connected = False  # a stale flag would let disconnect() touch the closed port
+    getattr(client, "OPEN_CLIENTS", set()).discard(client)
 
 
 @contextlib.contextmanager
@@ -177,12 +188,17 @@ def _config_session(motor_type: str, motor_ids: list[int], port: str, baudrate: 
             client.port_handler.closePort()
         except Exception:
             logger.debug("closing port after config session failed", exc_info=True)
+        _deregister_client(client)
 
 
 def scan_motors(motor_type: str, port: str, baudrate: int, id_range: tuple[int, int]) -> list[dict]:
     """Ping ``id_range`` at ``baudrate``. Returns dicts with id, model_name, baud_rate."""
     client = create_motor_client(motor_type, [], port, baudrate)
-    return client.scan_for_motors(port=port, id_range=id_range, baud_rates=[baudrate])
+    try:
+        return client.scan_for_motors(port=port, id_range=id_range, baud_rates=[baudrate])
+    finally:
+        # The scan client never connects; deregister it so polling cannot grow the registry.
+        _deregister_client(client)
 
 
 def detect_motor_type(port: str, progress_callback: Optional[ProgressCallback] = None) -> Optional[str]:
@@ -208,17 +224,16 @@ def detect_motor_type(port: str, progress_callback: Optional[ProgressCallback] =
 def plan_motor_chain(config: dict, port: str, motor_type: str) -> MotorChainPlan:
     """Build the target chain layout from a hand ``config.yaml`` mapping.
 
-    The wrist, when present, takes ID 1; the fingers take the remaining IDs
-    and are configured from the highest ID down, which is the order they are
-    daisy-chained from the board.
+    The wrist motor ID comes from ``joint_to_motor_map`` (sign stripped, as in
+    the hand config); the fingers take the remaining IDs. Motors are configured
+    from the highest ID down, the order they are daisy-chained from the board.
     """
     motor_ids = config.get("motor_ids") or list(range(17, 0, -1))
-    has_wrist = "wrist" in (config.get("joint_to_motor_map") or {})
-    wrist_id = 1 if has_wrist else None
-    finger_ids = sorted(
-        [mid for mid in motor_ids if mid != 1] if has_wrist else list(motor_ids),
-        reverse=True,
-    )
+    joint_map = config.get("joint_to_motor_map") or {}
+    wrist_id = abs(int(joint_map["wrist"])) if "wrist" in joint_map else None
+    if wrist_id is not None and wrist_id not in motor_ids:
+        raise MotorChainError(f"wrist motor {wrist_id} is not one of motor_ids")
+    finger_ids = sorted((mid for mid in motor_ids if mid != wrist_id), reverse=True)
     if not finger_ids:
         raise MotorChainError("config declares no finger motors")
     return MotorChainPlan(
@@ -246,7 +261,7 @@ def wait_for_port(
     """
     _emit(progress_callback, "waiting_for_port", port=port, present=present)
     deadline = None if timeout is None else time.monotonic() + timeout
-    while os.path.exists(port) != present:
+    while serial_port_exists(port) != present:
         _check_stop(should_stop)
         if deadline is not None and time.monotonic() > deadline:
             raise MotorChainError(
@@ -316,32 +331,75 @@ def find_default_motor(plan: MotorChainPlan, expected_model: str) -> Optional[di
     return motor
 
 
-def configure_default_motor(plan: MotorChainPlan, target_id: int) -> None:
-    """Re-program the factory-default motor to ``target_id`` at the target baud."""
-    with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.default_baud) as client:
+def configure_default_motor(
+    plan: MotorChainPlan,
+    target_id: int,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
+    """Re-program the factory-default motor: baud rate first, then ID.
+
+    Baud-first keeps a failure recoverable: an interruption leaves the motor at
+    (default ID, target baud), which the resume prescan reports as invalid and
+    ``reset_all_motors`` can revert. ID-first would strand it at a combination
+    no scan visits. Afterwards the default ID is probed again: a motor still
+    answering there means a second default motor joined the bus mid-step, so
+    the step is refused rather than risking a duplicate ``target_id``.
+    """
+    if plan.target_baud != plan.default_baud:
+        with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.default_baud) as client:
+            if not client.change_motor_baudrate(plan.default_id, plan.target_baud):
+                raise MotorChainError(
+                    f"failed to set the factory-default motor's baud to {plan.target_baud}"
+                )
+        time.sleep(ID_CHANGE_SETTLE_S)
+
+    with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
         if not client.change_motor_id(plan.default_id, target_id):
             raise MotorChainError(f"failed to change motor ID to {target_id}")
     time.sleep(ID_CHANGE_SETTLE_S)
 
+    _refuse_leftover_default_motor(plan, target_id, progress_callback)
+
+
+def _refuse_leftover_default_motor(
+    plan: MotorChainPlan,
+    target_id: int,
+    progress_callback: Optional[ProgressCallback],
+) -> None:
+    """Fail the step when a factory-default motor still answers after programming.
+
+    Duplicate motors at the target ID are invisible to ``verify_chain`` (both
+    answer as one), so the leftover default motor is the only observable symptom.
+    """
+    if target_id == plan.default_id:
+        return  # the programmed motor legitimately still holds the default ID
+    bauds = [plan.default_baud]
     if plan.target_baud != plan.default_baud:
-        with _config_session(plan.motor_type, [target_id], plan.port, plan.default_baud) as client:
-            if not client.change_motor_baudrate(target_id, plan.target_baud):
-                raise MotorChainError(f"failed to set motor {target_id} baud to {plan.target_baud}")
+        bauds.append(plan.target_baud)
+    for baud in bauds:
+        if scan_motors(plan.motor_type, plan.port, baud, (plan.default_id, plan.default_id)):
+            _emit(progress_callback, "duplicate_default_motor", target_id=target_id,
+                  baudrate=baud)
+            raise MotorChainError(
+                f"a factory-default motor still answers after programming motor "
+                f"{target_id}: a second motor joined the bus during this step "
+                f"(likely the next one plugged in early). Leave it connected and "
+                f"rerun — the run resumes and configures it as the next motor"
+            )
 
 
 def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
     """Find motors already at their target ID and baud.
 
-    A resumed build must see a *contiguous* run of correct IDs counting down
-    from the highest, optionally plus the wrist. Anything else means a motor
-    was mis-programmed, so the IDs are returned as ``invalid_ids`` rather than
-    silently skipped.
+    A resumed build must see a *contiguous* prefix of the chain order (IDs
+    descending, each slot holding its expected model). Anything else means a
+    motor was mis-programmed, so the IDs are returned as ``invalid_ids``
+    rather than silently skipped.
     """
     motors = scan_motors(plan.motor_type, plan.port, plan.target_baud, (1, plan.total_motors))
 
-    # When target_baud == default_baud (Feetech), a fresh finger motor sitting at
-    # the default ID is indistinguishable from a configured wrist. Drop it; a real
-    # wrist motor survives because its model name differs.
+    # With target_baud == default_baud, a fresh motor at the default ID is
+    # indistinguishable from a configured wrist; only a matching model name survives.
     if plan.target_baud == plan.default_baud:
         motors = [
             m for m in motors
@@ -351,21 +409,12 @@ def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
         return ChainScan(valid_ids=[], invalid_ids=[], motors_by_id={})
 
     motor_by_id = {m["id"]: m for m in motors}
-    min_finger_id = 2 if plan.wrist_id is not None else 1
     valid: list[int] = []
-    expected_id = plan.total_motors
-
-    for motor_id in sorted(motor_by_id, reverse=True):
-        if motor_id not in range(min_finger_id, plan.total_motors + 1):
+    for expected_id in plan.all_target_ids:
+        found = motor_by_id.get(expected_id)
+        if found is None or plan.model_for(expected_id) not in found["model_name"]:
             break
-        if motor_id != expected_id or plan.finger_model not in motor_by_id[motor_id]["model_name"]:
-            break
-        valid.append(motor_id)
-        expected_id -= 1
-
-    if (plan.wrist_id is not None and plan.wrist_id in motor_by_id and expected_id == 1
-            and plan.wrist_model in motor_by_id[plan.wrist_id]["model_name"]):
-        valid.append(plan.wrist_id)
+        valid.append(expected_id)
 
     invalid = sorted(mid for mid in motor_by_id if mid not in valid)
     return ChainScan(valid_ids=valid, invalid_ids=invalid, motors_by_id=motor_by_id)
@@ -421,7 +470,9 @@ def configure_motor_chain(
     """Program every motor in ``plan``, resuming from whatever is already done.
 
     Emits ``chain_started``, ``prescan_done``, ``step_started``,
-    ``awaiting_motor``, ``motor_configured``, ``chain_done``. Asks the operator
+    ``awaiting_motor``, ``wrong_motor_detected``, ``motor_found``,
+    ``duplicate_default_motor``, ``motor_configured``, ``chain_verified``,
+    ``chain_done``. Asks the operator
     to connect each motor via ``prompt_callback`` (required for Feetech, whose
     bus must be unpowered while plugging).
 
@@ -487,7 +538,7 @@ def configure_motor_chain(
             time.sleep(poll_interval)
 
         _emit(progress_callback, "motor_found", target_id=target_id, motor=motor)
-        configure_default_motor(plan, target_id)
+        configure_default_motor(plan, target_id, progress_callback=progress_callback)
         configured.append(target_id)
         _emit(progress_callback, "motor_configured", target_id=target_id,
               baudrate=plan.target_baud, configured_ids=list(configured))

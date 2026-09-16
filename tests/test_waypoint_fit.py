@@ -277,7 +277,9 @@ def test_waypoint_fit_folds_scale_into_calibration(joint_feedback_hand, tmp_path
     hand = joint_feedback_hand
     alpha = 0.95
     hand.calibrate(
-        joint_encoder_client=ScaledMapEncoderSource(hand, alpha), joints=TEST_JOINTS
+        joint_encoder_client=ScaledMapEncoderSource(hand, alpha),
+        joints=TEST_JOINTS,
+        persist=True,
     )
 
     # Quantisation to whole encoder counts bounds each sample error by half
@@ -320,6 +322,35 @@ def test_waypoint_fit_out_of_bounds_keeps_endpoint_calibration(joint_feedback_ha
         assert hand.joint_to_motor_ratios_dict[motor_id] == pytest.approx(
             (MOCK_MOTOR_HI - MOCK_MOTOR_LO) / (rom_up - rom_lo)
         )
+
+
+def test_waypoint_fit_skips_joint_whose_anchor_sample_failed(
+    joint_feedback_hand, monkeypatch
+):
+    from orca_core.maintenance import calibration_routine
+
+    hand = joint_feedback_hand
+    failing_slot = JOINT_TO_ENCODER_SLOT["ring_pip"]
+    real_sample = calibration_routine.sample_anchor_count_from_client
+
+    def sample(client, *, slot, **kwargs):
+        if slot == failing_slot:
+            raise JointEncoderCalibrationError("no frames")
+        return real_sample(client, slot=slot, **kwargs)
+
+    fitted = []
+    monkeypatch.setattr(calibration_routine, "sample_anchor_count_from_client", sample)
+    monkeypatch.setattr(
+        calibration_routine,
+        "run_waypoint_fit_for_step",
+        lambda hand, *, completed_joints, **kwargs: fitted.extend(completed_joints),
+    )
+    hand.calibrate(
+        joint_encoder_client=ScaledMapEncoderSource(hand, alpha=0.95),
+        joints=TEST_JOINTS,
+    )
+
+    assert fitted == ["ring_mcp"]
 
 
 def test_waypoint_fit_disabled_by_config(tmp_path):

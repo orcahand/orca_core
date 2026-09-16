@@ -31,7 +31,8 @@ To get started with Orca Core, follow these steps:
     If you prefer an activated shell, you can still use:
 
     ```sh
-    source .venv/bin/activate
+    source .venv/bin/activate      # macOS / Linux
+    .venv\Scripts\activate         # Windows
     ```
 
     End users who do not use `uv` can still install the package with:
@@ -79,6 +80,16 @@ sudo usermod -aG dialout $USER
 sudo chmod 666 /dev/ttyACM0
 ```
 
+### Windows
+
+Supported on Windows 10 and 11; no permission setup is needed. Ports are named `COM3`, `COM4`, ... and are listed with:
+
+```sh
+uv run python -m serial.tools.list_ports -v
+```
+
+Driver notes, latency settings and the first-connection checklist: [Running on Windows](docs/pages/getting-started-docs/windows.md).
+
 ### Serial port, baudrate, and motor type
 
 By default these are all **auto-detected** at connect time.
@@ -91,7 +102,7 @@ However, you can declare them explicitly in `config.yaml`. Useful when:
 
 ```yaml
 # Optional overrides:   auto-detected if omitted
-port: /dev/ttyACM0      # or /dev/cu.usbmodemXXXX on macOS
+port: /dev/ttyACM0      # /dev/cu.usbmodemXXXX on macOS, COM3 on Windows
 baudrate: 1000000       # 1M for v2; 3M for v1
 motor_type: dynamixel   # or 'feetech'
 ```

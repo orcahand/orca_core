@@ -84,7 +84,7 @@ def encoder_to_joint_angle(
 
     All four inputs are per-joint arrays of the same shape; the math
     runs element-wise. Wrap correction is needed because the encoder is
-    absolute over one turn
+    absolute over one turn.
     """
     a14 = raw_counts.astype(np.int64) & AUTO_ENC_ANGLE_MASK
     delta_deg = (a14 - anchor_count.astype(np.int64)) * ENCODER_LSB_DEG

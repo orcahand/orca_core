@@ -199,6 +199,27 @@ def test_parse_write_response_failure_status_raises():
         parse_write_response(_build_write_response(status=0x01))
 
 
+def test_parse_write_response_wrong_func_code_raises():
+    # A stale read response whose first data byte is 0x00 must not ack a write.
+    frame = _build_read_response(b"\x00")
+    with pytest.raises(IOError, match="Expected write response"):
+        parse_write_response(frame)
+
+
+def test_parse_write_response_echoed_address_checked():
+    frame = _build_write_response(status=0x00)  # echoes address 0x0017
+    parse_write_response(frame, expected_address=0x0017)
+    with pytest.raises(IOError, match="address mismatch"):
+        parse_write_response(frame, expected_address=0x0016)
+
+
+def test_parse_read_response_echoed_address_checked():
+    frame = _build_read_response(b"\x42")  # echoes address 0x0010
+    assert parse_read_response(frame, expected_address=0x0010) == b"\x42"
+    with pytest.raises(IOError, match="address mismatch"):
+        parse_read_response(frame, expected_address=0x0011)
+
+
 def test_parse_write_response_bad_lrc_raises():
     frame = bytearray(_build_write_response(status=0x00))
     frame[-1] ^= 0xFF

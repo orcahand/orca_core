@@ -37,8 +37,8 @@ import numpy as np
 from ..constants import WRIST
 from ..hardware.sensing.constants import (
     AUTO_ENC_NUM_JOINTS,
-    JOINT_ENCODER_POLARITY,
     JOINT_TO_ENCODER_SLOT,
+    joint_encoder_polarity_for_side,
 )
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
 from .joint_controller import JointController
@@ -179,8 +179,12 @@ class JointLoopThread:
         persistent failure rather than anchor to garbage.
         """
         for _ in range(retries):
-            pos = self._hand.get_motor_pos(as_dict=True)
-            if self._hand._motor_client.last_read_ok:
+            # Capture the read and its ok-flag under one (re-entrant) motor
+            # lock so a concurrent read can't overwrite the flag in between.
+            with self._hand._motor_lock:
+                pos = self._hand.get_motor_pos(as_dict=True)
+                read_ok = self._hand._motor_client.last_read_ok
+            if read_ok:
                 return np.array(
                     [pos[mid] for mid in self._motor_ids], dtype=np.float64
                 )
@@ -204,11 +208,8 @@ class JointLoopThread:
             return
 
         if self._writes_paused.is_set():
-            # A round-trip motor op (torque toggle / bulk read) is in flight on
-            # the bus. Keep measurements live for callers but issue no motor
-            # writes, so the loop's high-rate sync_writes don't interleave with
-            # that op's status-packet reads and stall them into "no status
-            # packet" timeouts.
+            # Motor op in flight (see pause_writes): keep measurements live
+            # for callers but issue no motor writes.
             measured = self._decode_measured(reading)
             with self._lock:
                 self._latest_measured = measured.copy()
@@ -364,8 +365,10 @@ class JointLoopThread:
         skipped.
 
         Raises:
-            RuntimeError: no encoder-backed joints to control.
+            RuntimeError: no encoder-backed joints to control, or a selected
+                joint lacks motor limits or a nonzero joint-to-motor ratio.
             ValueError: controller size disagrees with the resolved set.
+            KeyError: the hand's side has no validated encoder polarity table.
         """
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map
@@ -373,6 +376,7 @@ class JointLoopThread:
         joint_roms = self._hand.config.joint_roms_dict
         motor_limits = self._hand.motor_limits_dict
         ratios = self._hand.calibration.joint_to_motor_ratios_dict
+        polarity = joint_encoder_polarity_for_side(self._hand.config.type)
 
         joints = [
             j for j in JOINT_TO_ENCODER_SLOT
@@ -388,6 +392,20 @@ class JointLoopThread:
             joints = [j for j in joints if j in self._configured_joints]
         if not joints:
             raise RuntimeError("no encoder-backed joints to control")
+        # A zero ratio makes the joint→motor map a constant (silent no-op) and
+        # a None limit becomes NaN motor targets; fail loudly instead.
+        uncalibrated = [
+            j for j in joints
+            if motor_limits.get(joint_to_motor[j]) is None
+            or any(limit is None for limit in motor_limits[joint_to_motor[j]])
+            or not ratios.get(joint_to_motor[j])
+        ]
+        if uncalibrated:
+            raise RuntimeError(
+                f"joints {uncalibrated} lack motor limits or a nonzero "
+                "joint-to-motor ratio; calibrate them or exclude them via "
+                "the joints argument"
+            )
         if self._controller.num_joints != len(joints):
             raise ValueError(
                 f"controller was constructed with num_joints={self._controller.num_joints} "
@@ -405,7 +423,7 @@ class JointLoopThread:
             [encoder_dict[j].enc_at_anchor_count for j in joints], dtype=np.int64
         )
         self._enc_polarities = np.array(
-            [JOINT_ENCODER_POLARITY[j] for j in joints], dtype=np.int64
+            [polarity[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
             [joint_roms[j][1] for j in joints], dtype=np.float64
@@ -457,13 +475,16 @@ class JointLoopThread:
     def _measure_joint_angles_for_anchor(
         self, retries: int = 5, retry_interval: float = 0.05
     ) -> np.ndarray:
-        """Joint angles for anchoring, requiring a chip-valid sample for every
-        controlled joint. Anchoring to a missing or flagged reading would
-        latch a bogus target the PI then drives toward, so retry and raise on
-        persistent failure rather than anchor to garbage."""
+        """Joint angles for anchoring, requiring a fresh, chip-valid sample
+        for every controlled joint. Anchoring to a missing, stale, or flagged
+        reading would latch a bogus target the PI then drives toward, so
+        retry and raise on persistent failure rather than anchor to garbage."""
         for _ in range(retries):
             reading = self._encoder_client.get_latest()
-            if reading is not None:
+            if (
+                reading is not None
+                and float(reading.freshness_ms) <= WATCHDOG_HOLD_MS
+            ):
                 invalid = (
                     ~np.asarray(reading.parity_ok)[self._slots]
                     | np.asarray(reading.angle_error)[self._slots]
@@ -473,8 +494,8 @@ class JointLoopThread:
             time.sleep(retry_interval)
         raise RuntimeError(
             "no valid encoder reading while anchoring the joint loop: the "
-            "encoder stream is missing or chip-flagged. Check the encoder "
-            "connection; retry once readings are healthy."
+            "encoder stream is missing, stale, or chip-flagged. Check the "
+            "encoder connection; retry once readings are healthy."
         )
 
     def _decode_measured(self, reading) -> np.ndarray:
@@ -578,9 +599,8 @@ class JointLoopThread:
             try:
                 self.step_once(dt=dt)
             except Exception:
-                # Keep the thread alive on transient bus errors; the cycle
-                # surfaces as cycles_exception so a sick loop is visible
-                # without conflating it with jitter overruns.
+                # Keep the thread alive on transient bus errors; counted as
+                # cycles_exception, kept distinct from jitter overruns.
                 self._stats["cycles_exception"] += 1
                 self._maybe_log_step_exception()
             self._record_loop_period(dt)

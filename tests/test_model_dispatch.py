@@ -125,6 +125,8 @@ def patched_models_dir(monkeypatch):
         ({}, ("v2_right_joint",)),  # default version is v2
         ({"version": "v1", "type": "left"}, ("v1_left_joint",)),
         ({"version": "v1", "type": "right"}, ("v1_right_joint",)),
+        # No version given and no v2 sibling: resolution falls back to v1.
+        ({"type": "left"}, ("v1_left_joint",)),
     ],
 )
 def test_canonical_joint_ids_tracks_underlying_config_contents(patched_models_dir, kwargs, expected):

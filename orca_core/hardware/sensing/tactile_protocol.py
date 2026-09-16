@@ -119,11 +119,24 @@ def build_write_request(address: int, data: bytes) -> bytes:
 # Frame Parsers — response frames (request-response mode)
 # =========================================================================
 
-def parse_read_response(frame: bytes) -> bytes:
+def _validate_echoed_address(frame: bytes, expected_address: int | None, context: str) -> None:
+    """Check the address the device echoes in a response against the request's."""
+    if expected_address is None:
+        return
+    echoed = int.from_bytes(frame[4:6], "little")
+    if echoed != expected_address:
+        raise IOError(
+            f"{context} address mismatch: expected 0x{expected_address:04X}, "
+            f"got 0x{echoed:04X} (stale response?)"
+        )
+
+
+def parse_read_response(frame: bytes, expected_address: int | None = None) -> bytes:
     """Validate a read-response frame and return its data bytes.
 
     Frame layout: header(2) + reserved(1) + func(1) + addr(2) + count(2) + data(count) + LRC(1).
-    Raises ``IOError`` on size, func-code, or LRC mismatch.
+    Raises ``IOError`` on size, func-code, LRC, or — when ``expected_address``
+    is given — echoed-address mismatch.
     """
     if len(frame) < MIN_READ_RESPONSE_SIZE:
         raise IOError(
@@ -141,6 +154,7 @@ def parse_read_response(frame: bytes) -> bytes:
             f"Expected read response (func=0x{FUNC_CODE_READ:02X}), "
             f"got func=0x{frame[3]:02X}"
         )
+    _validate_echoed_address(frame, expected_address, "Read response")
     declared_count = int.from_bytes(frame[6:8], "little")
     actual_data = frame[8:-1]
     if len(actual_data) != declared_count:
@@ -158,11 +172,12 @@ def extract_write_response_data_length(meta: bytes) -> int:
     return int.from_bytes(meta[4:6], "little")
 
 
-def parse_write_response(frame: bytes) -> None:
-    """Validate a write-response frame's LRC and status byte.
+def parse_write_response(frame: bytes, expected_address: int | None = None) -> None:
+    """Validate a write-response frame's func code, LRC, and status byte.
 
     Frame layout: header(2) + reserved(1) + func(1) + addr(2) + nbytes(2) + payload(nbytes) + LRC(1).
-    Raises ``IOError`` on size, LRC, or non-zero status.
+    Raises ``IOError`` on size, func-code, LRC, non-zero status, or — when
+    ``expected_address`` is given — echoed-address mismatch.
     """
     if len(frame) < MIN_WRITE_RESPONSE_SIZE:
         raise IOError(
@@ -175,6 +190,12 @@ def parse_write_response(frame: bytes) -> None:
             f"got {frame[:2].hex()}"
         )
     _validate_frame_lrc(frame, "Write response")
+    if frame[3] != FUNC_CODE_WRITE:
+        raise IOError(
+            f"Expected write response (func=0x{FUNC_CODE_WRITE:02X}), "
+            f"got func=0x{frame[3]:02X}"
+        )
+    _validate_echoed_address(frame, expected_address, "Write response")
     nbytes = int.from_bytes(frame[6:8], "little")
     if nbytes >= 1:
         if len(frame) < 9 + nbytes:

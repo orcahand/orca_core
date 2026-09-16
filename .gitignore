@@ -133,3 +133,6 @@ calibration.yaml
 
 # Generated soak-test output (metrics.csv, progress.png)
 soak_logs/
+
+# Scratch worktrees created by agent sessions
+.claude/

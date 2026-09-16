@@ -1,4 +1,7 @@
-"""Typed containers for tactile sensor and joint encoder readings."""
+"""Typed containers for tactile sensor and joint encoder readings, plus the
+serial-link health snapshot. All reading timestamps are ``time.monotonic()``
+receive times: comparable across the tactile and encoder streams, not
+wall-clock."""
 
 import time
 from dataclasses import dataclass
@@ -6,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from orca_core.constants import FingerName
+from orca_core.hardware.hand_serial_link import LinkStats
 
 
 ForceVector = list[float]
@@ -27,6 +31,7 @@ class ResultantReading:
     """Resultant force per finger from a single auto-stream frame.
 
     Supports dict-style access: ``reading["thumb"]`` returns ``[fx, fy, fz]``.
+    ``timestamp`` is the ``time.monotonic()`` frame receive time.
     """
 
     forces: ResultantForces
@@ -53,6 +58,7 @@ class TaxelReading:
 
     Supports dict-style access: ``reading["thumb"]`` returns
     ``[[fx, fy, fz], ...]`` for every taxel on that finger.
+    ``timestamp`` is the ``time.monotonic()`` frame receive time.
     """
 
     taxels: TaxelForces
@@ -79,7 +85,7 @@ class TactileReading:
 
     Either field may be ``None`` if the matching stream mode is disabled.
     Use this when you need forces and taxels guaranteed to come from the
-    same frame (one lock acquisition, one timestamp).
+    same frame (one lock acquisition, one ``time.monotonic()`` timestamp).
     """
 
     forces: ResultantReading | None
@@ -113,7 +119,8 @@ class TaxelData:
 
     Row ``i`` of ``positions`` (meters) and ``forces`` (Newtons) describe the
     same taxel. ``frame`` names the coordinate frame both are expressed in
-    (see ``orca_core.kinematics.frames``).
+    (see ``orca_core.kinematics.frames``). ``timestamp`` is the
+    ``time.monotonic()`` receive time of the source tactile frame.
     """
 
     finger: str
@@ -125,3 +132,19 @@ class TaxelData:
     @property
     def num_taxels(self) -> int:
         return len(self.positions)
+
+
+@dataclass(frozen=True)
+class LinkHealth:
+    """Health snapshot of one hand serial link.
+
+    ``port_dead`` latches ``True`` after a hard port failure (e.g. USB
+    unplug) — the link cannot recover and must be reconnected —
+    with ``port_error`` describing the failure. ``stats`` are the link's
+    demuxer counters at snapshot time.
+    """
+
+    connected: bool
+    port_dead: bool
+    port_error: str | None
+    stats: LinkStats

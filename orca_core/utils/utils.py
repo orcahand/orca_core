@@ -6,12 +6,17 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
+import logging
 import os
+import sys
+import tempfile
 import yaml
 import numpy as np
 
 from ..constants import DEFAULT_MODEL_NAME
 from ..version import LATEST_VERSION
+
+logger = logging.getLogger(__name__)
 
 ################################################################################
 ### Model path utils ##########################################################
@@ -176,6 +181,60 @@ def update_yaml(file_path, key, value):
             yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
 
 
+def _to_plain(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {
+            k: (v.tolist() if isinstance(v, np.ndarray) else v)
+            for k, v in value.items()
+        }
+    return value
+
+
+def write_yaml_atomic(file_path, data):
+    """Replace a YAML file with ``data`` as its complete document, atomically.
+
+    The document is written to a temporary file in the same directory and
+    moved over ``file_path`` with ``os.replace``, so a crash mid-write can
+    never leave the target truncated or partially updated. A symlinked
+    ``file_path`` is resolved first, so the write replaces the file the link
+    points to rather than swapping the link for a regular file. NumPy arrays
+    are converted to plain Python lists, as in :func:`update_yaml`.
+
+    Args:
+        file_path: Path to the YAML file. Created if it does not exist.
+        data: Mapping of top-level keys to values forming the whole document.
+    """
+    data = {key: _to_plain(value) for key, value in data.items()}
+    real_path = os.path.realpath(file_path)
+
+    # mkstemp creates 0600 files; carry over the target's permissions so the
+    # replace doesn't silently restrict who can read an existing file.
+    try:
+        mode = os.stat(real_path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+
+    target_dir = os.path.dirname(real_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir, prefix=os.path.basename(real_path) + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as file:
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, real_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def read_yaml(file_path):
     """Reads a YAML file and returns its content."""
     try:
@@ -216,11 +275,8 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     import serial.tools.list_ports
     from ..constants import KNOWN_VIDS
 
-    # The ORCA OH board carries the motor bus on a dual-CDC device whose two
-    # interfaces share a VID/PID, so VID matching can't separate the motor port
-    # from the sensor port. Identify it with the ORCA_ID? handshake first (the
-    # same mechanism the sensor discovery uses); fall back to VID matching for
-    # classic adapters (U2D2, Feetech) that don't speak ORCA_ID?.
+    # The hand's controller board presents two CDC interfaces with one VID/PID;
+    # find the motor one via ORCA_ID?, falling back to VID for classic adapters.
     try:
         from ..hardware.sensing.serial_discovery import find_motor_port
 
@@ -228,7 +284,7 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
     except Exception:
         orca_motor_port = None
     if orca_motor_port is not None:
-        print(f"Auto-detected ORCA motor bus via ORCA_ID?: {orca_motor_port}")
+        logger.info("Auto-detected ORCA motor bus via ORCA_ID?: %s", orca_motor_port)
         return orca_motor_port
 
     if motor_type is None:
@@ -244,7 +300,12 @@ def auto_detect_port(motor_type: "str | None" = "dynamixel") -> str:
 
     if len(matches) == 1:
         port = matches[0]
-        print(f"Auto-detected {motor_type or 'motor'} adapter: {port.device} ({port.description or 'unknown'})")
+        logger.info(
+            "Auto-detected %s adapter: %s (%s)",
+            motor_type or "motor",
+            port.device,
+            port.description or "unknown",
+        )
         return port.device
 
     return None
@@ -280,20 +341,79 @@ def find_single_usb_serial_port() -> "str | None":
     return None
 
 
+def serial_port_exists(port: str) -> bool:
+    """Return True if ``port`` is currently attached.
+
+    Ports are device files on Linux and macOS, so ``os.path.exists`` answers.
+    Windows COM ports are not files; there pyserial's enumeration is asked.
+    """
+    if not port:
+        return False
+    if sys.platform != "win32":
+        return os.path.exists(port)
+    import serial.tools.list_ports
+
+    wanted = port.casefold()
+    return any(p.device.casefold() == wanted for p in serial.tools.list_ports.comports())
+
+
+def enable_ansi_escapes() -> None:
+    """Let the Windows console honour ANSI colour and cursor codes. No-op elsewhere."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    enable_virtual_terminal_processing = 0x0004
+    for std_handle in (-11, -12):  # stdout, stderr
+        handle = kernel32.GetStdHandle(std_handle)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | enable_virtual_terminal_processing)
+
+
+def _choose_port_plain() -> "str | None":
+    """Numbered-list port picker for terminals without ``curses``."""
+    import serial.tools.list_ports
+
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        print("No USB devices found!")
+        return None
+    print("Choose a device (number, or q to quit):")
+    for i, port in enumerate(ports, 1):
+        print(f"{i:2d}. {port.device}  {port.description or 'No description'}  "
+              f"({port.manufacturer or 'Unknown manufacturer'})")
+    while True:
+        try:
+            answer = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if answer.lower() == "q":
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(ports):
+            return ports[int(answer) - 1].device
+        print(f"Enter a number between 1 and {len(ports)}, or q.")
+
+
 def get_and_choose_port() -> str:
     """Present an interactive terminal menu for USB port selection.
 
     Uses ``curses`` to render an arrow-key-navigable list of all detected
     serial ports. The user selects a port with Enter or quits with ``q`` /
-    Escape.
+    Escape. Falls back to a numbered prompt where ``curses`` is unavailable
+    (Windows).
 
     Returns:
         Device string of the selected port (e.g. ``"/dev/ttyUSB0"``), or
         ``None`` if the user cancels or no ports are found.
     """
-    import curses
+    try:
+        import curses
+    except ImportError:  # python.org Windows builds ship without curses
+        return _choose_port_plain()
     import serial.tools.list_ports
-    
+
     def draw_menu(stdscr, ports, selected_idx):
         stdscr.clear()
         height, width = stdscr.getmaxyx()

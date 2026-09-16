@@ -6,8 +6,13 @@ on:
       - main
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  test-matrix:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +32,11 @@ jobs:
       - name: Run Tests
         run: |
           uv run pytest
+
+  # Single check named "test" for the main ruleset; passes only if every matrix leg passed.
+  test:
+    needs: test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test-matrix.result }}" = "success"

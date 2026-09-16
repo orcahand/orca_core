@@ -1,22 +1,15 @@
 """Constants for ORCA tactile sensing and joint encoders."""
 
 # ---------------------------------------------------------------------------
-# Baud-rate defaults
-#
-# One default per sensing link (the motor-bus default lives in
-# orca_core/constants.py with the other motor settings).
-#
-#   DEFAULT_SENSOR_BAUDRATE   tactile link on its own adapter  (config: sensors.baudrate)
-#   DEFAULT_ENCODER_BAUDRATE  joint-encoder / shared link      (config: encoder_baudrate)
-#
-# When tactile and encoders share one port, the tactile stream rides that link
-# at DEFAULT_ENCODER_BAUDRATE; DEFAULT_SENSOR_BAUDRATE applies only when the
-# tactile sensor is on its own adapter. Both are defaults — set the matching
-# config key to override.
+# Baud-rate defaults (the motor-bus default lives in orca_core/constants.py)
 # ---------------------------------------------------------------------------
 
 DEFAULT_SENSOR_BAUDRATE = 921600
+"""Tactile link on its own adapter; the ``sensors.baudrate`` config key overrides."""
+
 DEFAULT_ENCODER_BAUDRATE = 2_000_000
+"""Joint-encoder link, also carrying tactile when both share one port; the
+``encoder_baudrate`` config key overrides."""
 
 # ---------------------------------------------------------------------------
 # Serial discovery
@@ -96,9 +89,8 @@ RESOLUTION_N_PER_LSB = 0.1
 # Decimal places to round returned force values to (matches RESOLUTION_N_PER_LSB granularity).
 FORCE_ROUND_DECIMALS = 1
 
-# Decimal places kept when averaging zeroing offsets. Finer than the sensor's
-# 0.1 N resolution so the averaged baseline isn't biased before it is
-# subtracted; the subtracted force still rounds to FORCE_ROUND_DECIMALS.
+# Decimal places for averaged zeroing offsets: finer than the sensor's 0.1 N
+# resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
 # Byte sizes per data element
@@ -124,8 +116,7 @@ MIN_WRITE_RESPONSE_SIZE = 9
 MAX_AUTO_FRAME_EFFECTIVE_LENGTH = 8192
 
 # Same bound applied to the ``count`` field in AA 55 register responses — a
-# higher value is treated as a corrupted header and resync rather than the
-# start of a multi-megabyte read.
+# higher value is treated as corruption rather than a multi-megabyte read.
 MAX_RESPONSE_DATA_LEN = MAX_AUTO_FRAME_EFFECTIVE_LENGTH
 
 # Register block structure
@@ -182,12 +173,12 @@ JOINT_TO_ENCODER_SLOT = {
 }
 ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 
-# Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry
-# selects every slotted, motor-driven joint (the default for sensing hands),
-# while an explicit joint list narrows to that subset for bring-up/debugging.
+# Sentinel for ``config.joint_encoder_joints``: a single ``"all"`` entry selects every
+# slotted, motor-driven joint (the sensing-hand default); an explicit list narrows it.
 ENCODER_JOINTS_ALL = "all"
 
-# Per-joint encoder polarity.
+# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation.
+# Validated on right-hand assemblies only; mirroring changes mounting senses.
 JOINT_ENCODER_POLARITY = {
     "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
     "index_abd": 1, "index_mcp": 1, "index_pip": -1,
@@ -196,6 +187,28 @@ JOINT_ENCODER_POLARITY = {
     "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
     "wrist": 1,
 }
+
+# Polarity tables by hand side; a side is absent until its table is validated
+# on hardware ("left" deliberately has none yet).
+JOINT_ENCODER_POLARITY_BY_SIDE = {"right": JOINT_ENCODER_POLARITY}
+
+
+def joint_encoder_polarity_for_side(side):
+    """Per-joint encoder polarity table for hands of ``side``.
+
+    Raises ``ValueError`` for sides without a validated table (currently
+    everything but ``"right"``), so closed-loop consumers fail loudly
+    instead of decoding with wrong signs.
+    """
+    try:
+        return JOINT_ENCODER_POLARITY_BY_SIDE[side]
+    except KeyError:
+        raise ValueError(
+            f"hand side {side!r} (config field 'type') has no validated "
+            f"joint-encoder polarity table, so encoder angles cannot be "
+            f"decoded. Set 'type:' in config.yaml to one of "
+            f"{sorted(JOINT_ENCODER_POLARITY_BY_SIDE)}."
+        ) from None
 
 # Slots the production hand ships with encoders wired (all 17, wrist included).
 # Diagnostics treat a stuck slot outside this set as reserved rather than faulty.
@@ -241,6 +254,10 @@ OFFSET_CLEAR_SETTLE_S = 0.01
 
 OFFSET_CAPTURE_POLL_S = 0.002
 """Poll interval while collecting frames to average into zeroing offsets."""
+
+OFFSET_CAPTURE_FRAME_BUDGET_S = 0.05
+"""Slowest per-frame budget assumed when deriving the default offset-capture
+deadline; well above any real stream period so healthy captures never trip it."""
 
 TACTILE_FIRST_FRAME_TIMEOUT_S = 2.0
 """Default wait for the first stored tactile frame in ``wait_for_first_frame``."""

@@ -8,6 +8,7 @@
 
 """Abstract base class for motor communication clients."""
 
+import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
@@ -27,6 +28,10 @@ class MotorRead(NamedTuple):
     Each field is a 1-D numpy array indexed by the motor order configured
     on the client. NamedTuple so callers can also unpack as
     ``position, velocity, current = client.read_position_velocity_current()``.
+
+    A snapshot does not carry its own freshness; that is reported
+    out-of-band via :attr:`MotorClient.last_read_ok`, whose coupling rules
+    are documented there.
     """
     position: np.ndarray
     velocity: np.ndarray
@@ -47,6 +52,42 @@ class MotorClient(ABC):
     # Subclasses set this to True when ``wait_for_motion_complete`` actually
     # blocks; callers can use it to skip locking around no-op waits.
     waits_for_motion: bool = False
+
+    def _flush_input_buffer(self):
+        """Discards stale RX bytes so a late reply can't be misread as the next response."""
+        ser = getattr(getattr(self, "port_handler", None), "ser", None)
+        if ser is None or not hasattr(ser, "reset_input_buffer"):
+            return
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A new motor family gets its own registry; subclasses of an existing
+        # family share theirs, so that family's exit cleanup still sees them.
+        if not any("OPEN_CLIENTS" in base.__dict__ for base in cls.__mro__):
+            cls.OPEN_CLIENTS = set()
+
+    @classmethod
+    def cleanup_open_clients(cls):
+        """Disconnect every open client of this family at interpreter exit.
+
+        Each client is handled independently so one failing client cannot
+        prevent torque-disable of the others.
+        """
+        for client in list(cls.OPEN_CLIENTS):
+            try:
+                if client.port_handler.is_using:
+                    logging.warning("Forcing %s to close.", cls.__name__)
+                client.port_handler.is_using = False
+                client.disconnect()
+            except Exception:
+                logging.exception(
+                    "Exit cleanup failed for client on %s",
+                    getattr(client, "port_name", "<unknown>"),
+                )
 
     # ----- Motor-family description ----------------------------------------
 
@@ -117,22 +158,35 @@ class MotorClient(ABC):
         self,
         motor_ids: Sequence[int],
         enabled: bool,
-        retries: int = -1,
+        retries: int = 3,
         retry_interval: float = 0.25
-    ) -> None:
+    ) -> "list[int]":
         """Sets whether torque is enabled for the specified motors.
+
+        Unacked motors are reported, never raised: implementations must
+        return the failing IDs (and log them) so callers decide whether the
+        toggle was best-effort or must be acted on.
 
         Args:
             motor_ids: The motor IDs to configure.
             enabled: Whether to engage or disengage the motors.
-            retries: The number of times to retry. If <0, will retry forever.
+            retries: The number of times to retry after the first attempt.
+                0 means a single attempt; <0 retries forever.
             retry_interval: The number of seconds to wait between retries.
+
+        Returns:
+            The motor IDs that could not be set; an empty list means every
+            motor acknowledged the change.
         """
         ...
 
     @abstractmethod
     def set_operating_mode(self, motor_ids: Sequence[int], mode: int) -> None:
         """Sets the operating mode for the specified motors.
+
+        Mode changes require torque off; implementations must not write mode
+        registers for motors whose torque-disable was not acknowledged —
+        those motors are logged and skipped.
 
         Args:
             motor_ids: The motor IDs to configure.
@@ -161,8 +215,18 @@ class MotorClient(ABC):
         returned fresh data for every motor.
 
         A failed bus read keeps returning the stale cache, so callers must
-        discard or retry samples taken while this is ``False``. Clients with
-        no failure signal report ``True``; their reads are authoritative.
+        discard or retry samples taken while this is ``False``.
+
+        The flag is client-global mutable state, overwritten by every read
+        from any thread: it qualifies only the single most recent read on
+        this client, never a specific :class:`MotorRead` snapshot. Check it
+        immediately after the read it describes, before any other read can
+        run — i.e. under the same lock that serialized that read. Any
+        interleaved read (another thread, or a second read of your own)
+        rebinds the flag to different data.
+
+        Clients with no failure signal report ``True``; their reads are
+        authoritative.
         """
         return True
 
@@ -229,7 +293,9 @@ class MotorClient(ABC):
             upper: If True, set to upper bound. If False, set to lower bound.
 
         Returns:
-            True on success, False otherwise.
+            True if the motor acknowledged the offset command. ``False``
+            means the position frame was NOT shifted; callers must check
+            and must not persist limits derived from an unshifted frame.
         """
         # Base implementation: no-op for motors that don't need this
         return True

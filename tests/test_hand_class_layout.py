@@ -23,29 +23,28 @@ from orca_core.base_hand import BaseHand
 from orca_core.hardware_hand import MockMotorResolutionMixin
 
 
-def test_full_hand_mro_is_pinned():
-    assert OrcaHandFull.__mro__ == (
-        OrcaHandFull,
-        OrcaHandTouch,
-        OrcaHandJointFeedback,
-        OrcaHand,
-        BaseHand,
-        *BaseHand.__mro__[1:],
+def test_full_hand_mro_orders_capabilities_before_bases():
+    """Base order decides which class serves each shared seam.
+
+    Only the relative order is pinned, so inserting a mixin stays free while a
+    swapped base tuple still fails.
+    """
+    mro = OrcaHandFull.__mro__
+    assert (
+        mro.index(OrcaHandTouch)
+        < mro.index(OrcaHandJointFeedback)
+        < mro.index(OrcaHand)
+        < mro.index(BaseHand)
     )
 
 
-def test_mock_full_hand_mro_is_pinned():
-    assert MockOrcaHandFull.__mro__ == (
-        MockOrcaHandFull,
-        MockOrcaHandTouch,
-        MockOrcaHandJointFeedback,
-        MockMotorResolutionMixin,
-        OrcaHandFull,
-        OrcaHandTouch,
-        OrcaHandJointFeedback,
-        OrcaHand,
-        BaseHand,
-        *BaseHand.__mro__[1:],
+def test_mock_full_hand_resolves_the_mock_mixin_first():
+    mro = MockOrcaHandFull.__mro__
+    assert (
+        mro.index(MockOrcaHandTouch)
+        < mro.index(MockOrcaHandJointFeedback)
+        < mro.index(MockMotorResolutionMixin)
+        < mro.index(OrcaHandFull)
     )
 
 
@@ -87,4 +86,10 @@ def test_all_hand_classes_import_from_package_root():
         "BaseHand",
     ):
         assert name in orca_core.__all__
-        assert getattr(orca_core, name) is not None
+        getattr(orca_core, name)
+
+
+def test_every_declared_export_is_bound_at_the_package_root():
+    """``__all__`` and the actual bindings must not drift apart."""
+    for name in orca_core.__all__:
+        assert hasattr(orca_core, name), name
