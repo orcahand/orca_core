@@ -18,13 +18,13 @@ from tests._helpers import fake_serial_port
 
 def test_parse_full_identity_line():
     info = parse_orca_info(
-        b"ORCA:SENSOR;SIDE=L;HW=2;FW=1;SN=OH2-L-2628-0047;BID=0123456789ABCDEF"
+        b"ORCA:SENSOR;SIDE=L;HW=2;FW=1;SN=OH2-L-0000-0000;BID=0123456789ABCDEF"
     )
     assert info == OrcaBoardInfo(
         role="sensor", side="left", hw_version=2, fw_version=1,
-        serial="OH2-L-2628-0047", board_id="0123456789ABCDEF",
+        serial="OH2-L-0000-0000", board_id="0123456789ABCDEF",
     )
-    assert info.hand_id == "OH2-L-2628-0047"
+    assert info.hand_id == "OH2-L-0000-0000"
 
 
 def test_parse_reads_sensing_config():

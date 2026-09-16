@@ -29,7 +29,7 @@ Checks a specific motor by setting its operating mode and enabling torque. It th
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>--port</strong> (<strong>str</strong>, optional): The serial port for the Dynamixel client (default: "/dev/tty.usbserial-FT9MISJT").</li><br>
+    <li><strong>--port</strong> (<strong>str</strong>, optional): The serial port for the Dynamixel client (default: "/dev/tty.usbserial-XXXX").</li><br>
     <li><strong>--baudrate</strong> (<strong>int</strong>, optional): The baud rate for the Dynamixel client (default: 3000000).</li><br>
     <li><strong>--motor_id</strong> (<strong>int</strong>, optional): The ID of the motor to check (default: 2).</li><br>
     <li><strong>--wrist</strong> (<strong>action</strong>, optional): If set, configures the motor for wrist operation (position control mode 3). Recommended for motor IDs 0 or 17.</li><br>

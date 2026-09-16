@@ -989,7 +989,7 @@ class TestManualControlHandCap:
         mc = _load("scripts/manual_control.py")
         hand = SimpleNamespace(config=SimpleNamespace(type="right"))
 
-        assert mc._hand_label("ser-8316", hand) == "ser-8316  (right)"
+        assert mc._hand_label("ser-0000", hand) == "ser-0000  (right)"
 
 
 class TestManualControlMotorSpace:

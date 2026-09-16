@@ -15,7 +15,7 @@ run ``scripts/check_sensors.py`` instead.
 Usage:
     uv run python scripts/monitor_sensors.py                # autodetect the port
     uv run python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
-    uv run python scripts/monitor_sensors.py --hand ser-9964 # with several hands attached
+    uv run python scripts/monitor_sensors.py --hand ser-0000 # with several hands attached
 """
 from __future__ import annotations
 

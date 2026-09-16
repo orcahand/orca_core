@@ -488,13 +488,13 @@ def test_two_boards_pair_their_own_ports_despite_interleaved_enumeration(monkeyp
 def test_board_id_is_derived_from_the_usb_descriptor():
     """The firmware folds the same four MCU words into the ID it reports, so
     a board can be named without opening a port — or having the identity
-    firmware at all. Values measured on a real board."""
+    firmware at all. Words chosen so the fold is checkable by eye."""
     from orca_core.hardware.sensing.serial_discovery import board_id_from_usb_serial
 
-    measured = "1B46C9E850304C43552E3120FF061305" * 2
-    assert board_id_from_usb_serial(measured) == "4B7685ABAA282225"
+    descriptor = "00000001000000100000010000001000" * 2
+    assert board_id_from_usb_serial(descriptor) == "0000001100001100"
     # A descriptor carrying the ID once folds identically.
-    assert board_id_from_usb_serial(measured[:32]) == "4B7685ABAA282225"
+    assert board_id_from_usb_serial(descriptor[:32]) == "0000001100001100"
 
 
 @pytest.mark.parametrize(
