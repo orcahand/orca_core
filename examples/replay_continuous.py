@@ -16,9 +16,24 @@ from orca_core.utils.cli import (
 
 
 def main() -> int:
+    """Replay a continuous joint recording produced by ``record_continuous.py``.
+
+    ``--replay-file`` is resolved by :func:`~orca_core.utils.cli.resolve_input_path`. There is
+    no timing flag: the replay rate comes from the recording's ``sampling_frequency_hz``
+    metadata, and each frame is sent as an immediate move.
+
+    Returns the process exit code: 0 after a full replay or a Ctrl-C interrupt, 1 when the
+    replay file is missing, is not a continuous recording, or holds no frames.
+    """
     parser = argparse.ArgumentParser(description="Replay a continuous joint recording.")
     add_hand_arguments(parser)
-    parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--replay-file",
+        type=str,
+        required=True,
+        help="Path to the continuous recording to replay; its sampling_frequency_hz sets the "
+        "replay rate. Required.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)

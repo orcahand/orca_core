@@ -1,5 +1,3 @@
-
-
 import argparse
 import time
 
@@ -24,17 +22,48 @@ def ease_in_out(t: float) -> float:
 
 
 def main() -> int:
+    """Replay the waypoint poses of a recording produced by ``record_angles.py``.
+
+    ``--replay-file`` is resolved by :func:`~orca_core.utils.cli.resolve_input_path`, and
+    ``--mode`` selects :func:`linear_interp` or :func:`ease_in_out`. Poses are sent as
+    immediate moves, so the timing comes from ``--step-time`` and ``--transition-time``
+    rather than from :meth:`~orca_core.base_hand.BaseHand.set_joint_positions`.
+
+    Returns the process exit code: 0 after a full replay or a Ctrl-C interrupt, 1 when the
+    replay file is missing or holds no waypoints.
+    """
     parser = argparse.ArgumentParser(description="Replay recorded waypoint poses.")
     add_hand_arguments(parser)
-    parser.add_argument("--step-time", type=float, default=0.02)
-    parser.add_argument("--transition-time", type=float, default=0.5)
-    parser.add_argument("--loop", action="store_true")
+    parser.add_argument(
+        "--step-time",
+        type=float,
+        default=0.02,
+        help="Duration of each interpolation step. Default: 0.02 s.",
+    )
+    parser.add_argument(
+        "--transition-time",
+        type=float,
+        default=0.5,
+        help="Seconds spent moving between two consecutive waypoints."
+        "step_time and transition_time define the number of steps for each transition. Default: 0.5.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Loop the sequence until interrupted. Default: off.",
+    )
     parser.add_argument(
         "--mode",
         choices=["linear", "ease_in_out"],
         default="ease_in_out",
+        help="Interpolation profile between waypoints. Default: ease_in_out.",
     )
-    parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--replay-file",
+        type=str,
+        required=True,
+        help="Path to the replay file. Required.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)
