@@ -82,8 +82,7 @@ class OrcaHand(BaseHand):
     # default and the stale-flag demote). Mock classes flip it off.
     _persist_calibration = True
 
-    # Waits that let real serial hardware settle. Mock classes zero them:
-    # an in-memory bus has no port to reopen and no motors to coast down.
+    # Waits that let real serial hardware settle. Mock classes zero them.
     _torque_disable_settle_s = MOTOR_TORQUE_DISABLE_SETTLE_S
 
     def __init__(
