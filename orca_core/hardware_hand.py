@@ -36,6 +36,7 @@ from .utils.utils import (
 from .constants import (
     CALIBRATED,
     MODE_MAP,
+    MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
     CURRENT,
@@ -80,6 +81,9 @@ class OrcaHand(BaseHand):
     # Whether calibration state reaches calibration.yaml (the calibrate()
     # default and the stale-flag demote). Mock classes flip it off.
     _persist_calibration = True
+
+    # Waits that let real serial hardware settle. Mock classes zero them.
+    _torque_disable_settle_s = MOTOR_TORQUE_DISABLE_SETTLE_S
 
     def __init__(
         self,
@@ -331,7 +335,7 @@ class OrcaHand(BaseHand):
                     failure = (
                         f"torque disable was not acknowledged by motor IDs {failed_ids}"
                     )
-                time.sleep(0.1)
+                time.sleep(self._torque_disable_settle_s)
             except Exception as e:
                 failure = f"torque disable failed: {e}"
             finally:
@@ -1222,6 +1226,7 @@ class MockMotorResolutionMixin:
     """
 
     _persist_calibration = False
+    _torque_disable_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

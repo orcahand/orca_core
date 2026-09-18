@@ -1,3 +1,5 @@
+import math
+import threading
 import time
 
 import pytest
@@ -14,20 +16,74 @@ from orca_core.hardware.sensing.tactile_mock import (
 )
 from orca_core.hardware.tactile_client import TactileClient
 
+# Bound at import, so a test that patches time.sleep globally never records the clock's yield.
+_real_sleep = time.sleep
 
-class _NoSleepTime:
-    """Stand-in for the ``time`` module whose ``sleep`` is a no-op."""
+
+class _VirtualClock:
+    """Stand-in for the ``time`` module that runs paced routines at full speed.
+
+    ``sleep`` advances a virtual offset instead of blocking, and every clock
+    reading adds that offset back. A routine that paces itself with ``sleep``
+    and bounds a phase with ``time.time() - start < limit`` therefore observes
+    the durations it asked for while costing no wall-clock time. Readings still
+    include real time, so time spent computing or blocked counts as well.
+
+    Each thread keeps its own offset, so concurrent sleeps overlap as they do in
+    real time instead of adding up: a background loop can't bring another
+    thread's deadline forward. The price is that threads share no timeline, so
+    compare readings only against others taken on the same thread.
+    """
+
+    def __init__(self):
+        self._local = threading.local()
 
     def __getattr__(self, name):
         return getattr(time, name)
 
-    def sleep(self, _seconds):
-        pass
+    def sleep(self, seconds):
+        if not 0 <= seconds < math.inf:
+            raise ValueError(f"sleep length must be finite and non-negative, got {seconds!r}")
+        self._local.offset = self.offset + seconds
+        # Nothing blocks here, so yield the GIL: a polling loop would otherwise hog it.
+        _real_sleep(0)
+
+    @property
+    def offset(self) -> float:
+        return getattr(self._local, "offset", 0.0)
+
+    def time(self) -> float:
+        return time.time() + self.offset
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.offset
+
+    def perf_counter(self) -> float:
+        return time.perf_counter() + self.offset
+
+    def time_ns(self) -> int:
+        return time.time_ns() + round(self.offset * 1e9)
+
+    def monotonic_ns(self) -> int:
+        return time.monotonic_ns() + round(self.offset * 1e9)
+
+    def perf_counter_ns(self) -> int:
+        return time.perf_counter_ns() + round(self.offset * 1e9)
+
+
+_VIRTUAL_CLOCK = _VirtualClock()
+
+
+@pytest.fixture(scope="session")
+def virtual_clock():
+    """The clock the paced routines see; read it on a routine's own thread to
+    assert on its durations."""
+    return _VIRTUAL_CLOCK
 
 
 @pytest.fixture(autouse=True, scope="session")
 def _no_settle_sleeps():
-    """Skip hardware settle waits; the mock backends have nothing to settle.
+    """Run hardware-paced routines on a virtual clock instead of real time.
 
     Swaps the ``time`` module reference inside the routines that pace themselves
     for real motors. Patching ``time.sleep`` itself would be global and would
@@ -36,7 +92,7 @@ def _no_settle_sleeps():
     from orca_core import base_hand
     from orca_core.maintenance import calibration_routine, tensioning
 
-    fake = _NoSleepTime()
+    fake = _VIRTUAL_CLOCK
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(base_hand, "time", fake)
         mp.setattr(calibration_routine, "time", fake)

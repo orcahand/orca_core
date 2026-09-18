@@ -113,6 +113,7 @@ so a terminal and a GUI drive the identical routine.
 - Max 1-2 lines per comment. Longer is only OK for headstrings on files, major classes, or major functions.
 - Comments describe the current state of the code, never its history. Don't reference previous versions, past bugs, prior approaches that didn't work, commits, or plans/tasks - if it's not true of the code as it stands, it doesn't belong in a comment.
 - Don't require hardware-specific insider knowledge to understand a comment. Refer to hardware generically rather than by internal codename.
+- Never put a real hand's identity in comments, docstrings, usage text, docs, or tests: no serial numbers, board IDs, USB descriptors, or adapter paths copied from a real device. Use obvious placeholders - `ser-0000` (`ser-0001`, `ser-0002`, ... when several hands are needed), `/dev/cu.usbmodemXXXX`, a patterned board ID like `0123456789ABCDEF`.
 
 ---
 
@@ -143,8 +144,20 @@ uv sync --group dev
 ### Testing
 
 ```bash
-uv run pytest tests/
+uv run pytest tests/          # whole suite, fanned across cores (~3s)
+uv run pytest tests/ -n0      # serial: readable output when debugging a failure
 ```
+
+`addopts = "-n auto"` in `pyproject.toml` makes the suite parallel by default.
+
+Mock backends must never wait on hardware. The settle waits real hands need
+(e.g. `_torque_disable_settle_s`) are class attributes the `Mock*` classes set
+to `0.0`, and routines that pace themselves against `time.time()` run on the virtual clock in `tests/conftest.py`
+— its `sleep` advances a per-thread counter that the thread's clock readings add
+back, so a routine observes the durations it asked for at no wall-clock cost.
+Assert on durations via the `virtual_clock` fixture, read on the thread that ran
+the routine, never on real elapsed time; to hold a background task mid-flight,
+block it on an event rather than sleeping and hoping.
 
 ### Downstream consumers
 
