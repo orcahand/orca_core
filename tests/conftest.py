@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 
@@ -15,6 +16,9 @@ from orca_core.hardware.sensing.tactile_mock import (
 )
 from orca_core.hardware.tactile_client import TactileClient
 
+# Bound at import, so a test that patches time.sleep globally never records the clock's yield.
+_real_sleep = time.sleep
+
 
 class _VirtualClock:
     """Stand-in for the ``time`` module that runs paced routines at full speed.
@@ -22,8 +26,8 @@ class _VirtualClock:
     ``sleep`` advances a virtual offset instead of blocking, and every clock
     reading adds that offset back. A routine that paces itself with ``sleep``
     and bounds a phase with ``time.time() - start < limit`` therefore observes
-    exactly the durations it asked for while costing no wall-clock time —
-    deterministically, instead of racing a real deadline.
+    the durations it asked for while costing no wall-clock time. Readings still
+    include real time, so time spent computing or blocked counts as well.
 
     Each thread keeps its own offset, so concurrent sleeps overlap as they do in
     real time instead of adding up: a background loop can't bring another
@@ -38,11 +42,11 @@ class _VirtualClock:
         return getattr(time, name)
 
     def sleep(self, seconds):
-        if seconds < 0:
-            raise ValueError("sleep length must be non-negative")
+        if not 0 <= seconds < math.inf:
+            raise ValueError(f"sleep length must be finite and non-negative, got {seconds!r}")
         self._local.offset = self.offset + seconds
         # Nothing blocks here, so yield the GIL: a polling loop would otherwise hog it.
-        time.sleep(0)
+        _real_sleep(0)
 
     @property
     def offset(self) -> float:
