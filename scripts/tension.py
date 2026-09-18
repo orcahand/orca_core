@@ -2,7 +2,7 @@
 
 import argparse
 
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand, shutdown_hand
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 
 
 def _print_progress(event: dict) -> None:
@@ -27,7 +27,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
         hand.tension(move_motors=args.move_motors, progress_callback=_print_progress)

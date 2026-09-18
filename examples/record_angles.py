@@ -9,10 +9,13 @@ import yaml
 from orca_core.utils.cli import (
     add_hand_arguments,
     connect_hand,
-    create_hand,
+    create_hand_from_args,
     prepare_output_dir,
     shutdown_hand,
 )
+
+# Fraction of dropped captures above which the recording is not worth saving.
+MAX_STALE_FRACTION = 0.1
 
 
 def _build_output_path(output_dir: Path, prefix: str) -> Path:
@@ -46,8 +49,9 @@ def main() -> int:
     ).strip()
     output_path = _build_output_path(output_dir, prefix)
 
-    hand = create_hand(args.config_path, use_mock=args.mock)
+    hand = create_hand_from_args(args)
     replay_buffer: list[list[float]] = []
+    stale_captures = 0
     try:
         connect_hand(hand)
         hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
@@ -59,12 +63,30 @@ def main() -> int:
         while True:
             input("Capture waypoint")
             waypoint = hand.get_joint_position().as_list(hand.config.joint_ids)
+            # A failed bus read leaves cached values behind, which would replay
+            # as real motion; drop the capture instead of recording a lie.
+            if not hand.last_read_ok:
+                stale_captures += 1
+                print("Motor read failed; waypoint discarded. Try again.")
+                continue
             replay_buffer.append([float(value) for value in waypoint])
             print(f"Captured waypoint #{len(replay_buffer)}")
     except KeyboardInterrupt:
         print("\nRecording finished.")
     finally:
-        if replay_buffer:
+        total = len(replay_buffer) + stale_captures
+        stale_fraction = stale_captures / total if total else 0.0
+        if stale_captures:
+            print(
+                f"{stale_captures}/{total} captures dropped on failed motor reads "
+                f"({stale_fraction:.0%})."
+            )
+        if replay_buffer and stale_fraction > MAX_STALE_FRACTION:
+            print(
+                f"Refusing to save: more than {MAX_STALE_FRACTION:.0%} of captures "
+                "were dropped. Check the motor chain wiring and baud rate."
+            )
+        elif replay_buffer:
             payload = {
                 "metadata": {
                     "type": "discrete_waypoints",
