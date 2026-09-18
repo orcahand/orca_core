@@ -153,10 +153,11 @@ uv run pytest tests/ -n0      # serial: readable output when debugging a failure
 Mock backends must never wait on hardware. The settle waits real hands need
 (e.g. `_torque_disable_settle_s`) are class attributes the `Mock*` classes set
 to `0.0`, and routines that pace themselves against `time.time()` run on the virtual clock in `tests/conftest.py`
-— its `sleep` advances a counter that `time()` reads back, so a routine observes
-the durations it asked for at no wall-clock cost. Assert on durations via the
-`virtual_clock` fixture, never on real elapsed time; to hold a background task
-mid-flight, block it on an event rather than sleeping and hoping.
+— its `sleep` advances a per-thread counter that the thread's clock readings add
+back, so a routine observes the durations it asked for at no wall-clock cost.
+Assert on durations via the `virtual_clock` fixture, read on the thread that ran
+the routine, never on real elapsed time; to hold a background task mid-flight,
+block it on an event rather than sleeping and hoping.
 
 ### Downstream consumers
 

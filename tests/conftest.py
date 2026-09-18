@@ -19,29 +19,34 @@ from orca_core.hardware.tactile_client import TactileClient
 class _VirtualClock:
     """Stand-in for the ``time`` module that runs paced routines at full speed.
 
-    ``sleep`` advances a virtual offset instead of blocking, and ``time`` /
-    ``monotonic`` add that offset back. A routine that paces itself with
-    ``sleep`` and bounds a phase with ``time.time() - start < limit`` therefore
-    observes exactly the durations it asked for while costing no wall-clock
-    time — deterministically, instead of racing a real deadline.
+    ``sleep`` advances a virtual offset instead of blocking, and every clock
+    reading adds that offset back. A routine that paces itself with ``sleep``
+    and bounds a phase with ``time.time() - start < limit`` therefore observes
+    exactly the durations it asked for while costing no wall-clock time —
+    deterministically, instead of racing a real deadline.
+
+    Each thread keeps its own offset, so concurrent sleeps overlap as they do in
+    real time instead of adding up: a background loop can't bring another
+    thread's deadline forward. The price is that threads share no timeline, so
+    compare readings only against others taken on the same thread.
     """
 
     def __init__(self):
-        self._offset = 0.0
-        self._lock = threading.Lock()
+        self._local = threading.local()
 
     def __getattr__(self, name):
         return getattr(time, name)
 
     def sleep(self, seconds):
-        if seconds and seconds > 0:
-            with self._lock:
-                self._offset += seconds
+        if seconds < 0:
+            raise ValueError("sleep length must be non-negative")
+        self._local.offset = self.offset + seconds
+        # Nothing blocks here, so yield the GIL: a polling loop would otherwise hog it.
+        time.sleep(0)
 
     @property
     def offset(self) -> float:
-        with self._lock:
-            return self._offset
+        return getattr(self._local, "offset", 0.0)
 
     def time(self) -> float:
         return time.time() + self.offset
@@ -49,13 +54,26 @@ class _VirtualClock:
     def monotonic(self) -> float:
         return time.monotonic() + self.offset
 
+    def perf_counter(self) -> float:
+        return time.perf_counter() + self.offset
+
+    def time_ns(self) -> int:
+        return time.time_ns() + round(self.offset * 1e9)
+
+    def monotonic_ns(self) -> int:
+        return time.monotonic_ns() + round(self.offset * 1e9)
+
+    def perf_counter_ns(self) -> int:
+        return time.perf_counter_ns() + round(self.offset * 1e9)
+
 
 _VIRTUAL_CLOCK = _VirtualClock()
 
 
 @pytest.fixture(scope="session")
 def virtual_clock():
-    """The clock the paced routines see; read it to assert on their durations."""
+    """The clock the paced routines see; read it on a routine's own thread to
+    assert on its durations."""
     return _VIRTUAL_CLOCK
 
 
