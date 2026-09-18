@@ -49,12 +49,7 @@ class _FakePortsHandTouch(OrcaHandTouch):
 
 
 class _ImpatientTactileClient(TactileClient):
-    """Tactile client with the register retry ladder compressed.
-
-    What the fallback tests pin down is that a port which never answers gets
-    skipped — how long production waits before concluding that is tuning, and
-    waiting it out for real costs seconds per test.
-    """
+    """Tactile client with a short register timeout, so a silent port fails fast."""
 
     def _send_register_request(self, request, response_timeout_s, attempts=2):
         return super()._send_register_request(request, 0.01, attempts)

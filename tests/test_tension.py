@@ -8,8 +8,7 @@ import pytest
 def _holding(hand, move_motors=True):
     """Start a background tension and wait until it parks in the hold phase.
 
-    The hold phase runs until explicitly stopped, so reaching it is the
-    deterministic signal that the task is up — no sleeping on a guess.
+    The hold phase runs until explicitly stopped.
     """
     reached = threading.Event()
 
