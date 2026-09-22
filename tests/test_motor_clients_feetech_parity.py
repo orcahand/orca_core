@@ -21,7 +21,6 @@ import orca_core.hardware.feetech_client as feetech_client_module
 from orca_core.hardware import motor_resolution
 from orca_core.hardware.feetech_client import (
     COMM_SUCCESS,
-    DEFAULT_TORQUE_LIMIT,
     FeetechClient,
 )
 from orca_core.hardware.feetech_registers import HLS
@@ -36,6 +35,11 @@ from orca_core.hardware.feetech import (
 
 
 # ----- fakes ----------------------------------------------------------------
+
+
+# Factory protection current the fake motors report: 231 units = 1501.5 mA.
+PROTECTION_RAW = 231
+PROTECTION_MA = PROTECTION_RAW * HLS.CURRENT_SCALE_MA
 
 
 class FakePortHandler:
@@ -79,10 +83,17 @@ class FakeHlsHandler:
         self.write_hook = None
         self.ping_result = COMM_SUCCESS
         self.modes: dict[int, int] = {}  # mode register per motor; 0 = servo
+        # Protection current (register 28) per motor, in 6.5 mA units.
+        self.protection_current: dict[int, int] = {}
 
     def read1ByteTxRx(self, motor_id, address):
         if address == SMS_STS_MODE:
             return self.modes.get(motor_id, 0), COMM_SUCCESS, 0
+        return 0, COMM_SUCCESS, 0
+
+    def read2ByteTxRx(self, motor_id, address):
+        if address == HLS.PROTECTION_CURRENT:
+            return self.protection_current.get(motor_id, PROTECTION_RAW), COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
     def write1ByteTxRx(self, motor_id, address, value):
@@ -227,10 +238,11 @@ def test_set_operating_mode_writes_the_motion_profile_once(client):
 
     assert [addr for addr, _ in handler.sync_writes] == [
         SMS_STS_ACC, HLS.GOAL_CURRENT]
-    # Nothing moves while the torque limit reads zero, so it is established here.
+    # Nothing moves while the goal current reads zero, so it is established
+    # here: 400 mA is 61 register units.
     motion = _decode([p for addr, p in handler.sync_writes
                       if addr == HLS.GOAL_CURRENT][0], 4)
-    assert motion[1][:2] == [400 & 0xFF, 400 >> 8]
+    assert motion[1][:2] == [61, 0]
 
 
 def test_status_error_on_mode_write_does_not_fail_the_motor(client):
@@ -251,45 +263,100 @@ def test_read_hardware_error_returns_the_status_byte(client):
     assert feetech.read_hardware_error(1) is None
 
 
-# ----- per-motor torque limits ----------------------------------------------
+# ----- per-motor goal-current limits ----------------------------------------
 
 
-def test_write_desired_current_keeps_one_torque_per_motor(client):
+def _goal_current_writes(handler) -> "list[dict[int, list[int]]]":
+    return [_decode(p, 2) for addr, p in handler.sync_writes if addr == HLS.GOAL_CURRENT]
+
+
+def test_connect_reads_each_motors_protection_current(client):
+    feetech, handler = client
+    assert handler.writes == [], "the ceiling comes from a read, never a write"
+    assert feetech.read_current_limits() == {1: PROTECTION_MA, 2: PROTECTION_MA, 3: PROTECTION_MA}
+    assert feetech._current_limit_raw == {1: PROTECTION_RAW, 2: PROTECTION_RAW, 3: PROTECTION_RAW}
+
+
+def test_motor_without_a_readable_protection_current_keeps_full_scale(monkeypatch, caplog):
+    class NoProtectionOnTwo(FakeHlsHandler):
+        def __init__(self, port_handler=None):
+            super().__init__(port_handler)
+            self.protection_current = {2: 0}
+
+    monkeypatch.setattr(feetech_client_module, "PortHandler", FakePortHandler)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", NoProtectionOnTwo)
+    feetech = FeetechClient(motor_ids=[1, 2], port="/dev/fake")
+    feetech.connect()
+    try:
+        assert feetech.read_current_limits() == {1: PROTECTION_MA, 2: FeetechClient.max_current_ma}
+        assert "Motor 2 reports no protection current" in caplog.text
+    finally:
+        feetech._connected = False
+        FeetechClient.OPEN_CLIENTS.discard(feetech)
+
+
+def test_write_desired_current_converts_milliamps_per_motor(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
 
-    assert feetech._motor_torque[1] == 300
-    assert feetech._motor_torque[2] == 700
-    assert feetech._motor_torque[3] == DEFAULT_TORQUE_LIMIT
+    # 300 mA / 6.5 = 46.15 -> 46 (299 mA); 700 / 6.5 = 107.69 -> 107.
+    assert feetech._current_limit_raw[1] == 46
+    assert feetech._current_limit_raw[2] == 107
+    assert feetech._current_limit_raw[3] == PROTECTION_RAW
 
 
 def test_write_desired_current_reaches_the_bus_immediately(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
 
-    torque_writes = [p for addr, p in handler.sync_writes if addr == HLS.GOAL_CURRENT]
-    assert len(torque_writes) == 1, "the torque limit must not wait for a position"
-    assert _decode(torque_writes[0], 2) == {1: [300 & 0xFF, 300 >> 8],
-                                            2: [700 & 0xFF, 700 >> 8]}
+    writes = _goal_current_writes(handler)
+    assert len(writes) == 1, "the goal current must not wait for a position"
+    assert writes[0] == {1: [46, 0], 2: [107, 0]}
+    assert [addr for addr, _ in handler.sync_writes] == [44], "register 44, goal current"
 
 
-def test_write_positions_sync_composes_per_motor_torque(client):
+def test_write_desired_current_clamps_to_the_protection_current(client, caplog):
+    feetech, handler = client
+    feetech.write_desired_current([1], np.array([5000.0]))
+
+    assert _goal_current_writes(handler) == [{1: [PROTECTION_RAW & 0xFF, PROTECTION_RAW >> 8]}]
+    assert "clamped" in caplog.text
+
+
+def test_write_desired_current_warns_when_a_request_quantizes_to_zero(client, caplog):
+    feetech, handler = client
+    feetech.write_desired_current([1], np.array([5.0]))
+
+    assert _goal_current_writes(handler) == [{1: [0, 0]}]
+    assert "will not move" in caplog.text
+
+
+def test_write_desired_current_validates_before_touching_the_bus(client):
+    feetech, handler = client
+    with pytest.raises(ValueError, match="non-negative finite"):
+        feetech.write_desired_current([1, 2], np.array([300.0, -1.0]))
+    assert _goal_current_writes(handler) == []
+    assert feetech._current_limit_raw[1] == PROTECTION_RAW, "motor 1 was valid but nothing changed"
+
+
+def test_write_positions_sync_composes_per_motor_current(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
     feetech.write_positions_sync([1, 2], np.zeros(2))
 
     block = handler.profile_writes[-1]
     assert [(mid, _word(b, PROFILE_CURRENT)) for mid, b in block.items()] == [
-        (1, 300), (2, 700)]
+        (1, 46), (2, 107)]
 
 
-def test_explicit_torque_overrides_the_stored_limit(client):
+def test_explicit_current_limit_overrides_the_stored_limit(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
-    feetech.write_positions_sync([1, 2], np.zeros(2), torque=100)
+    feetech.write_positions_sync([1, 2], np.zeros(2), current_limit_ma=650.0)
 
     block = handler.profile_writes[-1]
     assert {_word(b, PROFILE_CURRENT) for b in block.values()} == {100}
+    assert feetech._current_limit_raw[1] == 100, "the register keeps the override"
 
 
 # ----- position-only hot path -----------------------------------------------

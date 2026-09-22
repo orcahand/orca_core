@@ -69,7 +69,7 @@ FEETECH_MODELS: dict[int, str] = {
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
 DEFAULT_VEL_SCALE = 0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
-DEFAULT_CUR_SCALE = 6.5  # mA per unit
+DEFAULT_CUR_SCALE = HLS.CURRENT_SCALE_MA
 
 # Position limits for STS servo mode (0-4095, one full rotation)
 POS_MIN = 0
@@ -85,7 +85,6 @@ POSITION_DIRECTION = -1
 # hardware can sustain, so a large value just means "go as fast as you can".
 DEFAULT_SPEED = 1500
 DEFAULT_ACC = 150  # Acceleration (0-254): faster ramp-up
-DEFAULT_TORQUE_LIMIT = 500  # Torque limit (0-1000), required for motion
 
 # Seconds between repeated out-of-range warnings for the same motor.
 CLAMP_WARN_INTERVAL_S = 5.0
@@ -161,9 +160,11 @@ class FeetechClient(MotorClient):
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
 
-    # STS servo mode covers one turn only, so there is no multi-turn mode and
-    # current control is emulated through the torque limit.
+    # Multi-turn is not offered: the servo forgets its turn count at power-down,
+    # which would invalidate a persisted wrist calibration on every power cycle.
     supports_multi_turn = False
+    # Mode 0 is position control under the goal-current limit, which is what
+    # backs CURRENT_BASED_POSITION here.
     supported_modes = frozenset({POSITION, VELOCITY, CURRENT_BASED_POSITION})
     position_range_rad = POSITION_RANGE_RAD
     current_scale_ma = HLS.CURRENT_SCALE_MA
@@ -231,12 +232,15 @@ class FeetechClient(MotorClient):
         self._cached_currents = np.zeros(num_motors, dtype=np.float32)
         self._last_read_ok = True
 
-        # Per-motor motion parameters. Torque and speed are registers the motor
-        # keeps until overwritten, so they are commanded on their own rather
-        # than re-sent with every position.
+        # Per-motor motion parameters. Goal current and speed are registers the
+        # motor keeps until overwritten, so they are commanded on their own
+        # rather than re-sent with every position.
         self._default_acc = DEFAULT_ACC
-        self._motor_torque = {mid: DEFAULT_TORQUE_LIMIT for mid in self.motor_ids}
         self._motor_speed = {mid: DEFAULT_SPEED for mid in self.motor_ids}
+        # Goal-current limit and its per-motor ceiling, in register units; both
+        # start at full scale until connect() reads the motor's protection current.
+        self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
+        self._current_ceiling_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
 
         # Sync read/write groups, built once per packet handler and reused: the
         # 100 Hz read path must not rebuild a param table per call.
@@ -283,7 +287,9 @@ class FeetechClient(MotorClient):
 
                 # Motor state is left as-is: connecting must never make the hand
                 # stiffen, move, or burn an EEPROM write. Servo mode is enforced
-                # by set_operating_mode, which disables torque first.
+                # by set_operating_mode, which disables torque first. The one
+                # bus access here is a read of each motor's protection current.
+                self.read_current_limits()
 
                 self.OPEN_CLIENTS.add(self)
             except Exception:
@@ -599,7 +605,7 @@ class FeetechClient(MotorClient):
         """
         self._check_connected()
 
-        # Warn about unsupported modes (mode 5 is supported via torque parameter)
+        # Warn about unsupported modes (mode 5 is servo mode under the goal-current limit)
         unsupported_modes = {
             0: "current control (mode 0) - using servo mode instead",
             4: "multi-turn (mode 4) - using servo mode (limited to 360°)",
@@ -611,7 +617,7 @@ class FeetechClient(MotorClient):
             )
         if mode == 5:
             logging.info(
-                "Feetech: current-based position mode uses torque limiting"
+                "Feetech: current-based position mode is servo mode under the goal-current limit"
             )
 
         with self._bus_lock:
@@ -673,10 +679,36 @@ class FeetechClient(MotorClient):
         self._motor_modes[motor_id] = mode
         return mode
 
-    def _write_profile_params(self, motor_ids: Sequence[int]) -> None:
-        """Sync-write acceleration, torque limit and goal speed for ``motor_ids``.
+    def read_current_limits(self) -> "dict[int, float | None]":
+        """Read each motor's protection current (register 28), its goal-current ceiling, in mA.
 
-        The torque limit is part of this: nothing moves while it reads zero,
+        A motor that does not answer, or reports zero, keeps the register's
+        full scale. Refreshes the ceilings the clamp uses, and lowers a stored
+        limit that now exceeds its ceiling.
+        """
+        self._check_connected()
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                raw = self._read_word(motor_id, HLS.PROTECTION_CURRENT, 'protection current')
+                if raw is not None and raw <= 0:
+                    logging.warning(
+                        'Motor %d reports no protection current; keeping the register maximum',
+                        motor_id)
+                if raw is None or raw <= 0:
+                    raw = HLS.GOAL_CURRENT_MAX_RAW
+                ceiling = min(int(raw), HLS.GOAL_CURRENT_MAX_RAW)
+                self._current_ceiling_raw[motor_id] = ceiling
+                self._current_limit_raw[motor_id] = min(self._current_limit_raw[motor_id], ceiling)
+        return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
+
+    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
+        ceiling_raw = self._current_ceiling_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
+        return ceiling_raw * self.current_scale_ma
+
+    def _write_profile_params(self, motor_ids: Sequence[int]) -> None:
+        """Sync-write acceleration, goal current and goal speed for ``motor_ids``.
+
+        The goal current is part of this: nothing moves while it reads zero,
         and position commands no longer carry it.
         """
         acc_write = self._sync_write(SMS_STS_ACC, 1)
@@ -687,8 +719,8 @@ class FeetechClient(MotorClient):
         for motor_id in motor_ids:
             acc_write.addParam(motor_id, [self._default_acc])
             motion_write.addParam(
-                motor_id, self._torque_bytes(motor_id) + self._speed_bytes(motor_id))
-        for writer, name in ((acc_write, 'acceleration'), (motion_write, 'torque/speed')):
+                motor_id, self._current_bytes(motor_id) + self._speed_bytes(motor_id))
+        for writer, name in ((acc_write, 'acceleration'), (motion_write, 'current/speed')):
             if writer.txPacket() != COMM_SUCCESS:
                 self._flush_input_buffer()
                 logging.error('Sync write of the motion-profile %s failed', name)
@@ -704,9 +736,9 @@ class FeetechClient(MotorClient):
         return self._word_bytes(self.packet_handler.scs_toscs(
             self._motor_speed.get(motor_id, DEFAULT_SPEED), 15))
 
-    def _torque_bytes(self, motor_id: int) -> "list[int]":
-        """Little-endian torque-limit bytes for ``motor_id``."""
-        return self._word_bytes(self._motor_torque.get(motor_id, DEFAULT_TORQUE_LIMIT))
+    def _current_bytes(self, motor_id: int) -> "list[int]":
+        """Little-endian goal-current bytes for ``motor_id``."""
+        return self._word_bytes(self._current_limit_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW))
 
     def _unlock_eeprom(self, motor_id: int) -> None:
         """Let EEPROM writes persist across power-down (lock register 0)."""
@@ -875,12 +907,12 @@ class FeetechClient(MotorClient):
         positions: np.ndarray,
         speed: Optional[int] = None,
         acc: Optional[int] = None,
-        torque: Optional[int] = None,
+        current_limit_ma: Optional[float] = None,
     ) -> None:
         """Writes desired positions to the motors in a single broadcast packet.
 
         With no explicit motion parameters this takes the position-only hot
-        path: speed, acceleration and torque already live in the motor's
+        path: speed, acceleration and goal current already live in the motor's
         registers, so re-sending them per command would re-arm the servo's own
         trapezoidal profile underneath the outer control loop. Passing any of
         them routes through :meth:`write_positions_sync` instead.
@@ -890,13 +922,13 @@ class FeetechClient(MotorClient):
             positions: Target positions in radians.
             speed: Movement speed (0.732 RPM per unit).
             acc: Acceleration (0-254).
-            torque: Torque limit (0-1000).
+            current_limit_ma: Goal-current limit in mA for every listed motor.
         """
-        if speed is None and acc is None and torque is None:
+        if speed is None and acc is None and current_limit_ma is None:
             self._write_positions_only(motor_ids, positions)
             return
         self.write_positions_sync(
-            motor_ids, positions, speed=speed, acc=acc, torque=torque)
+            motor_ids, positions, speed=speed, acc=acc, current_limit_ma=current_limit_ma)
 
     def _write_positions_only(
         self,
@@ -931,38 +963,36 @@ class FeetechClient(MotorClient):
         motor_ids: Sequence[int],
         currents: np.ndarray,
     ) -> None:
-        """Writes desired currents (torque limits) to the motors.
+        """Set each motor's goal-current limit (register 44) in mA, on the bus at once.
 
-        Feetech uses torque limiting (0-1000) instead of direct current
-        control, so each current maps to one motor's torque limit (1 mA ≈ 1
-        torque unit) and is written to the bus immediately — the limit must
-        not wait for a following position command.
+        The register caps the running current in position mode, so the limit
+        must not wait for a following position command. Values are converted
+        at 6.5 mA per unit, rounded down, and clamped to the motor's protection
+        current.
 
         Args:
             motor_ids: Motor IDs to configure.
-            currents: Desired current limits in mA. Mapped to torque (0-1000).
+            currents: Desired current limits in mA.
         """
         self._check_connected()
-
-        if len(motor_ids) != len(currents):
-            raise ValueError('motor_ids and currents must have the same length')
+        plan = self._goal_current_plan(motor_ids, currents)
 
         with self._bus_lock:
             sync_write = self._sync_write(HLS.GOAL_CURRENT, 2)
             sync_write.clearParam()
             failed_ids = []
-            for motor_id, current in zip(motor_ids, currents):
-                self._motor_torque[motor_id] = int(np.clip(abs(current), 0, 1000))
-                if not sync_write.addParam(motor_id, self._torque_bytes(motor_id)):
+            for motor_id, raw in plan.items():
+                self._current_limit_raw[motor_id] = raw
+                if not sync_write.addParam(motor_id, self._current_bytes(motor_id)):
                     failed_ids.append(motor_id)
             if sync_write.txPacket() != COMM_SUCCESS:
                 self._flush_input_buffer()
-                failed_ids = list(motor_ids)
+                failed_ids = list(plan)
             sync_write.clearParam()
 
         if failed_ids:
             logging.error(
-                'Torque limit not written for %d motor(s): %s',
+                'Goal current not written for %d motor(s): %s',
                 len(failed_ids), str(failed_ids)
             )
 
@@ -1170,25 +1200,31 @@ class FeetechClient(MotorClient):
         positions: np.ndarray,
         speed: Optional[int] = None,
         acc: Optional[int] = None,
-        torque: Optional[int] = None,
+        current_limit_ma: Optional[float] = None,
     ) -> None:
         """Writes position plus motion profile to multiple motors using sync write.
 
-        Each motor's packet carries its own torque limit (as set by
-        :meth:`write_desired_current`) unless ``torque`` overrides it for the
-        whole call.
+        Each motor's packet carries its own goal-current limit (as set by
+        :meth:`write_desired_current`) unless ``current_limit_ma`` overrides it
+        for the whole call; the override then stays the motor's limit, since
+        the register keeps it.
 
         Args:
             motor_ids: Motor IDs to write to.
             positions: Target positions in radians.
             speed: Movement speed (0.732 RPM per unit).
             acc: Acceleration (0-254).
-            torque: Torque limit (0-1000), applied to every listed motor.
+            current_limit_ma: Goal-current limit in mA, applied to every listed motor.
         """
         self._check_connected()
 
         if len(motor_ids) != len(positions):
             raise ValueError('motor_ids and positions must have the same length')
+
+        override = (
+            self._goal_current_plan(list(motor_ids), [current_limit_ma] * len(motor_ids))
+            if current_limit_ma is not None else {}
+        )
 
         with self._bus_lock:
             acc = acc if acc is not None else self._default_acc
@@ -1203,14 +1239,13 @@ class FeetechClient(MotorClient):
                     speed if speed is not None
                     else self._motor_speed.get(motor_id, DEFAULT_SPEED)
                 )
-                motor_torque = (
-                    torque if torque is not None
-                    else self._motor_torque.get(motor_id, DEFAULT_TORQUE_LIMIT)
-                )
+                if motor_id in override:
+                    self._current_limit_raw[motor_id] = override[motor_id]
+                motor_current = self._current_limit_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
 
                 logging.debug(
-                    'Position profile: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
-                    motor_id, pos_raw, motor_speed, acc, motor_torque
+                    'Position profile: motor=%d, pos=%d, speed=%d, acc=%d, current=%d',
+                    motor_id, pos_raw, motor_speed, acc, motor_current
                 )
 
                 # One block per motor: acceleration, goal position, goal current, goal speed.
@@ -1218,7 +1253,7 @@ class FeetechClient(MotorClient):
                     motor_id,
                     [acc]
                     + self._word_bytes(self.packet_handler.scs_toscs(pos_raw, 15))
-                    + self._word_bytes(motor_torque)
+                    + self._word_bytes(motor_current)
                     + self._word_bytes(self.packet_handler.scs_toscs(motor_speed, 15)),
                 )
 

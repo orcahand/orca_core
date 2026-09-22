@@ -250,3 +250,9 @@ def test_read_current_limits_reports_every_motor(connected_mock):
     limits = connected_mock.read_current_limits()
     assert set(limits) == {1, 2}
     assert all(limit == type(connected_mock).max_current_ma for limit in limits.values())
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan")])
+def test_mock_write_desired_current_rejects_bad_values(connected_mock, value):
+    with pytest.raises(ValueError, match="non-negative finite"):
+        connected_mock.write_desired_current([1], np.array([value]))

@@ -15,7 +15,8 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from .feetech_client import DEFAULT_TORQUE_LIMIT, FeetechClient
+from .feetech_client import FeetechClient
+from .feetech_registers import HLS
 from .motor_client import MotorClient, MotorRead
 
 
@@ -96,7 +97,9 @@ class MockFeetechClient(MotorClient):
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
-        self._torque = {mid: DEFAULT_TORQUE_LIMIT for mid in self.motor_ids}
+        self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
+        # Per-motor goal-current ceilings a test may script, in mA.
+        self.current_ceilings_ma: dict = {}
         self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
 
     @property
@@ -222,16 +225,18 @@ class MockFeetechClient(MotorClient):
 
     def write_desired_current(self, motor_ids: Sequence[int],
                               currents: np.ndarray) -> None:
-        """Stores the per-motor torque limit the currents map to."""
-        assert len(motor_ids) == len(currents)
+        """Stores each motor's goal-current limit in register units."""
         self.check_connected()
 
-        for mid, current in zip(motor_ids, currents):
+        for mid, raw in self._goal_current_plan(motor_ids, currents).items():
             if mid not in self._cur:
                 logging.error('Write ignored for unknown motor ID %d', mid)
                 continue
-            self._cur[mid] = current
-            self._torque[mid] = int(np.clip(abs(current), 0, 1000))
+            self._current_limit_raw[mid] = raw
+            self._cur[mid] = raw * self.current_scale_ma
+
+    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
+        return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
 
     def write_profile_velocity(self, motor_ids: Sequence[int],
                                profile_velocity: np.ndarray) -> None:

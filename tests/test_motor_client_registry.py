@@ -149,6 +149,9 @@ class FakeHlsHandler:
     def write1ByteTxRx(self, motor_id, address, value):
         return COMM_SUCCESS, 0
 
+    def read2ByteTxRx(self, motor_id, address):
+        return 0, COMM_SUCCESS, 0
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
