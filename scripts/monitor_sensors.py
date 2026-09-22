@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 import tkinter as tk
@@ -57,7 +56,7 @@ MODES = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    p.add_argument("--port", default=os.environ.get("PORT"),
+    p.add_argument("--port", default=None,
                    help="Sensor serial port. Default: autodetect the connector board.")
     p.add_argument("--baud", type=int, default=None,
                    help="Link baud. Default: auto-detect from the connected sensor.")

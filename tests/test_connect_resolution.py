@@ -120,7 +120,7 @@ def test_trial_probe_returns_none_when_nothing_responds(mock_hand, monkeypatch):
 
 
 def test_trial_probe_honours_pinned_motor_type(mock_hand, monkeypatch):
-    """When motor_type is pinned in yaml, only baudrates iterate."""
+    """A pinned, responding motor_type settles the probe on its own."""
     _clear_driver(mock_hand)
     mock_hand.config = dataclasses.replace(mock_hand.config, motor_type="dynamixel")
     seen_types = set()
@@ -132,24 +132,25 @@ def test_trial_probe_honours_pinned_motor_type(mock_hand, monkeypatch):
     from orca_core.hardware import dynamixel_client, feetech_client
 
     monkeypatch.setattr(
-        dynamixel_client.DynamixelClient, "probe", staticmethod(lambda *a, **k: False)
+        dynamixel_client.DynamixelClient, "probe", staticmethod(lambda *a, **k: True)
     )
     monkeypatch.setattr(
         feetech_client.FeetechClient, "probe", staticmethod(fake_feetech_probe)
     )
-    OrcaHand._trial_probe(mock_hand, "/dev/cu.x")
+    motor_type, _ = OrcaHand._trial_probe(mock_hand, "/dev/cu.x")
+    assert motor_type == "dynamixel"
     assert "feetech" not in seen_types
 
 
 def test_trial_probe_honours_pinned_baudrate(mock_hand, monkeypatch):
-    """When baudrate is pinned in yaml, only that rate is probed."""
+    """A pinned, responding baudrate is the only rate probed."""
     _clear_driver(mock_hand)
     mock_hand.config = dataclasses.replace(mock_hand.config, baudrate=3_000_000)
     seen = []
 
     def fake_probe(port, baudrate, motor_ids, **k):
         seen.append(baudrate)
-        return False
+        return True
 
     from orca_core.hardware import dynamixel_client, feetech_client
 
@@ -161,6 +162,25 @@ def test_trial_probe_honours_pinned_baudrate(mock_hand, monkeypatch):
     )
     OrcaHand._trial_probe(mock_hand, "/dev/cu.x")
     assert set(seen) == {3_000_000}
+
+
+def test_trial_probe_widens_when_the_pinned_combination_is_silent(
+    mock_hand, monkeypatch
+):
+    """A hand whose motors were swapped for another family still comes up on
+    its bundled config: the pinned combination is tried first, then dropped."""
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    mock_hand.config = dataclasses.replace(
+        mock_hand.config, motor_type="dynamixel", baudrate=1_000_000
+    )
+    monkeypatch.setattr(
+        dynamixel_client.DynamixelClient, "probe", staticmethod(lambda *a, **k: False)
+    )
+    monkeypatch.setattr(
+        feetech_client.FeetechClient, "probe", staticmethod(lambda *a, **k: True)
+    )
+    assert OrcaHand._trial_probe(mock_hand, "/dev/cu.x")[0] == "feetech"
 
 
 def test_resolve_motor_driver_verifies_pinned_combination(mock_hand, monkeypatch):
@@ -183,22 +203,21 @@ def test_resolve_motor_driver_verifies_pinned_combination(mock_hand, monkeypatch
         feetech_client.FeetechClient, "probe", staticmethod(fake_probe)
     )
     assert not OrcaHand._resolve_motor_driver(mock_hand, "/dev/cu.x")
-    assert seen == [1_000_000]
+    assert seen[0] == 1_000_000
 
 
-# ----- persistence ---------------------------------------------------------
+# ----- no write-back ------------------------------------------------------
 
-def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
-    """A successful auto-probe writes motor_type/baudrate back to config.yaml."""
+def test_connect_never_writes_the_resolved_driver_back(mock_config_dir, monkeypatch):
+    """A connect must leave config.yaml byte-identical: what the probe resolves
+    is never pinned behind the operator's back, so the next connect re-probes."""
     import yaml
 
     from orca_core import MockOrcaHand
-    from orca_core.utils.utils import read_yaml
 
     class ProbedMockOrcaHand(MockOrcaHand):
         # Undo the mock's synthetic resolution so the real probe path runs.
         _resolve_motor_driver = OrcaHand._resolve_motor_driver
-        _persist_resolved_driver = OrcaHand._persist_resolved_driver
 
     from orca_core.hardware import dynamixel_client, feetech_client
 
@@ -217,103 +236,35 @@ def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
     raw.pop("baudrate", None)
     raw["port"] = "/dev/cu.fake"
     config_path.write_text(yaml.safe_dump(raw))
+    before = config_path.read_text()
 
     hand = ProbedMockOrcaHand(config_path=str(config_path))
     success, msg = hand.connect()
     assert success, msg
+    assert hand.config.motor_type == "dynamixel"
+    assert hand.config.baudrate == 1_000_000
     hand.disconnect()
 
-    persisted = read_yaml(str(config_path))
-    assert persisted["motor_type"] == "dynamixel"
-    assert persisted["baudrate"] == 1_000_000
+    assert config_path.read_text() == before
 
 
-def test_persist_write_failure_does_not_fail_connect(
-        mock_config_dir, monkeypatch, caplog):
-    """A read-only config.yaml must degrade to a logged warning, not a
-    failed connect: the probe simply runs again next time."""
-    import yaml
+def test_packaged_configs_pin_no_motor_driver():
+    """The shipped models must leave motor_type/baudrate unset so autodetection
+    is what runs by default."""
+    import glob
 
-    from orca_core import MockOrcaHand
+    import orca_core
     from orca_core.utils.utils import read_yaml
 
-    class ProbedMockOrcaHand(MockOrcaHand):
-        _resolve_motor_driver = OrcaHand._resolve_motor_driver
-        _persist_resolved_driver = OrcaHand._persist_resolved_driver
-
-    from orca_core.hardware import dynamixel_client, feetech_client
-
-    monkeypatch.setattr(
-        dynamixel_client.DynamixelClient,
-        "probe",
-        staticmethod(lambda port, baudrate, motor_ids: baudrate == 1_000_000),
+    configs = glob.glob(
+        os.path.join(os.path.dirname(orca_core.__file__), "models", "v*", "*", "config.yaml")
     )
-    monkeypatch.setattr(
-        feetech_client.FeetechClient, "probe", staticmethod(lambda *a, **k: False)
-    )
-
-    config_path = mock_config_dir / "config.yaml"
-    raw = yaml.safe_load(config_path.read_text())
-    raw.pop("motor_type", None)
-    raw.pop("baudrate", None)
-    raw["port"] = "/dev/cu.fake"
-    config_path.write_text(yaml.safe_dump(raw))
-
-    hand = ProbedMockOrcaHand(config_path=str(config_path))
-    config_path.chmod(0o444)
-    if os.access(config_path, os.W_OK):
-        pytest.skip("cannot make the config read-only on this platform")
-    try:
-        with caplog.at_level(logging.WARNING):
-            success, msg = hand.connect()
-        assert success, msg
-        hand.disconnect()
-        persisted = read_yaml(str(config_path))
-        assert "motor_type" not in persisted
-        assert any(
-            "Could not persist" in record.getMessage()
-            for record in caplog.records
-        )
-    finally:
-        config_path.chmod(0o644)
-
-
-def test_persist_writes_all_keys_in_one_atomic_update(tmp_path, monkeypatch):
-    """All resolved keys land in a single os.replace and unrelated keys
-    survive the rewrite."""
-    import yaml
-
-    from orca_core.hardware import motor_resolution
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump({"custom_key": "keep-me", "port": "auto"})
-    )
-
-    replaced = []
-    real_replace = os.replace
-
-    def spy_replace(src, dst):
-        replaced.append(dst)
-        return real_replace(src, dst)
-
-    monkeypatch.setattr(motor_resolution.os, "replace", spy_replace)
-
-    existing = SimpleNamespace(port="auto", motor_type=None, baudrate=None)
-    resolved = SimpleNamespace(
-        port="/dev/cu.x",
-        motor_type="feetech",
-        baudrate=1_000_000,
-        config_path=str(config_path),
-    )
-    motor_resolution.persist_resolved_driver(existing, resolved)
-
-    data = yaml.safe_load(config_path.read_text())
-    assert data["custom_key"] == "keep-me"
-    assert data["port"] == "auto"  # 'auto' is never overwritten
-    assert data["motor_type"] == "feetech"
-    assert data["baudrate"] == 1_000_000
-    assert replaced == [str(config_path)]
+    assert configs
+    for path in configs:
+        raw = read_yaml(path) or {}
+        assert "motor_type" not in raw, path
+        assert "baudrate" not in raw, path
+        assert raw.get("port", "auto") == "auto", path
 
 
 def test_trial_probe_reports_via_logging_not_stdout(
@@ -383,3 +334,56 @@ def test_failed_connect_restores_config(mock_hand, monkeypatch):
     assert mock_hand.config.motor_type is None
     assert mock_hand.config.baudrate is None
     assert mock_hand.config.port == original_port
+
+
+# ----- driver resolution through cli.create_hand ---------------------------
+
+def test_mock_hand_keeps_the_family_its_config_declares(mock_config_dir):
+    """The mock must not silently substitute Dynamixel semantics for a config
+    that says feetech, or every Feetech branch stays untested."""
+    from orca_core.hardware.mock_feetech_client import MockFeetechClient
+    from orca_core.utils import cli, update_yaml
+
+    config_path = str(mock_config_dir / "config.yaml")
+    update_yaml(config_path, "motor_type", "feetech")
+
+    hand = cli.create_hand(config_path, use_mock=True)
+    assert hand.connect()[0]
+    try:
+        assert hand.config.motor_type == "feetech"
+        assert isinstance(hand.motor_client, MockFeetechClient)
+    finally:
+        hand.disconnect()
+
+
+def test_mock_hand_defaults_only_an_unpinned_family(mock_config_dir):
+    from orca_core.utils import cli
+
+    hand = cli.create_hand(str(mock_config_dir / "config.yaml"), use_mock=True)
+    _clear_driver(hand)
+    assert hand.connect()[0]
+    try:
+        assert hand.config.motor_type == "dynamixel"
+        assert hand.config.baudrate == 1_000_000
+    finally:
+        hand.disconnect()
+
+
+def test_connect_rechecks_control_mode_against_the_resolved_family(
+    mock_config_dir, monkeypatch
+):
+    """multi_turn_position passes the union check while the family is unknown,
+    and must be refused once the bus turns out to be Feetech."""
+    from orca_core.hand_config import HandConfigValidationError
+    from orca_core.utils.utils import update_yaml
+
+    config_path = str(mock_config_dir / "config.yaml")
+    update_yaml(config_path, "motor_type", None)
+    update_yaml(config_path, "control_mode", "multi_turn_position")
+
+    hand = OrcaHand(config_path=config_path)
+    monkeypatch.setattr(
+        OrcaHand, "_trial_probe", lambda self, port: ("feetech", 1_000_000)
+    )
+    with pytest.raises(HandConfigValidationError, match="feetech"):
+        hand._resolve_motor_driver("/dev/cu.x")

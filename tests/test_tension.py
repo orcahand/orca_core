@@ -133,3 +133,64 @@ def test_run_tension_holding_prints_nothing(connected_mock_hand, capsys):
     capsys.readouterr()
     run_tension(connected_mock_hand, move_motors=False, should_stop=lambda: True)
     assert capsys.readouterr().out == ""
+
+
+def test_winding_retries_a_stale_read_instead_of_calling_it_a_stall(
+    connected_mock_hand, monkeypatch
+):
+    """A failed bus read repeats the cached position, i.e. zero motion. Counting
+    that as a stall ends the winding early and leaves the tendons slack."""
+    from orca_core.maintenance import motor_reads
+
+    hand = connected_mock_hand
+    reads = {"n": 0}
+    fresh = [False, False, True]
+
+    def stale_then_fresh(self):
+        reads["n"] += 1
+        return fresh[min(reads["n"] - 1, len(fresh) - 1)]
+
+    monkeypatch.setattr(
+        type(hand.motor_client), "last_read_ok", property(stale_then_fresh)
+    )
+    motor_reads.read_motor_pos_checked(hand, retries=5, retry_interval=0.0)
+    assert reads["n"] == 3
+
+
+def test_winding_reads_are_freshness_checked(connected_mock_hand, monkeypatch):
+    """run_tension must not sample motor positions unchecked."""
+    from orca_core.maintenance import tensioning
+
+    checked = []
+    monkeypatch.setattr(
+        tensioning,
+        "read_motor_pos_checked",
+        lambda hand, **kw: checked.append(1) or hand.get_motor_pos(),
+    )
+    tensioning.run_tension(
+        connected_mock_hand, move_motors=True, should_stop=lambda: True
+    )
+    assert checked, "winding read positions without a freshness check"
+
+
+def test_winding_skips_ticks_while_the_bus_stays_silent(connected_mock_hand, monkeypatch):
+    """A read that fails for longer than the checked read retries must not end
+    the tension run; the tick is skipped and winding carries on."""
+    from orca_core.maintenance import tensioning
+
+    hand = connected_mock_hand
+    calls = {"reads": 0, "stops": 0}
+
+    def flaky_read(hand, **kw):
+        calls["reads"] += 1
+        if calls["reads"] in (1, 3, 4):
+            raise RuntimeError("motor position read failed")
+        return hand.get_motor_pos()
+
+    def stop_after_a_few_ticks():
+        calls["stops"] += 1
+        return calls["stops"] > 6
+
+    monkeypatch.setattr(tensioning, "read_motor_pos_checked", flaky_read)
+    tensioning.run_tension(hand, move_motors=True, should_stop=stop_after_a_few_ticks)
+    assert calls["reads"] >= 5, "winding stopped reading after the failures"

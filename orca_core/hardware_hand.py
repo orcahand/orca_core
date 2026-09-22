@@ -20,9 +20,9 @@ import numpy as np
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
-from .hardware.motor_factory import create_motor_client
-from .hardware.motor_client import MotorClient
-from .hardware.motor_resolution import persist_resolved_driver, trial_probe
+from .hardware.motor_factory import create_mock_motor_client, create_motor_client
+from .hardware.motor_client import MotionTimeoutError, MotorClient
+from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
 from .utils.utils import (
@@ -35,7 +35,9 @@ from .utils.utils import (
 
 from .constants import (
     CALIBRATED,
+    DYNAMIXEL,
     MODE_MAP,
+    MOTOR_BAUD_RATES,
     MOTOR_TORQUE_DISABLE_SETTLE_S,
     WRIST_MODE_VALUE,
     CURRENT_BASED_POSITION,
@@ -105,6 +107,7 @@ class OrcaHand(BaseHand):
         self._motor_client: MotorClient = None
         self._motor_lock: RLock = RLock()
         self._uncalibrated_warned: set = set()
+        self._single_turn_wrist_warned: bool = False
 
         self._task_thread: threading.Thread = None
         self._task_stop_event = threading.Event()
@@ -166,6 +169,17 @@ class OrcaHand(BaseHand):
         """
         return self._motor_client
 
+    @property
+    def last_read_ok(self) -> bool:
+        """Whether the most recent motor read returned fresh data.
+
+        ``False`` means the bus answered nothing and the last
+        :meth:`get_motor_pos` / :meth:`get_motor_current` returned the client's
+        stale cache. Qualifies only the single most recent read: check it right
+        after the read it describes, before another can run.
+        """
+        return self._motor_client.last_read_ok
+
     def _create_motor_client(self) -> MotorClient:
         return create_motor_client(
             self.config.motor_type,
@@ -191,11 +205,10 @@ class OrcaHand(BaseHand):
         self.config = dataclasses.replace(
             self.config, motor_type=motor_type, baudrate=baudrate
         )
+        # The control mode could only be checked against the union of families
+        # until now; recheck against the one actually on the bus.
+        self.config.validate_control_mode()
         return True
-
-    def _persist_resolved_driver(self, existing: "OrcaHandConfig") -> None:
-        """Write driver fields the connect resolved (vs ``existing``) to config.yaml."""
-        persist_resolved_driver(existing, self.config)
 
     def _connect_on_port(self, port: str, base_config: "OrcaHandConfig" = None) -> None:
         """Resolve the motor driver for ``port`` and open the client on it.
@@ -225,7 +238,6 @@ class OrcaHand(BaseHand):
         """
         try:
             self._connect_on_port(port, base_config)
-            self._persist_resolved_driver(base_config)
             return None
         except Exception as e:
             self._discard_motor_client()
@@ -252,8 +264,8 @@ class OrcaHand(BaseHand):
         ``config.yaml`` win when present; a missing port is auto-detected via
         USB vendor ID (interactive picker as a last resort) and a missing
         motor_type/baudrate is found by pinging each candidate family from
-        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Resolved values are
-        persisted back to ``config.yaml``.
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Nothing resolved here is
+        written back, so every connect re-probes what the yaml leaves unset.
 
         Idempotent: calling ``connect()`` on an already-connected hand is a
         no-op that returns success. Call :meth:`disconnect` first to force a
@@ -425,10 +437,11 @@ class OrcaHand(BaseHand):
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
         """Switch the operating mode of the specified motors.
 
-        The wrist motor is always kept in ``multi_turn_position`` mode (4) when
-        *mode* would otherwise be ``current_based_position`` (5) or
-        ``current`` (0), because those modes are incompatible with the wrist
-        joint's range of motion.
+        On motor families that offer multi-turn position control, the wrist
+        motor is kept in ``multi_turn_position`` mode (4) when *mode* would
+        otherwise be ``current_based_position`` (5) or ``current`` (0),
+        because those modes are incompatible with the wrist joint's range of
+        motion. Single-turn families take the requested mode for the wrist too.
 
         Args:
             mode: One of ``"current"``, ``"velocity"``, ``"position"``,
@@ -436,12 +449,17 @@ class OrcaHand(BaseHand):
             motor_ids: Motors to reconfigure. Defaults to all motors.
 
         Raises:
-            ValueError: If *mode* is not recognised or *motor_ids* contains
-                unknown IDs.
+            ValueError: If *mode* is not recognised, is unsupported by the
+                connected motor family, or *motor_ids* contains unknown IDs.
         """
         mode_value = MODE_MAP.get(mode)
         if mode_value is None:
             raise ValueError("Invalid control mode.")
+        if mode not in self._motor_client.supported_modes:
+            raise ValueError(
+                f"{self.config.motor_type} motors do not support control mode "
+                f"{mode!r}; supported: {sorted(self._motor_client.supported_modes)}."
+            )
 
         # Holds the lock for the whole torque-off/mode-write/torque-on sequence
         # so it can't interleave with other bus traffic.
@@ -453,7 +471,9 @@ class OrcaHand(BaseHand):
 
             if mode_value in (MODE_MAP[CURRENT_BASED_POSITION], MODE_MAP[CURRENT]):
                 wrist_motor_id = self.config.joint_to_motor_map.get("wrist")
-                if wrist_motor_id is not None:
+                if wrist_motor_id is not None and not self._motor_client.supports_multi_turn:
+                    self._warn_single_turn_wrist(mode)
+                elif wrist_motor_id is not None:
                     motor_ids_without_wrist = [
                         motor_id for motor_id in motor_ids if motor_id != wrist_motor_id
                     ]
@@ -469,6 +489,19 @@ class OrcaHand(BaseHand):
                     return
 
             self._motor_client.set_operating_mode(motor_ids, mode_value)
+
+    def _warn_single_turn_wrist(self, mode: str) -> None:
+        """Warn once that the wrist stays in ``mode`` for lack of multi-turn."""
+        if self._single_turn_wrist_warned:
+            return
+        self._single_turn_wrist_warned = True
+        rom = self.config.joint_roms_dict.get(WRIST)
+        span = f"{rom[0]}..{rom[1]} deg" if rom else "its configured ROM"
+        logger.warning(
+            "%s motors have no multi-turn mode: the wrist stays in %r. Its ROM "
+            "(%s) is only reachable within one turn of the motor's zero.",
+            self.config.motor_type, mode, span,
+        )
 
     def get_motor_pos(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read raw motor positions from the bus.
@@ -526,8 +559,23 @@ class OrcaHand(BaseHand):
         """
         if not self._motor_client.waits_for_motion:
             return
-        with self._motor_lock:
-            self._motor_client.wait_for_motion_complete(timeout=timeout)
+        # Deliberately unlocked: the client serializes its own bus access per
+        # poll, so holding the motor lock for the whole wait would only stall
+        # the joint loop for up to ``timeout``.
+        self._motor_client.wait_for_motion_complete(timeout=timeout)
+
+    def _settle_before_mode_switch(self) -> None:
+        """Let travelling motors arrive before a mode switch drops torque.
+
+        A motor blocked short of its goal never reports settled, so a timeout
+        is logged rather than raised: the switch must still happen.
+        """
+        try:
+            self.wait_for_motion()
+        except MotionTimeoutError as exc:
+            logger.warning(
+                "%s; switching control mode with motors still short of their goal.", exc
+            )
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
@@ -599,6 +647,7 @@ class OrcaHand(BaseHand):
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
+            self._settle_before_mode_switch()
             self.set_control_mode(control_mode)
 
     def is_calibrated(
@@ -814,6 +863,7 @@ class OrcaHand(BaseHand):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
+        self._settle_before_mode_switch()
         self.set_control_mode(control_mode)
     
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
@@ -850,7 +900,17 @@ class OrcaHand(BaseHand):
         the raw reading back into the expected operating range. Motors with no
         configured limits, or whose positions are within tolerance, receive an
         offset of 0.
+
+        Motor families whose position is bounded to a single turn cannot wrap:
+        every motor gets a 0 offset there, and an out-of-limits reading is a
+        real fault rather than a wrap to correct.
         """
+        if self._motor_client.position_range_rad is not None:
+            self._wrap_offsets_dict = {
+                motor_id: 0.0 for motor_id in self.config.motor_ids
+            }
+            return
+
         motor_pos = self._read_motor_pos_for_offsets()
 
         lower_limit = np.array(
@@ -1212,10 +1272,8 @@ class MockMotorResolutionMixin:
     """Swaps the motor bus for an in-memory mock on ``Mock*`` hand classes.
 
     Supplies the mock motor client and skips connect-time port/driver
-    resolution and yaml persistence: mock motors don't sit on a real bus, so
-    there is nothing to detect or probe (``port: auto`` must not handshake
-    real USB devices) and no auto-detected values worth writing back to
-    config.yaml.
+    resolution: mock motors don't sit on a real bus, so there is nothing to
+    detect or probe (``port: auto`` must not handshake real USB devices).
 
     It also synthesises the motor calibration a mock can't measure, so the
     bundled models are usable out of the box (see
@@ -1285,23 +1343,24 @@ class MockMotorResolutionMixin:
         return super().connect(interactive, **kwargs)
 
     def _create_motor_client(self) -> MotorClient:
-        from .hardware.mock_dynamixel_client import MockDynamixelClient
-
-        return MockDynamixelClient(
-            self.config.motor_ids, self.config.port, self.config.baudrate
+        return create_mock_motor_client(
+            self.config.motor_type or DYNAMIXEL,
+            self.config.motor_ids,
+            self.config.port,
+            self.config.baudrate,
         )
 
     def _resolve_motor_driver(self, port: str) -> bool:
+        # A config naming its family is authoritative; only an unpinned one
+        # falls back, so a Feetech mock keeps Feetech semantics.
         if self.config.motor_type is None or self.config.baudrate is None:
             self.config = dataclasses.replace(
                 self.config,
-                motor_type=self.config.motor_type or "dynamixel",
-                baudrate=self.config.baudrate or 1_000_000,
+                motor_type=self.config.motor_type or DYNAMIXEL,
+                baudrate=self.config.baudrate
+                or MOTOR_BAUD_RATES[self.config.motor_type or DYNAMIXEL][0],
             )
         return True
-
-    def _persist_resolved_driver(self, existing) -> None:
-        pass
 
 
 class MockOrcaHand(MockMotorResolutionMixin, OrcaHand):

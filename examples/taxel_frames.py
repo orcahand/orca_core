@@ -9,6 +9,7 @@ hand for live joint angles; sensor/fingertip frames connect sensors only.
 
 Usage:
     uv run python examples/taxel_frames.py --mock --frame base
+    uv run python examples/taxel_frames.py --frame palm       # autodetect the hand
     uv run python examples/taxel_frames.py path/to/config.yaml --frame palm
 """
 
@@ -19,13 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-from orca_core import MockOrcaHandTouch, OrcaHandTouch, frames
+from orca_core import OrcaHandTouch, frames, load_hand
 
-DEFAULT_CONFIG = (
-    Path(__file__).resolve().parents[1]
-    / "orca_core" / "models" / "v2" / "orcahand-touch-right" / "config.yaml"
-)
-
+MOCK_MODEL = "orcahand-touch-right"
 MOCK_POSE = {"wrist": -10.0, "index_mcp": 30.0, "index_pip": 20.0, "thumb_cmc": -15.0}
 
 
@@ -52,14 +49,26 @@ def _make_mock_feeder(hand):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config_path", nargs="?", default=str(DEFAULT_CONFIG))
+    parser.add_argument(
+        "config_path", nargs="?", default=None,
+        help="Path to config.yaml; omit to autodetect the connected hand.",
+    )
     parser.add_argument("--frame", default=frames.FINGERTIP, choices=frames.FRAMES)
     parser.add_argument("--mock", action="store_true", help="run without hardware")
     args = parser.parse_args()
 
     needs_joints = args.frame in (frames.PALM, frames.BASE, frames.WORLD)
-    hand_cls = MockOrcaHandTouch if args.mock else OrcaHandTouch
-    hand = hand_cls(config_path=args.config_path)
+    # A mock run has no hardware to detect, so name a bundled touch model.
+    model_name = MOCK_MODEL if args.mock and args.config_path is None else None
+    hand = load_hand(
+        config_path=args.config_path, model_name=model_name, mock=args.mock,
+    )
+    if not isinstance(hand, OrcaHandTouch):
+        sys.exit(
+            f"{Path(hand.config.config_path).parent.name} loaded as "
+            f"{type(hand).__name__}, which declares no tactile sensors; "
+            "this example needs a touch-equipped hand."
+        )
 
     if not args.mock and needs_joints:
         # Kinematic frames need live joint angles, so open the motor bus too.

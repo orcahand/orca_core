@@ -25,6 +25,7 @@ from typing import Callable, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, WRIST
+from .motor_reads import read_motor_pos_checked
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -43,6 +44,15 @@ def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) 
         progress_callback({"event": event, **payload})
     except Exception:
         logger.exception("tension progress callback failed")
+
+
+def _read_motor_pos_or_none(hand: "OrcaHand") -> Optional[np.ndarray]:
+    """A checked position read that yields ``None`` while the bus stays silent."""
+    try:
+        return read_motor_pos_checked(hand)
+    except RuntimeError as exc:
+        logger.warning("%s; skipping this winding tick", exc)
+        return None
 
 
 def run_tension(
@@ -114,11 +124,19 @@ def run_tension(
                 _emit(progress_callback, "winding_progress", stage=wind_pass + 1, stages=2)
                 stall_start = None
                 phase_start = time.time()
-                prev_pos = hand.get_motor_pos()
+                # Checked reads: a stale sample repeats the previous position,
+                # which reads as zero motion and ends the winding with slack.
+                # A read that stays stale skips the tick instead of aborting.
+                prev_pos = _read_motor_pos_or_none(hand)
                 while not should_stop() and time.time() - phase_start < max_wind_s:
                     hand._set_motor_pos(increments, rel_to_current=True)
                     time.sleep(0.1)
-                    cur_pos = hand.get_motor_pos()
+                    cur_pos = _read_motor_pos_or_none(hand)
+                    if cur_pos is None:
+                        continue
+                    if prev_pos is None:
+                        prev_pos = cur_pos
+                        continue
                     delta = np.max(np.abs(cur_pos[moved_idx] - prev_pos[moved_idx]))
                     if delta < stall_threshold:
                         if stall_start is None:
