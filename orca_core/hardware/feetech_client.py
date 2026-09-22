@@ -166,6 +166,8 @@ class FeetechClient(MotorClient):
     supports_multi_turn = False
     supported_modes = frozenset({POSITION, VELOCITY, CURRENT_BASED_POSITION})
     position_range_rad = POSITION_RANGE_RAD
+    current_scale_ma = HLS.CURRENT_SCALE_MA
+    max_current_ma = HLS.GOAL_CURRENT_MAX_RAW * HLS.CURRENT_SCALE_MA
 
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.

@@ -139,6 +139,10 @@ def make_fake_sdk(bus):
             bus.instant('reboot')
             return COMM_SUCCESS, 0
 
+        def ping(self, port, motor_id):
+            bus.instant('ping')
+            return 1220, COMM_SUCCESS, 0
+
         def readRx(self, port, motor_id, length):
             bus.bulk_rx()
             return bytes(length), COMM_SUCCESS, 0

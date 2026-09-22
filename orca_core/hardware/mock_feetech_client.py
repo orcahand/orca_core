@@ -50,6 +50,8 @@ class MockFeetechClient(MotorClient):
     supports_multi_turn = FeetechClient.supports_multi_turn
     supported_modes = FeetechClient.supported_modes
     position_range_rad = FeetechClient.position_range_rad
+    current_scale_ma = FeetechClient.current_scale_ma
+    max_current_ma = FeetechClient.max_current_ma
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.

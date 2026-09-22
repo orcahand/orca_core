@@ -84,6 +84,9 @@ def _make_fake_dxl_sdk():
         def read1ByteTxRx(self, port, motor_id, address):
             return 0, 0, 0
 
+        def ping(self, port, motor_id):
+            return 1220, 0, 0
+
         def getTxRxResult(self, comm_result):
             return str(comm_result)
 

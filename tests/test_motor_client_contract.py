@@ -220,3 +220,33 @@ def test_set_torque_enabled_signature_is_uniform_across_family():
         params = inspect.signature(cls.set_torque_enabled).parameters
         assert params["retries"].default == 3, cls.__name__
         assert params["retry_interval"].default == 0.25, cls.__name__
+
+
+# ----- goal-current contract -------------------------------------------------
+
+
+REAL_AND_MOCK = [
+    pytest.param((DynamixelClient, MockDynamixelClient), id="dynamixel"),
+    pytest.param((FeetechClient, MockFeetechClient), id="feetech"),
+]
+
+
+@pytest.mark.parametrize("pair", REAL_AND_MOCK)
+def test_every_family_declares_its_goal_current_register(pair):
+    real, mock = pair
+    for cls in (real, mock):
+        assert cls.current_scale_ma > 0 and np.isfinite(cls.current_scale_ma)
+        assert cls.max_current_ma > 0 and np.isfinite(cls.max_current_ma)
+    assert mock.current_scale_ma == real.current_scale_ma
+    assert mock.max_current_ma == real.max_current_ma
+
+
+def test_abc_leaves_the_goal_current_attributes_to_the_family():
+    assert not hasattr(MotorClient, "current_scale_ma")
+    assert not hasattr(MotorClient, "max_current_ma")
+
+
+def test_read_current_limits_reports_every_motor(connected_mock):
+    limits = connected_mock.read_current_limits()
+    assert set(limits) == {1, 2}
+    assert all(limit == type(connected_mock).max_current_ma for limit in limits.values())
