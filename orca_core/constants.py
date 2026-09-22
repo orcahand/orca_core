@@ -54,6 +54,9 @@ ORCA_INFO_MARKER_SENSOR = b"ORCA:SENSOR;"
 ORCA_ID_PROBE_TIMEOUT_S = 0.2
 ORCA_ID_PROBE_BAUDRATE = 921600
 
+MOTOR_TORQUE_DISABLE_SETTLE_S = 0.1
+"""Let the torque-disable write land before the port closes under it."""
+
 # Dynamixel-specific; TODO(fracapuano): add Feetech control modes too.
 # PWM control mode (id 2) is omitted because it bypasses PID controllers entirely.
 CONTROL_MODES: list[str] = [
