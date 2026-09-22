@@ -379,3 +379,28 @@ def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypat
         assert all(limit is not None for limit in hand.motor_limits_dict[wrist_motor])
     finally:
         hand.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# calibration currents are set once, per motor
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_sets_currents_once_as_a_per_motor_list(connected_hand, monkeypatch):
+    hand = connected_hand
+    calls = []
+    real = hand.set_max_current
+    monkeypatch.setattr(hand, "set_max_current",
+                        lambda current: (calls.append(current), real(current))[1])
+
+    hand.calibrate(joints=["wrist", "index_mcp"], persist=False)
+
+    wrist_index = hand.config.motor_ids.index(hand.config.joint_to_motor_map["wrist"])
+    lists = [c for c in calls if isinstance(c, list)]
+    assert len(lists) == 1, "one per-motor list before the steps, nothing per step"
+    fingers = lists[0][:wrist_index] + lists[0][wrist_index + 1:]
+    assert lists[0][wrist_index] == hand.config.wrist_calibration_current
+    assert set(fingers) == {float(hand.config.calibration_current)}
+    scalars = [c for c in calls if not isinstance(c, list)]
+    assert scalars and set(scalars) == {hand.config.max_current}, \
+        "the only hand-wide write is the restore to max_current"

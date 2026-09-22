@@ -7,12 +7,15 @@
 # ==============================================================================
 
 import dataclasses
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
 from .constants import (
     CONTROL_MODES,
+    DEFAULT_CALIBRATION_CURRENT_MA,
+    DEFAULT_MAX_CURRENT_MA,
     DEFAULT_MODEL_NAME,
     FINGER_NAMES,
     JOINT_IDS,
@@ -200,14 +203,16 @@ class OrcaHandConfig(BaseHandConfig):
     # None = auto-detect at connect time (probed and persisted to config.yaml).
     baudrate: int | None = None
     port: str = "auto"
-    max_current: int = 300  # mA
+    max_current: int = DEFAULT_MAX_CURRENT_MA
     control_mode: str = "current_based_position"
     motor_type: str | None = None
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
-    calibration_current: int = 200  # mA
-    wrist_calibration_current: int = 100  # mA
+    calibration_current: int = DEFAULT_CALIBRATION_CURRENT_MA
+    # None resolves to calibration_current: the wrist gets what the fingers get
+    # unless a config says otherwise.
+    wrist_calibration_current: int | None = None
     calibration_step_size: float = 0.1  # rad
     calibration_step_period: float = 0.01  # s
     calibration_threshold: float = 0.01  # rad
@@ -301,7 +306,7 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_inversion_dict"] = joint_inversion_dict
         if "calibration_current" in config:
             kwargs["calibration_current"] = int(config["calibration_current"])
-        if "wrist_calibration_current" in config:
+        if config.get("wrist_calibration_current") is not None:
             kwargs["wrist_calibration_current"] = int(
                 config["wrist_calibration_current"]
             )
@@ -372,6 +377,13 @@ class OrcaHandConfig(BaseHandConfig):
 
         self.validate_control_mode()
 
+        for name in ("max_current", "calibration_current", "wrist_calibration_current"):
+            value = getattr(self, name)
+            if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
+                raise HandConfigValidationError(
+                    f"{name} must be a positive number of mA, got {value!r}."
+                )
+
         if self.max_current < self.calibration_current:
             raise HandConfigValidationError(
                 "Max current should be greater than the calibration current."
@@ -418,6 +430,8 @@ class OrcaHandConfig(BaseHandConfig):
                     )
 
     def __post_init__(self) -> None:
+        if self.wrist_calibration_current is None:
+            object.__setattr__(self, "wrist_calibration_current", self.calibration_current)
         self.validate_config()
 
 

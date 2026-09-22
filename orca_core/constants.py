@@ -23,6 +23,11 @@ JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
+# Goal-current limits in mA. config.yaml overrides them; every packaged v2
+# config pins 300 for both.
+DEFAULT_MAX_CURRENT_MA = 300
+DEFAULT_CALIBRATION_CURRENT_MA = 300
+
 KNOWN_VIDS: dict[str, list[int]] = {
     DYNAMIXEL: [
         0x0403,  # FTDI (U2D2, most common)
