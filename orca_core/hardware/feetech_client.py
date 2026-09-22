@@ -24,7 +24,7 @@ from ..constants import (
 from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 from .feetech import (
     PortHandler,
-    sms_sts,
+    protocol_packet_handler,
     GroupSyncWrite,
     GroupSyncRead,
     COMM_SUCCESS,
@@ -37,11 +37,11 @@ from .feetech import (
     SMS_STS_MOVING,
     SMS_STS_ACC,
     SMS_STS_GOAL_POSITION_L,
-    SMS_STS_GOAL_TIME_L,
     SMS_STS_GOAL_SPEED_L,
     SMS_STS_ID,
     SMS_STS_BAUD_RATE,
 )
+from .feetech_registers import HLS
 
 # Map host-facing baud rates to the firmware's register code.
 FEETECH_BAUD_RATE_MAP: dict[int, int] = {
@@ -116,6 +116,13 @@ POSITION_RANGE_RAD: "tuple[float, float]" = tuple(
 def feetech_cleanup_handler():
     """Disconnect every open Feetech client at interpreter exit."""
     FeetechClient.cleanup_open_clients()
+
+
+class HLSPacketHandler(protocol_packet_handler):
+    """Wire protocol for HLS servos: little-endian registers, no family helpers."""
+
+    def __init__(self, port_handler):
+        super().__init__(port_handler, 0)
 
 
 class FeetechClient(MotorClient):
@@ -207,7 +214,7 @@ class FeetechClient(MotorClient):
         self.cur_scale = cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE
 
         self.port_handler = PortHandler(port)
-        self.packet_handler: Optional[sms_sts] = None
+        self.packet_handler: Optional[HLSPacketHandler] = None
 
         # RLock: mode/EEPROM sequences re-enter via set_torque_enabled.
         self._bus_lock = threading.RLock()
@@ -269,7 +276,7 @@ class FeetechClient(MotorClient):
             try:
                 self._apply_port_options()
 
-                self.packet_handler = sms_sts(self.port_handler)
+                self.packet_handler = HLSPacketHandler(self.port_handler)
                 self._connected = True
 
                 # Motor state is left as-is: connecting must never make the hand
@@ -384,7 +391,7 @@ class FeetechClient(MotorClient):
                         'Failed to open port %s at %d baud', port, baud_rate
                     )
                     continue
-                packet_handler = sms_sts(port_handler)
+                packet_handler = HLSPacketHandler(port_handler)
                 for motor_id in range(id_range[0], id_range[1] + 1):
                     model_number, result, _ = packet_handler.ping(motor_id)
                     if result == COMM_SUCCESS:
@@ -413,11 +420,11 @@ class FeetechClient(MotorClient):
             self._check_connected()
             with self._bus_lock:
                 self.set_torque_enabled([current_id], False, retries=0)
-                self.packet_handler.unLockEprom(current_id)
+                self._unlock_eeprom(current_id)
                 result, error = self.packet_handler.write1ByteTxRx(
                     current_id, SMS_STS_ID, new_id
                 )
-                self.packet_handler.LockEprom(new_id)
+                self._lock_eeprom(new_id)
                 if result == COMM_SUCCESS and error == 0:
                     logging.info("Changed motor ID: %d -> %d", current_id, new_id)
                     return True
@@ -448,7 +455,7 @@ class FeetechClient(MotorClient):
             self._check_connected()
             with self._bus_lock:
                 self.set_torque_enabled([motor_id], False, retries=0)
-                self.packet_handler.unLockEprom(motor_id)
+                self._unlock_eeprom(motor_id)
                 result, error = self.packet_handler.write1ByteTxRx(
                     motor_id, SMS_STS_BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
                 )
@@ -476,7 +483,7 @@ class FeetechClient(MotorClient):
         self.baudrate = baudrate
         self._apply_port_options()
 
-        self.packet_handler.LockEprom(motor_id)
+        self._lock_eeprom(motor_id)
         _, result, _ = self.packet_handler.ping(motor_id)
         if result != COMM_SUCCESS:
             self._flush_input_buffer()
@@ -625,11 +632,11 @@ class FeetechClient(MotorClient):
                     mode_set_ids.append(motor_id)
                     continue
                 self._motor_modes.pop(motor_id, None)
-                self.packet_handler.unLockEprom(motor_id)
+                self._unlock_eeprom(motor_id)
                 result, error = self.packet_handler.write1ByteTxRx(
                     motor_id, SMS_STS_MODE, feetech_mode
                 )
-                self.packet_handler.LockEprom(motor_id)
+                self._lock_eeprom(motor_id)
                 if result != COMM_SUCCESS:
                     self._flush_input_buffer()
                     logging.error(
@@ -672,8 +679,8 @@ class FeetechClient(MotorClient):
         """
         acc_write = self._sync_write(SMS_STS_ACC, 1)
         acc_write.clearParam()
-        # Registers 44-47 are the torque limit followed by the goal speed.
-        motion_write = self._sync_write(SMS_STS_GOAL_TIME_L, 4)
+        # Registers 44-47 are the goal current followed by the goal speed.
+        motion_write = self._sync_write(HLS.GOAL_CURRENT, 4)
         motion_write.clearParam()
         for motor_id in motor_ids:
             acc_write.addParam(motor_id, [self._default_acc])
@@ -685,18 +692,27 @@ class FeetechClient(MotorClient):
                 logging.error('Sync write of the motion-profile %s failed', name)
             writer.clearParam()
 
+    def _word_bytes(self, word: int) -> "list[int]":
+        """Little-endian bytes of a two-byte register value."""
+        return [self.packet_handler.scs_lobyte(word),
+                self.packet_handler.scs_hibyte(word)]
+
     def _speed_bytes(self, motor_id: int) -> "list[int]":
         """Little-endian goal-speed bytes for ``motor_id``."""
-        speed = self.packet_handler.scs_toscs(
-            self._motor_speed.get(motor_id, DEFAULT_SPEED), 15)
-        return [self.packet_handler.scs_lobyte(speed),
-                self.packet_handler.scs_hibyte(speed)]
+        return self._word_bytes(self.packet_handler.scs_toscs(
+            self._motor_speed.get(motor_id, DEFAULT_SPEED), 15))
 
     def _torque_bytes(self, motor_id: int) -> "list[int]":
         """Little-endian torque-limit bytes for ``motor_id``."""
-        torque = self._motor_torque.get(motor_id, DEFAULT_TORQUE_LIMIT)
-        return [self.packet_handler.scs_lobyte(torque),
-                self.packet_handler.scs_hibyte(torque)]
+        return self._word_bytes(self._motor_torque.get(motor_id, DEFAULT_TORQUE_LIMIT))
+
+    def _unlock_eeprom(self, motor_id: int) -> None:
+        """Let EEPROM writes persist across power-down (lock register 0)."""
+        self.packet_handler.write1ByteTxRx(motor_id, HLS.LOCK, 0)
+
+    def _lock_eeprom(self, motor_id: int) -> None:
+        """Re-lock the EEPROM after a write (lock register 1)."""
+        self.packet_handler.write1ByteTxRx(motor_id, HLS.LOCK, 1)
 
     def _read_word(self, motor_id: int, address: int, field: str) -> "int | None":
         """Read one 2-byte register, or None when the motor did not answer.
@@ -930,7 +946,7 @@ class FeetechClient(MotorClient):
             raise ValueError('motor_ids and currents must have the same length')
 
         with self._bus_lock:
-            sync_write = self._sync_write(SMS_STS_GOAL_TIME_L, 2)
+            sync_write = self._sync_write(HLS.GOAL_CURRENT, 2)
             sync_write.clearParam()
             failed_ids = []
             for motor_id, current in zip(motor_ids, currents):
@@ -1117,7 +1133,7 @@ class FeetechClient(MotorClient):
         try:
             if not handler.openPort():
                 return False
-            packet = sms_sts(handler)
+            packet = HLSPacketHandler(handler)
             for motor_id in sample:
                 _, comm, _ = packet.ping(motor_id)
                 if comm == COMM_SUCCESS:
@@ -1174,12 +1190,11 @@ class FeetechClient(MotorClient):
 
         with self._bus_lock:
             acc = acc if acc is not None else self._default_acc
-
-            # Clear any existing sync write params
-            self.packet_handler.groupSyncWrite.clearParam()
+            sync_write = self._sync_write(HLS.ACC, HLS.POSITION_PROFILE_LEN)
+            sync_write.clearParam()
 
             for motor_id, pos_rad in zip(motor_ids, positions):
-                # STS servo mode uses raw 0–4095 (single rotation); clamp before sending.
+                # Servo mode uses raw 0–4095 (single rotation); clamp before sending.
                 pos_raw = self._clamp_position(
                     self._rad_to_raw(pos_rad, self.pos_scale), motor_id)
                 motor_speed = (
@@ -1192,21 +1207,24 @@ class FeetechClient(MotorClient):
                 )
 
                 logging.debug(
-                    'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
+                    'Position profile: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
                     motor_id, pos_raw, motor_speed, acc, motor_torque
                 )
 
-                self.packet_handler.SyncWritePosEx(
-                    motor_id, pos_raw, motor_speed, acc, motor_torque)
+                # One block per motor: acceleration, goal position, goal current, goal speed.
+                sync_write.addParam(
+                    motor_id,
+                    [acc]
+                    + self._word_bytes(self.packet_handler.scs_toscs(pos_raw, 15))
+                    + self._word_bytes(motor_torque)
+                    + self._word_bytes(self.packet_handler.scs_toscs(motor_speed, 15)),
+                )
 
-            # Send the sync write packet
-            result = self.packet_handler.groupSyncWrite.txPacket()
+            result = sync_write.txPacket()
             if result != COMM_SUCCESS:
                 self._flush_input_buffer()
                 logging.error('Sync write failed: result=%d', result)
-
-            # Clear params for next use
-            self.packet_handler.groupSyncWrite.clearParam()
+            sync_write.clearParam()
 
     def read_position_velocity_current(self) -> MotorRead:
         """Read position, velocity, and current for all motors in one sync packet.

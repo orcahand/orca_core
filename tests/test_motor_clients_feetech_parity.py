@@ -24,10 +24,10 @@ from orca_core.hardware.feetech_client import (
     DEFAULT_TORQUE_LIMIT,
     FeetechClient,
 )
+from orca_core.hardware.feetech_registers import HLS
 from orca_core.hardware.feetech import (
     SMS_STS_ACC,
     SMS_STS_GOAL_POSITION_L,
-    SMS_STS_GOAL_TIME_L,
     SMS_STS_LOCK,
     SMS_STS_MODE,
     SMS_STS_PRESENT_POSITION_L,
@@ -66,32 +66,19 @@ class FakePortHandler:
         self.is_open = False
 
 
-class FakeGroupSyncWrite:
-    """The packet handler's own position sync-write group."""
-
-    def __init__(self, handler):
-        self.handler = handler
-
-    def clearParam(self):
-        pass
-
-    def txPacket(self):
-        return COMM_SUCCESS
-
-
-class FakeSmsSts:
+class FakeHlsHandler:
     """Records every transaction a FeetechClient issues, in order."""
 
     def __init__(self, port_handler=None):
         self.port_handler = port_handler
         self.writes: list[tuple[int, int, int]] = []   # (motor_id, address, value)
         self.sync_writes: list[tuple[int, list[int]]] = []  # (address, params)
-        self.pos_writes: list[tuple] = []              # SyncWritePosEx arguments
+        # Position-profile blocks, one {motor_id: 7 bytes} dict per packet.
+        self.profile_writes: list[dict[int, list[int]]] = []
         self.pings: list[int] = []
         self.write_hook = None
         self.ping_result = COMM_SUCCESS
         self.modes: dict[int, int] = {}  # mode register per motor; 0 = servo
-        self.groupSyncWrite = FakeGroupSyncWrite(self)
 
     def read1ByteTxRx(self, motor_id, address):
         if address == SMS_STS_MODE:
@@ -116,11 +103,9 @@ class FakeSmsSts:
 
     def syncWriteTxOnly(self, start_address, data_length, param, param_length):
         self.sync_writes.append((start_address, list(param)))
+        if (start_address, data_length) == (HLS.ACC, HLS.POSITION_PROFILE_LEN):
+            self.profile_writes.append(_decode(list(param), data_length))
         return COMM_SUCCESS
-
-    def SyncWritePosEx(self, motor_id, position, speed, acc, torque):
-        self.pos_writes.append((motor_id, position, speed, acc, torque))
-        return True
 
     def scs_toscs(self, value, bit):
         return value
@@ -166,7 +151,7 @@ class FakeSyncRead:
 def client(monkeypatch):
     """A connected FeetechClient whose bus is a recording fake."""
     monkeypatch.setattr(feetech_client_module, "PortHandler", FakePortHandler)
-    monkeypatch.setattr(feetech_client_module, "sms_sts", FakeSmsSts)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", FakeHlsHandler)
     feetech = FeetechClient(motor_ids=[1, 2, 3], port="/dev/fake")
     feetech.connect()
     yield feetech, feetech.packet_handler
@@ -181,6 +166,16 @@ def _decode(param: list[int], data_length: int) -> "dict[int, list[int]]":
         param[i]: param[i + 1:i + stride]
         for i in range(0, len(param), stride)
     }
+
+
+def _word(data: list[int], offset: int) -> int:
+    """Little-endian two-byte value at ``offset`` of a register block."""
+    return data[offset] | (data[offset + 1] << 8)
+
+
+# Byte offsets inside a position-profile block: acc, position, current, speed.
+PROFILE_CURRENT = 3
+PROFILE_SPEED = 5
 
 
 # ----- connect must not mutate motor state ----------------------------------
@@ -231,10 +226,10 @@ def test_set_operating_mode_writes_the_motion_profile_once(client):
     feetech.set_operating_mode([1, 2, 3], 5)
 
     assert [addr for addr, _ in handler.sync_writes] == [
-        SMS_STS_ACC, SMS_STS_GOAL_TIME_L]
+        SMS_STS_ACC, HLS.GOAL_CURRENT]
     # Nothing moves while the torque limit reads zero, so it is established here.
     motion = _decode([p for addr, p in handler.sync_writes
-                      if addr == SMS_STS_GOAL_TIME_L][0], 4)
+                      if addr == HLS.GOAL_CURRENT][0], 4)
     assert motion[1][:2] == [400 & 0xFF, 400 >> 8]
 
 
@@ -272,7 +267,7 @@ def test_write_desired_current_reaches_the_bus_immediately(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
 
-    torque_writes = [p for addr, p in handler.sync_writes if addr == SMS_STS_GOAL_TIME_L]
+    torque_writes = [p for addr, p in handler.sync_writes if addr == HLS.GOAL_CURRENT]
     assert len(torque_writes) == 1, "the torque limit must not wait for a position"
     assert _decode(torque_writes[0], 2) == {1: [300 & 0xFF, 300 >> 8],
                                             2: [700 & 0xFF, 700 >> 8]}
@@ -283,7 +278,8 @@ def test_write_positions_sync_composes_per_motor_torque(client):
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
     feetech.write_positions_sync([1, 2], np.zeros(2))
 
-    assert [(mid, torque) for mid, _, _, _, torque in handler.pos_writes] == [
+    block = handler.profile_writes[-1]
+    assert [(mid, _word(b, PROFILE_CURRENT)) for mid, b in block.items()] == [
         (1, 300), (2, 700)]
 
 
@@ -292,7 +288,8 @@ def test_explicit_torque_overrides_the_stored_limit(client):
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
     feetech.write_positions_sync([1, 2], np.zeros(2), torque=100)
 
-    assert {torque for _, _, _, _, torque in handler.pos_writes} == {100}
+    block = handler.profile_writes[-1]
+    assert {_word(b, PROFILE_CURRENT) for b in block.values()} == {100}
 
 
 # ----- position-only hot path -----------------------------------------------
@@ -302,7 +299,7 @@ def test_write_desired_pos_does_not_rearm_the_motion_profile(client):
     feetech, handler = client
     feetech.write_desired_pos([1, 2], np.zeros(2))
 
-    assert handler.pos_writes == [], "the profile must not be re-sent per command"
+    assert handler.profile_writes == [], "the profile must not be re-sent per command"
     assert [addr for addr, _ in handler.sync_writes] == [SMS_STS_GOAL_POSITION_L]
 
 
@@ -310,7 +307,8 @@ def test_write_desired_pos_with_explicit_speed_uses_the_profile_packet(client):
     feetech, handler = client
     feetech.write_desired_pos([1, 2], np.zeros(2), speed=200)
 
-    assert [speed for _, _, speed, _, _ in handler.pos_writes] == [200, 200]
+    block = handler.profile_writes[-1]
+    assert [_word(b, PROFILE_SPEED) for b in block.values()] == [200, 200]
 
 
 # ----- out-of-range commands are observable ---------------------------------

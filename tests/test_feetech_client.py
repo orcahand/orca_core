@@ -449,7 +449,7 @@ def test_connect_takes_advisory_lock_on_port(monkeypatch):
     flock_calls = []
     monkeypatch.setattr(fcntl, "flock",
                         lambda fd, op: flock_calls.append((fd, op)))
-    monkeypatch.setattr(feetech_client_module, "sms_sts",
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler",
                         lambda port_handler: FakePacketHandler({}))
 
     feetech = FeetechClient(motor_ids=[], port="/dev/fake")
@@ -470,7 +470,7 @@ def test_connect_succeeds_when_flock_unavailable(monkeypatch):
         raise OSError("resource temporarily unavailable")
 
     monkeypatch.setattr(fcntl, "flock", failing_flock)
-    monkeypatch.setattr(feetech_client_module, "sms_sts",
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler",
                         lambda port_handler: FakePacketHandler({}))
 
     feetech = FeetechClient(motor_ids=[], port="/dev/fake")
