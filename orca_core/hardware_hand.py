@@ -108,6 +108,7 @@ class OrcaHand(BaseHand):
         self._motor_lock: RLock = RLock()
         self._uncalibrated_warned: set = set()
         self._single_turn_wrist_warned: bool = False
+        self._unlimitable_motors_warned: bool = False
 
         self._task_thread: threading.Thread = None
         self._task_stop_event = threading.Event()
@@ -224,6 +225,7 @@ class OrcaHand(BaseHand):
                 f"no motor responded on {port} (check power and wiring)"
             )
         self._motor_client = self._create_motor_client()
+        self._unlimitable_motors_warned = False
         with self._motor_lock:
             self._motor_client.connect()
 
@@ -409,29 +411,55 @@ class OrcaHand(BaseHand):
         return failed_ids
 
     def set_max_current(self, current: Union[float, List[float]]):
-        """Set the maximum allowable current for the motors.
+        """Set every motor's goal-current limit, in mA.
+
+        In current-based position mode this bounds what the servo's position
+        controller may draw. Each family writes it to its own goal-current
+        register, quantized and clamped to the motor's hardware ceiling, which
+        orca_core reads at connect and never writes. A motor whose model has no
+        current register cannot be limited: it is named once per connect and
+        left alone.
 
         Args:
-            current: Either a single float applied to all motors, or a list of
-                per-motor current values (mA). If a list, its length must match
-                the number of configured motors.
+            current: One value for all motors, or a per-motor list, in mA.
 
         Raises:
-            ValueError: If *current* is a list with the wrong length.
+            ValueError: If a value is negative or non-finite, or a list does
+                not have one entry per motor.
         """
-        if isinstance(current, list):
-            if len(current) != len(self.config.motor_ids):
+        motor_ids = self.config.motor_ids
+        if isinstance(current, (list, tuple, np.ndarray)):
+            if len(current) != len(motor_ids):
                 raise ValueError(
                     "Number of currents do not match the number of motors."
                 )
-
-            with self._motor_lock:
-                self._motor_client.write_desired_current(self.config.motor_ids, current)
-            return
+            currents = [float(value) for value in current]
+        else:
+            currents = [float(current)] * len(motor_ids)
+        if any(not math.isfinite(value) or value < 0 for value in currents):
+            raise ValueError("Current limits must be non-negative finite values in mA.")
 
         with self._motor_lock:
-            self._motor_client.write_desired_current(
-                self.config.motor_ids, current * np.ones(len(self.config.motor_ids))
+            self._warn_unlimitable_motors_once()
+            self._motor_client.write_desired_current(motor_ids, np.array(currents))
+
+    def _warn_unlimitable_motors_once(self) -> None:
+        """Name, once per connect, the motors whose model has no current register."""
+        if self._unlimitable_motors_warned:
+            return
+        self._unlimitable_motors_warned = True
+        unlimitable = [
+            motor_id for motor_id, ceiling in self._motor_client.read_current_limits().items()
+            if ceiling is None
+        ]
+        if unlimitable:
+            logger.warning(
+                "No current limit on %s: the motor has no current register, so "
+                "set_max_current leaves it alone.",
+                ", ".join(
+                    f"{self.config.motor_to_joint_dict.get(motor_id, 'motor')} (motor {motor_id})"
+                    for motor_id in unlimitable
+                ),
             )
 
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
