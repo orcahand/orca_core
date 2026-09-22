@@ -15,7 +15,6 @@ This file defines parameters crucial for the hand's operation, including communi
 
 ```yaml
 port: auto
-baudrate: 1000000
 max_current: 300
 type: right
 control_mode: current_based_position
@@ -27,13 +26,13 @@ Change `type` to right or left depending on the hand assembly. `max_current` is 
 
 #### Driver settings: `port`, `baudrate`, `motor_type`
 
-The bundled configs ship with `port: auto` and a `baudrate` pinned for the hand version (1M for v2, 3M for v1). Anything not pinned is auto-detected at connect time and persisted back to `config.yaml`:
+The bundled configs leave all three on auto-detection: `port: auto`, and no `motor_type` or `baudrate` at all. They are resolved fresh on every connect and never written back to the file:
 
 - `port: auto` finds the serial adapter by USB VID, falling back to "the only adapter present" or an interactive picker.
-- A missing `motor_type` is identified by pinging each motor family (Dynamixel vs Feetech) on the bus.
-- A missing `baudrate` is probed from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
+- `motor_type` is identified by pinging each motor family (Dynamixel vs Feetech) on the bus.
+- `baudrate` is probed from the family's known set (1M / 3M for Dynamixel, 1M for Feetech).
 
-Override any of them explicitly if you need to:
+Write a value into the file to override detection for that field:
 
 ```yaml
 port: /dev/cu.usbmodemXXXX  # when multiple adapters are connected (COM3 on Windows)
@@ -41,7 +40,7 @@ baudrate: 1000000           # when motors are configured for a non-default rate
 motor_type: feetech         # when probing might misidentify the bus
 ```
 
-You won't normally need to — the script will tell you on the command line if a probe failed and asking for an override would help.
+A value you write wins over what was detected, and the log says so whenever the two disagree. You won't normally need one — the script will tell you on the command line if a probe failed and asking for an override would help. Remove the line (or set `port: auto`) to go back to detection.
 
 ---
 

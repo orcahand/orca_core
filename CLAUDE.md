@@ -138,8 +138,15 @@ override for bring-up, not the normal path.
 
 **Hand identity.** Never assume a side, model directory, joint list, or that sensors exist.
 `detect_hand()` / `load_hand()` decide which class and model a connected hand gets; `config.yaml` is
-the source of truth for everything else. Detection overrides what the yaml pins - and connecting a
-hand must never rewrite a packaged model config.
+the source of truth for everything else.
+
+**Config beats detection, and says so.** The packaged configs ship every resolvable field on `auto`
+(or absent), so autodetection is what runs by default - never pin a real port, baud rate or motor
+family into one. A value a human writes into a config is a deliberate override and wins over what
+was detected. Whenever a pin displaces a detected value, log it at warning level naming the field,
+the pinned value and the detected one: a silent override is indistinguishable from broken
+autodetection. Detection results are never written back to any config - every connect re-probes what
+the yaml leaves unset.
 
 **Front-ends.** Scripts and examples carry no logic. Use the shared argparse and lifecycle helpers in
 `utils/cli.py`; a flag it advertises must actually be forwarded to `load_hand()`. If a front-end

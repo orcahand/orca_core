@@ -9,21 +9,16 @@
 """Connect-time motor-driver resolution.
 
 Discovers which (motor_type, baudrate) combination a hand's motors answer on
-when ``config.yaml`` doesn't pin them, and persists what a probe found so the
-next connect skips it.
+when ``config.yaml`` doesn't pin them. Nothing is written back: every connect
+probes afresh unless a human pinned the driver in the yaml.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from typing import TYPE_CHECKING
 
-import yaml
-
 from ..constants import MOTOR_BAUD_RATES, SUPPORTED_MOTOR_TYPES
-from ..utils.utils import read_yaml
 
 if TYPE_CHECKING:
     from ..hand_config import OrcaHandConfig
@@ -39,9 +34,9 @@ def trial_probe(config: "OrcaHandConfig", port: str) -> "tuple[str | None, int |
     remaining rate the family's client accepts.
 
     A ``motor_type`` or ``baudrate`` pinned in ``config`` is tried first and
-    alone. When the pinned combination stays silent the probe falls back to the
-    full unpinned sweep, so a hand whose motors were swapped for another family
-    still comes up on its bundled config.
+    alone. Only when the pin stays silent does the probe warn and widen to the
+    full sweep, so a hand whose motors were swapped for another family still
+    comes up.
     """
     pinned = config.motor_type is not None or config.baudrate is not None
     if pinned:
@@ -54,8 +49,9 @@ def trial_probe(config: "OrcaHandConfig", port: str) -> "tuple[str | None, int |
         if motor_type is not None:
             return motor_type, baudrate
         logger.warning(
-            "Pinned motor driver (%s @ %s baud) did not respond on %s; "
-            "sweeping every supported family and baud rate.",
+            "config.yaml pins %s @ %s baud, which did not respond on %s; "
+            "ignoring the pin and sweeping every supported family and baud "
+            "rate. Clear those fields to autodetect without this attempt.",
             config.motor_type or "any", config.baudrate or "any", port,
         )
     return _sweep(port, config.motor_ids, list(SUPPORTED_MOTOR_TYPES), None)
@@ -92,93 +88,3 @@ def _baudrates_for(client_cls, motor_type: str) -> "list[int]":
     rates = list(MOTOR_BAUD_RATES.get(motor_type, []))
     rates.extend(r for r in client_cls.supported_baudrates() if r not in rates)
     return rates
-
-
-def persist_resolved_driver(resolved: "OrcaHandConfig") -> None:
-    """Best-effort persistence of auto-detected driver fields to config.yaml.
-
-    Only what the yaml itself leaves unset is filled in, so the next connect
-    short-circuits the probe; clear those fields to trigger a fresh probe. A
-    value the yaml pins is left alone even when another one answered — the file
-    states the operator's intent, and :func:`trial_probe` already warns and
-    sweeps when a pin stays silent. The comparison is against the file rather
-    than the in-memory config, which hand detection may have patched for this
-    connect. Packaged models are never rewritten: one file backs every hand of
-    that model, and this hand's driver is not a property of the model.
-
-    All fields are written in a single atomic rewrite. A write failure (e.g. a
-    read-only install) is logged and never raised: the connect stays valid and
-    the probe simply runs again next time.
-    """
-    if _is_packaged_model(resolved.config_path):
-        return
-    try:
-        updates = _driver_updates(read_yaml(resolved.config_path) or {}, resolved)
-        if not updates:
-            return
-        _atomic_yaml_update(resolved.config_path, updates)
-    except (OSError, yaml.YAMLError) as e:
-        logger.warning(
-            "Could not persist auto-detected driver fields to %s (%s); "
-            "the next connect will re-probe.",
-            resolved.config_path,
-            e,
-        )
-        return
-    logger.info(
-        "Wrote auto-detected %s to %s.",
-        ", ".join(updates),
-        os.path.basename(resolved.config_path),
-    )
-
-
-def _driver_updates(pinned: dict, resolved: "OrcaHandConfig") -> dict:
-    """Driver fields to write back: what yaml left unset, plus a port that
-    yaml pinned to a device the hand is not on."""
-    updates = {}
-    port = pinned.get("port")
-    if port not in (None, "auto") and port != resolved.port:
-        updates["port"] = resolved.port
-    if pinned.get("motor_type") is None and resolved.motor_type is not None:
-        updates["motor_type"] = resolved.motor_type
-    if pinned.get("baudrate") is None and resolved.baudrate is not None:
-        updates["baudrate"] = resolved.baudrate
-    return updates
-
-
-def _is_packaged_model(config_path: str) -> bool:
-    """Whether ``config_path`` is one of the models shipped inside the package."""
-    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-    return os.path.abspath(config_path).startswith(os.path.abspath(models_dir) + os.sep)
-
-
-def _atomic_yaml_update(path: str, updates: dict) -> None:
-    """Apply ``updates`` to the yaml mapping at ``path`` in one atomic replace.
-
-    Unrelated keys are preserved. The rewrite goes through a temp file in the
-    same directory plus ``os.replace``, so a crash mid-write can never leave a
-    half-written config behind.
-    """
-    if os.path.exists(path) and not os.access(path, os.W_OK):
-        raise PermissionError(f"{path} is not writable")
-    with open(path, "r") as f:
-        data = yaml.safe_load(f) or {}
-    data.update(updates)
-    directory = os.path.dirname(os.path.abspath(path))
-    fd, tmp_path = tempfile.mkstemp(
-        dir=directory, prefix=".config-", suffix=".yaml"
-    )
-    try:
-        try:
-            os.chmod(tmp_path, os.stat(path).st_mode & 0o777)
-        except OSError:
-            pass
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise

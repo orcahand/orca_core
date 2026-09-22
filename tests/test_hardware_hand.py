@@ -306,14 +306,17 @@ def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
 
     def create_and_record():
         client = orig_create()
+        real_connect = client.connect
+
+        def connect_then_fail():
+            real_connect()
+            raise RuntimeError("post-connect failure")
+
+        client.connect = connect_then_fail
         created.append(client)
         return client
 
-    def failing_persist():
-        raise RuntimeError("post-connect failure")
-
     monkeypatch.setattr(hand, "_create_motor_client", create_and_record)
-    monkeypatch.setattr(hand, "_persist_resolved_driver", failing_persist)
     monkeypatch.setattr(
         "orca_core.hardware_hand.auto_detect_port", lambda *a, **k: None
     )
@@ -329,10 +332,10 @@ def test_failed_connect_logs_instead_of_printing(tmp_path, monkeypatch, capsys, 
     shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
 
-    def failing_persist():
-        raise RuntimeError("post-connect failure")
+    def failing_create():
+        raise RuntimeError("client construction failure")
 
-    monkeypatch.setattr(hand, "_persist_resolved_driver", failing_persist)
+    monkeypatch.setattr(hand, "_create_motor_client", failing_create)
     monkeypatch.setattr(
         "orca_core.hardware_hand.auto_detect_port", lambda *a, **k: None
     )

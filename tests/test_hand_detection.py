@@ -1,5 +1,8 @@
 """Hand autodetection: identity parsing, the detection ladder, and load_hand()."""
 
+import dataclasses
+import logging
+
 import pytest
 
 import orca_core.hand_factory as hand_factory
@@ -156,34 +159,68 @@ def test_motor_family_falls_back_to_the_trial_probe(monkeypatch):
     assert hand_factory._detect_motor_family("/dev/cu.m") == ("feetech", 1_000_000)
 
 
-def test_pin_detected_ports_overrides_a_config_pinned_family():
-    """A bundled model pins dynamixel; a detected Feetech chain must win, and
-    the model's baud rate must be dropped with it."""
+def test_pin_detected_ports_fills_an_unpinned_family():
+    """The bundled models pin nothing, so the detected family and its baud
+    rate are what the config ends up with."""
     config = hand_factory.OrcaHandConfig.from_config_path(
         model_name="orcahand-right", model_version="v2"
     )
-    assert config.motor_type == "dynamixel"
+    assert config.motor_type is None
 
     detection = hand_factory.HandDetection(
         model_name="orcahand-right", side="right", has_tactile=False,
         has_encoders=False, motor_port="/dev/cu.m", motor_type="feetech",
+        motor_baudrate=500_000,
     )
     pinned = hand_factory._pin_detected_ports(config, detection)
     assert pinned.motor_type == "feetech"
-    assert pinned.baudrate is None
+    assert pinned.baudrate == 500_000
+    assert pinned.port == "/dev/cu.m"
 
 
-def test_pin_detected_ports_keeps_a_matching_family():
-    config = hand_factory.OrcaHandConfig.from_config_path(
-        model_name="orcahand-right", model_version="v1"
+def test_pin_detected_ports_keeps_a_hand_written_family(caplog):
+    """A family written into the config is a deliberate override: it survives a
+    detection that disagrees, and the clash is logged."""
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v2"
+        ),
+        motor_type="dynamixel",
+        baudrate=1_000_000,
     )
     detection = hand_factory.HandDetection(
         model_name="orcahand-right", side="right", has_tactile=False,
-        has_encoders=False, motor_port="/dev/cu.m", motor_type="dynamixel",
+        has_encoders=False, motor_port="/dev/cu.m", motor_type="feetech",
+        motor_baudrate=500_000,
     )
-    pinned = hand_factory._pin_detected_ports(config, detection)
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        pinned = hand_factory._pin_detected_ports(config, detection)
+
     assert pinned.motor_type == "dynamixel"
-    assert pinned.baudrate == config.baudrate
+    assert pinned.baudrate == 1_000_000
+    assert any(
+        "motor_type" in r.getMessage() and "feetech" in r.getMessage()
+        for r in caplog.records
+    ), "an override must say which field and what was detected"
+
+
+def test_pin_detected_ports_keeps_a_hand_written_port(caplog):
+    """A port written into the config wins over the detected one."""
+    config = dataclasses.replace(
+        hand_factory.OrcaHandConfig.from_config_path(
+            model_name="orcahand-right", model_version="v2"
+        ),
+        port="/dev/cu.pinned",
+    )
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False,
+        has_encoders=False, motor_port="/dev/cu.detected",
+    )
+    with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
+        pinned = hand_factory._pin_detected_ports(config, detection)
+
+    assert pinned.port == "/dev/cu.pinned"
+    assert any("port" in r.getMessage() for r in caplog.records)
 
 
 # ----- load_hand integration -------------------------------------------------

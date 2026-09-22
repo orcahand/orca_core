@@ -22,7 +22,7 @@ from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import MotorClient
-from .hardware.motor_resolution import persist_resolved_driver, trial_probe
+from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
 from .utils.utils import (
@@ -206,10 +206,6 @@ class OrcaHand(BaseHand):
         self.config.validate_control_mode()
         return True
 
-    def _persist_resolved_driver(self) -> None:
-        """Write the driver fields this connect resolved back to config.yaml."""
-        persist_resolved_driver(self.config)
-
     def _connect_on_port(self, port: str, base_config: "OrcaHandConfig" = None) -> None:
         """Resolve the motor driver for ``port`` and open the client on it.
 
@@ -238,7 +234,6 @@ class OrcaHand(BaseHand):
         """
         try:
             self._connect_on_port(port, base_config)
-            self._persist_resolved_driver()
             return None
         except Exception as e:
             self._discard_motor_client()
@@ -265,9 +260,8 @@ class OrcaHand(BaseHand):
         ``config.yaml`` win when present; a missing port is auto-detected via
         USB vendor ID (interactive picker as a last resort) and a missing
         motor_type/baudrate is found by pinging each candidate family from
-        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Values the probe had to
-        resolve are persisted back to ``config.yaml``, which never overwrites
-        what that file pins or touches a packaged model.
+        :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Nothing resolved here is
+        written back, so every connect re-probes what the yaml leaves unset.
 
         Idempotent: calling ``connect()`` on an already-connected hand is a
         no-op that returns success. Call :meth:`disconnect` first to force a
@@ -1265,10 +1259,8 @@ class MockMotorResolutionMixin:
     """Swaps the motor bus for an in-memory mock on ``Mock*`` hand classes.
 
     Supplies the mock motor client and skips connect-time port/driver
-    resolution and yaml persistence: mock motors don't sit on a real bus, so
-    there is nothing to detect or probe (``port: auto`` must not handshake
-    real USB devices) and no auto-detected values worth writing back to
-    config.yaml.
+    resolution: mock motors don't sit on a real bus, so there is nothing to
+    detect or probe (``port: auto`` must not handshake real USB devices).
 
     It also synthesises the motor calibration a mock can't measure, so the
     bundled models are usable out of the box (see
@@ -1355,9 +1347,6 @@ class MockMotorResolutionMixin:
                 or MOTOR_BAUD_RATES[self.config.motor_type or DYNAMIXEL][0],
             )
         return True
-
-    def _persist_resolved_driver(self) -> None:
-        pass
 
 
 class MockOrcaHand(MockMotorResolutionMixin, OrcaHand):

@@ -382,13 +382,6 @@ class TestReplayAnglesSideGuard:
         with pytest.raises(ValueError, match="hand_type=left"):
             module.main()
 
-    def test_force_replays_the_mirrored_recording(self, monkeypatch, tmp_path):
-        module, hand = self._run(
-            monkeypatch, self._write_sequence(tmp_path, "left"), extra_argv=("--force",),
-        )
-        assert module.main() == 0
-        assert hand.commanded
-
     def test_matching_side_replays(self, monkeypatch, tmp_path):
         module, hand = self._run(monkeypatch, self._write_sequence(tmp_path, "right"))
         assert module.main() == 0

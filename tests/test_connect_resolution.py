@@ -206,19 +206,18 @@ def test_resolve_motor_driver_verifies_pinned_combination(mock_hand, monkeypatch
     assert seen[0] == 1_000_000
 
 
-# ----- persistence ---------------------------------------------------------
+# ----- no write-back ------------------------------------------------------
 
-def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
-    """A successful auto-probe writes motor_type/baudrate back to config.yaml."""
+def test_connect_never_writes_the_resolved_driver_back(mock_config_dir, monkeypatch):
+    """A connect must leave config.yaml byte-identical: what the probe resolves
+    is never pinned behind the operator's back, so the next connect re-probes."""
     import yaml
 
     from orca_core import MockOrcaHand
-    from orca_core.utils.utils import read_yaml
 
     class ProbedMockOrcaHand(MockOrcaHand):
         # Undo the mock's synthetic resolution so the real probe path runs.
         _resolve_motor_driver = OrcaHand._resolve_motor_driver
-        _persist_resolved_driver = OrcaHand._persist_resolved_driver
 
     from orca_core.hardware import dynamixel_client, feetech_client
 
@@ -237,167 +236,35 @@ def test_resolved_driver_persisted_to_yaml(mock_config_dir, monkeypatch):
     raw.pop("baudrate", None)
     raw["port"] = "/dev/cu.fake"
     config_path.write_text(yaml.safe_dump(raw))
+    before = config_path.read_text()
 
     hand = ProbedMockOrcaHand(config_path=str(config_path))
     success, msg = hand.connect()
     assert success, msg
+    assert hand.config.motor_type == "dynamixel"
+    assert hand.config.baudrate == 1_000_000
     hand.disconnect()
 
-    persisted = read_yaml(str(config_path))
-    assert persisted["motor_type"] == "dynamixel"
-    assert persisted["baudrate"] == 1_000_000
+    assert config_path.read_text() == before
 
 
-def test_persist_write_failure_does_not_fail_connect(
-        mock_config_dir, monkeypatch, caplog):
-    """A read-only config.yaml must degrade to a logged warning, not a
-    failed connect: the probe simply runs again next time."""
-    import yaml
+def test_packaged_configs_pin_no_motor_driver():
+    """The shipped models must leave motor_type/baudrate unset so autodetection
+    is what runs by default."""
+    import glob
 
-    from orca_core import MockOrcaHand
+    import orca_core
     from orca_core.utils.utils import read_yaml
 
-    class ProbedMockOrcaHand(MockOrcaHand):
-        _resolve_motor_driver = OrcaHand._resolve_motor_driver
-        _persist_resolved_driver = OrcaHand._persist_resolved_driver
-
-    from orca_core.hardware import dynamixel_client, feetech_client
-
-    monkeypatch.setattr(
-        dynamixel_client.DynamixelClient,
-        "probe",
-        staticmethod(lambda port, baudrate, motor_ids: baudrate == 1_000_000),
+    configs = glob.glob(
+        os.path.join(os.path.dirname(orca_core.__file__), "models", "v*", "*", "config.yaml")
     )
-    monkeypatch.setattr(
-        feetech_client.FeetechClient, "probe", staticmethod(lambda *a, **k: False)
-    )
-
-    config_path = mock_config_dir / "config.yaml"
-    raw = yaml.safe_load(config_path.read_text())
-    raw.pop("motor_type", None)
-    raw.pop("baudrate", None)
-    raw["port"] = "/dev/cu.fake"
-    config_path.write_text(yaml.safe_dump(raw))
-
-    hand = ProbedMockOrcaHand(config_path=str(config_path))
-    config_path.chmod(0o444)
-    if os.access(config_path, os.W_OK):
-        pytest.skip("cannot make the config read-only on this platform")
-    try:
-        with caplog.at_level(logging.WARNING):
-            success, msg = hand.connect()
-        assert success, msg
-        hand.disconnect()
-        persisted = read_yaml(str(config_path))
-        assert "motor_type" not in persisted
-        assert any(
-            "Could not persist" in record.getMessage()
-            for record in caplog.records
-        )
-    finally:
-        config_path.chmod(0o644)
-
-
-def test_persist_writes_all_keys_in_one_atomic_update(tmp_path, monkeypatch):
-    """All resolved keys land in a single os.replace and unrelated keys
-    survive the rewrite."""
-    import yaml
-
-    from orca_core.hardware import motor_resolution
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump({"custom_key": "keep-me", "port": "auto"})
-    )
-
-    replaced = []
-    real_replace = os.replace
-
-    def spy_replace(src, dst):
-        replaced.append(dst)
-        return real_replace(src, dst)
-
-    monkeypatch.setattr(motor_resolution.os, "replace", spy_replace)
-
-    resolved = SimpleNamespace(
-        port="/dev/cu.x",
-        motor_type="feetech",
-        baudrate=1_000_000,
-        config_path=str(config_path),
-    )
-    motor_resolution.persist_resolved_driver(resolved)
-
-    data = yaml.safe_load(config_path.read_text())
-    assert data["custom_key"] == "keep-me"
-    assert data["port"] == "auto"  # 'auto' is never overwritten
-    assert data["motor_type"] == "feetech"
-    assert data["baudrate"] == 1_000_000
-    assert replaced == [str(config_path)]
-
-
-def test_persist_never_overwrites_what_yaml_pins(tmp_path):
-    """A yaml-pinned family is the operator's statement of intent: a probe that
-    answered differently must not rewrite it."""
-    import yaml
-
-    from orca_core.hardware import motor_resolution
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump({"motor_type": "dynamixel", "baudrate": 1_000_000, "port": "auto"})
-    )
-    resolved = SimpleNamespace(
-        port="/dev/cu.x",
-        motor_type="feetech",
-        baudrate=500_000,
-        config_path=str(config_path),
-    )
-
-    motor_resolution.persist_resolved_driver(resolved)
-
-    data = yaml.safe_load(config_path.read_text())
-    assert data["motor_type"] == "dynamixel"
-    assert data["baudrate"] == 1_000_000
-
-
-def test_persist_leaves_packaged_models_untouched(tmp_path, monkeypatch):
-    """One bundled config backs every hand of that model, so a connect must
-    never write this hand's driver into it."""
-    import yaml
-
-    from orca_core.hardware import motor_resolution
-
-    models_dir = tmp_path / "models" / "v2" / "orcahand-right"
-    models_dir.mkdir(parents=True)
-    config_path = models_dir / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"port": "auto"}))
-    monkeypatch.setattr(
-        motor_resolution, "_is_packaged_model", lambda path: path == str(config_path)
-    )
-
-    motor_resolution.persist_resolved_driver(
-        SimpleNamespace(
-            port="/dev/cu.x",
-            motor_type="feetech",
-            baudrate=1_000_000,
-            config_path=str(config_path),
-        )
-    )
-
-    assert yaml.safe_load(config_path.read_text()) == {"port": "auto"}
-
-
-def test_bundled_models_are_recognised_as_packaged():
-    """The packaged-model guard must match the configs the wheel ships."""
-    import orca_core
-    from orca_core.hardware import motor_resolution
-
-    bundled = os.path.join(
-        os.path.dirname(orca_core.__file__),
-        "models", "v2", "orcahand-right", "config.yaml",
-    )
-    assert motor_resolution._is_packaged_model(bundled)
-    assert not motor_resolution._is_packaged_model("/tmp/my-hand/config.yaml")
+    assert configs
+    for path in configs:
+        raw = read_yaml(path) or {}
+        assert "motor_type" not in raw, path
+        assert "baudrate" not in raw, path
+        assert raw.get("port", "auto") == "auto", path
 
 
 def test_trial_probe_reports_via_logging_not_stdout(

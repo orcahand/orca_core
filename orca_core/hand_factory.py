@@ -211,31 +211,57 @@ def detect_hand() -> HandDetection:
     )
 
 
+def _overridden(field: str, configured, detected) -> bool:
+    """Whether ``config.yaml`` pins ``field`` to something other than what was
+    detected. Logs the clash so a pin is never mistaken for a detection bug."""
+    if configured in (None, "auto") or configured == detected:
+        return False
+    logger.warning(
+        "config.yaml pins %s=%r, so the detected %r is not used. Set it to "
+        "'auto' (or remove it) to autodetect.",
+        field, configured, detected,
+    )
+    return True
+
+
 def _pin_detected_ports(config, detection: HandDetection):
-    """Point the config at the ports detection already found, so connect()
-    doesn't have to re-discover them. Fields with nothing detected keep
-    their configured (typically ``auto``) values."""
-    if detection.motor_port is not None:
+    """Point the config at what detection found, so connect() doesn't have to
+    re-discover it.
+
+    Only fields the yaml leaves on ``auto``/unset are filled in: a pinned value
+    is a deliberate override and wins over detection, and :func:`_overridden`
+    says so in the log. Fields with nothing detected keep their configured
+    values.
+    """
+    if detection.motor_port is not None and not _overridden(
+        "port", config.port, detection.motor_port
+    ):
         config = dataclasses.replace(config, port=detection.motor_port)
-    if detection.motor_type is not None and detection.motor_type != config.motor_type:
-        # The bundled model pins the other family, so its baud rate is wrong
-        # too; an undetected one is left unpinned for the connect-time probe.
-        logger.info(
-            "detected %s motors on %s; overriding the model's %s pinning",
-            detection.motor_type, detection.motor_port, config.motor_type,
-        )
+    if detection.motor_type is not None and not _overridden(
+        "motor_type", config.motor_type, detection.motor_type
+    ):
+        # The detected family sets the baud rate with it; an undetected rate is
+        # left unpinned for the connect-time probe.
         config = dataclasses.replace(
             config,
             motor_type=detection.motor_type,
             baudrate=detection.motor_baudrate,
         )
-    if detection.has_encoders and detection.sensing_port is not None:
+    if (
+        detection.has_encoders
+        and detection.sensing_port is not None
+        and not _overridden(
+            "encoder_serial_port", config.encoder_serial_port, detection.sensing_port
+        )
+    ):
         config = dataclasses.replace(
             config, encoder_serial_port=detection.sensing_port
         )
     if detection.has_tactile and isinstance(config, OrcaHandTouchConfig):
         sensor_port = detection.tactile_port or detection.sensing_port
-        if sensor_port is not None:
+        if sensor_port is not None and not _overridden(
+            "sensors.port", config.sensor_port, sensor_port
+        ):
             config = dataclasses.replace(config, sensor_port=sensor_port)
     return config
 

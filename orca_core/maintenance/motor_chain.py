@@ -327,12 +327,8 @@ def _await_motor_connection(
 
 
 def _model_is_unrecognised(plan: MotorChainPlan, motor: dict) -> bool:
-    """Whether the client could not name this motor's model number.
-
-    Clients fall back to the bare family label ("Feetech") or an "Unknown(n)"
-    label for model numbers outside their lookup table, which a new production
-    batch of the same servo will hit. That is unknown, not wrong.
-    """
+    """Whether the client reported the bare family label or "Unknown(n)",
+    meaning the model number is outside its lookup table."""
     model_name = str(motor.get("model_name", "")).strip().lower()
     return model_name == plan.motor_type.lower() or model_name.startswith("unknown")
 

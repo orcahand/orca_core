@@ -55,7 +55,7 @@ def mock_motor_client_class(motor_type: str) -> type[MotorClient]:
     """Return the in-memory stand-in for ``motor_type``'s client.
 
     Mocks carry their family's capability attributes, so a mock hand behaves
-    like the family it stands in for instead of always like a Dynamixel.
+    like the family it stands in for.
     """
     if motor_type == DYNAMIXEL:
         from .mock_dynamixel_client import MockDynamixelClient
