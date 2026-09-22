@@ -21,7 +21,7 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
-from .hardware.motor_client import MotorClient
+from .hardware.motor_client import MotionTimeoutError, MotorClient
 from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -564,6 +564,19 @@ class OrcaHand(BaseHand):
         # the joint loop for up to ``timeout``.
         self._motor_client.wait_for_motion_complete(timeout=timeout)
 
+    def _settle_before_mode_switch(self) -> None:
+        """Let travelling motors arrive before a mode switch drops torque.
+
+        A motor blocked short of its goal never reports settled, so a timeout
+        is logged rather than raised: the switch must still happen.
+        """
+        try:
+            self.wait_for_motion()
+        except MotionTimeoutError as exc:
+            logger.warning(
+                "%s; switching control mode with motors still short of their goal.", exc
+            )
+
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
 
@@ -634,9 +647,7 @@ class OrcaHand(BaseHand):
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
-            # The mode switch drops torque; let asynchronously travelling
-            # motors arrive first so they don't go limp mid-motion.
-            self.wait_for_motion()
+            self._settle_before_mode_switch()
             self.set_control_mode(control_mode)
 
     def is_calibrated(
@@ -852,9 +863,7 @@ class OrcaHand(BaseHand):
         control_mode = self.config.control_mode
         self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
-        # The mode switch drops torque; let asynchronously travelling motors
-        # arrive first so they don't go limp mid-motion.
-        self.wait_for_motion()
+        self._settle_before_mode_switch()
         self.set_control_mode(control_mode)
     
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):

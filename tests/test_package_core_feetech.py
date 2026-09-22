@@ -4,6 +4,7 @@ Every one of these paths used to be unreachable in tests: the mock hand always
 built a Dynamixel client regardless of what the config declared.
 """
 
+import logging
 import os
 import shutil
 import threading
@@ -13,6 +14,7 @@ import pytest
 from orca_core import MockOrcaHand
 from orca_core.constants import CURRENT_BASED_POSITION, MULTI_TURN_POSITION, POSITION, WRIST
 from orca_core.hardware.mock_feetech_client import MockFeetechClient
+from orca_core.hardware.motor_client import MotionTimeoutError
 from orca_core.utils import update_yaml
 
 MODEL_DIR = os.path.join(
@@ -158,6 +160,40 @@ def test_set_neutral_position_waits_before_the_mode_switch(feetech_hand):
     assert recorder.calls[0] == f"mode:{POSITION}"
     assert recorder.calls[1] == "wait"
     assert recorder.calls[2].startswith("mode:")
+
+
+def _stall_motion(hand):
+    """Make the client report motors that never settle, as a blocked motor does,
+    and record every control-mode switch."""
+    hand.motor_client.waits_for_motion = True
+
+    def never_settles(timeout=5.0, **_):
+        raise MotionTimeoutError(f"Motors did not settle within {timeout:.1f}s")
+
+    hand.motor_client.wait_for_motion_complete = never_settles
+    modes = []
+    original = hand.set_control_mode
+    hand.set_control_mode = lambda mode, motor_ids=None: (
+        modes.append(mode), original(mode, motor_ids)
+    )[1]
+    return modes
+
+
+def test_init_joints_survives_a_motor_that_never_settles(feetech_hand, caplog):
+    modes = _stall_motion(feetech_hand)
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        feetech_hand.init_joints(force_calibrate=False)
+    assert "did not settle" in caplog.text
+    assert modes[-1] == feetech_hand.config.control_mode
+
+
+def test_set_neutral_position_survives_a_motor_that_never_settles(feetech_hand, caplog):
+    feetech_hand.init_joints(move_to_neutral=False)
+    modes = _stall_motion(feetech_hand)
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+        feetech_hand.set_neutral_position(num_steps=2)
+    assert "did not settle" in caplog.text
+    assert modes == [POSITION, feetech_hand.config.control_mode]
 
 
 def _lock_is_free(lock) -> bool:
