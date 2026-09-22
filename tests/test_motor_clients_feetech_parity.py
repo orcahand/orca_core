@@ -24,14 +24,6 @@ from orca_core.hardware.feetech_client import (
     FeetechClient,
 )
 from orca_core.hardware.feetech_registers import HLS
-from orca_core.hardware.feetech import (
-    SMS_STS_ACC,
-    SMS_STS_GOAL_POSITION_L,
-    SMS_STS_LOCK,
-    SMS_STS_MODE,
-    SMS_STS_PRESENT_POSITION_L,
-    SMS_STS_TORQUE_ENABLE,
-)
 
 
 # ----- fakes ----------------------------------------------------------------
@@ -87,7 +79,7 @@ class FakeHlsHandler:
         self.protection_current: dict[int, int] = {}
 
     def read1ByteTxRx(self, motor_id, address):
-        if address == SMS_STS_MODE:
+        if address == HLS.MODE:
             return self.modes.get(motor_id, 0), COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
@@ -103,10 +95,10 @@ class FakeHlsHandler:
         return COMM_SUCCESS, 0
 
     def unLockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 0)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 0)
 
     def LockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 1)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 1)
 
     def ping(self, motor_id):
         self.pings.append(motor_id)
@@ -153,7 +145,7 @@ class FakeSyncRead:
         return True, FakeSyncRead.status.get(motor_id, 0)
 
     def getData(self, motor_id, address, size):
-        if address == SMS_STS_PRESENT_POSITION_L:
+        if address == HLS.PRESENT_POSITION:
             return FakeSyncRead.positions.get(motor_id, 0)
         return 0
 
@@ -194,7 +186,7 @@ PROFILE_SPEED = 5
 
 def test_connect_writes_no_mode_register(client):
     feetech, handler = client
-    assert [w for w in handler.writes if w[1] == SMS_STS_MODE] == []
+    assert [w for w in handler.writes if w[1] == HLS.MODE] == []
     assert handler.writes == [], "connect() must not write any motor register"
 
 
@@ -207,15 +199,15 @@ def test_set_operating_mode_brackets_the_mode_write(client):
     feetech.set_operating_mode([1], 5)
 
     eeprom = [(addr, value) for mid, addr, value in handler.writes
-              if mid == 1 and addr in (SMS_STS_LOCK, SMS_STS_MODE)]
-    assert eeprom == [(SMS_STS_LOCK, 0), (SMS_STS_MODE, 0), (SMS_STS_LOCK, 1)]
+              if mid == 1 and addr in (HLS.LOCK, HLS.MODE)]
+    assert eeprom == [(HLS.LOCK, 0), (HLS.MODE, 0), (HLS.LOCK, 1)]
 
 
 def test_set_operating_mode_skips_motors_whose_mode_write_failed(client):
     feetech, handler = client
 
     def hook(motor_id, address, value):
-        if motor_id == 2 and address == SMS_STS_MODE:
+        if motor_id == 2 and address == HLS.MODE:
             return -3, 0  # comm failure: the motor never answered
         return COMM_SUCCESS, 0
 
@@ -224,9 +216,9 @@ def test_set_operating_mode_skips_motors_whose_mode_write_failed(client):
     feetech.set_operating_mode([1, 2, 3], 5)
 
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1, 3], "a motor with an unacked mode write must stay off"
-    acc_params = [p for addr, p in handler.sync_writes if addr == SMS_STS_ACC]
+    acc_params = [p for addr, p in handler.sync_writes if addr == HLS.ACC]
     assert list(_decode(acc_params[0], 1)) == [1, 3]
 
 
@@ -237,7 +229,7 @@ def test_set_operating_mode_writes_the_motion_profile_once(client):
     feetech.set_operating_mode([1, 2, 3], 5)
 
     assert [addr for addr, _ in handler.sync_writes] == [
-        SMS_STS_ACC, HLS.GOAL_CURRENT]
+        HLS.ACC, HLS.GOAL_CURRENT]
     # Nothing moves while the goal current reads zero, so it is established
     # here: 400 mA is 61 register units.
     motion = _decode([p for addr, p in handler.sync_writes
@@ -252,7 +244,7 @@ def test_status_error_on_mode_write_does_not_fail_the_motor(client):
     feetech.set_operating_mode([1], 5)
 
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1], "a latched status flag is not a failed transaction"
 
 
@@ -367,7 +359,7 @@ def test_write_desired_pos_does_not_rearm_the_motion_profile(client):
     feetech.write_desired_pos([1, 2], np.zeros(2))
 
     assert handler.profile_writes == [], "the profile must not be re-sent per command"
-    assert [addr for addr, _ in handler.sync_writes] == [SMS_STS_GOAL_POSITION_L]
+    assert [addr for addr, _ in handler.sync_writes] == [HLS.GOAL_POSITION]
 
 
 def test_write_desired_pos_with_explicit_speed_uses_the_profile_packet(client):
@@ -445,9 +437,9 @@ def test_set_operating_mode_does_not_rewrite_an_unchanged_mode(client):
     handler.modes = {1: 0, 2: 0, 3: 0}
     feetech.set_operating_mode([1, 2, 3], 5)
 
-    assert [w for w in handler.writes if w[1] in (SMS_STS_MODE, SMS_STS_LOCK)] == []
+    assert [w for w in handler.writes if w[1] in (HLS.MODE, HLS.LOCK)] == []
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1, 2, 3], "torque must still come back on"
 
 
@@ -458,7 +450,7 @@ def test_set_operating_mode_writes_once_across_repeated_calls(client):
     handler.writes.clear()
     feetech.set_operating_mode([1], 5)
 
-    assert [w for w in handler.writes if w[1] == SMS_STS_MODE] == []
+    assert [w for w in handler.writes if w[1] == HLS.MODE] == []
 
 
 # ----- baud-rate changes ------------------------------------------------------
@@ -472,9 +464,9 @@ def test_change_motor_baudrate_relocks_eeprom_at_the_new_baud(client):
     assert feetech.baudrate == 500_000
     # The lock write and the confirming ping must both follow the baud switch.
     lock_index = max(i for i, (_, addr, value) in enumerate(handler.writes)
-                     if addr == SMS_STS_LOCK and value == 1)
+                     if addr == HLS.LOCK and value == 1)
     baud_index = next(i for i, (_, addr, _) in enumerate(handler.writes)
-                      if addr == feetech_client_module.SMS_STS_BAUD_RATE)
+                      if addr == feetech_client_module.HLS.BAUD_RATE)
     assert lock_index > baud_index
     assert handler.pings == [1]
 

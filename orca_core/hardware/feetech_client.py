@@ -28,18 +28,6 @@ from .feetech import (
     GroupSyncWrite,
     GroupSyncRead,
     COMM_SUCCESS,
-    SMS_STS_TORQUE_ENABLE,
-    SMS_STS_MODE,
-    SMS_STS_PRESENT_POSITION_L,
-    SMS_STS_PRESENT_SPEED_L,
-    SMS_STS_PRESENT_CURRENT_L,
-    SMS_STS_PRESENT_TEMPERATURE,
-    SMS_STS_MOVING,
-    SMS_STS_ACC,
-    SMS_STS_GOAL_POSITION_L,
-    SMS_STS_GOAL_SPEED_L,
-    SMS_STS_ID,
-    SMS_STS_BAUD_RATE,
 )
 from .feetech_registers import HLS
 
@@ -430,7 +418,7 @@ class FeetechClient(MotorClient):
                 self.set_torque_enabled([current_id], False, retries=0)
                 self._unlock_eeprom(current_id)
                 result, error = self.packet_handler.write1ByteTxRx(
-                    current_id, SMS_STS_ID, new_id
+                    current_id, HLS.ID, new_id
                 )
                 self._lock_eeprom(new_id)
                 if result == COMM_SUCCESS and error == 0:
@@ -465,7 +453,7 @@ class FeetechClient(MotorClient):
                 self.set_torque_enabled([motor_id], False, retries=0)
                 self._unlock_eeprom(motor_id)
                 result, error = self.packet_handler.write1ByteTxRx(
-                    motor_id, SMS_STS_BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
+                    motor_id, HLS.BAUD_RATE, FEETECH_BAUD_RATE_MAP[new_baud_rate]
                 )
                 if result != COMM_SUCCESS:
                     self._flush_input_buffer()
@@ -536,7 +524,7 @@ class FeetechClient(MotorClient):
                 failed_ids = []
                 for motor_id in remaining_ids:
                     result, error = self.packet_handler.write1ByteTxRx(
-                        motor_id, SMS_STS_TORQUE_ENABLE, int(enabled)
+                        motor_id, HLS.TORQUE_ENABLE, int(enabled)
                     )
                     if result != COMM_SUCCESS:
                         failed_ids.append(motor_id)
@@ -642,7 +630,7 @@ class FeetechClient(MotorClient):
                 self._motor_modes.pop(motor_id, None)
                 self._unlock_eeprom(motor_id)
                 result, error = self.packet_handler.write1ByteTxRx(
-                    motor_id, SMS_STS_MODE, feetech_mode
+                    motor_id, HLS.MODE, feetech_mode
                 )
                 self._lock_eeprom(motor_id)
                 if result != COMM_SUCCESS:
@@ -670,7 +658,7 @@ class FeetechClient(MotorClient):
         cached = self._motor_modes.get(motor_id)
         if cached is not None:
             return cached
-        mode, result, error = self.packet_handler.read1ByteTxRx(motor_id, SMS_STS_MODE)
+        mode, result, error = self.packet_handler.read1ByteTxRx(motor_id, HLS.MODE)
         if result != COMM_SUCCESS:
             self._flush_input_buffer()
             return None
@@ -711,7 +699,7 @@ class FeetechClient(MotorClient):
         The goal current is part of this: nothing moves while it reads zero,
         and position commands no longer carry it.
         """
-        acc_write = self._sync_write(SMS_STS_ACC, 1)
+        acc_write = self._sync_write(HLS.ACC, 1)
         acc_write.clearParam()
         # Registers 44-47 are the goal current followed by the goal speed.
         motion_write = self._sync_write(HLS.GOAL_CURRENT, 4)
@@ -779,7 +767,7 @@ class FeetechClient(MotorClient):
 
             for i, motor_id in enumerate(self.motor_ids):
                 pos_raw = self._read_word(
-                    motor_id, SMS_STS_PRESENT_POSITION_L, 'position')
+                    motor_id, HLS.PRESENT_POSITION, 'position')
                 if pos_raw is not None:
                     pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                     pos_normalized = self._normalize_position(pos_signed)
@@ -788,7 +776,7 @@ class FeetechClient(MotorClient):
                     read_ok = False
 
                 vel_raw = self._read_word(
-                    motor_id, SMS_STS_PRESENT_SPEED_L, 'velocity')
+                    motor_id, HLS.PRESENT_SPEED, 'velocity')
                 if vel_raw is not None:
                     vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
                     velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
@@ -796,7 +784,7 @@ class FeetechClient(MotorClient):
                     read_ok = False
 
                 cur_raw = self._read_word(
-                    motor_id, SMS_STS_PRESENT_CURRENT_L, 'current')
+                    motor_id, HLS.PRESENT_CURRENT, 'current')
                 if cur_raw is not None:
                     cur_signed = self.packet_handler.scs_tohost(cur_raw, 15)
                     currents[i] = cur_signed * self.cur_scale
@@ -817,16 +805,16 @@ class FeetechClient(MotorClient):
         with self._bus_lock:
             temperatures = np.zeros(len(self.motor_ids), dtype=np.float32)
 
-            sync_read = self._sync_read(SMS_STS_PRESENT_TEMPERATURE, 1)
+            sync_read = self._sync_read(HLS.PRESENT_TEMPERATURE, 1)
             if sync_read.txRxPacket() != COMM_SUCCESS:
                 self._flush_input_buffer()
                 logging.warning('Sync temp read failed, falling back to individual reads')
                 return self._read_temperature_per_motor_fallback()
 
             for i, motor_id in enumerate(self.motor_ids):
-                available, _ = sync_read.isAvailable(motor_id, SMS_STS_PRESENT_TEMPERATURE, 1)
+                available, _ = sync_read.isAvailable(motor_id, HLS.PRESENT_TEMPERATURE, 1)
                 if available:
-                    temperatures[i] = float(sync_read.getData(motor_id, SMS_STS_PRESENT_TEMPERATURE, 1))
+                    temperatures[i] = float(sync_read.getData(motor_id, HLS.PRESENT_TEMPERATURE, 1))
                 else:
                     self._flush_input_buffer()
                     logging.warning('Motor %d not available in sync temp read', motor_id)
@@ -839,7 +827,7 @@ class FeetechClient(MotorClient):
         with self._bus_lock:
             for i, motor_id in enumerate(self.motor_ids):
                 temp, result, error = self.packet_handler.read1ByteTxRx(
-                    motor_id, SMS_STS_PRESENT_TEMPERATURE
+                    motor_id, HLS.PRESENT_TEMPERATURE
                 )
                 if result == COMM_SUCCESS and error == 0:
                     temperatures[i] = float(temp)
@@ -877,19 +865,19 @@ class FeetechClient(MotorClient):
             # Lock per poll (not across the sleeps) so waiting for motion
             # never starves other bus traffic for the whole timeout.
             with self._bus_lock:
-                sync_read = self._sync_read(SMS_STS_MOVING, 1)
+                sync_read = self._sync_read(HLS.MOVING, 1)
                 if sync_read.txRxPacket() != COMM_SUCCESS:
                     self._flush_input_buffer()
                     all_stopped = False
                 else:
                     all_stopped = True
                     for motor_id in self.motor_ids:
-                        available, _ = sync_read.isAvailable(motor_id, SMS_STS_MOVING, 1)
+                        available, _ = sync_read.isAvailable(motor_id, HLS.MOVING, 1)
                         if not available:
                             self._flush_input_buffer()
                             all_stopped = False
                             break
-                        if sync_read.getData(motor_id, SMS_STS_MOVING, 1) != 0:
+                        if sync_read.getData(motor_id, HLS.MOVING, 1) != 0:
                             all_stopped = False
                             break
 
@@ -942,7 +930,7 @@ class FeetechClient(MotorClient):
             raise ValueError('motor_ids and positions must have the same length')
 
         with self._bus_lock:
-            sync_write = self._sync_write(SMS_STS_GOAL_POSITION_L, 2)
+            sync_write = self._sync_write(HLS.GOAL_POSITION, 2)
             sync_write.clearParam()
             for motor_id, pos_rad in zip(motor_ids, positions):
                 pos_raw = self._clamp_position(
@@ -1014,7 +1002,7 @@ class FeetechClient(MotorClient):
                 'motor_ids and profile_velocity must have the same length')
 
         with self._bus_lock:
-            sync_write = self._sync_write(SMS_STS_GOAL_SPEED_L, 2)
+            sync_write = self._sync_write(HLS.GOAL_SPEED, 2)
             sync_write.clearParam()
             for motor_id, speed in zip(motor_ids, profile_velocity):
                 self._motor_speed[motor_id] = int(np.clip(abs(speed), 0, 32766))
@@ -1029,16 +1017,16 @@ class FeetechClient(MotorClient):
         self._check_connected()
 
         with self._bus_lock:
-            sync_read = self._sync_read(SMS_STS_MOVING, 1)
+            sync_read = self._sync_read(HLS.MOVING, 1)
             if sync_read.txRxPacket() != COMM_SUCCESS:
                 self._flush_input_buffer()
                 return False
             for motor_id in self.motor_ids:
-                available, _ = sync_read.isAvailable(motor_id, SMS_STS_MOVING, 1)
+                available, _ = sync_read.isAvailable(motor_id, HLS.MOVING, 1)
                 if not available:
                     self._flush_input_buffer()
                     return False
-                if sync_read.getData(motor_id, SMS_STS_MOVING, 1) != 0:
+                if sync_read.getData(motor_id, HLS.MOVING, 1) != 0:
                     return False
         return True
 
@@ -1279,7 +1267,7 @@ class FeetechClient(MotorClient):
 
             # Sync read of position, speed, load, voltage, temp, moving, current:
             # from addr 56 (position) to 70 (current_h) = 15 bytes.
-            sync_read = self._sync_read(SMS_STS_PRESENT_POSITION_L, 15)
+            sync_read = self._sync_read(HLS.PRESENT_POSITION, 15)
             result = sync_read.txRxPacket()
             if result != COMM_SUCCESS:
                 # Late replies from the failed sync read must never be consumed
@@ -1291,7 +1279,7 @@ class FeetechClient(MotorClient):
             read_ok = True
             for i, motor_id in enumerate(self.motor_ids):
                 available, error = sync_read.isAvailable(
-                    motor_id, SMS_STS_PRESENT_POSITION_L, 2
+                    motor_id, HLS.PRESENT_POSITION, 2
                 )
                 if not available:
                     read_ok = False
@@ -1307,16 +1295,16 @@ class FeetechClient(MotorClient):
                 if error != 0:
                     self._log_status_error(motor_id, error, 'sync read')
 
-                pos_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_POSITION_L, 2)
+                pos_raw = sync_read.getData(motor_id, HLS.PRESENT_POSITION, 2)
                 pos_signed = self.packet_handler.scs_tohost(pos_raw, 15)
                 pos_normalized = self._normalize_position(pos_signed)
                 positions[i] = self._raw_to_rad(pos_normalized, self.pos_scale)
 
-                vel_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_SPEED_L, 2)
+                vel_raw = sync_read.getData(motor_id, HLS.PRESENT_SPEED, 2)
                 vel_signed = self.packet_handler.scs_tohost(vel_raw, 15)
                 velocities[i] = self._raw_to_rad(vel_signed, self.vel_scale)
 
-                cur_raw = sync_read.getData(motor_id, SMS_STS_PRESENT_CURRENT_L, 2)
+                cur_raw = sync_read.getData(motor_id, HLS.PRESENT_CURRENT, 2)
                 cur_signed = self.packet_handler.scs_tohost(cur_raw, 15)
                 currents[i] = cur_signed * self.cur_scale
 

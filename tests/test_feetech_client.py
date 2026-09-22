@@ -20,15 +20,7 @@ from orca_core.hardware.feetech_client import (
     COMM_SUCCESS,
     FeetechClient,
 )
-from orca_core.hardware.feetech import (
-    SMS_STS_LOCK,
-    SMS_STS_MODE,
-    SMS_STS_MOVING,
-    SMS_STS_PRESENT_CURRENT_L,
-    SMS_STS_PRESENT_POSITION_L,
-    SMS_STS_PRESENT_SPEED_L,
-    SMS_STS_TORQUE_ENABLE,
-)
+from orca_core.hardware.feetech_registers import HLS
 
 
 def _lock_held_by_another_thread(lock) -> bool:
@@ -102,7 +94,7 @@ class FakePacketHandler:
         if motor_id in self.unavailable_ids:
             return 0, 1, 0
         error = self.status_errors.get(motor_id, 0)
-        if address == SMS_STS_PRESENT_POSITION_L:
+        if address == HLS.PRESENT_POSITION:
             return self.positions[motor_id], COMM_SUCCESS, error
         return 0, COMM_SUCCESS, error
 
@@ -110,7 +102,7 @@ class FakePacketHandler:
         self._record("read1")
         if motor_id in self.unavailable_ids:
             return 0, 1, 0
-        if address == SMS_STS_MODE:
+        if address == HLS.MODE:
             return self.modes.get(motor_id, 0), COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
@@ -121,10 +113,10 @@ class FakePacketHandler:
         return COMM_SUCCESS, 0
 
     def unLockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 0)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 0)
 
     def LockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 1)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 1)
 
     def syncWriteTxOnly(self, start_address, data_length, param, param_length):
         self._record("sync_write")
@@ -153,10 +145,10 @@ class FakeGroupSyncRead:
         return motor_id not in self.handler.unavailable_ids, 0
 
     def getData(self, motor_id, address, size):
-        if address == SMS_STS_PRESENT_POSITION_L:
+        if address == HLS.PRESENT_POSITION:
             return self.handler.positions[motor_id]
         assert address in (
-            SMS_STS_PRESENT_SPEED_L, SMS_STS_PRESENT_CURRENT_L, SMS_STS_MOVING)
+            HLS.PRESENT_SPEED, HLS.PRESENT_CURRENT, HLS.MOVING)
         return 0
 
 
@@ -369,7 +361,7 @@ def test_set_operating_mode_skips_motors_that_did_not_ack_torque_off(
 
     def hook(motor_id, address, value):
         calls.append((motor_id, address, value))
-        if motor_id == 2 and address == SMS_STS_TORQUE_ENABLE:
+        if motor_id == 2 and address == HLS.TORQUE_ENABLE:
             return 1, 0
         return COMM_SUCCESS, 0
 
@@ -377,10 +369,10 @@ def test_set_operating_mode_skips_motors_that_did_not_ack_torque_off(
     handler.modes = {1: 1, 2: 1, 3: 1}  # wheel mode, so a mode write is due
     feetech.set_operating_mode([1, 2, 3], 5)
 
-    mode_writes = [mid for mid, addr, _ in calls if addr == SMS_STS_MODE]
+    mode_writes = [mid for mid, addr, _ in calls if addr == HLS.MODE]
     assert mode_writes == [1, 3], "unacked motor 2 must get no mode write"
     reenabled = [mid for mid, addr, val in calls
-                 if addr == SMS_STS_TORQUE_ENABLE and val == 1]
+                 if addr == HLS.TORQUE_ENABLE and val == 1]
     assert reenabled == [1, 3], "unacked motor 2 must not be torque re-enabled"
 
 
