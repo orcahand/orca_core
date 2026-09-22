@@ -4,7 +4,7 @@ Covers read caching and ``last_read_ok`` (a motor missing from a partial
 read must keep its cached value and flag the read as not ok), stale-RX
 flushing after failed transactions, finite torque/mode retries, the bus
 lock held across every port transaction, and the ``calibrate_offset``
-success/failure contract.
+success/failure contract. It also checks HLS target-current encoding.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ import pytest
 import orca_core.hardware.feetech_client as feetech_client_module
 from orca_core.hardware.feetech_client import (
     COMM_SUCCESS,
+    DEFAULT_CURRENT_LIMIT_MA,
     FeetechClient,
+    MAX_TARGET_CURRENT_RAW,
 )
 from orca_core.hardware.feetech import (
     SMS_STS_MODE,
@@ -63,6 +65,7 @@ class FakePacketHandler:
 
     def __init__(self, positions: dict[int, int]):
         self.positions = dict(positions)
+        self.commands = []
         self.unavailable_ids: set[int] = set()
         self.sync_fails = False
         self.log: list[str] = []
@@ -70,6 +73,10 @@ class FakePacketHandler:
         self.ofs_hook = None     # callable(motor_id, position) -> (result, error)
         self.client: FeetechClient | None = None
         self.lock_checks: list[bool] = []
+        self.groupSyncWrite = SimpleNamespace(
+            clearParam=lambda: None,
+            txPacket=self._sync_write_packet,
+        )
 
     def _record(self, name):
         self.log.append(name)
@@ -94,6 +101,14 @@ class FakePacketHandler:
         if self.write1_hook is not None:
             return self.write1_hook(motor_id, address, value)
         return COMM_SUCCESS, 0
+
+    def SyncWritePosEx(self, motor_id, position, speed, acc, target_current):
+        self.commands.append((motor_id, position, speed, acc, target_current))
+        return True
+
+    def _sync_write_packet(self):
+        self._record("sync_write")
+        return COMM_SUCCESS
 
     def reOfsCal(self, motor_id, position):
         self._record("ofs_cal")
@@ -427,3 +442,64 @@ def test_connect_succeeds_when_flock_unavailable(monkeypatch):
     finally:
         feetech._connected = False
         FeetechClient.OPEN_CLIENTS.discard(feetech)
+
+
+def test_current_limits_are_scaled_and_preserved_per_motor(client):
+    feetech, handler = client
+    feetech.write_desired_current([1, 2], np.array([300.0, 650.0]))
+    feetech.write_positions_sync([1, 2], np.array([0.0, 0.0]))
+
+    target_currents = [command[-1] for command in handler.commands]
+    assert target_currents == [46, 100]
+
+
+def test_position_command_override_is_in_milliamps(client):
+    feetech, handler = client
+    feetech.write_positions_sync(
+        [1, 2],
+        np.array([0.0, 0.0]),
+        current_limit_ma=300.0,
+    )
+
+    target_currents = [command[-1] for command in handler.commands]
+    assert target_currents == [46, 46]
+
+
+def test_default_target_current_uses_milliamps(client):
+    feetech, handler = client
+    feetech.write_positions_sync([1], np.array([0.0]))
+
+    assert handler.commands[0][-1] == int(
+        DEFAULT_CURRENT_LIMIT_MA // feetech.cur_scale
+    )
+
+
+@pytest.mark.parametrize('current_ma', [-1.0, np.nan, np.inf])
+def test_invalid_current_limit_is_rejected(client, current_ma):
+    feetech, _ = client
+    with pytest.raises(ValueError, match='non-negative finite'):
+        feetech.write_desired_current([1], np.array([current_ma]))
+
+
+def test_invalid_current_array_does_not_partially_update_limits(client):
+    feetech, _ = client
+    original_limits = feetech._current_limit_raw_by_motor.copy()
+
+    with pytest.raises(ValueError, match='non-negative finite'):
+        feetech.write_desired_current([1, 2], np.array([300.0, np.nan]))
+
+    assert feetech._current_limit_raw_by_motor == original_limits
+
+
+def test_target_current_saturates_at_register_max(client):
+    feetech, handler = client
+    feetech.write_desired_current([1], np.array([100_000.0]))
+    feetech.write_positions_sync([1], np.array([0.0]))
+
+    assert handler.commands[0][-1] == MAX_TARGET_CURRENT_RAW
+
+
+def test_current_limit_length_must_match_motor_ids(client):
+    feetech, _ = client
+    with pytest.raises(ValueError, match='same length'):
+        feetech.write_desired_current([1, 2], np.array([300.0]))

@@ -61,6 +61,8 @@ FEETECH_MODELS: dict[int, str] = {
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
 DEFAULT_VEL_SCALE = 0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
 DEFAULT_CUR_SCALE = 6.5  # mA per unit
+DEFAULT_CURRENT_LIMIT_MA = 500.0
+MAX_TARGET_CURRENT_RAW = 2047
 
 # Position limits for STS servo mode (0-4095, one full rotation)
 POS_MIN = 0
@@ -151,6 +153,8 @@ class FeetechClient(MotorClient):
         self.pos_scale = pos_scale if pos_scale is not None else DEFAULT_POS_SCALE
         self.vel_scale = vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE
         self.cur_scale = cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE
+        if not np.isfinite(self.cur_scale) or self.cur_scale <= 0:
+            raise ValueError('cur_scale must be a positive finite value')
 
         self.port_handler = PortHandler(port)
         self.packet_handler: Optional[sms_sts] = None
@@ -174,7 +178,10 @@ class FeetechClient(MotorClient):
         # means "go as fast as you can".
         self._default_speed = 1500  # Effectively "max speed" for STS-class
         self._default_acc = 150  # Acceleration (0-254): faster ramp-up
-        self._default_torque = 500  # Torque limit (0-1000), required for motion
+        default_current_raw = self._current_ma_to_raw(DEFAULT_CURRENT_LIMIT_MA)
+        self._current_limit_raw_by_motor = {
+            motor_id: default_current_raw for motor_id in self.motor_ids
+        }
 
     @property
     def is_connected(self) -> bool:
@@ -636,7 +643,7 @@ class FeetechClient(MotorClient):
         motor_ids: Sequence[int],
         positions: np.ndarray,
         speed: Optional[int] = None,
-        torque: Optional[int] = None,
+        current_limit_ma: Optional[float] = None,
     ) -> None:
         """Writes desired positions to the motors.
 
@@ -646,41 +653,61 @@ class FeetechClient(MotorClient):
         Args:
             motor_ids: Motor IDs to write to.
             positions: Target positions in radians.
-            speed: Movement speed (0.732 RPM per unit). Default ~60 = 44 RPM.
-            torque: Torque limit (0-1000). Default 500. Required for motion.
+            speed: Movement speed (0.732 RPM per unit).
+            current_limit_ma: Optional current limit in mA for this command.
+                When omitted, the last per-motor values supplied through
+                :meth:`write_desired_current` are used.
         """
-        self.write_positions_sync(motor_ids, positions, speed=speed, torque=torque)
+        self.write_positions_sync(
+            motor_ids,
+            positions,
+            speed=speed,
+            current_limit_ma=current_limit_ma,
+        )
 
     def write_desired_current(
         self,
         motor_ids: Sequence[int],
         currents: np.ndarray,
     ) -> None:
-        """Writes desired currents (torque limits) to the motors.
+        """Set per-motor target-current limits for subsequent position writes.
 
-        Feetech uses torque limiting (0-1000) instead of direct current control.
-        This method maps current values to torque: 1 mA ≈ 1 torque unit.
-        The torque limit takes effect on the next position command.
+        HLS registers 44-45 in the extended position command are target current,
+        with a scale of 6.5 mA per raw unit. They are distinct from registers
+        48-49, whose 0-1000 value is a percentage torque limit. This method only
+        configures target current; the values take effect on the next position
+        command.
 
         Args:
             motor_ids: Motor IDs to configure.
-            currents: Desired current limits in mA. Mapped to torque (0-1000).
+            currents: Desired current limits in mA.
         """
         self._check_connected()
 
         if len(motor_ids) != len(currents):
             raise ValueError('motor_ids and currents must have the same length')
 
+        raw_limits = [self._current_ma_to_raw(value) for value in currents]
         with self._bus_lock:
-            # Map current (mA) directly to torque (0-1000)
-            # Typical values: 200-400 mA for calibration, 500-1000 mA for normal operation
-            for current in currents:
-                torque_raw = int(np.clip(abs(current), 0, 1000))
-                self._default_torque = torque_raw
+            self._current_limit_raw_by_motor.update(zip(motor_ids, raw_limits))
 
         logging.debug(
-            'Updated default torque to %d (from current %.1f mA)',
-            self._default_torque, currents[0] if len(currents) > 0 else 0
+            'Updated target-current limits: %s',
+            {
+                motor_id: self._current_limit_raw_by_motor[motor_id]
+                for motor_id in motor_ids
+            },
+        )
+
+    def _current_ma_to_raw(self, current_ma: float) -> int:
+        """Convert a non-negative mA limit to the HLS target-current register."""
+        if not np.isfinite(current_ma) or current_ma < 0:
+            raise ValueError('current limits must be non-negative finite values')
+
+        # Round down so quantization never raises the requested safety limit.
+        return min(
+            int(np.floor(float(current_ma) / self.cur_scale)),
+            MAX_TARGET_CURRENT_RAW,
         )
 
     def _check_connected(self) -> None:
@@ -814,7 +841,7 @@ class FeetechClient(MotorClient):
         positions: np.ndarray,
         speed: Optional[int] = None,
         acc: Optional[int] = None,
-        torque: Optional[int] = None,
+        current_limit_ma: Optional[float] = None,
     ) -> None:
         """Writes positions to multiple motors using sync write.
 
@@ -823,9 +850,11 @@ class FeetechClient(MotorClient):
         Args:
             motor_ids: Motor IDs to write to.
             positions: Target positions in radians.
-            speed: Movement speed (0.732 RPM per unit). Default ~60 = 44 RPM.
-            acc: Acceleration (0-254). Default 50.
-            torque: Torque limit (0-1000). Default 500.
+            speed: Movement speed (0.732 RPM per unit).
+            acc: Acceleration (0-254).
+            current_limit_ma: Optional current limit in mA applied to every
+                motor in this command. Otherwise uses each motor's configured
+                limit.
         """
         self._check_connected()
 
@@ -835,21 +864,45 @@ class FeetechClient(MotorClient):
         with self._bus_lock:
             speed = speed if speed is not None else self._default_speed
             acc = acc if acc is not None else self._default_acc
-            torque = torque if torque is not None else self._default_torque
+            override_current_raw = (
+                self._current_ma_to_raw(current_limit_ma)
+                if current_limit_ma is not None
+                else None
+            )
 
             # Clear any existing sync write params
             self.packet_handler.groupSyncWrite.clearParam()
 
             for motor_id, pos_rad in zip(motor_ids, positions):
-                # STS servo mode uses raw 0–4095 (single rotation); clamp before sending.
+                # HLS servo mode uses raw 0–4095 (single rotation); clamp before sending.
                 pos_raw = self._clamp_position(self._rad_to_raw(pos_rad, self.pos_scale))
-
-                logging.debug(
-                    'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, torque=%d',
-                    motor_id, pos_raw, speed, acc, torque
+                target_current_raw = (
+                    override_current_raw
+                    if override_current_raw is not None
+                    else self._current_limit_raw_by_motor.get(
+                        motor_id,
+                        self._current_ma_to_raw(DEFAULT_CURRENT_LIMIT_MA),
+                    )
                 )
 
-                self.packet_handler.SyncWritePosEx(motor_id, pos_raw, speed, acc, torque)
+                logging.debug(
+                    'SyncWritePosEx: motor=%d, pos=%d, speed=%d, acc=%d, '
+                    'target_current=%d (%.1f mA)',
+                    motor_id,
+                    pos_raw,
+                    speed,
+                    acc,
+                    target_current_raw,
+                    target_current_raw * self.cur_scale,
+                )
+
+                self.packet_handler.SyncWritePosEx(
+                    motor_id,
+                    pos_raw,
+                    speed,
+                    acc,
+                    target_current_raw,
+                )
 
             # Send the sync write packet
             result = self.packet_handler.groupSyncWrite.txPacket()

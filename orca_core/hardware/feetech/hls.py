@@ -38,10 +38,15 @@ HLS_TORQUE_ENABLE = 40
 HLS_ACC = 41
 HLS_GOAL_POSITION_L = 42
 HLS_GOAL_POSITION_H = 43
-HLS_GOAL_TORQUE_L = 44
-HLS_GOAL_TORQUE_H = 45
+HLS_GOAL_CURRENT_L = 44
+HLS_GOAL_CURRENT_H = 45
+# Compatibility aliases used by Feetech's SDK naming.
+HLS_GOAL_TORQUE_L = HLS_GOAL_CURRENT_L
+HLS_GOAL_TORQUE_H = HLS_GOAL_CURRENT_H
 HLS_GOAL_SPEED_L = 46
 HLS_GOAL_SPEED_H = 47
+HLS_TORQUE_LIMIT_L = 48
+HLS_TORQUE_LIMIT_H = 49
 HLS_LOCK = 55
 
 #-------SRAM (read-only)--------
@@ -111,4 +116,3 @@ class hls(protocol_packet_handler):
 
     def unLockEprom(self, scs_id):
         return self.write1ByteTxRx(scs_id, HLS_LOCK, 0)
-
