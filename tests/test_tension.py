@@ -171,3 +171,26 @@ def test_winding_reads_are_freshness_checked(connected_mock_hand, monkeypatch):
         connected_mock_hand, move_motors=True, should_stop=lambda: True
     )
     assert checked, "winding read positions without a freshness check"
+
+
+def test_winding_skips_ticks_while_the_bus_stays_silent(connected_mock_hand, monkeypatch):
+    """A read that fails for longer than the checked read retries must not end
+    the tension run; the tick is skipped and winding carries on."""
+    from orca_core.maintenance import tensioning
+
+    hand = connected_mock_hand
+    calls = {"reads": 0, "stops": 0}
+
+    def flaky_read(hand, **kw):
+        calls["reads"] += 1
+        if calls["reads"] in (1, 3, 4):
+            raise RuntimeError("motor position read failed")
+        return hand.get_motor_pos()
+
+    def stop_after_a_few_ticks():
+        calls["stops"] += 1
+        return calls["stops"] > 6
+
+    monkeypatch.setattr(tensioning, "read_motor_pos_checked", flaky_read)
+    tensioning.run_tension(hand, move_motors=True, should_stop=stop_after_a_few_ticks)
+    assert calls["reads"] >= 5, "winding stopped reading after the failures"
