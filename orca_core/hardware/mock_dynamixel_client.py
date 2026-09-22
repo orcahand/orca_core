@@ -532,7 +532,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-d',
         '--device',
-        default='/dev/cu.usbserial-FT62AFSR',
+        default='/dev/cu.usbserial-XXXX',
         help='The Dynamixel device to connect to.')
     parser.add_argument(
         '-b', '--baud', default=1000000, help='The baudrate to connect with.')
