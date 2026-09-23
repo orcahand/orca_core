@@ -84,6 +84,9 @@ def _make_fake_dxl_sdk():
         def read1ByteTxRx(self, port, motor_id, address):
             return 0, 0, 0
 
+        def ping(self, port, motor_id):
+            return 1220, 0, 0
+
         def getTxRxResult(self, comm_result):
             return str(comm_result)
 
@@ -139,12 +142,15 @@ class FakeFeetechPortHandler:
         self.is_open = False
 
 
-class FakeSmsSts:
+class FakeHlsHandler:
     def __init__(self, port_handler):
         pass
 
     def write1ByteTxRx(self, motor_id, address, value):
         return COMM_SUCCESS, 0
+
+    def read2ByteTxRx(self, motor_id, address):
+        return 0, COMM_SUCCESS, 0
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +169,7 @@ def dxl_registry(monkeypatch):
 @pytest.fixture
 def feetech_registry(monkeypatch):
     monkeypatch.setattr(feetech_client_module, "PortHandler", FakeFeetechPortHandler)
-    monkeypatch.setattr(feetech_client_module, "sms_sts", FakeSmsSts)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", FakeHlsHandler)
     registry = _BadFirstSet()
     monkeypatch.setattr(FeetechClient, "OPEN_CLIENTS", registry)
     return registry
@@ -271,11 +277,11 @@ def test_feetech_failed_connect_leaves_registry_empty(feetech_registry):
 
 def test_feetech_failure_after_open_closes_port_before_raising(
         feetech_registry, monkeypatch):
-    class RaisingSmsSts:
+    class RaisingHandler:
         def __init__(self, port_handler):
             raise OSError("packet handler init failed")
 
-    monkeypatch.setattr(feetech_client_module, "sms_sts", RaisingSmsSts)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", RaisingHandler)
     client = _make_feetech()
     with pytest.raises(OSError):
         client.connect()

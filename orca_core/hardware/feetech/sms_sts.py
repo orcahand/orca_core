@@ -62,9 +62,9 @@ class sms_sts(protocol_packet_handler):
         protocol_packet_handler.__init__(self, portHandler, 0)
         self.groupSyncWrite = GroupSyncWrite(self, SMS_STS_ACC, 7)
 
-    def WritePosEx(self, scs_id, position, speed, acc, torque=500):
+    def WritePosEx(self, scs_id, position, speed, acc):
         position = self.scs_toscs(position, 15)
-        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), self.scs_lobyte(torque), self.scs_hibyte(torque), self.scs_lobyte(speed), self.scs_hibyte(speed)]
+        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
         return self.writeTxRx(scs_id, SMS_STS_ACC, len(txpacket), txpacket)
 
     def ReadPos(self, scs_id):
@@ -85,14 +85,14 @@ class sms_sts(protocol_packet_handler):
         moving, scs_comm_result, scs_error = self.read1ByteTxRx(scs_id, SMS_STS_MOVING)
         return moving, scs_comm_result, scs_error
 
-    def SyncWritePosEx(self, scs_id, position, speed, acc, torque=500):
+    def SyncWritePosEx(self, scs_id, position, speed, acc):
         position = self.scs_toscs(position, 15)
-        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), self.scs_lobyte(torque), self.scs_hibyte(torque), self.scs_lobyte(speed), self.scs_hibyte(speed)]
+        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
         return self.groupSyncWrite.addParam(scs_id, txpacket)
 
-    def RegWritePosEx(self, scs_id, position, speed, acc, torque=500):
+    def RegWritePosEx(self, scs_id, position, speed, acc):
         position = self.scs_toscs(position, 15)
-        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), self.scs_lobyte(torque), self.scs_hibyte(torque), self.scs_lobyte(speed), self.scs_hibyte(speed)]
+        txpacket = [acc, self.scs_lobyte(position), self.scs_hibyte(position), 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
         return self.regWriteTxRx(scs_id, SMS_STS_ACC, len(txpacket), txpacket)
 
     def RegAction(self):
@@ -101,9 +101,9 @@ class sms_sts(protocol_packet_handler):
     def WheelMode(self, scs_id):
         return self.write1ByteTxRx(scs_id, SMS_STS_MODE, 1)
 
-    def WriteSpec(self, scs_id, speed, acc, torque=500):
+    def WriteSpec(self, scs_id, speed, acc):
         speed = self.scs_toscs(speed, 15)
-        txpacket = [acc, 0, 0, self.scs_lobyte(torque), self.scs_hibyte(torque), self.scs_lobyte(speed), self.scs_hibyte(speed)]
+        txpacket = [acc, 0, 0, 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
         return self.writeTxRx(scs_id, SMS_STS_ACC, len(txpacket), txpacket)
 
     def LockEprom(self, scs_id):

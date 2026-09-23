@@ -249,6 +249,12 @@ uv run python scripts/monitor_sensors.py
 
 All hand-specific settings are in `config.yaml`:
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
+- `max_current` / `calibration_current` / `wrist_calibration_current` - `default` (what the
+  packaged configs say) resolves to the connected motor family's own values, the
+  `default_max_current_ma` / `default_calibration_current_ma` class attributes on its client
+  (Dynamixel 300/300, Feetech 900/900). A number pins an override for one hand. Resolution
+  happens in `load_hand()` when the family is detected or pinned, otherwise at connect, so
+  read these fields after `connect()`.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)
 

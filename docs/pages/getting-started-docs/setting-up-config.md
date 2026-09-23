@@ -15,14 +15,14 @@ This file defines parameters crucial for the hand's operation, including communi
 
 ```yaml
 port: auto
-max_current: 300
+max_current: default
 type: right
 control_mode: current_based_position
 ```
 
 **What should be changed?**
 
-Change `type` to right or left depending on the hand assembly. `max_current` is set to a sane default; adjust if your tasks need more or less. `control_mode` should generally stay at `current_based_position`.
+Change `type` to right or left depending on the hand assembly. `max_current: default` uses the motor family's own limit (300 mA on Dynamixel hands, 900 mA on Feetech hands); put a number there to pin a different limit for this hand. `control_mode` should generally stay at `current_based_position`.
 
 #### Driver settings: `port`, `baudrate`, `motor_type`
 
@@ -136,7 +136,7 @@ You can adjust this section if you want the hand to return to a different defaul
 ### 6. Calibration Parameters
 
 ```yaml
-calibration_current: 350
+calibration_current: default
 calibration_step_size: 0.1
 calibration_step_period: 0.001
 calibration_num_stable: 10
@@ -144,6 +144,8 @@ calibration_threshold: 0.01
 ```
 
 **What should be changed?**
+
+`calibration_current: default` drives the joints to their hardstops at the motor family's own calibration current (300 mA on Dynamixel hands, 900 mA on Feetech hands). A number pins a different value; `wrist_calibration_current` follows it unless set.
 
 These parameters should generally not be changed unless you have experience tuning the calibration behavior for a specific hardware modification.
 

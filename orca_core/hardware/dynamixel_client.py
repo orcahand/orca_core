@@ -138,6 +138,17 @@ class DynamixelClient(MotorClient):
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
 
+    # Goal Current (102) on the XC330-T288-T: 1 mA per unit, bounded by its
+    # Current Limit (38), whose range is 0..910. An XC330-M288 would allow 2352.
+    current_scale_ma = 1.0
+    max_current_ma = 910.0
+    # The XC330's register is 1 mA per unit, and 300 mA moves every joint of a
+    # tensioned hand to its hardstops; the packaged hands have always run here.
+    default_max_current_ma = 300
+    default_calibration_current_ma = 300
+    # Model numbers with no Goal Current register at all (XC430-T240BB-T).
+    MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
+
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.
     OPEN_CLIENTS = set()
@@ -181,6 +192,9 @@ class DynamixelClient(MotorClient):
 
         # RLock: alert handling re-enters from within a locked read/write path.
         self._bus_lock = threading.RLock()
+
+        # Model number per motor, learned by pinging at connect.
+        self._model_numbers: dict[int, int] = {}
 
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
@@ -246,6 +260,7 @@ class DynamixelClient(MotorClient):
 
                 # Clear any pre-existing hardware errors.
                 self.check_overload_and_reboot(self.motor_ids)
+                self._read_model_numbers()
 
                 # Torque is left as-is: connecting must never make the hand
                 # stiffen or move. Callers opt in via enable_torque()/init_joints().
@@ -414,8 +429,24 @@ class DynamixelClient(MotorClient):
         return times
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
-        assert len(motor_ids) == len(current)
-        self.sync_write(motor_ids, current, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
+        plan = self._goal_current_plan(motor_ids, current)
+        if plan:
+            self.sync_write(list(plan), list(plan.values()), ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
+
+    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
+        if self._model_numbers.get(motor_id) in self.MODELS_WITHOUT_CURRENT_CONTROL:
+            return None
+        return self.max_current_ma
+
+    def _read_model_numbers(self) -> None:
+        """Ping every motor for its model number; a silent motor stays unknown."""
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                model, comm_result, _ = self.packet_handler.ping(self.port_handler, motor_id)
+                if comm_result == self.dxl.COMM_SUCCESS:
+                    self._model_numbers[motor_id] = model
+                else:
+                    self._flush_input_buffer()
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)

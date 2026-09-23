@@ -86,6 +86,10 @@ class MockDynamixelClient(MotorClient):
     factory_default_baudrate = DynamixelClient.factory_default_baudrate
     baud_rate_map = DynamixelClient.baud_rate_map
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
+    current_scale_ma = DynamixelClient.current_scale_ma
+    max_current_ma = DynamixelClient.max_current_ma
+    default_max_current_ma = DynamixelClient.default_max_current_ma
+    default_calibration_current_ma = DynamixelClient.default_calibration_current_ma
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.
@@ -132,6 +136,8 @@ class MockDynamixelClient(MotorClient):
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
+        # Per-motor goal-current ceilings a test may script; None = no current register.
+        self.current_ceilings_ma: dict = {}
         self._temp = {mid: 0.0 for mid in self.motor_ids}
         self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
         
@@ -292,14 +298,16 @@ class MockDynamixelClient(MotorClient):
         return times
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
-        assert len(motor_ids) == len(current)
         self.check_connected()
 
-        for mid in motor_ids:
+        for mid, raw in self._goal_current_plan(motor_ids, current).items():
             if mid not in self._cur:
                 logging.error('Write ignored for unknown motor ID %d', mid)
                 continue
-            self._cur[mid] = current[motor_ids.index(mid)]
+            self._cur[mid] = raw * self.current_scale_ma
+
+    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
+        return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
 
     def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
             assert len(motor_ids) == len(profile_velocity)

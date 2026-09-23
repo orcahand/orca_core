@@ -220,3 +220,54 @@ def test_set_torque_enabled_signature_is_uniform_across_family():
         params = inspect.signature(cls.set_torque_enabled).parameters
         assert params["retries"].default == 3, cls.__name__
         assert params["retry_interval"].default == 0.25, cls.__name__
+
+
+# ----- goal-current contract -------------------------------------------------
+
+
+REAL_AND_MOCK = [
+    pytest.param((DynamixelClient, MockDynamixelClient), id="dynamixel"),
+    pytest.param((FeetechClient, MockFeetechClient), id="feetech"),
+]
+
+
+@pytest.mark.parametrize("pair", REAL_AND_MOCK)
+def test_every_family_declares_its_goal_current_register(pair):
+    real, mock = pair
+    for cls in (real, mock):
+        assert cls.current_scale_ma > 0 and np.isfinite(cls.current_scale_ma)
+        assert cls.max_current_ma > 0 and np.isfinite(cls.max_current_ma)
+    assert mock.current_scale_ma == real.current_scale_ma
+    assert mock.max_current_ma == real.max_current_ma
+
+
+def test_abc_leaves_the_goal_current_attributes_to_the_family():
+    assert not hasattr(MotorClient, "current_scale_ma")
+    assert not hasattr(MotorClient, "max_current_ma")
+
+
+def test_read_current_limits_reports_every_motor(connected_mock):
+    limits = connected_mock.read_current_limits()
+    assert set(limits) == {1, 2}
+    assert all(limit == type(connected_mock).max_current_ma for limit in limits.values())
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan")])
+def test_mock_write_desired_current_rejects_bad_values(connected_mock, value):
+    with pytest.raises(ValueError, match="non-negative finite"):
+        connected_mock.write_desired_current([1], np.array([value]))
+
+
+# ----- family current defaults ------------------------------------------------
+
+@pytest.mark.parametrize("real, mock, expected", [
+    pytest.param(DynamixelClient, MockDynamixelClient, (300, 300), id="dynamixel"),
+    pytest.param(FeetechClient, MockFeetechClient, (900, 900), id="feetech"),
+])
+def test_every_family_declares_its_current_defaults(real, mock, expected):
+    for cls in (real, mock):
+        assert (cls.default_max_current_ma, cls.default_calibration_current_ma) == expected
+        assert isinstance(cls.default_max_current_ma, int)
+        assert isinstance(cls.default_calibration_current_ma, int)
+    assert (mock.default_max_current_ma, mock.default_calibration_current_ma) == (
+        real.default_max_current_ma, real.default_calibration_current_ma)

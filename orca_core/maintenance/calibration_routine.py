@@ -82,6 +82,16 @@ def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) 
         logger.exception("calibration progress callback failed")
 
 
+def _calibration_currents(hand: "OrcaHand") -> "list[float]":
+    """Per-motor calibration currents: the wrist value on the wrist motor, the finger value elsewhere."""
+    wrist_motor = hand.config.joint_to_motor_map.get(WRIST)
+    return [
+        float(hand.config.wrist_calibration_current if motor_id == wrist_motor
+              else hand.config.calibration_current)
+        for motor_id in hand.config.motor_ids
+    ]
+
+
 def run_calibration(
     hand: "OrcaHand",
     *,
@@ -343,7 +353,7 @@ def _drive_calibration(
     calibrated_joints: dict = {}
 
     hand.set_control_mode(CURRENT_BASED_POSITION)
-    hand.set_max_current(hand.config.calibration_current)
+    hand.set_max_current(_calibration_currents(hand))
 
     _emit(
         progress_callback,
@@ -383,12 +393,6 @@ def _drive_calibration(
             if should_stop():
                 _emit(progress_callback, "calibration_aborted")
                 return None
-
-            hand.set_max_current(
-                hand.config.calibration_current
-                if joint != WRIST
-                else hand.config.wrist_calibration_current
-            )
 
             sign = 1 if direction == FLEX else -1
             if hand.config.joint_inversion_dict.get(joint, False):

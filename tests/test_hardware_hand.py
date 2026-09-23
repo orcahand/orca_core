@@ -62,6 +62,35 @@ def test_set_max_current_supports_scalar_and_list(mock_hand):
     mock_hand.set_max_current(desired_currents)
     for motor_id, desired in zip(mock_hand.config.motor_ids, desired_currents):
         assert mock_hand._motor_client._cur[motor_id] == desired
+    as_array = np.asarray(desired_currents) + 10.0
+    mock_hand.set_max_current(as_array)
+    for motor_id, desired in zip(mock_hand.config.motor_ids, as_array):
+        assert mock_hand._motor_client._cur[motor_id] == desired
+
+
+def test_set_max_current_rejects_bad_values_before_reaching_the_bus(mock_hand):
+    before = dict(mock_hand._motor_client._cur)
+    for value in (-1.0, float("nan")):
+        with pytest.raises(ValueError, match="non-negative finite"):
+            mock_hand.set_max_current(value)
+    assert mock_hand._motor_client._cur == before
+
+
+def test_set_max_current_names_unlimitable_motors_once(mock_hand, caplog):
+    wrist_id = mock_hand.config.joint_to_motor_map["wrist"]
+    mock_hand._motor_client.current_ceilings_ma[wrist_id] = None
+    before = mock_hand._motor_client._cur[wrist_id]
+
+    with caplog.at_level(logging.WARNING):
+        mock_hand.set_max_current(300.0)
+        mock_hand.set_max_current(250.0)
+
+    warnings = [r for r in caplog.records if "No current limit" in r.getMessage()]
+    assert len(warnings) == 1, "one warning per connect, not per call"
+    assert f"wrist (motor {wrist_id})" in warnings[0].getMessage()
+    assert mock_hand._motor_client._cur[wrist_id] == before, "the wrist was left alone"
+    finger_id = next(m for m in mock_hand.config.motor_ids if m != wrist_id)
+    assert mock_hand._motor_client._cur[finger_id] == 250.0
 
 
 def test_disconnect_disables_torque_and_discards_client(mock_hand):

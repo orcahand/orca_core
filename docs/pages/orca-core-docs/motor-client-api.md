@@ -224,10 +224,10 @@ This method maps Dynamixel mode values to Feetech equivalents:
 
 | Input Mode | Feetech Mode | Behavior |
 |------------|--------------|----------|
-| 0 (current) | 0 (servo) | Position with torque limit |
+| 0 (current) | 0 (servo) | Position under the goal-current limit |
 | 1 (velocity) | 1 (wheel) | Continuous rotation |
 | 3 (position) | 0 (servo) | Standard position |
-| 5 (current-based) | 0 (servo) | Position with torque limit |
+| 5 (current-based) | 0 (servo) | Position under the goal-current limit |
 
 **Example:**
 ```python
@@ -328,9 +328,11 @@ write_desired_current(
 ) -> None
 ```
 
-Set current/torque limits for specified motors.
-
-**Note:** Feetech servos don't have direct current control. This sets the torque limit via the Goal Time register.
+Set each motor's goal-current limit in mA. The value is written at once to
+register 44 (goal current, 6.5 mA per unit, rounded down) and clamped to the
+motor's protection current (register 28), which the client reads at connect.
+This is not the 0.1 % torque limit at register 48, which is never written.
+Negative or non-finite values raise `ValueError` before anything is sent.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -339,7 +341,7 @@ Set current/torque limits for specified motors.
 
 **Example:**
 ```python
-# Set 500mA torque limit for motors 1-3
+# Limit motors 1-3 to 500 mA (76 register units)
 client.write_desired_current([1, 2, 3], np.array([500, 500, 500]))
 ```
 

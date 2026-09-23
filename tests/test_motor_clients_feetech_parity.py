@@ -21,21 +21,17 @@ import orca_core.hardware.feetech_client as feetech_client_module
 from orca_core.hardware import motor_resolution
 from orca_core.hardware.feetech_client import (
     COMM_SUCCESS,
-    DEFAULT_TORQUE_LIMIT,
     FeetechClient,
 )
-from orca_core.hardware.feetech import (
-    SMS_STS_ACC,
-    SMS_STS_GOAL_POSITION_L,
-    SMS_STS_GOAL_TIME_L,
-    SMS_STS_LOCK,
-    SMS_STS_MODE,
-    SMS_STS_PRESENT_POSITION_L,
-    SMS_STS_TORQUE_ENABLE,
-)
+from orca_core.hardware.feetech_registers import HLS
 
 
 # ----- fakes ----------------------------------------------------------------
+
+
+# Factory protection current the fake motors report: 231 units = 1501.5 mA.
+PROTECTION_RAW = 231
+PROTECTION_MA = PROTECTION_RAW * HLS.CURRENT_SCALE_MA
 
 
 class FakePortHandler:
@@ -66,36 +62,30 @@ class FakePortHandler:
         self.is_open = False
 
 
-class FakeGroupSyncWrite:
-    """The packet handler's own position sync-write group."""
-
-    def __init__(self, handler):
-        self.handler = handler
-
-    def clearParam(self):
-        pass
-
-    def txPacket(self):
-        return COMM_SUCCESS
-
-
-class FakeSmsSts:
+class FakeHlsHandler:
     """Records every transaction a FeetechClient issues, in order."""
 
     def __init__(self, port_handler=None):
         self.port_handler = port_handler
         self.writes: list[tuple[int, int, int]] = []   # (motor_id, address, value)
         self.sync_writes: list[tuple[int, list[int]]] = []  # (address, params)
-        self.pos_writes: list[tuple] = []              # SyncWritePosEx arguments
+        # Position-profile blocks, one {motor_id: 7 bytes} dict per packet.
+        self.profile_writes: list[dict[int, list[int]]] = []
         self.pings: list[int] = []
         self.write_hook = None
         self.ping_result = COMM_SUCCESS
         self.modes: dict[int, int] = {}  # mode register per motor; 0 = servo
-        self.groupSyncWrite = FakeGroupSyncWrite(self)
+        # Protection current (register 28) per motor, in 6.5 mA units.
+        self.protection_current: dict[int, int] = {}
 
     def read1ByteTxRx(self, motor_id, address):
-        if address == SMS_STS_MODE:
+        if address == HLS.MODE:
             return self.modes.get(motor_id, 0), COMM_SUCCESS, 0
+        return 0, COMM_SUCCESS, 0
+
+    def read2ByteTxRx(self, motor_id, address):
+        if address == HLS.PROTECTION_CURRENT:
+            return self.protection_current.get(motor_id, PROTECTION_RAW), COMM_SUCCESS, 0
         return 0, COMM_SUCCESS, 0
 
     def write1ByteTxRx(self, motor_id, address, value):
@@ -105,10 +95,10 @@ class FakeSmsSts:
         return COMM_SUCCESS, 0
 
     def unLockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 0)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 0)
 
     def LockEprom(self, motor_id):
-        return self.write1ByteTxRx(motor_id, SMS_STS_LOCK, 1)
+        return self.write1ByteTxRx(motor_id, HLS.LOCK, 1)
 
     def ping(self, motor_id):
         self.pings.append(motor_id)
@@ -116,11 +106,9 @@ class FakeSmsSts:
 
     def syncWriteTxOnly(self, start_address, data_length, param, param_length):
         self.sync_writes.append((start_address, list(param)))
+        if (start_address, data_length) == (HLS.ACC, HLS.POSITION_PROFILE_LEN):
+            self.profile_writes.append(_decode(list(param), data_length))
         return COMM_SUCCESS
-
-    def SyncWritePosEx(self, motor_id, position, speed, acc, torque):
-        self.pos_writes.append((motor_id, position, speed, acc, torque))
-        return True
 
     def scs_toscs(self, value, bit):
         return value
@@ -157,7 +145,7 @@ class FakeSyncRead:
         return True, FakeSyncRead.status.get(motor_id, 0)
 
     def getData(self, motor_id, address, size):
-        if address == SMS_STS_PRESENT_POSITION_L:
+        if address == HLS.PRESENT_POSITION:
             return FakeSyncRead.positions.get(motor_id, 0)
         return 0
 
@@ -166,7 +154,7 @@ class FakeSyncRead:
 def client(monkeypatch):
     """A connected FeetechClient whose bus is a recording fake."""
     monkeypatch.setattr(feetech_client_module, "PortHandler", FakePortHandler)
-    monkeypatch.setattr(feetech_client_module, "sms_sts", FakeSmsSts)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", FakeHlsHandler)
     feetech = FeetechClient(motor_ids=[1, 2, 3], port="/dev/fake")
     feetech.connect()
     yield feetech, feetech.packet_handler
@@ -183,12 +171,22 @@ def _decode(param: list[int], data_length: int) -> "dict[int, list[int]]":
     }
 
 
+def _word(data: list[int], offset: int) -> int:
+    """Little-endian two-byte value at ``offset`` of a register block."""
+    return data[offset] | (data[offset + 1] << 8)
+
+
+# Byte offsets inside a position-profile block: acc, position, current, speed.
+PROFILE_CURRENT = 3
+PROFILE_SPEED = 5
+
+
 # ----- connect must not mutate motor state ----------------------------------
 
 
 def test_connect_writes_no_mode_register(client):
     feetech, handler = client
-    assert [w for w in handler.writes if w[1] == SMS_STS_MODE] == []
+    assert [w for w in handler.writes if w[1] == HLS.MODE] == []
     assert handler.writes == [], "connect() must not write any motor register"
 
 
@@ -201,15 +199,15 @@ def test_set_operating_mode_brackets_the_mode_write(client):
     feetech.set_operating_mode([1], 5)
 
     eeprom = [(addr, value) for mid, addr, value in handler.writes
-              if mid == 1 and addr in (SMS_STS_LOCK, SMS_STS_MODE)]
-    assert eeprom == [(SMS_STS_LOCK, 0), (SMS_STS_MODE, 0), (SMS_STS_LOCK, 1)]
+              if mid == 1 and addr in (HLS.LOCK, HLS.MODE)]
+    assert eeprom == [(HLS.LOCK, 0), (HLS.MODE, 0), (HLS.LOCK, 1)]
 
 
 def test_set_operating_mode_skips_motors_whose_mode_write_failed(client):
     feetech, handler = client
 
     def hook(motor_id, address, value):
-        if motor_id == 2 and address == SMS_STS_MODE:
+        if motor_id == 2 and address == HLS.MODE:
             return -3, 0  # comm failure: the motor never answered
         return COMM_SUCCESS, 0
 
@@ -218,9 +216,9 @@ def test_set_operating_mode_skips_motors_whose_mode_write_failed(client):
     feetech.set_operating_mode([1, 2, 3], 5)
 
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1, 3], "a motor with an unacked mode write must stay off"
-    acc_params = [p for addr, p in handler.sync_writes if addr == SMS_STS_ACC]
+    acc_params = [p for addr, p in handler.sync_writes if addr == HLS.ACC]
     assert list(_decode(acc_params[0], 1)) == [1, 3]
 
 
@@ -231,11 +229,12 @@ def test_set_operating_mode_writes_the_motion_profile_once(client):
     feetech.set_operating_mode([1, 2, 3], 5)
 
     assert [addr for addr, _ in handler.sync_writes] == [
-        SMS_STS_ACC, SMS_STS_GOAL_TIME_L]
-    # Nothing moves while the torque limit reads zero, so it is established here.
+        HLS.ACC, HLS.GOAL_CURRENT]
+    # Nothing moves while the goal current reads zero, so it is established
+    # here: 400 mA is 61 register units.
     motion = _decode([p for addr, p in handler.sync_writes
-                      if addr == SMS_STS_GOAL_TIME_L][0], 4)
-    assert motion[1][:2] == [400 & 0xFF, 400 >> 8]
+                      if addr == HLS.GOAL_CURRENT][0], 4)
+    assert motion[1][:2] == [61, 0]
 
 
 def test_status_error_on_mode_write_does_not_fail_the_motor(client):
@@ -245,7 +244,7 @@ def test_status_error_on_mode_write_does_not_fail_the_motor(client):
     feetech.set_operating_mode([1], 5)
 
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1], "a latched status flag is not a failed transaction"
 
 
@@ -256,43 +255,100 @@ def test_read_hardware_error_returns_the_status_byte(client):
     assert feetech.read_hardware_error(1) is None
 
 
-# ----- per-motor torque limits ----------------------------------------------
+# ----- per-motor goal-current limits ----------------------------------------
 
 
-def test_write_desired_current_keeps_one_torque_per_motor(client):
+def _goal_current_writes(handler) -> "list[dict[int, list[int]]]":
+    return [_decode(p, 2) for addr, p in handler.sync_writes if addr == HLS.GOAL_CURRENT]
+
+
+def test_connect_reads_each_motors_protection_current(client):
+    feetech, handler = client
+    assert handler.writes == [], "the ceiling comes from a read, never a write"
+    assert feetech.read_current_limits() == {1: PROTECTION_MA, 2: PROTECTION_MA, 3: PROTECTION_MA}
+    assert feetech._current_limit_raw == {1: PROTECTION_RAW, 2: PROTECTION_RAW, 3: PROTECTION_RAW}
+
+
+def test_motor_without_a_readable_protection_current_keeps_full_scale(monkeypatch, caplog):
+    class NoProtectionOnTwo(FakeHlsHandler):
+        def __init__(self, port_handler=None):
+            super().__init__(port_handler)
+            self.protection_current = {2: 0}
+
+    monkeypatch.setattr(feetech_client_module, "PortHandler", FakePortHandler)
+    monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", NoProtectionOnTwo)
+    feetech = FeetechClient(motor_ids=[1, 2], port="/dev/fake")
+    feetech.connect()
+    try:
+        assert feetech.read_current_limits() == {1: PROTECTION_MA, 2: FeetechClient.max_current_ma}
+        assert "Motor 2 reports no protection current" in caplog.text
+    finally:
+        feetech._connected = False
+        FeetechClient.OPEN_CLIENTS.discard(feetech)
+
+
+def test_write_desired_current_converts_milliamps_per_motor(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
 
-    assert feetech._motor_torque[1] == 300
-    assert feetech._motor_torque[2] == 700
-    assert feetech._motor_torque[3] == DEFAULT_TORQUE_LIMIT
+    # 300 mA / 6.5 = 46.15 -> 46 (299 mA); 700 / 6.5 = 107.69 -> 107.
+    assert feetech._current_limit_raw[1] == 46
+    assert feetech._current_limit_raw[2] == 107
+    assert feetech._current_limit_raw[3] == PROTECTION_RAW
 
 
 def test_write_desired_current_reaches_the_bus_immediately(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
 
-    torque_writes = [p for addr, p in handler.sync_writes if addr == SMS_STS_GOAL_TIME_L]
-    assert len(torque_writes) == 1, "the torque limit must not wait for a position"
-    assert _decode(torque_writes[0], 2) == {1: [300 & 0xFF, 300 >> 8],
-                                            2: [700 & 0xFF, 700 >> 8]}
+    writes = _goal_current_writes(handler)
+    assert len(writes) == 1, "the goal current must not wait for a position"
+    assert writes[0] == {1: [46, 0], 2: [107, 0]}
+    assert [addr for addr, _ in handler.sync_writes] == [44], "register 44, goal current"
 
 
-def test_write_positions_sync_composes_per_motor_torque(client):
+def test_write_desired_current_clamps_to_the_protection_current(client, caplog):
+    feetech, handler = client
+    feetech.write_desired_current([1], np.array([5000.0]))
+
+    assert _goal_current_writes(handler) == [{1: [PROTECTION_RAW & 0xFF, PROTECTION_RAW >> 8]}]
+    assert "clamped" in caplog.text
+
+
+def test_write_desired_current_warns_when_a_request_quantizes_to_zero(client, caplog):
+    feetech, handler = client
+    feetech.write_desired_current([1], np.array([5.0]))
+
+    assert _goal_current_writes(handler) == [{1: [0, 0]}]
+    assert "will not move" in caplog.text
+
+
+def test_write_desired_current_validates_before_touching_the_bus(client):
+    feetech, handler = client
+    with pytest.raises(ValueError, match="non-negative finite"):
+        feetech.write_desired_current([1, 2], np.array([300.0, -1.0]))
+    assert _goal_current_writes(handler) == []
+    assert feetech._current_limit_raw[1] == PROTECTION_RAW, "motor 1 was valid but nothing changed"
+
+
+def test_write_positions_sync_composes_per_motor_current(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
     feetech.write_positions_sync([1, 2], np.zeros(2))
 
-    assert [(mid, torque) for mid, _, _, _, torque in handler.pos_writes] == [
-        (1, 300), (2, 700)]
+    block = handler.profile_writes[-1]
+    assert [(mid, _word(b, PROFILE_CURRENT)) for mid, b in block.items()] == [
+        (1, 46), (2, 107)]
 
 
-def test_explicit_torque_overrides_the_stored_limit(client):
+def test_explicit_current_limit_overrides_the_stored_limit(client):
     feetech, handler = client
     feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
-    feetech.write_positions_sync([1, 2], np.zeros(2), torque=100)
+    feetech.write_positions_sync([1, 2], np.zeros(2), current_limit_ma=650.0)
 
-    assert {torque for _, _, _, _, torque in handler.pos_writes} == {100}
+    block = handler.profile_writes[-1]
+    assert {_word(b, PROFILE_CURRENT) for b in block.values()} == {100}
+    assert feetech._current_limit_raw[1] == 100, "the register keeps the override"
 
 
 # ----- position-only hot path -----------------------------------------------
@@ -302,15 +358,16 @@ def test_write_desired_pos_does_not_rearm_the_motion_profile(client):
     feetech, handler = client
     feetech.write_desired_pos([1, 2], np.zeros(2))
 
-    assert handler.pos_writes == [], "the profile must not be re-sent per command"
-    assert [addr for addr, _ in handler.sync_writes] == [SMS_STS_GOAL_POSITION_L]
+    assert handler.profile_writes == [], "the profile must not be re-sent per command"
+    assert [addr for addr, _ in handler.sync_writes] == [HLS.GOAL_POSITION]
 
 
 def test_write_desired_pos_with_explicit_speed_uses_the_profile_packet(client):
     feetech, handler = client
     feetech.write_desired_pos([1, 2], np.zeros(2), speed=200)
 
-    assert [speed for _, _, speed, _, _ in handler.pos_writes] == [200, 200]
+    block = handler.profile_writes[-1]
+    assert [_word(b, PROFILE_SPEED) for b in block.values()] == [200, 200]
 
 
 # ----- out-of-range commands are observable ---------------------------------
@@ -380,9 +437,9 @@ def test_set_operating_mode_does_not_rewrite_an_unchanged_mode(client):
     handler.modes = {1: 0, 2: 0, 3: 0}
     feetech.set_operating_mode([1, 2, 3], 5)
 
-    assert [w for w in handler.writes if w[1] in (SMS_STS_MODE, SMS_STS_LOCK)] == []
+    assert [w for w in handler.writes if w[1] in (HLS.MODE, HLS.LOCK)] == []
     reenabled = [mid for mid, addr, value in handler.writes
-                 if addr == SMS_STS_TORQUE_ENABLE and value == 1]
+                 if addr == HLS.TORQUE_ENABLE and value == 1]
     assert reenabled == [1, 2, 3], "torque must still come back on"
 
 
@@ -393,7 +450,7 @@ def test_set_operating_mode_writes_once_across_repeated_calls(client):
     handler.writes.clear()
     feetech.set_operating_mode([1], 5)
 
-    assert [w for w in handler.writes if w[1] == SMS_STS_MODE] == []
+    assert [w for w in handler.writes if w[1] == HLS.MODE] == []
 
 
 # ----- baud-rate changes ------------------------------------------------------
@@ -407,9 +464,9 @@ def test_change_motor_baudrate_relocks_eeprom_at_the_new_baud(client):
     assert feetech.baudrate == 500_000
     # The lock write and the confirming ping must both follow the baud switch.
     lock_index = max(i for i, (_, addr, value) in enumerate(handler.writes)
-                     if addr == SMS_STS_LOCK and value == 1)
+                     if addr == HLS.LOCK and value == 1)
     baud_index = next(i for i, (_, addr, _) in enumerate(handler.writes)
-                      if addr == feetech_client_module.SMS_STS_BAUD_RATE)
+                      if addr == feetech_client_module.HLS.BAUD_RATE)
     assert lock_index > baud_index
     assert handler.pings == [1]
 

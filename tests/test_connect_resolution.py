@@ -387,3 +387,48 @@ def test_connect_rechecks_control_mode_against_the_resolved_family(
     )
     with pytest.raises(HandConfigValidationError, match="feetech"):
         hand._resolve_motor_driver("/dev/cu.x")
+
+
+def test_trial_probe_tries_every_family_at_a_rate_before_the_next_rate(mock_hand, monkeypatch):
+    """Another family on the bus is likelier than the same family at an odd rate."""
+    seen = []
+
+    def record(family, answer_at=None):
+        def probe(port, baudrate, motor_ids, **k):
+            seen.append((family, baudrate))
+            return baudrate == answer_at
+        return staticmethod(probe)
+
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    _clear_driver(mock_hand)
+    monkeypatch.setattr(dynamixel_client.DynamixelClient, "probe", record("dynamixel"))
+    monkeypatch.setattr(feetech_client.FeetechClient, "probe", record("feetech", answer_at=500_000))
+    assert OrcaHand._trial_probe(mock_hand, "/dev/cu.x") == ("feetech", 500_000)
+    assert seen == [
+        ("dynamixel", 1_000_000),
+        ("feetech", 1_000_000),
+        ("dynamixel", 3_000_000),
+        ("feetech", 500_000),
+    ]
+
+
+def test_trial_probe_starts_with_the_family_the_adapter_vid_names(mock_hand, monkeypatch, patch_comports):
+    from types import SimpleNamespace
+
+    from orca_core.hardware import dynamixel_client, feetech_client
+
+    patch_comports([SimpleNamespace(device="/dev/cu.x", vid=0x1A86, pid=0x55D3)])
+    seen = []
+
+    def record(family, answer):
+        def probe(port, baudrate, motor_ids, **k):
+            seen.append((family, baudrate))
+            return answer
+        return staticmethod(probe)
+
+    _clear_driver(mock_hand)
+    monkeypatch.setattr(dynamixel_client.DynamixelClient, "probe", record("dynamixel", False))
+    monkeypatch.setattr(feetech_client.FeetechClient, "probe", record("feetech", True))
+    assert OrcaHand._trial_probe(mock_hand, "/dev/cu.x") == ("feetech", 1_000_000)
+    assert seen == [("feetech", 1_000_000)]

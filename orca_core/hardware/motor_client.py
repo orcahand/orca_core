@@ -9,6 +9,7 @@
 """Abstract base class for motor communication clients."""
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
@@ -123,6 +124,18 @@ class MotorClient(ABC):
 
     max_operating_temp_c: ClassVar[float] = 70.0
     """Maximum rated operating temperature in degrees Celsius (XC330/XC430, HLS3930/HLS3915)."""
+
+    current_scale_ma: ClassVar[float]
+    """mA per raw unit of this family's goal-current register."""
+
+    max_current_ma: ClassVar[float]
+    """Largest value this family's goal-current register can express, in mA."""
+
+    default_max_current_ma: ClassVar[int]
+    """Goal-current limit in mA for a config whose ``max_current`` is ``default``."""
+
+    default_calibration_current_ma: ClassVar[int]
+    """Calibration drive current in mA for a config whose ``calibration_current`` is ``default``."""
 
     @classmethod
     def supported_baudrates(cls) -> list[int]:
@@ -285,13 +298,71 @@ class MotorClient(ABC):
         motor_ids: Sequence[int],
         currents: np.ndarray
     ) -> None:
-        """Writes desired currents (torque limits) to the specified motors.
+        """Set each motor's goal-current limit, in mA.
+
+        Values are quantized to the register and clamped to the motor's
+        ceiling (see :meth:`read_current_limits`); motors without a current
+        register are skipped. Negative or non-finite values raise
+        ``ValueError`` before anything is written.
 
         Args:
             motor_ids: The motor IDs to write to.
-            currents: The desired currents in mA.
+            currents: The desired current limits in mA.
         """
         ...
+
+    def read_current_limits(self) -> "dict[int, float | None]":
+        """Per-motor ceiling for the goal current, in mA.
+
+        ``None`` marks a motor with no current register. Families with a
+        per-motor EEPROM limit read it from the bus here, so cache the result
+        instead of calling this in a loop.
+        """
+        return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
+
+    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
+        """Cached ceiling for one motor: the family maximum unless a subclass knows better."""
+        return self.max_current_ma
+
+    def _goal_current_plan(
+        self, motor_ids: Sequence[int], currents_ma: Sequence[float]
+    ) -> "dict[int, int]":
+        """Goal-current register values for ``currents_ma``, validated and clamped.
+
+        Raises ``ValueError`` before touching anything when a value is negative
+        or non-finite. Motors without a current register are left out; clamped
+        and zero-quantized requests are logged once per call.
+        """
+        if len(motor_ids) != len(currents_ma):
+            raise ValueError('motor_ids and currents must have the same length')
+        values = [float(value) for value in currents_ma]
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError('current limits must be non-negative finite values')
+
+        plan: dict[int, int] = {}
+        clamped, zeroed, skipped = [], [], []
+        for motor_id, value in zip(motor_ids, values):
+            ceiling = self._current_ceiling_ma(motor_id)
+            if ceiling is None:
+                skipped.append(motor_id)
+                continue
+            if value > ceiling:
+                clamped.append(f'{motor_id}: {value:.0f} -> {ceiling:.0f} mA')
+                value = ceiling
+            raw = int(value / self.current_scale_ma)
+            if raw == 0 and value > 0:
+                zeroed.append(motor_id)
+            plan[motor_id] = raw
+
+        if skipped:
+            logging.debug('No current register on motors %s; limit not applied', skipped)
+        if clamped:
+            logging.warning('Current limit clamped to the motor ceiling: %s', ', '.join(clamped))
+        if zeroed:
+            logging.warning(
+                'Current limit under one register unit (%.1f mA) on motors %s; they will not move',
+                self.current_scale_ma, zeroed)
+        return plan
 
     def write_profile_velocity(
         self,
