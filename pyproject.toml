@@ -1,6 +1,6 @@
 [project]
 name = "orca_core"
-version = "0.4.2"
+version = "0.4.3"
 description = "Core Python Controller of the ORCA Hand. Handles all hardware interaction, logic and abstracts control. Provides API for basic functionality and info of the hand."
 authors = [
     {name = "clemens-chr", email = "cchristoph@student.ethz.ch"},
@@ -15,7 +15,7 @@ dependencies = [
     "dynamixel-sdk (>=3.7.31,<4.0.0)",
     "pyserial (>=3.5,<4.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
-    "fastapi (>=0.115.12,<0.116.0)",
+    "fastapi (>=0.115.12,<1.0.0)",
     "uvicorn (>=0.34.2,<0.35.0)",
     "numpy (>=2.2.6,<3.0.0)",
 ]
