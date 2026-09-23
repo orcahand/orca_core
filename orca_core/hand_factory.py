@@ -214,6 +214,7 @@ def detect_hand() -> HandDetection:
     if not has_tactile and sensing_port is not None:
         has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
 
+    classic_motor_ports: tuple[str, ...] = ()
     if motor_port is not None:
         motor_type, motor_baudrate = _detect_motor_family(motor_port)
     else:
@@ -221,9 +222,12 @@ def detect_hand() -> HandDetection:
         # motor-family adapter, matched by vendor ID and confirmed by the
         # family probe. That probe does not open exclusively, so a port another
         # session holds is skipped rather than talked over.
+        classic_motor_ports = tuple(
+            p for p in _classic_motor_ports() if p not in (sensing_port, tactile_port)
+        )
         motor_type, motor_baudrate = None, None
-        for port in _classic_motor_ports():
-            if port in (sensing_port, tactile_port) or port_in_use(port):
+        for port in classic_motor_ports:
+            if port_in_use(port):
                 continue
             motor_type, motor_baudrate = _detect_motor_family(port)
             if motor_type is not None:
@@ -235,7 +239,7 @@ def detect_hand() -> HandDetection:
 
     busy_ports = tuple(
         port
-        for port in candidates
+        for port in (*candidates, *classic_motor_ports)
         if port not in (motor_port, sensing_port) and port_in_use(port)
     )
 

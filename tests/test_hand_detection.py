@@ -238,6 +238,19 @@ def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
     monkeypatch.setattr(hand_factory, "detect_hand", _must_not_probe)
     load_hand(**kwargs)
 
+def test_busy_bare_adapter_is_reported(monkeypatch):
+    """A bare adapter held by another process is skipped by the family probe,
+    so without this it would read as 'no motor found' with no reason given."""
+    _patch_hardware(
+        monkeypatch,
+        classic_ports=["/dev/cu.motor"],
+        busy_ports=("/dev/cu.motor",),
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert d.busy_ports == ("/dev/cu.motor",)
+
+
 # ----- motor-family detection ------------------------------------------------
 
 def test_detects_the_motor_family_on_the_motor_port(monkeypatch):
