@@ -53,6 +53,7 @@ from .hardware.sensing.serial_discovery import (
     detect_encoder_stream,
     find_tactile_port,
     oh_board_ports,
+    port_in_use,
     probe_orca_info,
 )
 from .hardware_hand import MockOrcaHand, OrcaHand
@@ -122,6 +123,21 @@ class HandDetection:
 _PROBE_MOTOR_IDS = list(range(1, 18))
 
 
+def _classic_motor_ports() -> "list[str]":
+    """Device paths of USB adapters whose vendor ID belongs to a motor family.
+
+    A hand whose motor side is a bare Feetech or Dynamixel adapter has no
+    controller board to answer the identity query, so it never appears in
+    :func:`~.hardware.sensing.serial_discovery.oh_board_ports`.
+    """
+    import serial.tools.list_ports
+
+    from .constants import KNOWN_VIDS, SUPPORTED_MOTOR_TYPES
+
+    vids = {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}
+    return [p.device for p in serial.tools.list_ports.comports() if p.vid in vids]
+
+
 def _detect_motor_family(port: str) -> "tuple[Optional[str], Optional[int]]":
     """Identify the motor family answering on ``port``, non-fatally.
 
@@ -156,8 +172,9 @@ def detect_hand() -> HandDetection:
     The hand's side comes from the controller board's identity reply; joint
     encoders are confirmed by a live encoder stream on the sensing CDC and
     tactile by a sensor register reply (on the shared CDC or a dedicated
-    adapter) and the motor family by probing the motor bus. Any question the
-    hardware doesn't answer falls back
+    adapter) and the motor family by probing the motor bus. A hand whose motor
+    side is a bare USB adapter is found by the adapter's vendor ID and
+    confirmed by that same probe. Any question the hardware doesn't answer falls back
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
@@ -190,9 +207,21 @@ def detect_hand() -> HandDetection:
     if not has_tactile and sensing_port is not None:
         has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
 
-    motor_type, motor_baudrate = (
-        _detect_motor_family(motor_port) if motor_port is not None else (None, None)
-    )
+    if motor_port is not None:
+        motor_type, motor_baudrate = _detect_motor_family(motor_port)
+    else:
+        # No controller board claimed the motor role: fall back to a bare
+        # motor-family adapter, matched by vendor ID and confirmed by the
+        # family probe. That probe does not open exclusively, so a port another
+        # session holds is skipped rather than talked over.
+        motor_type, motor_baudrate = None, None
+        for port in _classic_motor_ports():
+            if port in (sensing_port, tactile_port) or port_in_use(port):
+                continue
+            motor_type, motor_baudrate = _detect_motor_family(port)
+            if motor_type is not None:
+                motor_port = port
+                break
 
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)

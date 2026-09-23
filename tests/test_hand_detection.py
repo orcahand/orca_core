@@ -1,6 +1,7 @@
 """Hand autodetection: identity parsing, the detection ladder, and load_hand()."""
 
 import dataclasses
+import errno
 import logging
 
 import pytest
@@ -55,11 +56,24 @@ def _patch_hardware(
     paxini_port=None,
     tactile_register=False,
     motor_family=(None, None),
+    classic_ports=(),
+    busy_ports=(),
+    probed=None,
 ):
+    """``motor_family`` is one answer for every port, or a per-port dict;
+    ``probed`` collects the ports the family probe was asked about."""
     infos = infos or {}
-    monkeypatch.setattr(
-        hand_factory, "_detect_motor_family", lambda port: motor_family
-    )
+    probed = probed if probed is not None else []
+
+    def family(port):
+        probed.append(port)
+        if isinstance(motor_family, dict):
+            return motor_family.get(port, (None, None))
+        return motor_family
+
+    monkeypatch.setattr(hand_factory, "_detect_motor_family", family)
+    monkeypatch.setattr(hand_factory, "_classic_motor_ports", lambda: list(classic_ports))
+    monkeypatch.setattr(hand_factory, "port_in_use", lambda port: port in busy_ports)
     monkeypatch.setattr(hand_factory, "oh_board_ports", lambda: list(oh_ports))
     monkeypatch.setattr(hand_factory, "probe_orca_info", lambda port: infos.get(port))
     monkeypatch.setattr(
@@ -264,3 +278,108 @@ def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
 
     monkeypatch.setattr(hand_factory, "detect_hand", _must_not_probe)
     load_hand(**kwargs)
+
+
+# ----- bare USB adapters (no controller board) ------------------------------
+
+def test_bare_adapter_becomes_the_motor_port_when_no_board_answers(monkeypatch):
+    _patch_hardware(
+        monkeypatch,
+        classic_ports=["/dev/cu.usbserial-XXXX"],
+        motor_family={"/dev/cu.usbserial-XXXX": ("feetech", 1_000_000)},
+    )
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.usbserial-XXXX"
+    assert (d.motor_type, d.motor_baudrate) == ("feetech", 1_000_000)
+    assert d.model_name == "orcahand-right"
+
+
+def test_bare_adapter_fallback_skips_busy_and_silent_adapters(monkeypatch):
+    probed = []
+    _patch_hardware(
+        monkeypatch,
+        classic_ports=["/dev/cu.busy", "/dev/cu.silent", "/dev/cu.motors"],
+        busy_ports={"/dev/cu.busy"},
+        motor_family={"/dev/cu.motors": ("dynamixel", 1_000_000)},
+        probed=probed,
+    )
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.motors"
+    assert probed == ["/dev/cu.silent", "/dev/cu.motors"]
+
+
+def test_bare_adapter_fallback_leaves_the_motor_port_unset_when_all_are_silent(monkeypatch):
+    _patch_hardware(monkeypatch, classic_ports=["/dev/cu.usbserial-XXXX"])
+    d = detect_hand()
+    assert d.motor_port is None
+    assert (d.motor_type, d.motor_baudrate) == (None, None)
+
+
+def test_bare_adapter_fallback_never_probes_the_sensing_port(monkeypatch):
+    """An FTDI sensing adapter shares a vendor ID with Dynamixel adapters."""
+    probed = []
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.s"],
+        infos={"/dev/cu.s": OrcaBoardInfo(role="sensor", side="left")},
+        classic_ports=["/dev/cu.s"],
+        motor_family={"/dev/cu.s": ("dynamixel", 1_000_000)},
+        probed=probed,
+    )
+    d = detect_hand()
+    assert d.motor_port is None
+    assert probed == []
+
+
+def test_controller_board_motor_port_wins_over_a_bare_adapter(monkeypatch):
+    probed = []
+    _patch_hardware(
+        monkeypatch,
+        oh_ports=["/dev/cu.m"],
+        infos={"/dev/cu.m": OrcaBoardInfo(role="motor", side="right")},
+        classic_ports=["/dev/cu.usbserial-XXXX"],
+        motor_family=("dynamixel", 1_000_000),
+        probed=probed,
+    )
+    d = detect_hand()
+    assert d.motor_port == "/dev/cu.m"
+    assert probed == ["/dev/cu.m"]
+
+
+def test_classic_motor_ports_match_known_motor_vendor_ids(patch_comports):
+    from types import SimpleNamespace
+
+    patch_comports([
+        SimpleNamespace(device="/dev/cu.ch340", vid=0x1A86),
+        SimpleNamespace(device="/dev/cu.ftdi", vid=0x0403),
+        SimpleNamespace(device="/dev/cu.paxini", vid=0x28E9),
+        SimpleNamespace(device="/dev/cu.Bluetooth-Incoming-Port", vid=None),
+    ])
+    assert hand_factory._classic_motor_ports() == ["/dev/cu.ch340", "/dev/cu.ftdi"]
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (OSError(errno.EBUSY, "busy"), True),
+    (OSError(errno.EAGAIN, "again"), True),
+    (FileNotFoundError(errno.ENOENT, "absent"), False),
+    (None, False),
+])
+def test_port_in_use_reads_the_open_error(monkeypatch, exc, expected):
+    import serial
+
+    from orca_core.hardware.sensing.serial_discovery import port_in_use
+
+    class FakeSerial:
+        def __init__(self, port, **kwargs):
+            assert kwargs.get("exclusive") is True
+            if exc is not None:
+                raise exc
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    assert port_in_use("/dev/cu.usbmodemXXXX") is expected
