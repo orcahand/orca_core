@@ -131,6 +131,12 @@ class MotorClient(ABC):
     max_current_ma: ClassVar[float]
     """Largest value this family's goal-current register can express, in mA."""
 
+    default_max_current_ma: ClassVar[int]
+    """Goal-current limit in mA for a config whose ``max_current`` is ``default``."""
+
+    default_calibration_current_ma: ClassVar[int]
+    """Calibration drive current in mA for a config whose ``calibration_current`` is ``default``."""
+
     @classmethod
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""

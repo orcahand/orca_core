@@ -14,8 +14,6 @@ from typing import Dict, List, Literal
 
 from .constants import (
     CONTROL_MODES,
-    DEFAULT_CALIBRATION_CURRENT_MA,
-    DEFAULT_MAX_CURRENT_MA,
     DEFAULT_MODEL_NAME,
     FINGER_NAMES,
     JOINT_IDS,
@@ -32,6 +30,26 @@ from .hardware.sensing.constants import (
 )
 from .joint_position import OrcaJointPositions
 from .utils.utils import get_model_path, read_yaml
+
+
+# What a current limit says in config.yaml to take the motor family's own value.
+_FAMILY_DEFAULT = "default"
+
+
+def _current_setting(value, name: str) -> "int | str":
+    """A current limit from config.yaml: a whole number of mA, or ``default``."""
+    if isinstance(value, str) and value.strip().lower() == _FAMILY_DEFAULT:
+        return _FAMILY_DEFAULT
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise HandConfigValidationError(
+            f"{name} must be a number of mA or 'default', got {value!r}."
+        )
+    try:
+        return int(value)
+    except ValueError:
+        raise HandConfigValidationError(
+            f"{name} must be a number of mA or 'default', got {value!r}."
+        ) from None
 
 
 class HandConfigValidationError(ValueError):
@@ -203,16 +221,18 @@ class OrcaHandConfig(BaseHandConfig):
     # None = auto-detect at connect time (probed and persisted to config.yaml).
     baudrate: int | None = None
     port: str = "auto"
-    max_current: int = DEFAULT_MAX_CURRENT_MA
+    # A current limit in mA, or "default": the motor family's own value, filled
+    # in once the family is known (load_hand when detected or pinned, else connect).
+    max_current: int | str = _FAMILY_DEFAULT
     control_mode: str = "current_based_position"
     motor_type: str | None = None
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
-    calibration_current: int = DEFAULT_CALIBRATION_CURRENT_MA
-    # None resolves to calibration_current: the wrist gets what the fingers get
+    calibration_current: int | str = _FAMILY_DEFAULT
+    # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
-    wrist_calibration_current: int | None = None
+    wrist_calibration_current: int | str | None = None
     calibration_step_size: float = 0.1  # rad
     calibration_step_period: float = 0.01  # s
     calibration_threshold: float = 0.01  # rad
@@ -291,7 +311,7 @@ class OrcaHandConfig(BaseHandConfig):
         if "port" in config:
             kwargs["port"] = config["port"]
         if "max_current" in config:
-            kwargs["max_current"] = int(config["max_current"])
+            kwargs["max_current"] = _current_setting(config["max_current"], "max_current")
         if "control_mode" in config:
             kwargs["control_mode"] = config["control_mode"]
         if "motor_type" in config:
@@ -305,10 +325,12 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_to_motor_map"] = joint_to_motor_map
             kwargs["joint_inversion_dict"] = joint_inversion_dict
         if "calibration_current" in config:
-            kwargs["calibration_current"] = int(config["calibration_current"])
+            kwargs["calibration_current"] = _current_setting(
+                config["calibration_current"], "calibration_current"
+            )
         if config.get("wrist_calibration_current") is not None:
-            kwargs["wrist_calibration_current"] = int(
-                config["wrist_calibration_current"]
+            kwargs["wrist_calibration_current"] = _current_setting(
+                config["wrist_calibration_current"], "wrist_calibration_current"
             )
         if "calibration_step_size" in config:
             kwargs["calibration_step_size"] = float(config["calibration_step_size"])
@@ -379,12 +401,14 @@ class OrcaHandConfig(BaseHandConfig):
 
         for name in ("max_current", "calibration_current", "wrist_calibration_current"):
             value = getattr(self, name)
+            if value == _FAMILY_DEFAULT:
+                continue
             if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
                 raise HandConfigValidationError(
-                    f"{name} must be a positive number of mA, got {value!r}."
+                    f"{name} must be a positive number of mA or 'default', got {value!r}."
                 )
 
-        if self.max_current < self.calibration_current:
+        if self.currents_resolved and self.max_current < self.calibration_current:
             raise HandConfigValidationError(
                 "Max current should be greater than the calibration current."
             )
@@ -433,6 +457,39 @@ class OrcaHandConfig(BaseHandConfig):
         if self.wrist_calibration_current is None:
             object.__setattr__(self, "wrist_calibration_current", self.calibration_current)
         self.validate_config()
+
+    @property
+    def currents_resolved(self) -> bool:
+        """Whether every current limit is a number rather than ``default``."""
+        return _FAMILY_DEFAULT not in (
+            self.max_current, self.calibration_current, self.wrist_calibration_current
+        )
+
+    def with_family_currents(self, client_cls) -> "OrcaHandConfig":
+        """This config with each ``default`` current replaced by ``client_cls``'s own.
+
+        ``client_cls`` is the motor client class of the connected family; its
+        ``default_max_current_ma`` fills ``max_current`` and its
+        ``default_calibration_current_ma`` fills ``calibration_current`` and a
+        wrist value that was left to follow it. The result is validated, so a
+        pinned ``max_current`` below the family's calibration current raises.
+        """
+        if self.currents_resolved:
+            return self
+
+        def pick(value, family_value):
+            return int(family_value) if value == _FAMILY_DEFAULT else value
+
+        return dataclasses.replace(
+            self,
+            max_current=pick(self.max_current, client_cls.default_max_current_ma),
+            calibration_current=pick(
+                self.calibration_current, client_cls.default_calibration_current_ma
+            ),
+            wrist_calibration_current=pick(
+                self.wrist_calibration_current, client_cls.default_calibration_current_ma
+            ),
+        )
 
 
 @dataclass(frozen=True)

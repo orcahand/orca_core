@@ -19,7 +19,7 @@ import numpy as np
 
 from .base_hand import BaseHand
 from .calibration import CalibrationResult
-from .hand_config import OrcaHandConfig
+from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import MotorClient
 from .hardware.motor_resolution import trial_probe
@@ -225,6 +225,9 @@ class OrcaHand(BaseHand):
                 f"no motor responded on {port} (check power and wiring)"
             )
         self._motor_client = self._create_motor_client()
+        # The family is known now, so a config that says "default" gets its
+        # current limits before anything reads them.
+        self.config = self.config.with_family_currents(type(self._motor_client))
         self._unlimitable_motors_warned = False
         with self._motor_lock:
             self._motor_client.connect()
@@ -304,6 +307,10 @@ class OrcaHand(BaseHand):
                 f"Connection successful ({self.config.motor_type} @ "
                 f"{self.config.port}, {self.config.baudrate} baud)"
             )
+        if isinstance(error, HandConfigValidationError):
+            # The motors answered; config.yaml is what is wrong. Trying other
+            # ports cannot fix that.
+            return False, f"config.yaml is not valid for the motors on {first_port}: {error}"
         logger.warning("Connection failed on %s: %s", first_port, error)
 
         chosen_port = auto_detect_port(self.config.motor_type)

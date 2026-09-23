@@ -142,6 +142,10 @@ class DynamixelClient(MotorClient):
     # Current Limit (38), whose range is 0..910. An XC330-M288 would allow 2352.
     current_scale_ma = 1.0
     max_current_ma = 910.0
+    # The XC330's register is 1 mA per unit, and 300 mA moves every joint of a
+    # tensioned hand to its hardstops; the packaged hands have always run here.
+    default_max_current_ma = 300
+    default_calibration_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
 

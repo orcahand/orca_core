@@ -157,6 +157,11 @@ class FeetechClient(MotorClient):
     position_range_rad = POSITION_RANGE_RAD
     current_scale_ma = HLS.CURRENT_SCALE_MA
     max_current_ma = HLS.GOAL_CURRENT_MAX_RAW * HLS.CURRENT_SCALE_MA
+    # HLS3915 fingers stall at 1.5 A and spend about 260 mA on their own
+    # losses, so 300 mA barely moves a joint; the stiffest joint of a tensioned
+    # hand needs about 800 mA to reach its hardstops, and 900 leaves margin.
+    default_max_current_ma = 900
+    default_calibration_current_ma = 900
 
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.

@@ -88,6 +88,8 @@ class MockDynamixelClient(MotorClient):
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma
+    default_max_current_ma = DynamixelClient.default_max_current_ma
+    default_calibration_current_ma = DynamixelClient.default_calibration_current_ma
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.

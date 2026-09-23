@@ -256,3 +256,18 @@ def test_read_current_limits_reports_every_motor(connected_mock):
 def test_mock_write_desired_current_rejects_bad_values(connected_mock, value):
     with pytest.raises(ValueError, match="non-negative finite"):
         connected_mock.write_desired_current([1], np.array([value]))
+
+
+# ----- family current defaults ------------------------------------------------
+
+@pytest.mark.parametrize("real, mock, expected", [
+    pytest.param(DynamixelClient, MockDynamixelClient, (300, 300), id="dynamixel"),
+    pytest.param(FeetechClient, MockFeetechClient, (900, 900), id="feetech"),
+])
+def test_every_family_declares_its_current_defaults(real, mock, expected):
+    for cls in (real, mock):
+        assert (cls.default_max_current_ma, cls.default_calibration_current_ma) == expected
+        assert isinstance(cls.default_max_current_ma, int)
+        assert isinstance(cls.default_calibration_current_ma, int)
+    assert (mock.default_max_current_ma, mock.default_calibration_current_ma) == (
+        real.default_max_current_ma, real.default_calibration_current_ma)

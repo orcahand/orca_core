@@ -53,6 +53,8 @@ class MockFeetechClient(MotorClient):
     position_range_rad = FeetechClient.position_range_rad
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
+    default_max_current_ma = FeetechClient.default_max_current_ma
+    default_calibration_current_ma = FeetechClient.default_calibration_current_ma
 
     # Clients with an open (simulated) port; registered on successful
     # connect() so the atexit cleanup only ever touches live connections.

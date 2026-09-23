@@ -365,5 +365,13 @@ def load_hand(
             config.type, alternative,
         )
 
+    if config.motor_type is not None:
+        # The family is already known (detected or pinned), so "default"
+        # currents can resolve now instead of at connect.
+        from .hardware.motor_factory import mock_motor_client_class, motor_client_class
+
+        family_cls = (mock_motor_client_class if mock else motor_client_class)(config.motor_type)
+        config = config.with_family_currents(family_cls)
+
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
     return hand_cls(config=config)

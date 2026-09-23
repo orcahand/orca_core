@@ -3,6 +3,7 @@
 import dataclasses
 import errno
 import logging
+import os
 
 import pytest
 
@@ -383,3 +384,67 @@ def test_port_in_use_reads_the_open_error(monkeypatch, exc, expected):
 
     monkeypatch.setattr(serial, "Serial", FakeSerial)
     assert port_in_use("/dev/cu.usbmodemXXXX") is expected
+
+
+# ----- family current defaults resolve when the family is known ----------------
+
+def test_load_hand_resolves_default_currents_from_the_detected_family(monkeypatch):
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False, has_encoders=False,
+        motor_port="/dev/cu.usbserial-XXXX", motor_type="feetech", motor_baudrate=1_000_000,
+    )
+    monkeypatch.setattr(hand_factory, "detect_hand", lambda: detection)
+    hand = load_hand()
+    assert (hand.config.max_current, hand.config.calibration_current,
+            hand.config.wrist_calibration_current) == (900, 900, 900)
+
+
+def test_load_hand_leaves_default_currents_for_connect_when_no_family_is_known(monkeypatch):
+    monkeypatch.setattr(hand_factory, "detect_hand", lambda: hand_factory.HandDetection(
+        model_name="orcahand-right", side="right", has_tactile=False, has_encoders=False))
+    hand = load_hand()
+    assert hand.config.max_current == "default"
+    assert not hand.config.currents_resolved
+
+
+def test_load_hand_resolves_default_currents_for_a_pinned_family_mock():
+    hand = load_hand(model_name="orcahand-right", mock=True)
+    assert hand.config.max_current == "default"
+    ok, msg = hand.connect()
+    assert ok, msg
+    assert (hand.config.max_current, hand.config.calibration_current) == (300, 300)
+    hand.disconnect()
+
+
+def test_connect_resolves_default_currents_from_the_family_on_the_bus(tmp_path):
+    import shutil
+
+    from orca_core.utils import update_yaml
+
+    src = os.path.join(os.path.dirname(hand_factory.__file__), "models", "v2", "orcahand-right", "config.yaml")
+    path = tmp_path / "config.yaml"
+    shutil.copy(src, path)
+    update_yaml(str(path), "motor_type", "feetech")
+    hand = load_hand(config_path=str(path), mock=True)
+    assert (hand.config.max_current, hand.config.calibration_current) == (900, 900)
+    ok, msg = hand.connect()
+    assert ok, msg
+    assert hand.config.wrist_calibration_current == 900
+    hand.disconnect()
+
+
+def test_connect_rejects_a_pinned_max_current_below_the_family_calibration_current(tmp_path):
+    import shutil
+
+    from orca_core.utils import update_yaml
+
+    src = os.path.join(os.path.dirname(hand_factory.__file__), "models", "v2", "orcahand-right", "config.yaml")
+    path = tmp_path / "config.yaml"
+    shutil.copy(src, path)
+    update_yaml(str(path), "max_current", 500)
+    hand = load_hand(config_path=str(path), mock=True)
+    hand.config = dataclasses.replace(hand.config, motor_type="feetech")
+    ok, msg = hand.connect(interactive=False)
+    assert not ok
+    assert "Max current" in msg and "config.yaml" in msg
+    assert not hand.is_connected()
