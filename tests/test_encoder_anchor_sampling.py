@@ -139,3 +139,50 @@ def test_all_flagged_samples_raise_calibration_error(encoder_link_and_client):
 
 
 
+
+
+class _CoarseClock:
+    """A clock that ticks in 15.625 ms steps, as ``time.monotonic`` does on
+    Windows before Python 3.13, advancing once per few readings."""
+
+    def __init__(self, calls_per_tick: int = 4):
+        self.calls = 0
+        self.calls_per_tick = calls_per_tick
+
+    def monotonic(self) -> float:
+        self.calls += 1
+        return (self.calls // self.calls_per_tick) * 0.015625
+
+    def sleep(self, _seconds: float) -> None:
+        pass
+
+
+def test_sampling_counts_frames_that_share_a_coarse_timestamp(monkeypatch):
+    """Consecutive frames stamped by a coarse clock carry equal timestamps;
+    each must still count as a sample, or a calibration crawls one frame per
+    clock tick."""
+    import orca_core.hardware.joint_encoder_client as module
+    from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
+    from orca_core.hardware.sensing.types import EncoderReading
+
+    clock = _CoarseClock()
+    monkeypatch.setattr(module, "time", clock)
+
+    class Source:
+        calls = 0
+
+        def get_latest(self):
+            self.calls += 1
+            raw = np.full(AUTO_ENC_NUM_JOINTS, 1000 + self.calls, dtype=np.uint16)
+            return EncoderReading(
+                raw_counts=raw,
+                parity_ok=np.ones(AUTO_ENC_NUM_JOINTS, dtype=bool),
+                angle_error=np.zeros(AUTO_ENC_NUM_JOINTS, dtype=bool),
+                error_byte=0,
+                timestamp=clock.monotonic(),
+            )
+
+    source = Source()
+    count = sample_anchor_count_from_client(source, slot=3, num_samples=40, timeout_s=0.1)
+    assert source.calls == 40
+    assert 1001 <= count <= 1040

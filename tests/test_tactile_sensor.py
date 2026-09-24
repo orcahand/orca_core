@@ -415,3 +415,31 @@ def test_stop_between_rearm_writes_skips_the_enable(tactile_mock, monkeypatch):
 
     enable_writes = [d for a, d in state.write_log if a == ADDR_AUTO_ENABLE]
     assert enable_writes == [REGISTER_DISABLE]
+
+
+def test_capture_counts_frames_that_share_a_coarse_timestamp(tactile_mock_factory, monkeypatch):
+    """Frames stamped by a coarse clock carry equal timestamps; each new taxel
+    payload must still count toward the capture."""
+    import orca_core.hardware.tactile_client as module
+    from orca_core.hardware.sensing.types import TaxelReading
+
+    link, client, state = tactile_mock_factory(["thumb"], taxel_counts={"thumb": 1})
+    client.start_stream(resultant=False, taxels=True)
+    feed_taxels_frame(link, {"thumb": [[1.0, 1.0, 1.0]]}, state.active_sensors)
+    client.wait_for_first_frame()
+
+    calls = {"n": 0}
+
+    def coarse_monotonic():
+        calls["n"] += 1
+        return (calls["n"] // 4) * 0.015625
+
+    monkeypatch.setattr(module.time, "monotonic", coarse_monotonic)
+    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    payloads = iter([{"thumb": [[v, v, v]]} for v in (2.0, 4.0, 6.0)] * 10)
+    monkeypatch.setattr(
+        client, "get_latest_taxels", lambda: TaxelReading(taxels=next(payloads), timestamp=0.0)
+    )
+    client.capture_taxel_offsets(num_samples=3, timeout_s=0.05)
+    assert client._taxel_offsets == {"thumb": [[4.0, 4.0, 4.0]]}
+    client.stop_stream()
