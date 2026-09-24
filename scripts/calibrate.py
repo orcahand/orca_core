@@ -117,7 +117,7 @@ def main():
 
     # Leave the feedback loop disengaged regardless of config: calibration drives
     # the motors open-loop and opens its own reader on the encoder stream.
-    hand = create_hand_from_args(args, engage_feedback=False)
+    hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
     if args.encoder_port is not None:
         hand.config = dataclasses.replace(
             hand.config, encoder_serial_port=args.encoder_port,

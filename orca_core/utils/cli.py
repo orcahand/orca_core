@@ -55,6 +55,7 @@ def create_hand(
     use_mock: bool,
     model_name: str | None = None,
     engage_feedback: bool = True,
+    engage_sensors: bool = True,
 ) -> BaseHand:
     """Build the hand class matching the selected (or detected) model."""
     hand = load_hand(
@@ -62,6 +63,7 @@ def create_hand(
         mock=use_mock,
         model_name=model_name,
         engage_feedback=engage_feedback,
+        engage_sensors=engage_sensors,
     )
     print(f"Loaded {type(hand).__name__} from {hand.config.config_path}")
     return hand
@@ -73,7 +75,8 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
     Front-ends call this instead of :func:`create_hand` so a flag can never be
     advertised and then dropped. ``overrides`` pin what the front-end decides
     itself, e.g. ``engage_feedback=False`` for a routine that must drive the
-    motors open-loop.
+    motors open-loop, or ``engage_sensors=False`` for one that opens its own
+    reader on the sensing port.
     """
     options = {
         "use_mock": args.mock,

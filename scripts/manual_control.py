@@ -837,7 +837,7 @@ def _run_feedback_ui(args: argparse.Namespace, hand: OrcaHandJointFeedback) -> i
 def _run_motor_space(args: argparse.Namespace) -> int:
     # Detected like every other mode, but with the feedback loop disengaged: the
     # loop would fight the raw motor writes this mode makes.
-    hand = create_hand_from_args(args, engage_feedback=False)
+    hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
     success, msg = hand.connect()
     print(msg)
     if not success:

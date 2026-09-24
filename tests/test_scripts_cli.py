@@ -206,6 +206,7 @@ class TestCreateHandFromArgs:
         assert calls == [dict(
             config_path="cfg.yaml", mock=True,
             model_name="orcahand-full-left", engage_feedback=False,
+            engage_sensors=True,
         )]
 
     def test_front_end_override_wins_over_the_flag(self, monkeypatch, capsys):
@@ -496,3 +497,34 @@ class TestDetectScript:
 
         assert module.main() == 0
         assert "No motor bus found" in capsys.readouterr().out
+
+
+def test_check_encoder_signs_runs_against_the_mock():
+    """The script must get past building the hand and print its first frame;
+    a bad keyword to the shared builder used to kill it before connecting."""
+    import os, signal, subprocess, time
+
+    proc = subprocess.Popen(
+        [sys.executable, str(REPO_ROOT / "scripts" / "check_encoder_signs.py"),
+         "--mock", "--model-name", "orcahand-joint-right"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    seen = []
+    deadline = time.monotonic() + 60
+    try:
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            seen.append(line)
+            if "move the SAME direction" in line:
+                break
+        proc.send_signal(signal.SIGINT)
+        out = "".join(seen) + proc.communicate(timeout=30)[0]
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert "move the SAME direction" in out, out
+    assert "Traceback" not in out, out
+    assert proc.returncode == 0, out
