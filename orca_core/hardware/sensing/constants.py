@@ -93,9 +93,13 @@ FORCE_ROUND_DECIMALS = 1
 # resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2
 
-# Headroom added to each taxel's measured dither when it becomes a noise gate.
-# One LSB, because a few seconds of frames will not have caught the rarest
-# excursion, and a gate set exactly at the observed worst case still flickers.
+# Headroom on each taxel's measured dither when it becomes a noise gate. The
+# capture window is a few seconds, so its worst observed excursion is not the
+# taxel's worst: sizing a gate at exactly that still leaves the noisiest taxels
+# flickering, always the same ones within a run. The scale is multiplicative on
+# purpose — it widens noisy taxels without costing quiet ones any sensitivity.
+# These are the knobs to turn if dither still shows through after zeroing.
+NOISE_GATE_SCALE = 1.5
 NOISE_GATE_MARGIN_N = RESOLUTION_N_PER_LSB
 
 # Byte sizes per data element
