@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Scripts and examples that take a hand and must expose the shared flags.
 HAND_CLI_MODULES = [
     "scripts/check_motor.py",
+    "scripts/check_encoder_signs.py",
     "scripts/setup.py",
     "scripts/calibrate.py",
     "scripts/stress_test.py",
@@ -205,6 +206,7 @@ class TestCreateHandFromArgs:
         assert calls == [dict(
             config_path="cfg.yaml", mock=True,
             model_name="orcahand-full-left", engage_feedback=False,
+            engage_sensors=True,
         )]
 
     def test_front_end_override_wins_over_the_flag(self, monkeypatch, capsys):
@@ -495,3 +497,38 @@ class TestDetectScript:
 
         assert module.main() == 0
         assert "No motor bus found" in capsys.readouterr().out
+
+
+def test_check_encoder_signs_runs_against_the_mock(monkeypatch, capsys):
+    """The script must get past building the hand, connect, and render a frame;
+    a bad keyword to the shared builder used to kill it before connecting.
+    Runs in-process; only the script's own refresh sleep is intercepted, and
+    the first refresh after a rendered frame plays the part of Ctrl-C."""
+    import time as real_time
+
+    module = _load("scripts/check_encoder_signs.py")
+    monkeypatch.setattr(
+        sys, "argv", ["check_encoder_signs.py", "--mock", "--model-name", "orcahand-joint-right"]
+    )
+    state = {"frames": 0, "idle": 0}
+    real_render = module._render
+
+    def render(*a, **kw):
+        state["frames"] += 1
+        return real_render(*a, **kw)
+
+    def sleep(seconds):
+        if state["frames"]:
+            raise KeyboardInterrupt  # caught inside main(), like a real Ctrl-C
+        state["idle"] += 1
+        if state["idle"] > 500:
+            raise RuntimeError("no encoder reading ever arrived from the mock")
+        real_time.sleep(seconds)
+
+    monkeypatch.setattr(module, "_render", render)
+    monkeypatch.setattr(module, "time", SimpleNamespace(sleep=sleep))
+    module.main()
+    out = capsys.readouterr().out
+    assert "move the SAME direction" in out
+    assert state["frames"] == 1
+    assert "Stopped." in out

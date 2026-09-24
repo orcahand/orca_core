@@ -9,6 +9,7 @@
 import logging
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,10 @@ def test_load_hand_selects_class_from_config(model, expected):
     assert type(hand) is expected
 
 
+class _FakeHand:
+    config = SimpleNamespace(config_path="<fake>")
+
+
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
@@ -59,6 +64,31 @@ def test_load_hand_selects_class_from_config(model, expected):
 def test_load_hand_engage_feedback_false_returns_motor_only(model, expected):
     hand = load_hand(config_path=_config(model), mock=True, engage_feedback=False)
     assert type(hand) is expected
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs", "expected"),
+    [
+        ("orcahand-touch-right", {}, MockOrcaHand),
+        ("orcahand-full-right", {"engage_feedback": False}, MockOrcaHand),
+        ("orcahand-full-right", {}, MockOrcaHandJointFeedback),
+        ("orcahand-right", {}, MockOrcaHand),
+    ],
+)
+def test_load_hand_engage_sensors_false_withholds_the_tactile_class(model, kwargs, expected):
+    """A caller that opens its own reader on the sensing port gets a class that
+    never opens the tactile link, while the config keeps its sensor block."""
+    hand = load_hand(config_path=_config(model), mock=True, engage_sensors=False, **kwargs)
+    assert type(hand) is expected
+    assert hasattr(hand.config, "sensor_port") == ("touch" in model or "full" in model)
+
+
+def test_create_hand_from_args_forwards_engage_sensors(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "load_hand", lambda **kw: seen.update(kw) or _FakeHand())
+    args = SimpleNamespace(config_path=None, mock=True, model_name=None, engage_feedback=True)
+    cli.create_hand_from_args(args, engage_sensors=False)
+    assert seen["engage_sensors"] is False
 
 
 @pytest.mark.parametrize(
@@ -155,6 +185,7 @@ def test_create_hand_forwards_its_selection_arguments(monkeypatch):
         "mock": True,
         "model_name": "orcahand-left",
         "engage_feedback": False,
+        "engage_sensors": True,
     }
 
 

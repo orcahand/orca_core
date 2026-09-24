@@ -104,7 +104,9 @@ class HandDetection:
     sensing capabilities; the port fields carry what was discovered so the
     hand can connect without re-probing. ``identity`` is ``None`` for hands
     whose board doesn't report one, and ``motor_type``/``motor_baudrate`` are
-    ``None`` when the motor bus answered nothing.
+    ``None`` when the motor bus answered nothing. ``busy_ports`` lists
+    controller-board CDCs another process holds: those stay silent under
+    probing, so anything behind them is missing from the rest of this result.
     """
 
     model_name: str
@@ -117,6 +119,7 @@ class HandDetection:
     identity: Optional[OrcaBoardInfo] = None
     motor_type: Optional[str] = None
     motor_baudrate: Optional[int] = None
+    busy_ports: tuple[str, ...] = ()
 
 
 # Motor IDs the family probe pings when no config names them yet.
@@ -178,6 +181,10 @@ def detect_hand() -> HandDetection:
     conservatively: no side means right, no reply means the capability is
     absent — so with nothing plugged in this returns the plain right-hand
     model with all ports unset.
+
+    A CDC another process already holds is silent under probing and so reads
+    as absent; those ports are reported in ``busy_ports`` so callers can tell
+    an incomplete result from a genuinely simpler hand.
     """
     motor_port: Optional[str] = None
     sensing_port: Optional[str] = None
@@ -207,6 +214,7 @@ def detect_hand() -> HandDetection:
     if not has_tactile and sensing_port is not None:
         has_tactile = _tactile_responds_at(sensing_port, DEFAULT_ENCODER_BAUDRATE)
 
+    classic_motor_ports: tuple[str, ...] = ()
     if motor_port is not None:
         motor_type, motor_baudrate = _detect_motor_family(motor_port)
     else:
@@ -214,9 +222,12 @@ def detect_hand() -> HandDetection:
         # motor-family adapter, matched by vendor ID and confirmed by the
         # family probe. That probe does not open exclusively, so a port another
         # session holds is skipped rather than talked over.
+        classic_motor_ports = tuple(
+            p for p in _classic_motor_ports() if p not in (sensing_port, tactile_port)
+        )
         motor_type, motor_baudrate = None, None
-        for port in _classic_motor_ports():
-            if port in (sensing_port, tactile_port) or port_in_use(port):
+        for port in classic_motor_ports:
+            if port_in_use(port):
                 continue
             motor_type, motor_baudrate = _detect_motor_family(port)
             if motor_type is not None:
@@ -225,6 +236,12 @@ def detect_hand() -> HandDetection:
 
     side = identity.side if identity is not None and identity.side else "right"
     model_name = _MODEL_BY_CAPS[(has_tactile, has_encoders)].format(side=side)
+
+    busy_ports = tuple(
+        port
+        for port in (*candidates, *classic_motor_ports)
+        if port not in (motor_port, sensing_port) and port_in_use(port)
+    )
 
     return HandDetection(
         model_name=model_name,
@@ -237,6 +254,7 @@ def detect_hand() -> HandDetection:
         identity=identity,
         motor_type=motor_type,
         motor_baudrate=motor_baudrate,
+        busy_ports=busy_ports,
     )
 
 
@@ -302,6 +320,7 @@ def load_hand(
     model_name: str | None = None,
     mock: bool = False,
     engage_feedback: bool = True,
+    engage_sensors: bool = True,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -324,6 +343,10 @@ def load_hand(
         engage_feedback: When ``False``, return the motor-only class even if
             the config enables joint feedback. The config still carries the
             encoder declaration so calibration's encoder pass runs.
+        engage_sensors: When ``False``, return a class that does not open the
+            tactile link even if the config declares sensors. Tactile and
+            encoders can share one CDC, so a caller that opens its own reader
+            on the sensing port must not have the hand open it too.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -332,6 +355,14 @@ def load_hand(
     if config_path is None and model_name is None and model_version is None and not mock:
         detection = detect_hand()
         model_name = detection.model_name
+        if detection.busy_ports:
+            logger.warning(
+                "controller-board port(s) %s are held by another process, so "
+                "anything behind them went undetected and %r may understate "
+                "this hand. Close the other client (a running UI, script or "
+                "serial monitor), or name the model explicitly.",
+                ", ".join(detection.busy_ports), model_name,
+            )
 
     resolved_config_path = _resolve_config_path(
         config_path,
@@ -339,9 +370,12 @@ def load_hand(
         model_name=model_name,
     )
     raw = read_yaml(resolved_config_path) or {}
-    tactile = "sensors" in raw
+    declares_tactile = "sensors" in raw
+    # The config keeps its sensor declaration either way; only the class that
+    # would open the link is withheld, mirroring engage_feedback.
+    tactile = declares_tactile and engage_sensors
 
-    config_cls = OrcaHandTouchConfig if tactile else OrcaHandConfig
+    config_cls = OrcaHandTouchConfig if declares_tactile else OrcaHandConfig
     config = config_cls.from_config_path(
         config_path=resolved_config_path,
         calibration_path=calibration_path,
