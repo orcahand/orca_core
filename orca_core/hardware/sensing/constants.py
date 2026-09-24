@@ -177,28 +177,42 @@ ENCODER_SLOT_TO_JOINT = {v: k for k, v in JOINT_TO_ENCODER_SLOT.items()}
 # slotted, motor-driven joint (the sensing-hand default); an explicit list narrows it.
 ENCODER_JOINTS_ALL = "all"
 
-# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation.
-# Validated on right-hand assemblies only; mirroring changes mounting senses.
+# Per-joint encoder polarity, fixed by encoder mounting + magnet orientation:
+# +1 when raw counts rise as the joint moves toward its flex hardstop (ROM upper,
+# where the calibration anchor is sampled). Measured per side on hardware.
 JOINT_ENCODER_POLARITY = {
     "thumb_cmc": -1, "thumb_abd": -1, "thumb_mcp": 1, "thumb_dip": -1,
     "index_abd": 1, "index_mcp": 1, "index_pip": -1,
     "middle_abd": 1, "middle_mcp": 1, "middle_pip": -1,
     "ring_abd": 1, "ring_mcp": 1, "ring_pip": -1,
     "pinky_abd": 1, "pinky_mcp": 1, "pinky_pip": -1,
-    "wrist": 1,
+    "wrist": -1,
 }
 
-# Polarity tables by hand side; a side is absent until its table is validated
-# on hardware ("left" deliberately has none yet).
-JOINT_ENCODER_POLARITY_BY_SIDE = {"right": JOINT_ENCODER_POLARITY}
+# The mirrored assembly flips the abduction-type axes (thumb_cmc, thumb_abd and
+# every finger abd) and leaves the flexion axes and the wrist alone.
+JOINT_ENCODER_POLARITY_LEFT = {
+    "thumb_cmc": 1, "thumb_abd": 1, "thumb_mcp": 1, "thumb_dip": -1,
+    "index_abd": -1, "index_mcp": 1, "index_pip": -1,
+    "middle_abd": -1, "middle_mcp": 1, "middle_pip": -1,
+    "ring_abd": -1, "ring_mcp": 1, "ring_pip": -1,
+    "pinky_abd": -1, "pinky_mcp": 1, "pinky_pip": -1,
+    "wrist": -1,
+}
+
+# Polarity tables by hand side; a side is absent until its table is measured
+# on hardware, so an unrecognised 'type:' never decodes with borrowed signs.
+JOINT_ENCODER_POLARITY_BY_SIDE = {
+    "right": JOINT_ENCODER_POLARITY,
+    "left": JOINT_ENCODER_POLARITY_LEFT,
+}
 
 
 def joint_encoder_polarity_for_side(side):
     """Per-joint encoder polarity table for hands of ``side``.
 
-    Raises ``ValueError`` for sides without a validated table (currently
-    everything but ``"right"``), so closed-loop consumers fail loudly
-    instead of decoding with wrong signs.
+    Raises ``ValueError`` for sides without a measured table, so closed-loop
+    consumers fail loudly instead of decoding with wrong signs.
     """
     try:
         return JOINT_ENCODER_POLARITY_BY_SIDE[side]

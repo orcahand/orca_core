@@ -1,8 +1,9 @@
 """Lifecycle and routing tests for ``OrcaHandJointFeedback``: connect
 starts the loop without touching motor operating modes, disconnect tears
 down cleanly, calibration gate raises on missing encoder calibration,
-and the joint-position public API routes encoder joints through the loop
-and the wrist through the inherited motor-position path.
+and the joint-position public API routes every anchored encoder joint —
+wrist included — through the loop, with anchor-less joints falling back
+to the inherited motor-position path.
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ import logging
 import os
 import shutil
 
+import numpy as np
 import pytest
 
 from orca_core.constants import CURRENT, MODE_MAP, WRIST
 from orca_core.control import JointController, JointLoopThread
 from orca_core import JointFeedbackConnectError
+from orca_core.hardware.sensing.constants import JOINT_ENCODER_POLARITY_LEFT
 from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
@@ -41,6 +44,16 @@ def left_joint_feedback_config(tmp_path):
         text = f.read()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(text.replace("type: right", "type: left"))
+    return str(config_path)
+
+
+@pytest.fixture
+def unknown_side_joint_feedback_config(tmp_path):
+    """A side with no measured polarity table."""
+    with open(REAL_CONFIG) as f:
+        text = f.read()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(text.replace("type: right", "type: middle"))
     return str(config_path)
 
 
@@ -139,49 +152,109 @@ def test_connect_skips_uncalibrated_joints_and_keeps_loop(joint_feedback_config)
         hand.disconnect()
 
 
-def test_set_joint_positions_routes_wrist_and_encoder_joints(joint_feedback_config):
+def test_set_joint_positions_routes_wrist_through_loop_when_anchored(
+    joint_feedback_config, monkeypatch
+):
+    """The wrist is an anchored encoder joint like any other: its target
+    lands in the loop, with no synchronous open-loop write alongside."""
+    from orca_core.hardware_hand import OrcaHand
+
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
     try:
-        encoder_joint = hand._encoder_backed_joints()[0]
-        wrist_motor_id = hand.config.joint_to_motor_map[WRIST]
-        wrist_pos_before = hand._motor_client._pos[wrist_motor_id]
+        assert WRIST in hand._loop._joint_names
+        encoder_joint = next(
+            j for j in hand._encoder_backed_joints() if j != WRIST
+        )
 
+        open_loop_joints = []
+        orig = OrcaHand._set_joint_positions
+
+        def _recording(self, joint_pos):
+            open_loop_joints.extend(joint_pos.as_dict())
+            return orig(self, joint_pos)
+
+        monkeypatch.setattr(OrcaHand, "_set_joint_positions", _recording)
         hand.set_joint_positions(
             OrcaJointPositions.from_dict({encoder_joint: 30.0, WRIST: 5.0}),
         )
 
         loop_idx = hand._loop._joint_names.index(encoder_joint)
         assert hand._loop._target_deg[loop_idx] == pytest.approx(30.0)
-        assert hand._motor_client._pos[wrist_motor_id] != wrist_pos_before
+        wrist_idx = hand._loop._joint_names.index(WRIST)
+        assert hand._loop._target_deg[wrist_idx] == pytest.approx(5.0)
+        assert WRIST not in open_loop_joints
     finally:
         hand.disconnect()
 
 
-def test_get_joint_positions_wrist_comes_from_motor_position(joint_feedback_config):
-    """Encoder joints come from the loop's measurement; the wrist value
-    has to come from the motor-position read (the wrist isn't in the
-    loop). Drive the wrist motor to a known position post-connect and
-    check the converted joint angle propagates through _get_joint_positions.
-    """
+def test_get_joint_positions_wrist_comes_from_encoder_when_in_loop(
+    joint_feedback_config,
+):
+    """The wrist angle comes from the loop's encoder measurement, not the
+    motor-position read. Park the wrist motor away from the encoder-implied
+    pose and check the encoder value wins in _get_joint_positions."""
     hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
     hand.connect()
     try:
         wrist_motor_id = hand.config.joint_to_motor_map[WRIST]
         wrist_idx = hand.config.motor_id_to_idx_dict[wrist_motor_id]
 
-        # Park the wrist motor at a non-trivial position so the converted
-        # joint angle is distinct from the post-connect default.
         motor_pos = hand.get_motor_pos().copy()
         motor_pos[wrist_idx] = 0.25
         hand._motor_client._pos[wrist_motor_id] = 0.25
+        motor_derived = hand._motor_to_joint_pos(motor_pos)[WRIST]
 
-        # Compute the expected joint angle through the inherited mapping.
-        expected_wrist = hand._motor_to_joint_pos(motor_pos)[WRIST]
-
+        measured = hand._loop.get_measured_joints()[WRIST]
         positions = hand._get_joint_positions().as_dict()
-        assert WRIST in positions
-        assert positions[WRIST] == pytest.approx(expected_wrist, abs=1e-9)
+        assert positions[WRIST] == pytest.approx(measured, abs=1e-9)
+        assert positions[WRIST] != pytest.approx(motor_derived)
+    finally:
+        hand.disconnect()
+
+
+def test_wrist_missing_anchor_runs_open_loop_and_connect_succeeds(
+    joint_feedback_config, caplog
+):
+    """Migration case: a calibration made before the wrist joined the loop
+    (no wrist anchor) still connects; the wrist is skipped from the loop and
+    driven through the inherited motor path."""
+    import dataclasses as dc
+
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    encoder_cal = dict(hand.calibration.joint_encoder_calibration_dict)
+    del encoder_cal[WRIST]
+    hand.calibration = dc.replace(
+        hand.calibration, joint_encoder_calibration_dict=encoder_cal
+    )
+
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand_sensing"):
+        ok, _ = hand.connect()
+    try:
+        assert ok
+        assert hand.loop_skipped_joints == [WRIST]
+        assert WRIST not in hand.loop_joint_names
+        assert any("open-loop" in r.getMessage() for r in caplog.records)
+
+        wrist_motor_id = hand.config.joint_to_motor_map[WRIST]
+        pos_before = hand._motor_client._pos[wrist_motor_id]
+        hand.set_joint_positions(OrcaJointPositions.from_dict({WRIST: 5.0}))
+        assert hand._motor_client._pos[wrist_motor_id] != pos_before
+    finally:
+        hand.disconnect()
+
+
+def test_mock_joint_feedback_hand_loop_includes_wrist(joint_feedback_config):
+    """A plain mock hand (auto-installed calibration) closes the loop on the
+    wrist too — the behavior downstream mock tiers inherit."""
+    from orca_core import MockOrcaHandJointFeedback
+
+    hand = MockOrcaHandJointFeedback(config_path=joint_feedback_config)
+    ok, _ = hand.connect()
+    try:
+        assert ok
+        assert WRIST in hand.loop_joint_names
+        assert WRIST in hand.get_measured_joints()
     finally:
         hand.disconnect()
 
@@ -280,17 +353,37 @@ def test_second_connect_is_noop_and_orphans_nothing(joint_feedback_config):
     assert not thread.is_alive()
 
 
-def test_connect_refuses_left_hand_config(left_joint_feedback_config):
-    """Closed-loop control is unvalidated for left-hand assemblies: connect
-    must refuse before opening the motor bus, any link, or the loop — and
-    the refusal must name the concrete escape hatches."""
+def test_connect_engages_the_loop_on_a_left_hand(left_joint_feedback_config):
+    """Left assemblies have a measured polarity table, so closed-loop control
+    starts exactly as it does on a right hand."""
     hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
+    success, msg = hand.connect()
+    try:
+        assert success, msg
+        assert isinstance(hand._loop, JointLoopThread)
+        assert hand._loop._thread is not None and hand._loop._thread.is_alive()
+        assert hand._encoder_client is not None
+        assert np.array_equal(
+            hand._loop._enc_polarities,
+            np.array(
+                [JOINT_ENCODER_POLARITY_LEFT[j] for j in hand._loop._joint_names]
+            ),
+        )
+    finally:
+        hand.disconnect()
+
+
+def test_connect_refuses_a_side_without_a_polarity_table(
+    unknown_side_joint_feedback_config,
+):
+    """An unrecognised side must be refused before opening the motor bus, any
+    link, or the loop — and the refusal must name the escape hatch."""
+    hand = make_calibrated_joint_feedback_hand(unknown_side_joint_feedback_config)
     with pytest.raises(JointFeedbackConnectError) as excinfo:
         hand.connect()
     message = str(excinfo.value)
-    assert "left" in message
+    assert "middle" in message
     assert "connect(engage_feedback=False)" in message
-    assert "orcahand-left" in message
     assert not hand.is_connected()
     assert hand._loop is None
     assert hand._encoder_client is None
@@ -301,7 +394,7 @@ def test_connect_refuses_left_hand_config(left_joint_feedback_config):
 def test_left_connect_without_feedback_opens_motor_bus_only(
     left_joint_feedback_config,
 ):
-    """``engage_feedback=False`` is the left-hand escape hatch: the motor bus
+    """``engage_feedback=False`` stays available on a left hand: the motor bus
     opens for open-loop control and the encoder stack stays untouched."""
     hand = make_calibrated_joint_feedback_hand(left_joint_feedback_config)
     success, msg = hand.connect(engage_feedback=False)

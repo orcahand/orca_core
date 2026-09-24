@@ -48,6 +48,7 @@ from .constants import (
     WATCHDOG_HOLD_MS,
     WATCHDOG_STOP_LOOP_MS,
     WATCHDOG_WARN_MS,
+    WRIST_MOTOR_TARGET_MARGIN_DEG,
 )
 
 
@@ -113,6 +114,7 @@ class JointLoopThread:
             "cycles_held_base": 0,
             "cycles_paused": 0,
             "cycles_exception": 0,
+            "cycles_clamped": 0,
             "commands_sent": 0,
             "e_stops": 0,
             "joints_flagged_invalid": 0,
@@ -228,7 +230,7 @@ class JointLoopThread:
 
         if freshness_ms > WATCHDOG_HOLD_BASE_MS:
             motor_targets = self._joint_to_motor_pos(target) + motor_bias
-            self._hand.write_motor_pos(self._motor_ids, motor_targets)
+            self._write_motor_targets(motor_targets)
             self._stats["cycles_held_base"] += 1
             self._stats["commands_sent"] += 1
             return
@@ -246,7 +248,7 @@ class JointLoopThread:
 
         correction = self._controller.step(target, measured, dt)
         motor_targets = self._joint_to_motor_pos(target + correction) + motor_bias
-        self._hand.write_motor_pos(self._motor_ids, motor_targets)
+        self._write_motor_targets(motor_targets)
 
         with self._lock:
             self._latest_measured = measured.copy()
@@ -334,14 +336,13 @@ class JointLoopThread:
 
     def _snapshot_calibration(self) -> None:
         """Freeze the joint set and the kinematics arrays for one loop run.
-        Wrist is excluded; joints without an encoder calibration entry are
-        skipped.
+        Joints without an encoder calibration entry are skipped.
 
         Raises:
             RuntimeError: no encoder-backed joints to control, or a selected
                 joint lacks motor limits or a nonzero joint-to-motor ratio.
             ValueError: controller size disagrees with the resolved set.
-            KeyError: the hand's side has no validated encoder polarity table.
+            ValueError: the hand's side has no measured encoder polarity table.
         """
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map
@@ -353,7 +354,7 @@ class JointLoopThread:
 
         joints = [
             j for j in JOINT_TO_ENCODER_SLOT
-            if j != WRIST and j in joint_to_motor and j in encoder_dict
+            if j in joint_to_motor and j in encoder_dict
         ]
         if self._configured_joints is not None:
             missing = [j for j in self._configured_joints if j not in joints]
@@ -421,6 +422,25 @@ class JointLoopThread:
             [self._hand._wrap_offsets_dict.get(mid, 0.0) for mid in self._motor_ids],
             dtype=np.float64,
         )
+        # The wrist motor runs in multi_turn_position mode (no current cap),
+        # so its commanded position is clamped to the calibrated travel plus
+        # a small margin; other joints deliberately over-travel to take up
+        # tendon stretch and stay unclamped.
+        motor_limits_upper = np.array(
+            [motor_limits[mid][1] for mid in self._motor_ids], dtype=np.float64
+        )
+        is_wrist = np.array([j == WRIST for j in joints], dtype=bool)
+        margin = WRIST_MOTOR_TARGET_MARGIN_DEG * np.abs(self._joint_to_motor_ratios)
+        self._motor_target_lower = np.where(
+            is_wrist,
+            self._motor_limits_lower - margin + self._wrap_offsets,
+            -np.inf,
+        )
+        self._motor_target_upper = np.where(
+            is_wrist,
+            motor_limits_upper + margin + self._wrap_offsets,
+            np.inf,
+        )
         self._target_deg = np.zeros(len(joints), dtype=np.float64)
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
         self._last_correction = np.zeros(len(joints), dtype=np.float64)
@@ -444,6 +464,22 @@ class JointLoopThread:
         )
         motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
         return motor_pos + self._wrap_offsets
+
+    def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
+        """Write motor targets, clamping joints with a bounded travel
+        (currently the wrist) to their snapshot limits."""
+        if np.any(
+            (motor_targets < self._motor_target_lower)
+            | (motor_targets > self._motor_target_upper)
+        ):
+            self._stats["cycles_clamped"] += 1
+        np.clip(
+            motor_targets,
+            self._motor_target_lower,
+            self._motor_target_upper,
+            out=motor_targets,
+        )
+        self._hand.write_motor_pos(self._motor_ids, motor_targets)
 
     def _measure_joint_angles_for_anchor(
         self, retries: int = 5, retry_interval: float = 0.05

@@ -60,6 +60,7 @@ from ..hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     sample_anchor_count_from_client,
 )
+from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV
 from ..utils.utils import read_yaml, write_yaml_atomic
 from .motor_reads import read_motor_pos_checked
 
@@ -70,6 +71,18 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[dict], None]
 ShouldStop = Callable[[], bool]
+
+# An anchor commits only when the flex- and extend-hardstop samples differ by
+# a meaningful fraction of the ROM span: a dead or unwired slot reads a
+# constant (which passes the chip parity check) and must not be anchored.
+MIN_ANCHOR_SWEEP_FRACTION = 0.25
+MIN_ANCHOR_SWEEP_COUNTS = 300
+
+
+def _count_delta(a: int, b: int) -> int:
+    """Wrap-aware distance between two 14-bit encoder counts."""
+    d = abs(a - b) % ENCODER_COUNTS_PER_REV
+    return min(d, ENCODER_COUNTS_PER_REV - d)
 
 
 def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
@@ -254,8 +267,11 @@ def _drive_calibration(
 
     Wrist calibration logic:
     - Wrist is calibrated independently of fingers (tracked by `wrist_calibrated` in calibration file).
-    - Uses a higher calibration current.
-    - If already calibrated (and calibration run is not forcing), skip wrist steps.
+    - Wrist steps write `wrist_calibration_current`, though the wrist motor's
+      multi_turn_position mode ignores current caps (PWM-limited torque).
+    - If already calibrated (and calibration run is not forcing), skip wrist
+      steps — unless the encoder pass is active and the wrist still lacks an
+      encoder anchor, in which case the wrist steps run to capture it.
     - If missing from the sequence, wrist flex/extend steps are appended.
     - If force_wrist=True, always include wrist in calibration steps.
     - `wrist_calibrated` turns true only once both wrist limits are captured;
@@ -265,6 +281,11 @@ def _drive_calibration(
         "wrist" in step[JOINTS] for step in hand.config.calibration_sequence
     )
     calibration_sequence = list(hand.config.calibration_sequence)
+
+    encoder_pass_active = (
+        getattr(hand.config, "joint_feedback_enabled", False)
+        and joint_encoder_client is not None
+    )
 
     # A calibrated flag without recorded wrist limits is inconsistent; treat
     # the wrist as uncalibrated so it is driven again rather than skipped.
@@ -276,7 +297,22 @@ def _drive_calibration(
         hand.calibration.wrist_calibrated and None not in prior_wrist_limits
     )
 
-    if wrist_calibrated and not force_wrist:
+    # An encoder-backed wrist without an anchor still needs its steps: the
+    # anchor is sampled at the wrist FLEX hardstop during the sweep. A
+    # ``joints`` restriction that excludes the wrist keeps the plain skip.
+    wrist_anchor_needed = (
+        encoder_pass_active
+        and (joints is None or WRIST in joints)
+        and WRIST in set(hand._encoder_backed_joints())
+        and WRIST not in hand.calibration.joint_encoder_calibration_dict
+    )
+    if wrist_anchor_needed and wrist_calibrated and not force_wrist:
+        logger.info(
+            "wrist is motor-calibrated but missing its encoder anchor; "
+            "running wrist steps to capture it"
+        )
+
+    if wrist_calibrated and not force_wrist and not wrist_anchor_needed:
         if wrist_in_sequence:
             _emit(progress_callback, "wrist_skipped")
             logger.warning(
@@ -322,16 +358,13 @@ def _drive_calibration(
     }
     joint_to_motor_ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
 
-    encoder_pass_active = (
-        getattr(hand.config, "joint_feedback_enabled", False)
-        and joint_encoder_client is not None
-    )
     joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
         hand.calibration.joint_encoder_calibration_dict
     )
     # Existing anchors stay until their replacement is sampled, so an aborted
     # or failed run never loses anchors of joints it did not re-anchor.
     joints_to_anchor: set[str] = set()
+    pending_anchors: Dict[str, int] = {}
     if encoder_pass_active:
         joints_to_anchor = {
             joint
@@ -500,6 +533,7 @@ def _drive_calibration(
                 step=step,
                 directions=directions,
                 joints_to_anchor=joints_to_anchor,
+                pending_anchors=pending_anchors,
                 joint_encoder_calibration=joint_encoder_calibration,
                 joint_encoder_client=joint_encoder_client,
                 progress_callback=progress_callback,
@@ -626,6 +660,19 @@ def _drive_calibration(
         # TODO(fracapuano): Is this necessary?
         time.sleep(0.1)
 
+    # A pending anchor whose joint saw no extend step this run could not be
+    # sweep-validated; commit it so such sequences keep their anchors.
+    for joint, count in list(pending_anchors.items()):
+        _commit_anchor(
+            hand,
+            joint,
+            count,
+            joint_encoder_calibration=joint_encoder_calibration,
+            joints_to_anchor=joints_to_anchor,
+            progress_callback=progress_callback,
+        )
+    pending_anchors.clear()
+
     final_result = _build_calibration_result(
         motor_limits=motor_limits,
         joint_to_motor_ratios=joint_to_motor_ratios,
@@ -651,71 +698,133 @@ def _drive_calibration(
     return final_result
 
 
+def _commit_anchor(
+    hand: "OrcaHand",
+    joint: str,
+    anchor_count: int,
+    *,
+    joint_encoder_calibration: Dict[str, JointEncoderCal],
+    joints_to_anchor: set,
+    progress_callback: Optional[ProgressCallback],
+) -> None:
+    joint_encoder_calibration[joint] = JointEncoderCal(
+        enc_at_anchor_count=anchor_count,
+    )
+    joints_to_anchor.discard(joint)
+    anchor_angle_deg = float(hand.config.joint_roms_dict[joint][1])
+    _emit(
+        progress_callback,
+        "encoder_anchor_recorded",
+        joint=joint,
+        anchor_count=anchor_count,
+        anchor_angle_deg=anchor_angle_deg,
+    )
+    logger.info(
+        "joint %s encoder anchor sampled: anchor_count=%d (at ROM upper %.2f deg)",
+        joint,
+        anchor_count,
+        anchor_angle_deg,
+    )
+
+
 def _run_joint_encoder_pass_for_step(
     hand: "OrcaHand",
     *,
     step,
     directions: Dict[int, int],
     joints_to_anchor: set,
+    pending_anchors: Dict[str, int],
     joint_encoder_calibration: Dict[str, JointEncoderCal],
     joint_encoder_client,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
-    """Sample the anchor count for each joint in ``step`` still awaiting one.
+    """Sample and sweep-validate anchor counts for the joints in ``step``.
 
-    Only FLEX-direction joints listed in ``joints_to_anchor`` whose motor was
-    actually driven to its hardstop (present in ``directions``) and that are
-    encoder-backed are sampled; the caller must hold those motors
-    torque-enabled at the FLEX hardstop. A joint's previous anchor in
-    ``joint_encoder_calibration`` is only replaced once its new sample
-    succeeds, so a failed sample keeps the previously persisted anchor.
+    A FLEX-direction joint still awaiting an anchor is sampled at its flex
+    hardstop into ``pending_anchors``; its later EXTEND step samples the
+    opposite hardstop and commits the anchor only when the two counts differ
+    by a meaningful fraction of the ROM span. A dead or unwired slot reads a
+    constant and is rejected — including any previously stored anchor for it.
+    The caller must hold the step's motors torqued at their hardstops. A
+    failed sample keeps the previously persisted anchor.
     """
     from ..hardware.sensing.constants import JOINT_TO_ENCODER_SLOT
 
     encoder_backed = set(hand._encoder_backed_joints())
 
     for joint, direction in step[JOINTS].items():
-        if direction != FLEX:
-            continue
-        if joint not in joints_to_anchor:
-            continue
         if joint not in encoder_backed:
             continue
-
         slot = JOINT_TO_ENCODER_SLOT[joint]
         motor_id = hand.config.joint_to_motor_map.get(joint)
         if motor_id is None or motor_id not in directions:
             continue
 
-        try:
-            anchor_count = sample_anchor_count_from_client(
-                joint_encoder_client, slot=slot
-            )
-        except JointEncoderCalibrationError as e:
-            _emit(
-                progress_callback,
-                "encoder_anchor_failed",
-                joint=joint,
-                error=str(e),
-            )
-            logger.warning("encoder anchor sample failed for joint %s: %s", joint, e)
-            continue
+        if direction == FLEX and joint in joints_to_anchor:
+            try:
+                pending_anchors[joint] = int(
+                    sample_anchor_count_from_client(joint_encoder_client, slot=slot)
+                )
+            except JointEncoderCalibrationError as e:
+                _emit(
+                    progress_callback,
+                    "encoder_anchor_failed",
+                    joint=joint,
+                    error=str(e),
+                )
+                logger.warning(
+                    "encoder anchor sample failed for joint %s: %s", joint, e
+                )
+        elif direction == EXTEND and joint in pending_anchors:
+            try:
+                extend_count = int(
+                    sample_anchor_count_from_client(joint_encoder_client, slot=slot)
+                )
+            except JointEncoderCalibrationError as e:
+                pending_anchors.pop(joint)
+                _emit(
+                    progress_callback,
+                    "encoder_anchor_failed",
+                    joint=joint,
+                    error=str(e),
+                )
+                logger.warning(
+                    "encoder sweep check failed for joint %s: %s", joint, e
+                )
+                continue
 
-        joint_encoder_calibration[joint] = JointEncoderCal(
-            enc_at_anchor_count=int(anchor_count),
-        )
-        joints_to_anchor.discard(joint)
-        anchor_angle_deg = float(hand.config.joint_roms_dict[joint][1])
-        _emit(
-            progress_callback,
-            "encoder_anchor_recorded",
-            joint=joint,
-            anchor_count=int(anchor_count),
-            anchor_angle_deg=anchor_angle_deg,
-        )
-        logger.info(
-            "joint %s encoder anchor sampled: anchor_count=%d (at ROM upper %.2f deg)",
-            joint,
-            int(anchor_count),
-            anchor_angle_deg,
-        )
+            rom_lower, rom_upper = hand.config.joint_roms_dict[joint]
+            expected = (rom_upper - rom_lower) * ENCODER_COUNTS_PER_REV / 360.0
+            threshold = max(
+                MIN_ANCHOR_SWEEP_COUNTS, MIN_ANCHOR_SWEEP_FRACTION * expected
+            )
+            delta = _count_delta(pending_anchors[joint], extend_count)
+            if delta < threshold:
+                pending_anchors.pop(joint)
+                # A slot proven dead now also invalidates any stored anchor.
+                joint_encoder_calibration.pop(joint, None)
+                _emit(
+                    progress_callback,
+                    "encoder_anchor_failed",
+                    joint=joint,
+                    error=(
+                        f"slot {slot} did not track the sweep ({delta} of "
+                        f"~{int(expected)} expected counts) — encoder dead or "
+                        "unwired; joint stays open-loop"
+                    ),
+                )
+                logger.warning(
+                    "joint %s encoder slot %d did not track the calibration "
+                    "sweep (%d of ~%d expected counts); no anchor recorded",
+                    joint, slot, delta, int(expected),
+                )
+                continue
+
+            _commit_anchor(
+                hand,
+                joint,
+                pending_anchors.pop(joint),
+                joint_encoder_calibration=joint_encoder_calibration,
+                joints_to_anchor=joints_to_anchor,
+                progress_callback=progress_callback,
+            )
