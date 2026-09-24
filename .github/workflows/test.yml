@@ -31,7 +31,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          uv run pytest
+          uv run pytest --durations=40
 
   # Single check named "test" for the main ruleset; passes only if every matrix leg passed.
   test:
