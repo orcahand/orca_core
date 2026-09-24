@@ -25,6 +25,15 @@ def _build_output_path(output_dir: Path, prefix: str) -> Path:
 
 
 def main() -> int:
+    """Record discrete joint-space waypoints, one per keypress, while moving the orca hand manually.
+
+    Torque is released after :meth:`~orca_core.hardware_hand.OrcaHand.init_joints` so the
+    joints move freely, and the waypoints are written under
+    :func:`~orca_core.utils.cli.prepare_output_dir` with an interactively entered filename
+    prefix. Play them back with ``replay_angles.py``.
+
+    Returns the process exit code: always 0.
+    """
     parser = argparse.ArgumentParser(
         description="Record discrete joint-space waypoints by manually posing the hand."
     )
@@ -33,12 +42,12 @@ def main() -> int:
         "--output-dir",
         type=str,
         default=None,
-        help="Directory where the replay YAML will be written.",
+        help="Directory where the replay YAML is written. Default: ./replay_sequences.",
     )
     parser.add_argument(
         "--force-calibrate",
         action="store_true",
-        help="Run calibration even if calibration.yaml already exists.",
+        help="Run calibration even if calibration.yaml already exists. Default: off.",
     )
     args = parser.parse_args()
 

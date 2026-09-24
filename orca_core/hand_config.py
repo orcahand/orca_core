@@ -173,7 +173,10 @@ def _resolve_config_path(
 
 
 def _resolve_calibration_path(config_path: str, calibration_path: str | None) -> str:
-    """Resolve the companion ``calibration.yaml`` path for a config file."""
+    """Resolve the companion ``calibration.yaml`` path for a config file.
+
+    Without an explicit *calibration_path*, the file is looked up next to the config.
+    """
     if calibration_path is not None:
         return os.path.abspath(calibration_path)
     return os.path.join(os.path.dirname(config_path), "calibration.yaml")

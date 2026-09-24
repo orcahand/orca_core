@@ -26,7 +26,8 @@ def add_hand_arguments(
         "config_path",
         nargs="?",
         default=None,
-        help="Path to config.yaml; omit to autodetect the connected hand.",
+        help="Path to config.yaml; omit to autodetect the connected hand. A "
+        "calibration.yaml sitting in the same folder is picked up with it.",
     )
     parser.add_argument(
         "--mock",

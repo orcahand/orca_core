@@ -256,11 +256,22 @@ The two sensing scripts split by intent: `monitor_sensors.py` shows you the data
 <details>
 <summary><strong>monitor_sensors.py</strong></summary>
 
-Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate. Autodetects the connector-board serial port; pass <code>--port</code> to override.
+Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate.
+
+With no arguments it autodetects one connector board carrying both streams. Pass a <code>config.yaml</code> to monitor exactly the streams that hand declares, on the ports it names — a tactile-only hand gets no encoder panel, a joint-feedback hand no tactile panel, and a hand whose sensors sit on separate ports gets a link each.
+
+<br><strong>Args:</strong><br>
+<ul>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand's config.yaml. Mutually exclusive with <code>--port</code>.</li><br>
+    <li><strong>--port</strong>: Raw serial port carrying both streams; skips the config.</li><br>
+    <li><strong>--baud</strong>: Link baud, overriding the config's rates and detection.</li><br>
+    <li><strong>--start-mode</strong>: Tactile mode to start in (default: Resultant).</li>
+</ul>
 
 <strong>Example:</strong>
 ```bash
 python scripts/monitor_sensors.py
+python scripts/monitor_sensors.py orca_core/models/v2/orcahand-touch-left/config.yaml
 python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
 ```
 </details>

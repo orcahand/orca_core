@@ -14,11 +14,36 @@ from orca_core.utils.cli import (
     shutdown_hand,
 )
 
+from replay_angles import ease_in_out, play_transition
+
 
 def main() -> int:
+    """Replay a continuous joint recording produced by ``record_continuous.py``.
+
+    ``--replay-file`` is resolved by :func:`~orca_core.utils.cli.resolve_input_path`. Playback
+    speed takes no flag: the rate comes from the recording's ``sampling_frequency_hz``
+    metadata, and every frame is sent as an immediate move. Only the approach onto the first
+    frame is timed, by ``--approach-time`` through :func:`replay_angles.play_transition`.
+
+    Returns the process exit code: 0 after a full replay or a Ctrl-C interrupt, 1 when the
+    replay file is missing, is not a continuous recording, or holds no frames.
+    """
     parser = argparse.ArgumentParser(description="Replay a continuous joint recording.")
     add_hand_arguments(parser)
-    parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--replay-file",
+        type=str,
+        required=True,
+        help="Path to the continuous recording to replay; its sampling_frequency_hz sets the "
+        "replay rate. Required.",
+    )
+    parser.add_argument(
+        "--approach-time",
+        type=float,
+        default=1.0,
+        help="Seconds spent interpolating from the current pose onto the first recorded "
+        "frame, paced at the recording's sampling_frequency_hz. Default: 1.0 s.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)
@@ -58,8 +83,14 @@ def main() -> int:
                 f"but the connected config is {hand.config.type}."
             )
 
-        print(f"Replaying {len(waypoints)} frames from {replay_path}")
         step_time = 1.0 / sampling_frequency
+        initial_pose = hand.get_joint_position().as_list(hand.config.joint_ids)
+        approach_steps = max(1, int(args.approach_time * sampling_frequency))
+        play_transition(
+            hand, initial_pose, waypoints[0], approach_steps, step_time, ease_in_out
+        )
+
+        print(f"Replaying {len(waypoints)} frames from {replay_path}")
         start_time = time.time()
         for index, pose in enumerate(waypoints):
             hand.set_joint_positions(np.asarray(pose, dtype=np.float64))

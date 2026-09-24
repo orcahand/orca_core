@@ -23,18 +23,77 @@ def ease_in_out(t: float) -> float:
     return 0.5 * (1 - np.cos(np.pi * t))
 
 
+def play_transition(
+    hand, start, end, n_steps: int, step_time: float, interp_func
+) -> None:
+    """Move the hand from *start* to *end* pose through a series of interpolated poses.
+
+    Args:
+        hand: Connected hand to command.
+        start: Pose to leave, ordered like ``hand.config.joint_ids``.
+        end: Pose to reach, in the same joint order.
+        n_steps (int): Number of interpolation steps.
+        step_time (float): Seconds each step lasts.
+        interp_func: Interpolation function for each step.
+    """
+    start_time = time.time()
+    for step in range(n_steps + 1):
+        alpha = interp_func(step / n_steps)
+        pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
+        hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
+
+        target_time = start_time + step * step_time
+        remaining = target_time - time.time()
+        if remaining > 0:
+            time.sleep(remaining)
+
+
 def main() -> int:
+    """Replay the waypoint poses of a recording produced by ``record_angles.py``.
+
+    ``--replay-file`` is resolved by :func:`~orca_core.utils.cli.resolve_input_path`, and
+    ``--mode`` selects :func:`linear_interp` or :func:`ease_in_out`. The current pose is the
+    starting point, so the move onto the first waypoint is interpolated like every later
+    transition. Poses are sent as immediate moves by :func:`play_transition`, so the timing
+    comes from ``--step-time`` and ``--transition-time`` rather than from
+    :meth:`~orca_core.base_hand.BaseHand.set_joint_positions`.
+
+    Returns the process exit code: 0 after a full replay or a Ctrl-C interrupt, 1 when the
+    replay file is missing or holds no waypoints.
+    """
     parser = argparse.ArgumentParser(description="Replay recorded waypoint poses.")
     add_hand_arguments(parser)
-    parser.add_argument("--step-time", type=float, default=0.02)
-    parser.add_argument("--transition-time", type=float, default=0.5)
-    parser.add_argument("--loop", action="store_true")
+    parser.add_argument(
+        "--step-time",
+        type=float,
+        default=0.02,
+        help="Duration of each interpolation step. Default: 0.02 s.",
+    )
+    parser.add_argument(
+        "--transition-time",
+        type=float,
+        default=0.5,
+        help="Seconds spent on each transition, including the one from the initial pose onto "
+        "the first waypoint. step_time and transition_time define the number of steps for "
+        "each transition. Default: 0.5.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Loop the sequence until interrupted. Default: off.",
+    )
     parser.add_argument(
         "--mode",
         choices=["linear", "ease_in_out"],
         default="ease_in_out",
+        help="Interpolation profile between waypoints. Default: ease_in_out.",
     )
-    parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--replay-file",
+        type=str,
+        required=True,
+        help="Path to the replay file. Required.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)
@@ -68,29 +127,20 @@ def main() -> int:
             )
 
         interp_func = linear_interp if args.mode == "linear" else ease_in_out
+        n_steps = max(1, int(args.transition_time / args.step_time))
         print(f"Starting waypoint replay from {replay_path}")
+
+        initial_pose = hand.get_joint_position().as_list(hand.config.joint_ids)
+        play_transition(
+            hand, initial_pose, waypoints[0], n_steps, args.step_time, interp_func
+        )
 
         while True:
             for index, start in enumerate(waypoints):
                 if not args.loop and index == len(waypoints) - 1:
-                    hand.set_joint_positions(np.asarray(start, dtype=np.float64))
                     return 0
                 end = waypoints[(index + 1) % len(waypoints)]
-                n_steps = max(1, int(args.transition_time / args.step_time))
-                start_time = time.time()
-
-                for step in range(n_steps + 1):
-                    alpha = interp_func(step / n_steps)
-                    pose = [(1 - alpha) * s + alpha * e for s, e in zip(start, end)]
-                    hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
-
-                    target_time = start_time + step * args.step_time
-                    remaining = target_time - time.time()
-                    if remaining > 0:
-                        time.sleep(remaining)
-
-                if not args.loop and index == len(waypoints) - 1:
-                    return 0
+                play_transition(hand, start, end, n_steps, args.step_time, interp_func)
     except KeyboardInterrupt:
         print("\nReplay interrupted.")
         return 0

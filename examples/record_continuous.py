@@ -27,17 +27,42 @@ def _build_output_path(output_dir: Path, prefix: str) -> Path:
 
 
 def main() -> int:
+    """Record joint angles at a fixed rate while moving the orca hand manually.
+
+    Torque is released after :meth:`~orca_core.hardware_hand.OrcaHand.init_joints` so the
+    joints move freely, and the recording is written under
+    :func:`~orca_core.utils.cli.prepare_output_dir` with an interactively entered filename
+    prefix. Play it back with ``replay_continuous.py``.
+
+    Returns the process exit code: always 0.
+    """
     parser = argparse.ArgumentParser(
         description="Continuously record joint angles while manually moving the hand."
     )
     add_hand_arguments(parser)
-    parser.add_argument("--frequency", type=float, default=50.0)
-    parser.add_argument("--duration", type=float, default=None)
-    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument(
+        "--frequency",
+        type=float,
+        default=50.0,
+        help="Sampling rate of the recording. Stored in the file as sampling_frequency_hz, "
+        "which sets the playback rate in replay_continuous.py. Default: 50 Hz.",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Stop recording after this many seconds. Default: unlimited, stop with Ctrl+C.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory where the recording YAML is written. Default: ./replay_sequences.",
+    )
     parser.add_argument(
         "--force-calibrate",
         action="store_true",
-        help="Run calibration even if calibration.yaml already exists.",
+        help="Run calibration even if calibration.yaml already exists. Default: off.",
     )
     args = parser.parse_args()
 
