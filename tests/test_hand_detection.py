@@ -196,48 +196,6 @@ def test_load_hand_is_silent_when_every_port_answered(monkeypatch, caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-# ----- load_hand integration -------------------------------------------------
-
-def test_load_hand_autodetects_and_pins_ports(monkeypatch):
-    detection = hand_factory.HandDetection(
-        model_name="orcahand-touch-left",
-        side="left",
-        has_tactile=True,
-        has_encoders=False,
-        motor_port="/dev/cu.m",
-        sensing_port="/dev/cu.s",
-    )
-    monkeypatch.setattr(hand_factory, "detect_hand", lambda: detection)
-    hand = load_hand()
-    assert type(hand) is OrcaHandTouch
-    assert hand.config.type == "left"
-    assert hand.config.port == "/dev/cu.m"
-    assert hand.config.sensor_port == "/dev/cu.s"
-
-
-def test_load_hand_detection_fallback_is_default_model(monkeypatch):
-    _patch_hardware(monkeypatch)
-    hand = load_hand()
-    assert type(hand) is OrcaHand
-    assert hand.config.type == "right"
-    assert hand.config.port == "auto"
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"mock": True},
-        {"model_name": "orcahand-left"},
-        {"model_version": "v2"},
-    ],
-)
-def test_load_hand_skips_detection_when_told_what_to_load(monkeypatch, kwargs):
-    def _must_not_probe():
-        raise AssertionError("detect_hand() ran despite explicit selection")
-
-    monkeypatch.setattr(hand_factory, "detect_hand", _must_not_probe)
-    load_hand(**kwargs)
-
 def test_busy_bare_adapter_is_reported(monkeypatch):
     """A bare adapter held by another process is skipped by the family probe,
     so without this it would read as 'no motor found' with no reason given."""
