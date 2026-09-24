@@ -499,32 +499,36 @@ class TestDetectScript:
         assert "No motor bus found" in capsys.readouterr().out
 
 
-def test_check_encoder_signs_runs_against_the_mock():
-    """The script must get past building the hand and print its first frame;
-    a bad keyword to the shared builder used to kill it before connecting."""
-    import os, signal, subprocess, time
+def test_check_encoder_signs_runs_against_the_mock(monkeypatch, capsys):
+    """The script must get past building the hand, connect, and render a frame;
+    a bad keyword to the shared builder used to kill it before connecting.
+    Runs in-process; only the script's own refresh sleep is intercepted, and
+    the first refresh after a rendered frame plays the part of Ctrl-C."""
+    import time as real_time
 
-    proc = subprocess.Popen(
-        [sys.executable, str(REPO_ROOT / "scripts" / "check_encoder_signs.py"),
-         "--mock", "--model-name", "orcahand-joint-right"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    module = _load("scripts/check_encoder_signs.py")
+    monkeypatch.setattr(
+        sys, "argv", ["check_encoder_signs.py", "--mock", "--model-name", "orcahand-joint-right"]
     )
-    seen = []
-    deadline = time.monotonic() + 60
-    try:
-        while time.monotonic() < deadline:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            seen.append(line)
-            if "move the SAME direction" in line:
-                break
-        proc.send_signal(signal.SIGINT)
-        out = "".join(seen) + proc.communicate(timeout=30)[0]
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    assert "move the SAME direction" in out, out
-    assert "Traceback" not in out, out
-    assert proc.returncode == 0, out
+    state = {"frames": 0, "idle": 0}
+    real_render = module._render
+
+    def render(*a, **kw):
+        state["frames"] += 1
+        return real_render(*a, **kw)
+
+    def sleep(seconds):
+        if state["frames"]:
+            raise KeyboardInterrupt  # caught inside main(), like a real Ctrl-C
+        state["idle"] += 1
+        if state["idle"] > 500:
+            raise RuntimeError("no encoder reading ever arrived from the mock")
+        real_time.sleep(seconds)
+
+    monkeypatch.setattr(module, "_render", render)
+    monkeypatch.setattr(module, "time", SimpleNamespace(sleep=sleep))
+    module.main()
+    out = capsys.readouterr().out
+    assert "move the SAME direction" in out
+    assert state["frames"] == 1
+    assert "Stopped." in out
