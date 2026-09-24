@@ -228,14 +228,15 @@ def sample_anchor_count_from_client(
         raise ValueError("num_samples must be positive")
 
     counts = np.empty(num_samples, dtype=np.uint16)
-    last_ts: float | None = None
+    # A new frame is a new reading object; timestamps repeat on coarse clocks.
+    last_reading = None
     deadline = time.monotonic() + timeout_s
     collected = 0
     rejected = 0
     while collected < num_samples:
         reading = client.get_latest()
-        if reading is not None and reading.timestamp != last_ts:
-            last_ts = reading.timestamp
+        if reading is not None and reading is not last_reading:
+            last_reading = reading
             if bool(reading.parity_ok[slot]) and not bool(reading.angle_error[slot]):
                 counts[collected] = int(reading.raw_counts[slot]) & 0x3FFF
                 collected += 1

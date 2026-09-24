@@ -584,13 +584,14 @@ class TactileClient:
         succeeded = False
         try:
             frames = []
-            last_ts = None
+            # Each frame publishes a new taxel payload; timestamps repeat on coarse clocks.
+            last_taxels = None
             deadline = time.monotonic() + timeout_s
             while len(frames) < num_samples:
                 reading = self.get_latest_taxels()
-                if reading is not None and reading.timestamp != last_ts:
+                if reading is not None and reading.taxels is not last_taxels:
                     frames.append(reading.taxels)
-                    last_ts = reading.timestamp
+                    last_taxels = reading.taxels
                     continue
                 if time.monotonic() > deadline:
                     raise TimeoutError(
