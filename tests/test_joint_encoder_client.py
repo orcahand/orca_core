@@ -265,15 +265,8 @@ def _start_at(link, client, value):
 
 
 def test_get_latest_smooths_while_unfiltered_stays_on_the_wire_value(
-    encoder_link_and_client, monkeypatch,
+    encoder_link_and_client,
 ):
-    """The filter needs the interval between two frames, which a coarse clock
-    (Windows ticks every ~15.6 ms) reports as zero, so pace it explicitly."""
-    import orca_core.hardware.joint_encoder_client as module
-
-    ticks = iter(i * 0.002 for i in range(1, 10_000))
-    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
-
     link, client = encoder_link_and_client
     _start_at(link, client, 1000)
 

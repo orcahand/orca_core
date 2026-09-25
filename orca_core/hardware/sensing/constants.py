@@ -272,6 +272,11 @@ ENCODER_FILTER_CUTOFF_HZ = 5.0
 Only display and monitoring consumers see this — the control loop and the
 calibration sweep read the unfiltered stream."""
 
+ENCODER_FRAME_PERIOD_S = 0.002
+"""Nominal spacing of encoder frames (the board streams at about 466 Hz). The
+low-pass assumes it when a coarse clock stamps consecutive frames identically
+and no measured interval is known yet."""
+
 # ---------------------------------------------------------------------------
 # Auto-stream timing
 # ---------------------------------------------------------------------------

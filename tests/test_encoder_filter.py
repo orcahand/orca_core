@@ -134,6 +134,35 @@ def test_long_gap_snaps_to_the_new_sample():
     assert out[0] == 9000
 
 
+def test_frames_sharing_a_coarse_timestamp_keep_tracking():
+    """A clock that ticks every ~15.6 ms stamps back-to-back frames identically;
+    each still moves the filter by the last measured interval."""
+    filt = EncoderCountFilter(cutoff_hz=10.0)
+    filt.update(np.array([1000], dtype=np.uint16), 0.0)
+    filt.update(np.array([1000], dtype=np.uint16), 0.01)
+
+    paced = EncoderCountFilter(cutoff_hz=10.0)
+    paced.update(np.array([1000], dtype=np.uint16), 0.0)
+    paced.update(np.array([1000], dtype=np.uint16), 0.01)
+
+    outs = [filt.update(np.array([5000], dtype=np.uint16), 0.01)[0] for _ in range(5)]
+    expected = [paced.update(np.array([5000], dtype=np.uint16), 0.01 + 0.01 * k)[0] for k in range(1, 6)]
+
+    assert outs == expected
+    assert all(a < b for a, b in zip(outs, outs[1:]))
+
+
+def test_same_timestamp_before_any_interval_assumes_the_nominal_period():
+    from orca_core.hardware.sensing.constants import ENCODER_FRAME_PERIOD_S
+
+    filt = EncoderCountFilter(cutoff_hz=10.0)
+    filt.update(np.array([1000], dtype=np.uint16), 3.0)
+    out = filt.update(np.array([5000], dtype=np.uint16), 3.0)[0]
+
+    alpha = 1.0 - math.exp(-ENCODER_FRAME_PERIOD_S * 2.0 * math.pi * 10.0)
+    assert out == round(1000 + alpha * 4000)
+
+
 def test_backwards_timestamp_holds_state():
     filt = EncoderCountFilter(cutoff_hz=10.0)
     filt.update(np.array([500], dtype=np.uint16), 10.0)

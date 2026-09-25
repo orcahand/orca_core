@@ -11,6 +11,7 @@ import numpy as np
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_ANGLE_MASK,
     ENCODER_COUNTS_PER_REV,
+    ENCODER_FRAME_PERIOD_S,
 )
 
 _HALF_REV = ENCODER_COUNTS_PER_REV // 2
@@ -30,6 +31,7 @@ class EncoderCountFilter:
     def __init__(self, cutoff_hz: float):
         self._state: np.ndarray | None = None
         self._last_timestamp: float = 0.0
+        self._last_interval: float | None = None
         self.cutoff_hz = cutoff_hz
 
     @property
@@ -46,6 +48,7 @@ class EncoderCountFilter:
     def reset(self) -> None:
         """Drop the state so the next sample passes through and reseeds it."""
         self._state = None
+        self._last_interval = None
 
     def update(
         self,
@@ -64,7 +67,15 @@ class EncoderCountFilter:
         if self._state is None or self._state.shape != angle.shape:
             self._state = angle.astype(np.float64)
         else:
-            dt = max(timestamp - self._last_timestamp, 0.0)
+            dt = timestamp - self._last_timestamp
+            if dt > 0.0:
+                self._last_interval = dt
+            elif dt == 0.0:
+                # A coarse clock stamps frames within one tick identically; the
+                # frame is still real, so assume the stream's usual spacing.
+                dt = self._last_interval or ENCODER_FRAME_PERIOD_S
+            else:
+                dt = 0.0  # clock went backwards: hold the state
             alpha = 1.0 - math.exp(-dt * 2.0 * math.pi * self._cutoff_hz)
             delta = ((angle - self._state + _HALF_REV) % ENCODER_COUNTS_PER_REV) - _HALF_REV
             step = alpha * delta
