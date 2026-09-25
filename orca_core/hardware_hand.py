@@ -21,7 +21,13 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
-from .hardware.motor_client import MotionTimeoutError, MotorClient, MotorRead
+from .hardware.motor_client import (
+    MotionTimeoutError,
+    MotorClient,
+    MotorRead,
+    ServoGains,
+    ServoProfile,
+)
 from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import persist_calibration, run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -46,7 +52,6 @@ from .constants import (
     CURRENT,
     WRIST,
     NUM_STEPS,
-    POSITION,
     STEP_SIZE,
 )
 
@@ -554,6 +559,47 @@ class OrcaHand(BaseHand):
                 ),
             )
 
+    def get_servo_gains(self) -> "dict[int, ServoGains | None]":
+        """Read every motor's own position-PID and feedforward gains.
+
+        These are the servo's internal gains, not the host outer-loop PI that
+        :meth:`OrcaHandJointFeedback.get_pid_gains` returns. Motors whose
+        family does not expose them report ``None``.
+        """
+        with self._motor_lock:
+            return self._motor_client.read_servo_gains(self.config.motor_ids)
+
+    def set_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set servo gains per motor, leaving ``None`` fields untouched.
+
+        RAM registers, so they do not survive a power cycle: re-apply them
+        whenever the hand is brought up. The client replays them itself after
+        a motor reboot.
+        """
+        unknown = set(gains) - set(self.config.motor_ids)
+        if unknown:
+            raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
+        with self._motor_lock:
+            self._motor_client.write_servo_gains(gains)
+
+    def get_servo_profile(self) -> "dict[int, ServoProfile | None]":
+        """Read each motor's trajectory limits (SI units, 0.0 = disabled)."""
+        with self._motor_lock:
+            return self._motor_client.read_servo_profile(self.config.motor_ids)
+
+    def set_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set trajectory limits per motor, leaving ``None`` fields untouched.
+
+        A non-zero limit rate-limits *streamed* targets as well as
+        point-to-point moves, so it shapes teleop and replay too. RAM
+        registers: re-apply on bring-up.
+        """
+        unknown = set(profiles) - set(self.config.motor_ids)
+        if unknown:
+            raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
+        with self._motor_lock:
+            self._motor_client.write_servo_profile(profiles)
+
     def set_control_mode(self, mode: str, motor_ids: List[int] = None):
         """Switch the operating mode of the specified motors.
 
@@ -706,18 +752,16 @@ class OrcaHand(BaseHand):
         # the joint loop for up to ``timeout``.
         self._motor_client.wait_for_motion_complete(timeout=timeout)
 
-    def _settle_before_mode_switch(self) -> None:
-        """Let travelling motors arrive before a mode switch drops torque.
+    def _settle_neutral_move(self) -> None:
+        """Let a slow motor family arrive at neutral before the caller moves on.
 
         A motor blocked short of its goal never reports settled, so a timeout
-        is logged rather than raised: the switch must still happen.
+        is logged rather than raised: the hand is still usable where it is.
         """
         try:
             self.wait_for_motion()
         except MotionTimeoutError as exc:
-            logger.warning(
-                "%s; switching control mode with motors still short of their goal.", exc
-            )
+            logger.warning("%s; continuing with motors still short of neutral.", exc)
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
@@ -762,9 +806,13 @@ class OrcaHand(BaseHand):
     def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
         """Prepare the hand for operation.
 
-        Enables torque, sets the configured control mode and current limit,
+        Enables torque, sets the configured control mode and Goal Current,
         runs calibration if needed, computes wrap offsets, and optionally
         moves to the neutral position.
+
+        ``connect()`` leaves actuation untouched, so a hand that is connected
+        but never initialized runs at whatever Goal Current its motors powered
+        up with.
 
         Args:
             force_calibrate: Force a fresh calibration even if the hand is
@@ -779,18 +827,20 @@ class OrcaHand(BaseHand):
 
         if not self.calibrated or force_calibrate:
             self.calibrate()
+            # Calibration drives in current_based_position and leaves torque
+            # off on every motor but the last step's.
+            if self.config.control_mode != CURRENT_BASED_POSITION:
+                self.set_control_mode(self.config.control_mode)
+            self.enable_torque()
 
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
-            control_mode = self.config.control_mode
-            self.set_control_mode(POSITION)  # neutral position is given in POSITION mode
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
-            self._settle_before_mode_switch()
-            self.set_control_mode(control_mode)
+            self._settle_neutral_move()
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -1120,12 +1170,9 @@ class OrcaHand(BaseHand):
         return anchor
 
     def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
-        control_mode = self.config.control_mode
-        self.set_control_mode(POSITION)
         super().set_neutral_position(num_steps, step_size)
-        self._settle_before_mode_switch()
-        self.set_control_mode(control_mode)
-    
+        self._settle_neutral_move()
+
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
         """Read motor positions for wrap-offset detection, rejecting a read the
         bus never actually answered.

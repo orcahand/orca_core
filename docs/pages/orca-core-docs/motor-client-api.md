@@ -390,7 +390,7 @@ DynamixelClient(
 | `lazy_connect` | bool | False | Auto-connect on first operation |
 | `pos_scale` | float | 2π/4096 | Position conversion (rad/unit) |
 | `vel_scale` | float | 0.229×2π/60 | Velocity conversion |
-| `cur_scale` | float | 1.34 | Current conversion (mA/unit) |
+| `cur_scale` | float | 1.0 | Current conversion (mA/unit) |
 
 ### Additional Methods
 

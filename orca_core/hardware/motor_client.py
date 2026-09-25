@@ -10,11 +10,14 @@
 
 import logging
 import math
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Sequence
 import numpy as np
 
 from ..constants import CONTROL_MODES
+
+logger = logging.getLogger(__name__)
 
 
 class MotorError(Exception):
@@ -39,6 +42,80 @@ class MotorRead(NamedTuple):
     position: np.ndarray
     velocity: np.ndarray
     current: np.ndarray
+
+
+@dataclass(frozen=True)
+class ServoGains:
+    """One motor's internal position-PID and feedforward gains.
+
+    Feedforward acts on the *desired trajectory*, not on error: ``ff_1st``
+    scales its velocity and ``ff_2nd`` its acceleration, supplying the command
+    a move needs before any error has accumulated. Both are therefore near
+    useless while Profile Velocity and Acceleration are zero -- a Goal
+    Position write is then a step, and a step has no trajectory to
+    differentiate.
+
+    ``None`` means "leave this one alone" on a write, and "not reported" on a
+    read.
+    """
+
+    kp: "int | None" = None
+    ki: "int | None" = None
+    kd: "int | None" = None
+    ff_1st: "int | None" = None
+    """Velocity feedforward: cancels the lag of tracking a moving target."""
+    ff_2nd: "int | None" = None
+    """Acceleration feedforward: acts at profile corners and reversals."""
+
+    def __post_init__(self):
+        for name in ("kp", "ki", "kd", "ff_1st", "ff_2nd"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or int(value) != value or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+
+
+@dataclass(frozen=True)
+class ServoProfile:
+    """One motor's trajectory-shaping limits, in SI units.
+
+    The servo generates its own trajectory toward Goal Position: acceleration
+    ramps up to the velocity cap, giving a trapezoid. ``0.0`` disables a
+    limit -- no cap, or instantaneous acceleration -- which is the factory
+    state and makes a Goal Position write a step.
+
+    This is a slew-rate limiter, not a filter: motion that stays under the cap
+    passes through untouched. With a *streamed* target it therefore behaves as
+    a rate limit on the command, which is a genuine safety property for teleop
+    and an unwanted lag inside a tuned closed loop. On encoder hands it also
+    fights the outer PI, which integrates the error the profile is holding.
+
+    A profile is also what makes the feedforward gains in :class:`ServoGains`
+    do anything: they act on this trajectory's derivatives, and a step has
+    none. ``None`` means "leave this one alone".
+    """
+
+    velocity_rad_s: "float | None" = None
+    """Speed cap. 0.0 = uncapped."""
+    acceleration_rad_s2: "float | None" = None
+    """Ramp rate toward the cap. 0.0 = instantaneous."""
+
+    def __post_init__(self):
+        for name in ("velocity_rad_s", "acceleration_rad_s2"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
+
+
+def _warn_servo_registers_unavailable(client, what: str, requested: dict) -> None:
+    if requested:
+        logger.warning(
+            "%s does not expose servo %s; the request for motor(s) %s was "
+            "ignored.", type(client).__name__, what, sorted(requested),
+        )
 
 
 class MotorClient(ABC):
@@ -159,6 +236,63 @@ class MotorClient(ABC):
         if value is None:
             return None
         return [name for bit, name in cls.hardware_error_bits if value & bit]
+
+    def read_servo_gains(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoGains | None]":
+        """The servo's own position-PID and feedforward gains, per motor.
+
+        Distinct from the host outer-loop PI in ``control/constants.py``:
+        these live inside the servo and close the loop the host trims. A
+        family that does not expose them reports ``None`` for every motor.
+        """
+        return {int(mid): None for mid in motor_ids}
+
+    def write_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set the servo position-PID and feedforward gains, per motor.
+
+        These are RAM registers, so a reboot clears them; clients that
+        implement this must remember what was written and restore it the way
+        the current ceiling is restored. Fields left ``None`` are untouched.
+        """
+        _warn_servo_registers_unavailable(self, "gains", gains)
+
+    def read_servo_profile(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile | None]":
+        """Per-motor trajectory limits. ``None`` where unsupported."""
+        return {int(mid): None for mid in motor_ids}
+
+    def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set per-motor trajectory limits; ``None`` fields are untouched.
+
+        RAM registers, so implementations must remember what they wrote and
+        replay it after a reboot, as they do for the current ceiling.
+        """
+        _warn_servo_registers_unavailable(self, "trajectory limits", profiles)
+
+    def read_hardware_errors(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, int | None]":
+        """Latched Hardware Error Status for several motors at once.
+
+        The bus is half-duplex, so every read blocks commands for its whole
+        round trip; a family that can fetch one register from many motors in a
+        single transaction should override this to do so. The default falls
+        back to one round trip per motor.
+        """
+        return {int(mid): self.read_hardware_error(mid) for mid in motor_ids}
+
+    def take_hardware_alerts(self) -> "dict[int, int]":
+        """Motors seen carrying a latched fault since the last call, and clear.
+
+        Status packets already carry each motor's error byte, so a family that
+        can see it should report it here rather than paying for a second read.
+        Recovery is the caller's decision: a reboot holds the bus for a third
+        of a second, and the moment a motor faults is the worst time to
+        restart it. Families that cannot see it report nothing.
+        """
+        return {}
 
     @classmethod
     def supported_baudrates(cls) -> list[int]:
