@@ -102,6 +102,22 @@ class MockHandSerialLink(HandSerialLink):
             if response:
                 self.feed_bytes(response)
 
+    # How long a byte-less read parks before looping. Long enough not to spin,
+    # short enough that a reader still blocked on it when the port dies is not
+    # stuck for long. disconnect() wakes it rather than waiting this out.
+    _read_poll_timeout_s = 0.05
+
+    def disconnect(self) -> None:
+        """Wake the demux thread before the base class joins it.
+
+        The reader parks in :meth:`_serial_read` until bytes arrive or its
+        wait expires, so a disconnect would otherwise wait out that timeout.
+        """
+        self._demux_running = False
+        with self._injected_cv:
+            self._injected_cv.notify_all()
+        super().disconnect()
+
     def _serial_read(self, n: int) -> bytes:
         """Block briefly for bytes (matching ``serial.Serial.read`` timeout
         semantics); latch the port-dead state on a simulated port death,
@@ -110,7 +126,7 @@ class MockHandSerialLink(HandSerialLink):
             if self._mock_port_error is None and not self._injected_buffer:
                 if not self._mock_serial_open or not self._demux_running:
                     return b""
-                self._injected_cv.wait(timeout=0.05)
+                self._injected_cv.wait(timeout=self._read_poll_timeout_s)
             error = self._mock_port_error
             if error is None:
                 if not self._injected_buffer:

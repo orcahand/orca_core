@@ -6,6 +6,7 @@ bytes is asynchronous. Tests synchronise via ``Condition.wait_for``
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -318,3 +319,22 @@ def test_implausible_response_length_has_own_counter(link):
     stats = link.get_link_stats()
     assert stats.responses_implausible_length == 1
     assert stats.frames_bad_lrc[PROTOCOL_BYTE_RESPONSE] == 0
+
+
+def test_disconnect_wakes_a_reader_parked_on_the_poll():
+    """The demux thread parks in the mock's read between frames. disconnect()
+    must wake it instead of waiting the poll out, or every test that builds a
+    link pays that timeout on teardown.
+
+    Real elapsed time is the subject here, so the poll is set far longer than
+    the bound: passing by luck would need a 50x scheduling stall.
+    """
+    link = MockHandSerialLink()
+    link._read_poll_timeout_s = 5.0
+    link.connect()
+
+    start = time.monotonic()
+    link.disconnect()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"disconnect waited {elapsed:.2f}s for the read poll"
