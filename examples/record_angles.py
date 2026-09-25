@@ -28,7 +28,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Record discrete joint-space waypoints by manually posing the hand."
     )
-    add_hand_arguments(parser)
+    add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -49,12 +49,14 @@ def main() -> int:
     ).strip()
     output_path = _build_output_path(output_dir, prefix)
 
-    hand = create_hand_from_args(args)
+    # Recording backdrives the hand with torque off, which a running joint
+    # loop would fight and wind its integrator up against.
+    hand = create_hand_from_args(args, engage_feedback=False)
     replay_buffer: list[list[float]] = []
     stale_captures = 0
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
+        hand.init_joints(force_calibrate=args.force_calibrate)
         hand.disable_torque()
 
         print("Torque disabled. Manually move the hand, then press Enter to capture a waypoint.")

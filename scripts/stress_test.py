@@ -106,7 +106,7 @@ def main() -> int:
     hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.mock)
+        hand.init_joints()
 
         max_temp = hand.motor_client.max_operating_temp_c
         open_pos = hand.pose_from_fractions(OPEN_FRACTIONS)

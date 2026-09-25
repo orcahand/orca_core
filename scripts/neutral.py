@@ -16,7 +16,7 @@ def main() -> int:
     hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
+        hand.init_joints(force_calibrate=args.force_calibrate)
         print("Moving to neutral position...")
         hand.set_neutral_position()
         print("Reached neutral position.")

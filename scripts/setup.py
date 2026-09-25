@@ -161,7 +161,7 @@ def run_motion_test(hand, step_num, duration=60):
 
 def main():
     parser = argparse.ArgumentParser(description="Full ORCA Hand setup workflow.")
-    add_hand_arguments(parser)
+    add_hand_arguments(parser, feedback_flag=False)
     args = parser.parse_args()
 
     print(DIVIDER)
@@ -170,7 +170,9 @@ def main():
     print("  Type 's' at any prompt or Ctrl+C to skip a step")
     print(DIVIDER)
 
-    hand = create_hand_from_args(args)
+    # The workflow runs tension and calibrate, neither of which can share the
+    # motors with a live joint loop.
+    hand = create_hand_from_args(args, engage_feedback=False)
     connect_hand(hand)
     print(f"  Model: {Path(hand.config.config_path).parent.name}")
     print(f"  Motor family: {hand.config.motor_type}")

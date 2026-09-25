@@ -30,7 +30,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Continuously record joint angles while manually moving the hand."
     )
-    add_hand_arguments(parser)
+    add_hand_arguments(parser, feedback_flag=False)
     parser.add_argument("--frequency", type=float, default=50.0)
     parser.add_argument("--duration", type=float, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
@@ -46,7 +46,9 @@ def main() -> int:
     output_path = _build_output_path(output_dir, prefix)
     interval = 1.0 / args.frequency
 
-    hand = create_hand_from_args(args)
+    # Recording backdrives the hand with torque off, which a running joint
+    # loop would fight and wind its integrator up against.
+    hand = create_hand_from_args(args, engage_feedback=False)
     data = {
         "metadata": {
             "type": "continuous",
@@ -62,7 +64,7 @@ def main() -> int:
 
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.force_calibrate or args.mock)
+        hand.init_joints(force_calibrate=args.force_calibrate)
         hand.disable_torque()
 
         data["metadata"]["joint_ids"] = hand.config.joint_ids

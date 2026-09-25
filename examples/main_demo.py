@@ -18,7 +18,7 @@ def main() -> int:
     hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints(force_calibrate=args.mock)
+        hand.init_joints()
 
         print("Cycling through open_hand -> power_grasp -> pinch -> neutral")
         run_demo(

@@ -41,6 +41,7 @@ from ..hardware.sensing.constants import (
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
 from .joint_controller import JointController
 from .constants import (
+    CLAMP_WARN_INTERVAL_S,
     DEFAULT_LOOP_HZ,
     FRESHNESS_WARN_INTERVAL_S,
     JITTER_ESTOP_CONSECUTIVE,
@@ -127,6 +128,7 @@ class JointLoopThread:
         }
         self._last_freshness_warn_time: float = 0.0
         self._last_exception_log_time: float = 0.0
+        self._last_clamp_warn_time: float = 0.0
         self._slow_cycle_streak: int = 0
         self._pathological_cycle_streak: int = 0
 
@@ -476,12 +478,21 @@ class JointLoopThread:
 
     def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
         """Write motor targets, clamping joints with a bounded travel
-        (currently the wrist) to their snapshot limits."""
-        if np.any(
+        (currently the wrist) to their snapshot limits.
+
+        The bounds are absolute motor positions, so they bound the whole
+        command — feed-forward bias included. A bias larger than the margin
+        therefore pins the joint short of its target for as long as it stands,
+        which is the safe outcome but an invisible one: warn so a wrist that
+        stops responding reads as a stale calibration rather than a dead loop.
+        """
+        clamped = (
             (motor_targets < self._motor_target_lower)
             | (motor_targets > self._motor_target_upper)
-        ):
+        )
+        if np.any(clamped):
             self._stats["cycles_clamped"] += 1
+            self._maybe_log_clamp_warning(clamped)
         np.clip(
             motor_targets,
             self._motor_target_lower,
@@ -489,6 +500,21 @@ class JointLoopThread:
             out=motor_targets,
         )
         self._hand.write_motor_pos(self._motor_ids, motor_targets)
+
+    def _maybe_log_clamp_warning(self, clamped: np.ndarray) -> None:
+        now = time.monotonic()
+        if now - self._last_clamp_warn_time < CLAMP_WARN_INTERVAL_S:
+            return
+        joints = [
+            self._joint_names[i] for i in np.flatnonzero(clamped)
+        ]
+        logger.warning(
+            "joint(s) %s commanded past their calibrated motor travel and were "
+            "clamped; they will hold short of target. Recalibrate if this "
+            "persists — the motor limits no longer match where the joint is.",
+            ", ".join(joints),
+        )
+        self._last_clamp_warn_time = now
 
     def _measure_joint_angles_for_anchor(
         self, retries: int = 5, retry_interval: float = 0.05

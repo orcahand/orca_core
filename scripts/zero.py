@@ -20,7 +20,7 @@ def main() -> int:
     try:
         connect_hand(hand)
         hand.init_joints(
-            force_calibrate=args.force_calibrate or args.mock, move_to_neutral=False
+            force_calibrate=args.force_calibrate, move_to_neutral=False
         )
         print("Moving all joints to zero...")
         hand.set_zero_position(num_steps=args.num_steps, step_size=args.step_size)

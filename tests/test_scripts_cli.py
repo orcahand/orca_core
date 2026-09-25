@@ -217,6 +217,19 @@ class TestCreateHandFromArgs:
 
         assert calls[0]["engage_feedback"] is False
 
+    def test_nothing_selecting_a_model_leaves_load_hand_to_autodetect(
+        self, monkeypatch, capsys,
+    ):
+        """The bare invocation must reach load_hand with no model pinned —
+        anything else silently loads the packaged default against real hardware."""
+        cli, calls = self._recording_load_hand(monkeypatch)
+
+        cli.create_hand_from_args(self._args(cli, []))
+
+        assert calls[0]["config_path"] is None
+        assert calls[0]["model_name"] is None
+        assert calls[0]["mock"] is False
+
     def test_a_hidden_feedback_flag_defaults_to_engaged(self, monkeypatch, capsys):
         cli, calls = self._recording_load_hand(monkeypatch)
         parser = argparse.ArgumentParser()
@@ -384,6 +397,13 @@ class TestReplayAnglesSideGuard:
         with pytest.raises(ValueError, match="hand_type=left"):
             module.main()
 
+    def test_force_replays_the_mirrored_recording(self, monkeypatch, tmp_path):
+        module, hand = self._run(
+            monkeypatch, self._write_sequence(tmp_path, "left"), extra_argv=("--force",),
+        )
+        assert module.main() == 0
+        assert hand.commanded
+
     def test_matching_side_replays(self, monkeypatch, tmp_path):
         module, hand = self._run(monkeypatch, self._write_sequence(tmp_path, "right"))
         assert module.main() == 0
@@ -487,11 +507,33 @@ class TestDetectScript:
         assert module.main() == 0
         assert "no motor answered" in capsys.readouterr().out
 
-    def test_reports_a_missing_motor_bus(self, capsys, monkeypatch):
+    def test_bare_adapter_hand_is_not_called_unplugged(self, capsys, monkeypatch):
+        """A motor bus found by vendor ID with no controller board gets the
+        no-identity note, not the nothing-plugged-in one."""
         module = _load("scripts/detect.py")
         monkeypatch.setattr(
             module, "detect_hand",
-            lambda: self._detection(motor_port=None, motor_type=None, motor_baudrate=None),
+            lambda: self._detection(identity=None, sensing_port=None, has_tactile=False,
+                                    has_encoders=False, model_name="orcahand-right", side="right"),
+        )
+        monkeypatch.setattr(sys, "argv", ["detect.py"])
+
+        assert module.main() == 0
+
+        out = capsys.readouterr().out
+        assert "USB-vendor-ID probing" in out
+        assert "nothing plugged in" not in out
+
+    def test_reports_a_missing_motor_bus(self, capsys, monkeypatch):
+        """A board answered but nothing spoke on the motor bus."""
+        from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+        board = OrcaBoardInfo(role="sensor", side="left", serial="ser-0000")
+        module = _load("scripts/detect.py")
+        monkeypatch.setattr(
+            module, "detect_hand",
+            lambda: self._detection(identity=board, motor_port=None,
+                                    motor_type=None, motor_baudrate=None),
         )
         monkeypatch.setattr(sys, "argv", ["detect.py"])
 
@@ -532,3 +574,38 @@ def test_check_encoder_signs_runs_against_the_mock(monkeypatch, capsys):
     assert "move the SAME direction" in out
     assert state["frames"] == 1
     assert "Stopped." in out
+
+
+class TestEngageFlagsSelectTheClass:
+    """The two engage_* flags are what a front-end uses to withhold a link it
+    would otherwise open; they must actually change the class that is built."""
+
+    MODEL = "orcahand-full-right"
+
+    def _hand(self, **kwargs):
+        from orca_core.utils.cli import create_hand
+
+        return create_hand(None, use_mock=True, model_name=self.MODEL, **kwargs)
+
+    def test_everything_engaged_is_the_full_hand(self):
+        from orca_core import MockOrcaHandFull
+
+        assert isinstance(self._hand(), MockOrcaHandFull)
+
+    def test_disengaging_feedback_keeps_tactile(self):
+        from orca_core import MockOrcaHandTouch
+
+        assert isinstance(self._hand(engage_feedback=False), MockOrcaHandTouch)
+
+    def test_disengaging_both_is_motor_only(self):
+        from orca_core import MockOrcaHand
+
+        hand = self._hand(engage_feedback=False, engage_sensors=False)
+        assert type(hand) is MockOrcaHand
+
+    def test_the_config_keeps_its_sensor_declaration_either_way(self):
+        """Withholding the class must not strip the config: calibration's
+        encoder pass still reads the declaration off it."""
+        hand = self._hand(engage_feedback=False, engage_sensors=False)
+        assert hand.config.joint_feedback_enabled
+        assert hand.config.sensor_port
