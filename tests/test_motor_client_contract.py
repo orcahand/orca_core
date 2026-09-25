@@ -11,6 +11,7 @@ deregistered by ``disconnect()`` even when its torque-off raises.
 """
 
 import inspect
+import logging
 import types
 
 import numpy as np
@@ -320,6 +321,14 @@ def test_servo_gains_are_uniform_across_family():
     blind = types.SimpleNamespace()
     assert MotorClient.read_servo_gains(blind, [1, 2]) == {1: None, 2: None}
     assert MotorClient.write_servo_gains(blind, {1: ServoGains(kp=1)}) is None
+
+
+def test_a_family_without_servo_registers_says_so_instead_of_dropping_the_write(caplog):
+    blind = types.SimpleNamespace()
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware.motor_client"):
+        MotorClient.write_servo_gains(blind, {1: ServoGains(kp=1)})
+        MotorClient.write_servo_profile(blind, {})
+    assert caplog.text.count("was ignored") == 1
 
 
 def test_partial_gain_writes_leave_the_other_fields_alone(connected_mock):

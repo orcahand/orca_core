@@ -17,6 +17,8 @@ import numpy as np
 
 from ..constants import CONTROL_MODES
 
+logger = logging.getLogger(__name__)
+
 
 class MotorError(Exception):
     """Raised when a motor operation cannot be completed."""
@@ -65,6 +67,14 @@ class ServoGains:
     ff_2nd: "int | None" = None
     """Acceleration feedforward: acts at profile corners and reversals."""
 
+    def __post_init__(self):
+        for name in ("kp", "ki", "kd", "ff_1st", "ff_2nd"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or int(value) != value or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+
 
 @dataclass(frozen=True)
 class ServoProfile:
@@ -90,6 +100,22 @@ class ServoProfile:
     """Speed cap. 0.0 = uncapped."""
     acceleration_rad_s2: "float | None" = None
     """Ramp rate toward the cap. 0.0 = instantaneous."""
+
+    def __post_init__(self):
+        for name in ("velocity_rad_s", "acceleration_rad_s2"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
+
+
+def _warn_servo_registers_unavailable(client, what: str, requested: dict) -> None:
+    if requested:
+        logger.warning(
+            "%s does not expose servo %s; the request for motor(s) %s was "
+            "ignored.", type(client).__name__, what, sorted(requested),
+        )
 
 
 class MotorClient(ABC):
@@ -229,7 +255,7 @@ class MotorClient(ABC):
         implement this must remember what was written and restore it the way
         the current ceiling is restored. Fields left ``None`` are untouched.
         """
-        return None
+        _warn_servo_registers_unavailable(self, "gains", gains)
 
     def read_servo_profile(
         self, motor_ids: "Sequence[int]"
@@ -243,14 +269,7 @@ class MotorClient(ABC):
         RAM registers, so implementations must remember what they wrote and
         replay it after a reboot, as they do for the current ceiling.
         """
-        return None
-
-    def read_hardware_error(self, motor_id: int) -> "int | None":
-        """Latched Hardware Error Status for one motor, or ``None`` if unread.
-
-        Clients that cannot read it report ``None``.
-        """
-        return None
+        _warn_servo_registers_unavailable(self, "trajectory limits", profiles)
 
     def read_hardware_errors(
         self, motor_ids: Sequence[int]

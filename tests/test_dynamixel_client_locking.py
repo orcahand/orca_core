@@ -597,6 +597,79 @@ def test_alerts_on_a_single_motor_write_are_recorded_too(client, bus):
     assert bus.events('reboot') == []
 
 
+def test_a_latched_alert_is_logged_once_until_the_motor_is_rebooted(
+        client, bus, monkeypatch, caplog):
+    """A headless process never drains the alerts, so the first sighting has
+    to reach the log; every later status packet carries the same bit."""
+    _patch_sleep(monkeypatch)
+    bus.write1_hook = lambda motor_id: (COMM_SUCCESS, 0x80)
+
+    with caplog.at_level(logging.WARNING):
+        client.write_byte([1], 1, 64)
+        client.write_byte([1], 1, 64)
+    latched = [r for r in caplog.records if 'hardware error latched' in r.getMessage()]
+    assert len(latched) == 1 and 'Motor ID: 1' in latched[0].getMessage()
+
+    bus.write1_hook = None
+    client.reboot_motor(1)
+    bus.write1_hook = lambda motor_id: (COMM_SUCCESS, 0x80)
+    with caplog.at_level(logging.WARNING):
+        client.write_byte([1], 1, 64)
+    latched = [r for r in caplog.records if 'hardware error latched' in r.getMessage()]
+    assert len(latched) == 2
+
+
+def test_gains_outside_the_register_range_never_reach_the_bus(client, bus, monkeypatch):
+    from orca_core.hardware.dynamixel_client import GAIN_MAX
+    from orca_core.hardware.motor_client import ServoGains, ServoProfile
+
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append(addr))
+    with pytest.raises(ValueError):
+        client.write_servo_gains({1: ServoGains(kp=GAIN_MAX + 1)})
+    assert writes == []
+    assert client._ram_settings == {}
+
+    with pytest.raises(ValueError):
+        ServoGains(kd=-1)
+    with pytest.raises(ValueError):
+        ServoGains(kp=1.5)
+    with pytest.raises(ValueError):
+        ServoProfile(velocity_rad_s=-1.0)
+
+
+def test_an_oversized_profile_limit_clamps_to_the_register(client, bus, monkeypatch):
+    from orca_core.hardware.dynamixel_client import PROFILE_MAX
+    from orca_core.hardware.motor_client import ServoProfile
+
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append((addr, list(vals))))
+    client.write_servo_profile({1: ServoProfile(velocity_rad_s=1e9)})
+    assert dict(writes)[112] == [PROFILE_MAX]
+
+
+def test_a_mode_switch_replays_the_remembered_ram(client, bus, monkeypatch):
+    """Changing Operating Mode resets Goal Current, the gains and the profile
+    on the motor; what the caller set must come back with the new mode."""
+    from orca_core.hardware.motor_client import ServoGains
+
+    client.write_desired_current([1], np.array([300]))
+    client.write_servo_gains({1: ServoGains(kp=1200)})
+    writes = []
+    real = client.sync_write
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda i, v, a, s: (writes.append((a, list(v))),
+                                            real(i, v, a, s))[1])
+
+    client.set_operating_mode([1], 5)
+
+    addresses = [a for a, _ in writes]
+    assert addresses.index(11) < addresses.index(102) < len(addresses)
+    assert (102, [300]) in writes and (84, [1200]) in writes
+
+
 # ----- reboot restores the current ceiling ---------------------------------
 
 

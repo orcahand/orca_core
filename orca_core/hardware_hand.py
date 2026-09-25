@@ -21,7 +21,13 @@ from .base_hand import BaseHand
 from .calibration import CalibrationResult
 from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
-from .hardware.motor_client import MotionTimeoutError, MotorClient, MotorRead
+from .hardware.motor_client import (
+    MotionTimeoutError,
+    MotorClient,
+    MotorRead,
+    ServoGains,
+    ServoProfile,
+)
 from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import persist_calibration, run_calibration
 from .maintenance.tensioning import run_jitter, run_tension
@@ -66,8 +72,6 @@ ROM_FRAMES = (ROM_FRAME_ANCHOR, ROM_FRAME_CENTERED)
 
 logger = logging.getLogger(__name__)
 
-
-from .hardware.motor_client import ServoGains, ServoProfile
 
 class OrcaHand(BaseHand):
     """ORCA hand class.
@@ -748,6 +752,17 @@ class OrcaHand(BaseHand):
         # the joint loop for up to ``timeout``.
         self._motor_client.wait_for_motion_complete(timeout=timeout)
 
+    def _settle_neutral_move(self) -> None:
+        """Let a slow motor family arrive at neutral before the caller moves on.
+
+        A motor blocked short of its goal never reports settled, so a timeout
+        is logged rather than raised: the hand is still usable where it is.
+        """
+        try:
+            self.wait_for_motion()
+        except MotionTimeoutError as exc:
+            logger.warning("%s; continuing with motors still short of neutral.", exc)
+
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.
 
@@ -795,9 +810,9 @@ class OrcaHand(BaseHand):
         runs calibration if needed, computes wrap offsets, and optionally
         moves to the neutral position.
 
-        This is the only place Goal Current is written: ``connect()`` leaves
-        actuation untouched, so a hand that is connected but never initialized
-        runs at whatever Goal Current its motors powered up with.
+        ``connect()`` leaves actuation untouched, so a hand that is connected
+        but never initialized runs at whatever Goal Current its motors powered
+        up with.
 
         Args:
             force_calibrate: Force a fresh calibration even if the hand is
@@ -812,15 +827,20 @@ class OrcaHand(BaseHand):
 
         if not self.calibrated or force_calibrate:
             self.calibrate()
+            # Calibration drives in current_based_position and leaves torque
+            # off on every motor but the last step's.
+            if self.config.control_mode != CURRENT_BASED_POSITION:
+                self.set_control_mode(self.config.control_mode)
+            self.enable_torque()
 
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
- 
             self.set_joint_positions(
                 OrcaJointPositions.from_dict(self.config.neutral_position),
                 num_steps=NUM_STEPS
             )
+            self._settle_neutral_move()
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -1149,7 +1169,10 @@ class OrcaHand(BaseHand):
         )
         return anchor
 
-    
+    def set_neutral_position(self, num_steps: int = NUM_STEPS, step_size: float = STEP_SIZE):
+        super().set_neutral_position(num_steps, step_size)
+        self._settle_neutral_move()
+
     def _read_motor_pos_for_offsets(self, retries: int = 5, retry_interval: float = 0.05):
         """Read motor positions for wrap-offset detection, rejecting a read the
         bus never actually answered.

@@ -89,6 +89,10 @@ PROFILE_ACC_SCALE = 214.577 * 2.0 * np.pi / 3600.0  # rad/s^2 per unit
 
 DEFAULT_CUR_SCALE = 1.0
 
+# Register ceilings for the servo gain block and the profile limits.
+GAIN_MAX = 16383
+PROFILE_MAX = 32767
+
 # A rebooting motor is off the bus while its firmware restarts; writes sent
 # before it answers again are lost.
 MOTOR_REBOOT_SETTLE_S = 0.3
@@ -249,6 +253,8 @@ class DynamixelClient(MotorClient):
         self._ram_settings: Dict[int, Dict[Tuple[int, int], int]] = {}
         # Motors seen with the Alert bit set, drained by take_hardware_alerts().
         self._hardware_alerts: Dict[int, int] = {}
+        # Last error byte logged per motor, so a persisting fault logs once.
+        self._logged_alerts: Dict[int, int] = {}
         self._alerts_lock = threading.Lock()
 
     @property
@@ -446,6 +452,8 @@ class DynamixelClient(MotorClient):
             self.set_torque_enabled(acked_ids, True)
             for mid in acked_ids:
                 self._operating_modes[mid] = mode_value
+                # A mode change resets Goal Current, the gains and the profile.
+                self._replay_ram(mid)
 
     def read_position_velocity_current(self) -> MotorRead:
         """Return positions, velocities, and currents as a ``MotorRead`` snapshot.
@@ -599,6 +607,8 @@ class DynamixelClient(MotorClient):
             if not success:
                 self._flush_input_buffer()
                 return
+            with self._alerts_lock:
+                self._logged_alerts.pop(int(motor_id), None)
             self._restore_ram_after_reboot(motor_id)
 
     def _remember_ram(self, motor_ids: Sequence[int],
@@ -611,11 +621,12 @@ class DynamixelClient(MotorClient):
 
     def _restore_ram_after_reboot(self, motor_id: int) -> None:
         """Re-apply the RAM settings a reboot cleared, once the motor answers."""
-        settings = self._ram_settings.get(int(motor_id))
-        if not settings:
-            return
-        time.sleep(MOTOR_REBOOT_SETTLE_S)
-        for (address, size), value in settings.items():
+        if self._ram_settings.get(int(motor_id)):
+            time.sleep(MOTOR_REBOOT_SETTLE_S)
+            self._replay_ram(motor_id)
+
+    def _replay_ram(self, motor_id: int) -> None:
+        for (address, size), value in self._ram_settings.get(int(motor_id), {}).items():
             self.sync_write([motor_id], [value], address, size)
 
     # Field name -> (address, size) within the gain block.
@@ -672,6 +683,12 @@ class DynamixelClient(MotorClient):
         """
         if not gains:
             return
+        for motor_id, entry in gains.items():
+            for field, _ in self._GAIN_REGISTERS:
+                value = getattr(entry, field)
+                if value is not None and not 0 <= value <= GAIN_MAX:
+                    raise ValueError(
+                        f"motor {motor_id}: {field}={value} outside 0..{GAIN_MAX}")
         with self._bus_lock:
             for field, address in self._GAIN_REGISTERS:
                 ids, values = [], []
@@ -723,8 +740,8 @@ class DynamixelClient(MotorClient):
     def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
         """Write the trajectory limits, converting SI to register units.
 
-        Values round to the nearest unit and clamp at zero, so a small
-        positive request can never become "unlimited" by truncation.
+        Values round to the nearest unit and clamp to the register range, so a
+        small positive request can never become "unlimited" by truncation.
         """
         if not profiles:
             return
@@ -740,7 +757,7 @@ class DynamixelClient(MotorClient):
                     value = getattr(entry, field)
                     if value is None:
                         continue
-                    raw = max(0, int(round(float(value) / scale)))
+                    raw = min(PROFILE_MAX, int(round(float(value) / scale)))
                     if value > 0 and raw == 0:
                         raw = 1  # never round a real limit into "unlimited"
                     ids.append(int(motor_id))
@@ -885,8 +902,17 @@ class DynamixelClient(MotorClient):
         the worst time to restart it. Callers drain this with
         :meth:`take_hardware_alerts` and decide.
         """
+        motor_id, dxl_error = int(motor_id), int(dxl_error)
         with self._alerts_lock:
-            self._hardware_alerts[int(motor_id)] = int(dxl_error)
+            self._hardware_alerts[motor_id] = dxl_error
+            unlogged = self._logged_alerts.get(motor_id) != dxl_error
+            if unlogged:
+                self._logged_alerts[motor_id] = dxl_error
+        if unlogged:
+            logging.warning(
+                '[Motor ID: %d] hardware error latched (status 0x%02X); '
+                'read_hardware_error() names it and reboot_motor() clears it.',
+                motor_id, dxl_error)
 
     def take_hardware_alerts(self) -> "dict[int, int]":
         """Motors seen carrying the Alert bit since the last call, and clear."""
