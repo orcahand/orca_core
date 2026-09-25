@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Configure the motor chain of a fresh ORCA hand: assign each motor its ID and baud rate.
 
+DYNAMIXEL motors also get their Return Delay Time set (DYNAMIXEL_RETURN_DELAY_TIME_US
+in orca_core/constants.py) so the bus answers faster; Feetech motors keep theirs.
+
 Plug the motors in one at a time when prompted. Re-running resumes from wherever
 the previous run stopped.
 

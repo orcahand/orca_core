@@ -151,3 +151,10 @@ MOTOR_BAUD_RATES: dict[str, list[int]] = {
     DYNAMIXEL: [1_000_000, 3_000_000],
     FEETECH: [1_000_000],
 }
+
+# Return Delay Time programmed into every DYNAMIXEL during chain assembly: how
+# long a servo waits before answering. The factory 500 us leaves the bus idle
+# for most of a 17-motor bulk read (12.4 ms -> 3.8 ms at 20 us). 20 us is
+# validated on assembled hands; 0 is faster still but not yet proven safe
+# against transceiver turnaround. Feetech is left at its factory value.
+DYNAMIXEL_RETURN_DELAY_TIME_US = 20

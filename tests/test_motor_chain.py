@@ -10,7 +10,7 @@ import contextlib
 
 import pytest
 
-from orca_core.constants import DYNAMIXEL, FEETECH
+from orca_core.constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US, FEETECH
 from orca_core.maintenance import motor_chain as mc
 
 
@@ -272,12 +272,17 @@ def test_find_default_motor_returns_none_on_empty_bus(monkeypatch):
 
 
 class FakeSessionClient:
-    """Records ID/baud writes issued through a config session."""
+    """Records ID/baud/return-delay writes issued through a config session."""
 
     def __init__(self):
         self.calls = []
         self.baud_ok = True
         self.id_ok = True
+        self.delay_ok = True
+
+    def change_return_delay_time(self, motor_id, delay_us):
+        self.calls.append(("delay", motor_id, delay_us))
+        return self.delay_ok
 
     def change_motor_baudrate(self, motor_id, new_baud):
         self.calls.append(("baud", motor_id, new_baud))
@@ -313,8 +318,39 @@ def test_configure_default_motor_changes_baud_before_id(monkeypatch):
     mc.configure_default_motor(plan, target_id=3)
 
     assert client.calls == [("baud", plan.default_id, plan.target_baud),
+                            ("delay", plan.default_id, DYNAMIXEL_RETURN_DELAY_TIME_US),
                             ("id", plan.default_id, 3)]
     assert session_bauds == [plan.default_baud, plan.target_baud]
+
+
+def test_a_dynamixel_gets_its_return_delay_before_its_id(monkeypatch):
+    """Delay before ID: a motor that reaches its target ID always carries it."""
+    client = FakeSessionClient()
+    _wire_sessions(monkeypatch, client)
+
+    mc.configure_default_motor(dyna_plan(), target_id=3)
+
+    kinds = [call[0] for call in client.calls]
+    assert kinds.index("delay") < kinds.index("id")
+
+
+def test_a_failed_return_delay_write_never_touches_the_id(monkeypatch):
+    client = FakeSessionClient()
+    client.delay_ok = False
+    _wire_sessions(monkeypatch, client)
+
+    with pytest.raises(mc.MotorChainError, match="return delay"):
+        mc.configure_default_motor(dyna_plan(), target_id=3)
+    assert not any(call[0] == "id" for call in client.calls)
+
+
+def test_feetech_return_delay_is_left_at_the_factory_value(monkeypatch):
+    plan = mc.plan_motor_chain(DYNA_CFG, "/dev/fake", FEETECH)
+    client = FakeSessionClient()
+    _wire_sessions(monkeypatch, client)
+
+    mc.configure_default_motor(plan, target_id=3)
+    assert not any(call[0] == "delay" for call in client.calls)
 
 
 def test_a_failed_baud_change_never_touches_the_id(monkeypatch):

@@ -12,7 +12,7 @@ import logging
 import math
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import ClassVar, NamedTuple, Sequence
+from typing import ClassVar, NamedTuple, Optional, Sequence
 import numpy as np
 
 from ..constants import CONTROL_MODES
@@ -156,6 +156,13 @@ class MotorClient(ABC):
 
     baud_rate_map: ClassVar[dict] = {}
     """Baud rate in bps → the register value this family encodes it as."""
+
+    return_delay_time_us: ClassVar[Optional[int]] = None
+    """Return Delay Time chain assembly programs into each motor, in µs.
+
+    ``None`` leaves the factory value untouched. A family that sets it must
+    implement :meth:`change_return_delay_time`.
+    """
 
     requires_unpowered_hotplug: ClassVar[bool] = False
     """Whether the bus must be de-powered before a motor is plugged in.
@@ -310,6 +317,10 @@ class MotorClient(ABC):
     def change_motor_baudrate(self, motor_id: int, new_baud_rate: int) -> bool:
         """Re-program a motor's baud rate. Returns True on success."""
         raise NotImplementedError(f"{type(self).__name__} cannot change motor baud rates")
+
+    def change_return_delay_time(self, motor_id: int, delay_us: int) -> bool:
+        """Re-program a motor's Return Delay Time. Returns True on success."""
+        raise NotImplementedError(f"{type(self).__name__} cannot change the return delay time")
 
     @property
     @abstractmethod
