@@ -261,14 +261,12 @@ Cycles <code>thumb_mcp</code> and <code>thumb_dip</code> across their full confi
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, uses the default config path.</li><br>
     <li><strong>--num-steps</strong>: Interpolation steps per move.</li><br>
     <li><strong>--step-size</strong>: Sleep between interpolation steps in seconds.</li><br>
-    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li><br>
-    <li><strong>--freeze-abduction</strong>: Leave every <code>*_abd</code> joint out of the commanded pose so it holds wherever it already is, instead of fanning the fingers out.</li>
+    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
 python scripts/stress_test.py /path/to/orcahand-right/config.yaml --hold 1
-python scripts/stress_test.py --freeze-abduction
 ```
 </details>
 
@@ -279,7 +277,7 @@ The two sensing scripts split by intent: `monitor_sensors.py` shows you the data
 <details>
 <summary><strong>monitor_sensors.py</strong></summary>
 
-Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate. Autodetects the connector-board serial port; pass <code>--port</code> to override.
+Assembly and bring-up dashboard: every configured motor with its joint, live position, current and temperature, read once a second through the hand's own motor client (port, family, baud rate and IDs resolved exactly as a control session resolves them, read-only); every joint encoder grouped by finger with a health verdict; and a card per tactile sensor, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Reconnects when the sensor board is unplugged and plugged back in. Takes the shared hand flags (<code>config_path</code>, <code>--model-name</code>, <code>--mock</code>); <code>--port</code> overrides the sensor board port and <code>--motor-port</code> the motor bus port, both for bring-up only.
 
 <strong>Example:</strong>
 ```bash

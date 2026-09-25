@@ -263,10 +263,11 @@ All hand-specific settings are in `config.yaml`:
 - `joint_motor_travel:` - motor-shaft travel between each joint's hardstops, in degrees, **keyed by
   joint name** (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
   routine resolves the motor through `joint_to_motor_map` at the point of use). Calibration re-drives
-  a joint that measures more than `calibration_travel_margin` short of its baseline at a higher
-  current (`calibration_retry_current`, `calibration_travel_retries`) - the fix for an
-  over-tensioned hand whose joints stall before their hardstops. Generate it with
-  `scripts/measure_travel.py`, never by hand.
+  a joint that measures more than `calibration_travel_margin` short of its baseline
+  (`calibration_travel_retries`), escalating the current only when `calibration_max_current`
+  grants headroom (`calibration_retry_current` is the target) - the fix for an over-tensioned hand
+  whose joints stall before their hardstops. Generate it with `scripts/measure_travel.py` into your
+  own copy of a config, never by hand and never into a packaged model: the numbers are per hand.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)

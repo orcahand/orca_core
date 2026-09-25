@@ -1177,7 +1177,7 @@ def _drive_calibration(
             include_encoder=encoder_pass_active,
         )
 
-    if calibrated_joints:
+    if calibrated_joints and not manual:
         hand.set_joint_positions(
             calibrated_joints, num_steps=NUM_STEPS, step_size=STEP_SIZE
         )

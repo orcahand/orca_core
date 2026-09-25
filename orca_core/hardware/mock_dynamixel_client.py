@@ -278,6 +278,11 @@ class MockDynamixelClient(MotorClient):
         self.check_connected()
         return True
 
+    def read_hardware_error(self, motor_id: int) -> "int | None":
+        """A configured motor answers fault-free; any other ID is silent."""
+        self.check_connected()
+        return 0 if motor_id in self.motor_ids else None
+
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the simulated temperatures."""
         self.check_connected()

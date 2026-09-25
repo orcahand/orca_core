@@ -31,12 +31,6 @@ DEFAULT_MODEL_NAME = "orcahand-right"
 # ``calibration_retry_current``.
 DEFAULT_RETRY_CURRENT_SCALE = 1.5
 
-# Ceiling the calibration short-travel re-drive may escalate to (mA).
-# Deliberately independent of ``max_current``: the re-drive needs more
-# torque than normal operation to break a joint past an over-tensioned
-# tendon, and it is bounded in time — the routine restores max_current
-# the moment calibration ends, so nothing else ever sees this current.
-
 # A calibration sweep that ends with its two motor limits this close together
 # did not find two hardstops: the motor never turned. Committing such a pair
 # writes a zero (or near-zero) joint-to-motor ratio, which silently makes the

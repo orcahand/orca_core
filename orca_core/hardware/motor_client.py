@@ -417,6 +417,17 @@ class MotorClient(ABC):
         ...
 
     @abstractmethod
+    def read_hardware_error(self, motor_id: int) -> "int | None":
+        """Read one motor's latched hardware-error byte.
+
+        Returns:
+            The raw error byte (0 when the motor answered without a fault), or
+            ``None`` when the motor did not answer. Doubles as a per-motor
+            liveness probe after a bus-wide read has failed.
+        """
+        ...
+
+    @abstractmethod
     def write_desired_pos(
         self,
         motor_ids: Sequence[int],

@@ -522,3 +522,69 @@ def test_zero_travel_joints_are_not_re_driven_at_higher_current():
 
 # ---------------------------------------------------------------------------
 # Hardstop detection: a stable position is not on its own a hardstop
+
+
+def test_write_joint_motor_travel_refuses_a_packaged_model_config():
+    """Travel is measured on one hand; a bundled model is shared by all of them."""
+    packaged = os.path.join(MODEL_DIR, "config.yaml")
+    with open(packaged, encoding="utf-8") as f:
+        original = f.read()
+    try:
+        with pytest.raises(ValueError, match="packaged model config"):
+            write_joint_motor_travel(packaged, {"index_mcp": 100.0})
+        with open(packaged, encoding="utf-8") as f:
+            assert f.read() == original
+    finally:
+        # Should the refusal ever regress, the test must not leave the
+        # packaged model rewritten behind it.
+        with open(packaged, "w", encoding="utf-8") as f:
+            f.write(original)
+
+
+def test_write_joint_motor_travel_keeps_comments_and_other_lines(tmp_path):
+    path = tmp_path / "config.yaml"
+    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), path)
+    before = path.read_text()
+    comment_lines = [l for l in before.splitlines() if l.lstrip().startswith("#")]
+    assert comment_lines, "the packaged config carries comments to protect"
+
+    write_joint_motor_travel(str(path), {"index_mcp": 100.0, "wrist": 150.0})
+    after = path.read_text()
+
+    assert all(l in after for l in comment_lines)
+    assert after.startswith(before.rstrip("\n"))
+    assert read_yaml(str(path))["joint_motor_travel"] == {"wrist": 150.0, "index_mcp": 100.0}
+
+    # a second write replaces the block in place rather than appending another
+    write_joint_motor_travel(str(path), {"index_mcp": 101.0})
+    assert path.read_text().count("joint_motor_travel:") == 1
+    assert read_yaml(str(path))["joint_motor_travel"] == {"wrist": 150.0, "index_mcp": 101.0}
+
+
+@pytest.mark.parametrize("entry", [None, True, "wide"])
+def test_non_numeric_travel_entries_are_a_config_error(model_dir, entry):
+    from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
+
+    path = _write_config(model_dir, joint_motor_travel={"index_mcp": entry})
+    with pytest.raises(HandConfigValidationError, match="index_mcp"):
+        OrcaHandConfig.from_config_path(config_path=path)
+
+
+def test_null_calibration_max_current_means_unset(model_dir):
+    from orca_core.hand_config import OrcaHandConfig
+
+    path = _write_config(model_dir, calibration_max_current=None)
+    assert OrcaHandConfig.from_config_path(config_path=path).calibration_max_current is None
+
+
+def test_packaged_path_check_treats_another_drive_as_outside_the_package(monkeypatch):
+    """On Windows commonpath raises for paths on different drives; a temp dir on
+    C: while the package sits on D: is simply not a packaged path."""
+    import os
+    from orca_core.utils import utils
+
+    def other_drive(paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", other_drive)
+    assert utils.is_packaged_model_path("/somewhere/else/config.yaml") is False

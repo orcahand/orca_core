@@ -107,6 +107,11 @@ def test_manual_mode_never_re_drives_a_short_joint(hand):
         _resolve_short_travel,
     )
 
+    import dataclasses
+
+    hand.config = dataclasses.replace(
+        hand.config, joint_motor_travel_dict={"index_mcp": 120.0}
+    )
     motor_id = hand.config.joint_to_motor_map["index_mcp"]
     baseline = hand.config.expected_motor_travel_deg("index_mcp")
     # Short enough to be flagged, far enough above the floor to be re-drivable.

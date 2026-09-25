@@ -24,10 +24,12 @@ its baseline; a joint that falls short of it stalled before its hardstop
 from __future__ import annotations
 
 import math
+import re
+from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..constants import JOINT_MOTOR_TRAVEL
-from ..utils.utils import read_yaml, write_yaml_atomic
+from ..utils.utils import is_packaged_model_path, read_yaml, write_text_atomic
 
 if TYPE_CHECKING:
     from ..calibration import CalibrationResult
@@ -76,9 +78,18 @@ def write_joint_motor_travel(
 
     With ``merge`` (the default) the joints named update in place and the rest
     of the stored baseline is kept, so a partial sweep does not erase the
-    joints it did not visit. Every other config key keeps its value and its
-    position in the file.
+    joints it did not visit. Only the ``joint_motor_travel`` block is rewritten;
+    every other line of the file, comments included, stays as it was.
+
+    Refuses a packaged model config: travel is measured on one hand and a
+    bundled model is shared by all of them.
     """
+    if is_packaged_model_path(config_path):
+        raise ValueError(
+            f"{config_path} is a packaged model config. Measured travel is "
+            "hand-specific: copy the model directory out of the package and "
+            "point the script at that copy."
+        )
     doc = read_yaml(config_path) or {}
     stored = dict(doc.get(JOINT_MOTOR_TRAVEL) or {}) if merge else {}
     stored.update({str(j): round(float(t), 2) for j, t in travel_by_joint.items()})
@@ -89,6 +100,15 @@ def write_joint_motor_travel(
     ordered = {joint: stored[joint] for joint in order if joint in stored}
     ordered.update({j: t for j, t in stored.items() if j not in ordered})
 
-    doc[JOINT_MOTOR_TRAVEL] = ordered
-    write_yaml_atomic(config_path, doc)
+    block = f"{JOINT_MOTOR_TRAVEL}:\n" + "".join(f"  {j}: {t}\n" for j, t in ordered.items())
+    text = Path(config_path).read_text(encoding="utf-8")
+    pattern = re.compile(rf"^{JOINT_MOTOR_TRAVEL}:[^\n]*\n(?:[ \t]+\S[^\n]*\n)*", re.M)
+    if pattern.search(text):
+        text = pattern.sub(lambda _: block, text, count=1)
+    else:
+        text = text.rstrip("\n") + "\n\n" + block
+    write_text_atomic(config_path, text)
+    written = (read_yaml(config_path) or {}).get(JOINT_MOTOR_TRAVEL)
+    if written != ordered:
+        raise RuntimeError(f"{config_path} did not read back the travel block just written")
     return ordered

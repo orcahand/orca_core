@@ -594,9 +594,15 @@ class OrcaHandConfig(BaseHandConfig):
                     f"{JOINT_MOTOR_TRAVEL} must be a mapping of joint name to "
                     f"motor travel in degrees, got {raw_travel!r}"
                 )
-            kwargs["joint_motor_travel_dict"] = {
-                str(joint): float(travel) for joint, travel in raw_travel.items()
-            }
+            travel_by_joint = {}
+            for joint, travel in raw_travel.items():
+                if travel is None or isinstance(travel, bool) or not isinstance(travel, (int, float)):
+                    raise HandConfigValidationError(
+                        f"{JOINT_MOTOR_TRAVEL}[{joint}] must be a number of degrees, "
+                        f"got {travel!r}"
+                    )
+                travel_by_joint[str(joint)] = float(travel)
+            kwargs["joint_motor_travel_dict"] = travel_by_joint
         if "calibration_travel_margin" in config:
             kwargs["calibration_travel_margin"] = float(
                 config["calibration_travel_margin"]
@@ -611,8 +617,9 @@ class OrcaHandConfig(BaseHandConfig):
                 config["calibration_travel_retries"]
             )
         if "calibration_max_current" in config:
-            kwargs["calibration_max_current"] = int(
-                config["calibration_max_current"]
+            raw_ceiling = config["calibration_max_current"]
+            kwargs["calibration_max_current"] = (
+                None if raw_ceiling is None else int(raw_ceiling)
             )
         if "use_joint_feedback" in config:
             raw_ujf = config["use_joint_feedback"]
