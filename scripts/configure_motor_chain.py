@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Configure the motor chain of a fresh ORCA hand: assign each motor its ID and baud rate.
 
+DYNAMIXEL motors also get their Return Delay Time set (DYNAMIXEL_RETURN_DELAY_TIME_US
+in orca_core/constants.py) so the bus answers faster; Feetech motors keep theirs.
+
 Plug the motors in one at a time when prompted. Re-running resumes from wherever
 the previous run stopped.
 
@@ -8,6 +11,10 @@ Usage:
     uv run python scripts/configure_motor_chain.py [CONFIG]
     uv run python scripts/configure_motor_chain.py CONFIG --reset
     uv run python scripts/configure_motor_chain.py CONFIG --baudrate 1000000
+    uv run python scripts/configure_motor_chain.py CONFIG --return-delay
+
+--return-delay sets the Return Delay Time on every motor already on the bus, for
+hands assembled before chain configuration set it (DYNAMIXEL only).
 """
 
 import argparse
@@ -27,6 +34,7 @@ from orca_core.maintenance import (
     plan_motor_chain,
     reset_all_motors,
     resolve_port,
+    set_all_return_delays,
     valid_baudrates,
 )
 from orca_core.utils import (
@@ -241,6 +249,10 @@ def main() -> int:
     parser.add_argument("--baudrate", type=int, metavar="BAUD",
                         help="Change all motors to the given baudrate without modifying IDs "
                              "(loops until Ctrl+C).")
+    parser.add_argument("--return-delay", action="store_true",
+                        help="Set the Return Delay Time on every motor on the bus, leaving IDs "
+                             "and baud alone (DYNAMIXEL; for hands assembled before chain "
+                             "configuration set it).")
     parser.add_argument("--motor-type", choices=SUPPORTED_MOTOR_TYPES,
                         help="Override motor family. Auto-detected from factory defaults when omitted.")
     args = parser.parse_args()
@@ -274,6 +286,25 @@ def main() -> int:
             lambda: change_all_baudrates(plan, args.baudrate, progress_callback=on_progress,
                                          prompt_callback=on_prompt),
         )
+
+    if args.return_delay:
+        if plan.return_delay_time_us is None:
+            print(f"{YELLOW}{label} motors have no return delay to set; nothing to do.{RESET}")
+            return 0
+        _banner(f"⏱️  ORCAHAND {label.upper()} RETURN DELAY ⏱️")
+        print(f"   Setting {plan.return_delay_time_us} µs on every motor at {plan.target_baud:,} bps")
+        try:
+            motors = set_all_return_delays(plan, progress_callback=on_progress,
+                                           prompt_callback=on_prompt)
+        except MotorChainError as exc:
+            print(f"{RED}❌ {exc}{RESET}")
+            return 1
+        if len(motors) != plan.total_motors:
+            print(f"{YELLOW}⚠️  Found {len(motors)} of {plan.total_motors} motors; "
+                  f"check the chain and re-run for the rest.{RESET}")
+            return 1
+        print(f"{GREEN}✅ Return delay set on all {len(motors)} motors.{RESET}")
+        return 0
 
     _banner(f"⚙️  ORCAHAND {label.upper()} CHAIN CONFIGURATION ⚙️")
     print(f"   • {len(plan.finger_ids)} {BLUE}{plan.finger_model}{RESET}: "

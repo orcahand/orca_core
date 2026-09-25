@@ -332,3 +332,30 @@ def test_partial_gain_writes_leave_the_other_fields_alone(connected_mock):
     assert after.kp == 1234
     assert (after.ki, after.kd, after.ff_1st, after.ff_2nd) == (
         before.ki, before.kd, before.ff_1st, before.ff_2nd)
+
+
+def test_only_dynamixel_declares_a_return_delay_to_program():
+    from orca_core.constants import DYNAMIXEL_RETURN_DELAY_TIME_US
+
+    assert DynamixelClient.return_delay_time_us == DYNAMIXEL_RETURN_DELAY_TIME_US
+    assert FeetechClient.return_delay_time_us is None
+
+
+@pytest.mark.parametrize("delay_us, register", [(20, 10), (0, 0), (508, 254)])
+def test_dynamixel_return_delay_is_written_in_two_us_units(delay_us, register):
+    from orca_core.hardware.dynamixel_client import ADDR_RETURN_DELAY_TIME
+
+    writes = []
+    stub = types.SimpleNamespace(
+        set_torque_enabled=lambda ids, enabled: None,
+        write_byte=lambda ids, value, address: writes.append((ids, value, address)) or [],
+    )
+
+    assert DynamixelClient.change_return_delay_time(stub, 5, delay_us) is True
+    assert writes == [([5], register, ADDR_RETURN_DELAY_TIME)]
+
+
+@pytest.mark.parametrize("delay_us", [-2, 7, 510])
+def test_dynamixel_rejects_an_unencodable_return_delay(delay_us):
+    stub = types.SimpleNamespace(write_byte=lambda *a: pytest.fail("wrote an invalid delay"))
+    assert DynamixelClient.change_return_delay_time(stub, 5, delay_us) is False

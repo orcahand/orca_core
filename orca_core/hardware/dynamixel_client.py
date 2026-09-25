@@ -21,7 +21,7 @@ import time
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
-from ..constants import DYNAMIXEL
+from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
 from .motor_client import MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -35,6 +35,7 @@ FALLBACK_FULL_SWEEP_MIN_INTERVAL_S = 1.0
 # see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/ for control table
 ADDR_ID = 7
 ADDR_BAUD_RATE = 8
+ADDR_RETURN_DELAY_TIME = 9  # EEPROM, units of 2 us
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
@@ -165,6 +166,7 @@ class DynamixelClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
+    return_delay_time_us = DYNAMIXEL_RETURN_DELAY_TIME_US
 
     # Goal Current (102) on the XC330-T288-T: 1 mA per unit, bounded by its
     # Current Limit (38), whose range is 0..910. An XC330-M288 would allow 2352.
@@ -932,6 +934,21 @@ class DynamixelClient(MotorClient):
             logging.error(f"Failed to change baud rate: {e}")
             return False
     
+    def change_return_delay_time(self, motor_id: int, delay_us: int) -> bool:
+        """Sets a Dynamixel motor's Return Delay Time (0-508 us, even)."""
+        if not (0 <= delay_us <= 508) or delay_us % 2:
+            logging.error(f"Invalid return delay {delay_us} us. Valid: even values 0-508.")
+            return False
+        try:
+            self.set_torque_enabled([motor_id], False)
+            success = not self.write_byte([motor_id], delay_us // 2, ADDR_RETURN_DELAY_TIME)
+            if success:
+                logging.info(f"Changed motor {motor_id} return delay time: {delay_us} us")
+            return success
+        except Exception as e:
+            logging.error(f"Failed to change return delay time: {e}")
+            return False
+
     def scan_for_motors(self, port: str, id_range: tuple,
                              baud_rates: Optional[list] = None) -> list:
         """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_name'}."""

@@ -105,6 +105,10 @@ class MotorChainPlan:
         return self.client_cls.requires_unpowered_hotplug
 
     @property
+    def return_delay_time_us(self) -> Optional[int]:
+        return self.client_cls.return_delay_time_us
+
+    @property
     def finger_model(self) -> str:
         return MOTOR_MODELS[self.motor_type][FINGER]
 
@@ -375,14 +379,16 @@ def configure_default_motor(
     target_id: int,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
-    """Re-program the factory-default motor: baud rate first, then ID.
+    """Re-program the factory-default motor: baud rate, return delay, then ID.
 
     Baud-first keeps a failure recoverable: an interruption leaves the motor at
     (default ID, target baud), which the resume prescan reports as invalid and
     ``reset_all_motors`` can revert. ID-first would strand it at a combination
-    no scan visits. Afterwards the default ID is probed again: a motor still
-    answering there means a second default motor joined the bus mid-step, so
-    the step is refused rather than risking a duplicate ``target_id``.
+    no scan visits. The return delay (for families that set one) goes just
+    before the ID, so a motor that reaches its target ID always carries it.
+    Afterwards the default ID is probed again: a motor still answering there
+    means a second default motor joined the bus mid-step, so the step is
+    refused rather than risking a duplicate ``target_id``.
     """
     if plan.target_baud != plan.default_baud:
         with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.default_baud) as client:
@@ -393,6 +399,11 @@ def configure_default_motor(
         time.sleep(ID_CHANGE_SETTLE_S)
 
     with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
+        delay_us = plan.return_delay_time_us
+        if delay_us is not None and not client.change_return_delay_time(plan.default_id, delay_us):
+            raise MotorChainError(
+                f"failed to set the factory-default motor's return delay to {delay_us} us"
+            )
         if not client.change_motor_id(plan.default_id, target_id):
             raise MotorChainError(f"failed to change motor ID to {target_id}")
     time.sleep(ID_CHANGE_SETTLE_S)
@@ -485,6 +496,14 @@ def change_motor_baudrate_only(plan: MotorChainPlan, motor_id: int, current_baud
         if not client.change_motor_baudrate(motor_id, new_baud):
             raise MotorChainError(f"failed to change baud rate for motor {motor_id}")
     return True
+
+
+def set_return_delay_only(plan: MotorChainPlan, motor_id: int, baud: int) -> None:
+    """Write the family's Return Delay Time into one configured motor."""
+    delay_us = plan.return_delay_time_us
+    with _config_session(plan.motor_type, [motor_id], plan.port, baud) as client:
+        if not client.change_return_delay_time(motor_id, delay_us):
+            raise MotorChainError(f"failed to set the return delay of motor {motor_id}")
 
 
 def reset_motor_to_factory(plan: MotorChainPlan, motor_id: int, current_baud: int) -> None:
@@ -654,5 +673,28 @@ def change_all_baudrates(
         plan,
         lambda m: change_motor_baudrate_only(plan, m["id"], m["baud_rate"], new_baud),
         "Connect the motor(s) whose baudrate you want to change",
+        progress_callback, prompt_callback, should_stop,
+    )
+
+
+def set_all_return_delays(
+    plan: MotorChainPlan,
+    progress_callback: Optional[ProgressCallback] = None,
+    prompt_callback: Optional[PromptCallback] = None,
+    should_stop: Optional[ShouldStop] = None,
+) -> list[dict]:
+    """Write the family's Return Delay Time into every motor on the bus. One pass.
+
+    For hands whose motors were configured before chain assembly set it: the
+    delay lives in each motor's EEPROM, and re-running the chain skips motors
+    already at their target ID. Raises :class:`MotorChainError` for a family
+    that declares no delay (Feetech), before touching the bus.
+    """
+    if plan.return_delay_time_us is None:
+        raise MotorChainError(f"{plan.motor_type} motors have no return delay to set")
+    return _each_motor_on_bus(
+        plan,
+        lambda m: set_return_delay_only(plan, m["id"], m["baud_rate"]),
+        "Connect the motor(s) whose return delay you want to set",
         progress_callback, prompt_callback, should_stop,
     )
