@@ -152,6 +152,20 @@ class JointLoopThread:
         disabled to hand-pose the hand) so re-enabling torque doesn't lurch."""
         self._anchor_to_current_pose()
 
+    def update_anchor(self, joint: str, anchor_count: int) -> None:
+        """Hot-swap one joint's encoder anchor (manual recalibration) into the
+        running loop's snapshot, then rebase so the target follows the
+        corrected frame — without a rebase the joint would lurch toward where
+        the old anchor thought the target was."""
+        with self._lock:
+            if joint not in self._joint_names:
+                raise ValueError(
+                    f"joint {joint!r} is not controlled by this loop "
+                    f"(controlled: {self._joint_names})"
+                )
+            self._anchors[self._joint_names.index(joint)] = int(anchor_count)
+        self._anchor_to_current_pose()
+
     def _anchor_to_current_pose(self) -> None:
         measured = self._measure_joint_angles_for_anchor()
         motor_now = self._read_motor_pos_now()
@@ -354,11 +368,11 @@ class JointLoopThread:
         joint_to_motor = self._hand.config.joint_to_motor_map
         inversion = self._hand.config.joint_inversion_dict
         # The map runs in the hand's effective (encoder-measured where
-        # available) ROM frame; the encoder anchor angle is the config ROM
-        # upper by definition — it is the assumed absolute reference the
-        # measured span is laid out from, not something the sweep measures.
+        # available) ROM frame; the encoder anchor angle is that frame's ROM
+        # upper — the label the active frame gives the flex hardstop the
+        # anchor was sampled at (config upper in the anchor frame, shifted by
+        # half the measured delta when centered).
         joint_roms = self._hand.effective_joint_roms_dict
-        config_roms = self._hand.config.joint_roms_dict
         motor_limits = self._hand.motor_limits_dict
         ratios = self._hand.calibration.joint_to_motor_ratios_dict
         polarity = joint_encoder_polarity_for_side(self._hand.config.type)
@@ -411,7 +425,7 @@ class JointLoopThread:
             [polarity[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
-            [config_roms[j][1] for j in joints], dtype=np.float64
+            [joint_roms[j][1] for j in joints], dtype=np.float64
         )
         self._motor_ids = [joint_to_motor[j] for j in joints]
         self._motor_limits_lower = np.array(

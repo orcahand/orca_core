@@ -220,7 +220,7 @@ def _build_calibration_result(
     )
 
 
-def _persist_calibration(
+def persist_calibration(
     calibration_path: str, *, result: CalibrationResult, include_encoder: bool
 ) -> None:
     """Persist ``result`` to ``calibration.yaml`` in one atomic replace.
@@ -671,7 +671,7 @@ def _drive_calibration(
         # Persist partial progress after every step so an interrupted run
         # never loses the work already done.
         if persist:
-            _persist_calibration(
+            persist_calibration(
                 hand.config.calibration_path,
                 result=hand.calibration,
                 include_encoder=encoder_pass_active,
@@ -709,7 +709,7 @@ def _drive_calibration(
     )
     hand.calibration = final_result
     if persist:
-        _persist_calibration(
+        persist_calibration(
             hand.config.calibration_path,
             result=final_result,
             include_encoder=encoder_pass_active,
@@ -760,6 +760,8 @@ def _commit_measured_rom(
     joint: str,
     span_deg: float,
     *,
+    flex_count: int,
+    extend_count: int,
     joint_roms_measured: Dict[str, list],
     progress_callback: Optional[ProgressCallback],
 ) -> None:
@@ -770,6 +772,10 @@ def _commit_measured_rom(
     lower endpoint and the upper carries through unchanged. A span implying a
     lower endpoint too far from nominal is rejected, leaving the joint on its
     config ROM.
+
+    Both events carry the raw magnet counts sampled at the two hardstops
+    (``flex_count``/``extend_count``) so successive calibrations can be
+    compared for magnet drift.
     """
     rom_lower, rom_upper = hand.config.joint_roms_dict[joint]
     measured_lower = rom_upper - span_deg
@@ -783,6 +789,8 @@ def _commit_measured_rom(
             joint=joint,
             span_deg=span_deg,
             deviation_deg=deviation,
+            flex_count=flex_count,
+            extend_count=extend_count,
         )
         logger.warning(
             "joint %s measured span %.2f deg puts its lower hardstop %+.2f deg "
@@ -807,6 +815,8 @@ def _commit_measured_rom(
         joint=joint,
         rom=[float(measured_lower), float(rom_upper)],
         deviation_deg=deviation,
+        flex_count=flex_count,
+        extend_count=extend_count,
     )
     logger.info(
         "joint %s measured ROM: [%.2f, %.2f] deg (span %.2f, %+.2f deg vs config)",
@@ -914,6 +924,7 @@ def _run_joint_encoder_pass_for_step(
                 )
                 continue
 
+            flex_count = pending_anchors[joint]
             _commit_anchor(
                 hand,
                 joint,
@@ -929,6 +940,8 @@ def _run_joint_encoder_pass_for_step(
                 hand,
                 joint,
                 delta * ENCODER_LSB_DEG,
+                flex_count=flex_count,
+                extend_count=extend_count,
                 joint_roms_measured=joint_roms_measured,
                 progress_callback=progress_callback,
             )

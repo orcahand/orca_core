@@ -20,7 +20,11 @@ from orca_core import (
     OrcaHandTouch,
 )
 from orca_core.base_hand import BaseHand
-from orca_core.constants import MOTOR_TORQUE_DISABLE_SETTLE_S
+from orca_core.constants import (
+    MOTOR_PORT_CLOSE_SETTLE_S,
+    MOTOR_TORQUE_DISABLE_SETTLE_S,
+)
+from orca_core.hardware.sensing.constants import TACTILE_PORT_OPEN_SETTLE_S
 from orca_core.hardware_hand import MockMotorResolutionMixin
 
 
@@ -99,6 +103,10 @@ def test_every_declared_export_is_bound_at_the_package_root():
 def test_real_hands_keep_their_torque_disable_settle():
     """Zeroing this on a production class would race a real serial port."""
     assert OrcaHand._torque_disable_settle_s == MOTOR_TORQUE_DISABLE_SETTLE_S
+    assert OrcaHand._port_close_settle_s == MOTOR_PORT_CLOSE_SETTLE_S
+    assert MOTOR_PORT_CLOSE_SETTLE_S > 0
+    assert OrcaHandTouch._tactile_port_open_settle_s == TACTILE_PORT_OPEN_SETTLE_S
+    assert TACTILE_PORT_OPEN_SETTLE_S > 0
     assert MOTOR_TORQUE_DISABLE_SETTLE_S > 0
 
 
@@ -106,3 +114,6 @@ def test_real_hands_keep_their_torque_disable_settle():
 def test_mock_hands_wait_on_nothing(cls):
     """Mock backends have no port to settle; waiting for one only costs time."""
     assert cls._torque_disable_settle_s == 0.0
+    assert cls._port_close_settle_s == 0.0
+    if issubclass(cls, OrcaHandTouch):
+        assert cls._tactile_port_open_settle_s == 0.0

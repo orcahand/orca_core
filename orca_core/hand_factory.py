@@ -282,6 +282,10 @@ def detect_hand() -> HandDetection:
         )
         motor_type, motor_baudrate = None, None
         for port in classic_motor_ports:
+            # Unlike the oh_board identity probe, the motor family probe below
+            # doesn't open exclusively (it borrows maintenance code meant for
+            # deliberate bring-up), so a port already held by a live session
+            # must be skipped explicitly rather than left to fail closed.
             if port_in_use(port):
                 continue
             motor_type, motor_baudrate = _detect_motor_family(port)

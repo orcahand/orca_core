@@ -68,6 +68,7 @@ BASE_HAND = frozenset({
 
 ORCA_HAND = BASE_HAND | {
     "calibrate",
+    "calibrate_joint_encoder_manual",
     "calibrated",
     "calibration",
     "connect",
@@ -88,6 +89,8 @@ ORCA_HAND = BASE_HAND | {
     "joint_to_motor_ratios_dict",
     "motor_client",
     "motor_limits_dict",
+    "rom_frame",
+    "set_rom_frame",
     "set_control_mode",
     "set_max_current",
     "stop_task",

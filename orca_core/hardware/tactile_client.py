@@ -440,6 +440,15 @@ class TactileClient:
             self._auto_mode_taxels = taxels
             self._first_frame_event.clear()
 
+        # Idempotent: clear any auto-stream left running from a prior session
+        # before querying configuration below, so that read isn't racing the
+        # tail of a stream this same client only just told the device to stop.
+        # Best-effort — a failure here surfaces on the next register write.
+        try:
+            self.disable_auto_data_transmission()
+        except (OSError, RuntimeError) as e:
+            logger.debug(f"Idempotent stream clear failed, continuing: {e}")
+
         try:
             self._tactile_config = self._get_configuration()
         except IOError as e:
@@ -450,13 +459,6 @@ class TactileClient:
                 f"Only {self._tactile_config.num_active_sensors} sensor(s) available, "
                 f"need at least {min_sensors}"
             )
-
-        # Idempotent: clear any auto-stream left running from a prior session.
-        # Best-effort — a failure here surfaces on the next register write.
-        try:
-            self.disable_auto_data_transmission()
-        except (OSError, RuntimeError) as e:
-            logger.debug(f"Idempotent stream clear failed, continuing: {e}")
 
         self.set_auto_data_type(resultant=resultant, taxels=taxels)
         self.enable_auto_data_transmission()

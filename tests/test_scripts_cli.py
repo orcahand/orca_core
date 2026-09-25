@@ -28,6 +28,7 @@ HAND_CLI_MODULES = [
     "scripts/tension.py",
     "scripts/zero.py",
     "scripts/manual_control.py",
+    "scripts/monitor_sensors.py",
     "examples/main_demo.py",
     "examples/main_demo_abduction.py",
     "examples/record_angles.py",
@@ -41,7 +42,6 @@ NO_HARDCODING_MODULES = HAND_CLI_MODULES + [
     "scripts/detect.py",
     "scripts/check_sensors.py",
     "scripts/configure_motor_chain.py",
-    "scripts/monitor_sensors.py",
     "examples/demo_runner.py",
     "examples/taxel_frames.py",
     "tools/extract_urdf_kinematics.py",
@@ -609,3 +609,56 @@ class TestEngageFlagsSelectTheClass:
         hand = self._hand(engage_feedback=False, engage_sensors=False)
         assert hand.config.joint_feedback_enabled
         assert hand.config.sensor_port
+
+
+class TestMonitorSensorsMotorBus:
+    """scripts/monitor_sensors.py reads motors through the hand, not its own bus."""
+
+    @staticmethod
+    def _bus(module, monkeypatch=None):
+        from orca_core import load_hand
+
+        hand = load_hand(mock=True, model_name="orcahand-left", engage_feedback=False)
+        bus = module.MotorBus(hand)
+        assert bus.connect()
+        return hand, bus
+
+    def test_poll_reads_every_configured_motor_through_the_hand(self):
+        pytest.importorskip("tkinter")
+        module = _load("scripts/monitor_sensors.py")
+        hand, bus = self._bus(module)
+        try:
+            bus.poll_once()
+            snap = bus.snapshot()
+        finally:
+            bus.disconnect()
+
+        assert set(snap.motors) == set(hand.config.motor_ids)
+        assert set(snap.joint_map.values()) == set(hand.config.joint_to_motor_map)
+        assert all({"pos", "cur", "temp"} <= set(m) for m in snap.motors.values())
+        assert str(hand.config.motor_type) in snap.message
+
+    def test_per_motor_probe_runs_only_after_a_failed_bus_read(self, monkeypatch):
+        pytest.importorskip("tkinter")
+        module = _load("scripts/monitor_sensors.py")
+        hand, bus = self._bus(module)
+        try:
+            flag = {"ok": True}
+            monkeypatch.setattr(type(hand), "last_read_ok", property(lambda self: flag["ok"]))
+            probes = []
+            real = hand.motor_client.read_hardware_error
+            monkeypatch.setattr(hand.motor_client, "read_hardware_error",
+                                lambda mid: probes.append(mid) or real(mid))
+
+            bus.poll_once()                      # healthy: no per-motor traffic
+            assert probes == []
+            flag["ok"] = False
+            bus.poll_once()                      # failed bus read: still no probe this cycle
+            assert probes == []
+            assert "probing motors next cycle" in bus.snapshot().message
+            flag["ok"] = True
+            bus.poll_once()                      # next cycle: one read per motor, then back to normal
+            assert sorted(probes) == sorted(hand.config.motor_ids)
+            assert set(bus.snapshot().motors) == set(hand.config.motor_ids)
+        finally:
+            bus.disconnect()
