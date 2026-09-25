@@ -634,3 +634,42 @@ def test_reset_all_motors_reports_per_motor_failures(monkeypatch):
     assert [m["id"] for m in acted] == [17]
     failures = [e for e in events if e["event"] == "motor_update_failed"]
     assert len(failures) == 1 and failures[0]["motor"]["id"] == 16
+
+
+# --- set_all_return_delays --------------------------------------------------
+
+
+def test_set_all_return_delays_writes_every_motor_at_its_own_baud(monkeypatch):
+    plan = dyna_plan()
+    client = FakeSessionClient()
+    bus = [motor(17, "XC330", 1_000_000), motor(16, "XC330", 1_000_000)]
+    session_bauds = _wire_sessions(monkeypatch, client, scan=lambda *a, **k: bus)
+
+    acted = mc.set_all_return_delays(plan)
+
+    assert [m["id"] for m in acted] == [17, 16]
+    assert client.calls == [("delay", 17, DYNAMIXEL_RETURN_DELAY_TIME_US),
+                            ("delay", 16, DYNAMIXEL_RETURN_DELAY_TIME_US)]
+    assert session_bauds == [1_000_000, 1_000_000]
+
+
+def test_set_all_return_delays_reports_a_rejected_write(monkeypatch):
+    client = FakeSessionClient()
+    client.delay_ok = False
+    _wire_sessions(monkeypatch, client, scan=lambda *a, **k: [motor(17, "XC330", 1_000_000)])
+    events = []
+
+    acted = mc.set_all_return_delays(dyna_plan(), progress_callback=events.append)
+
+    assert acted == []
+    assert [e["event"] for e in events] == ["motor_update_failed"]
+
+
+def test_set_all_return_delays_refuses_feetech_before_touching_the_bus(monkeypatch):
+    plan = mc.plan_motor_chain(DYNA_CFG, "/dev/fake", FEETECH)
+    _wire_sessions(monkeypatch, FakeSessionClient(),
+                   scan=lambda *a, **k: pytest.fail("scanned the bus"))
+    monkeypatch.setattr(mc, "wait_for_port", lambda *a, **k: pytest.fail("power-cycled the bus"))
+
+    with pytest.raises(mc.MotorChainError, match="no return delay"):
+        mc.set_all_return_delays(plan)

@@ -33,6 +33,7 @@ from .motor_chain import (
     reset_all_motors,
     resolve_port,
     scan_configured_motors,
+    set_all_return_delays,
     valid_baudrates,
 )
 
@@ -53,6 +54,7 @@ __all__ = [
     "run_jitter",
     "run_tension",
     "scan_configured_motors",
+    "set_all_return_delays",
     "travel_deviation",
     "valid_baudrates",
     "write_joint_motor_travel",
