@@ -5,8 +5,9 @@ Assembly / bring-up dashboard. Opens a Tkinter window that:
 
   * finds the hand's sensor board on its own and reconnects when the board or
     a sensor is unplugged and plugged back in;
-  * scans the motor bus and shows every Dynamixel with its ID, the joint it
-    drives (per hand side), live position, voltage and temperature;
+  * connects to the motor bus the way a control session does (port, family,
+    baud rate and IDs resolved by the package) and shows every configured
+    motor with its ID, joint, live position, current and temperature;
   * shows every joint encoder grouped by finger with a live angle and a
     health verdict (live / no encoder / parity or chip error), so magnets and
     wiring can be checked joint by joint while the hand is assembled;
@@ -24,7 +25,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
+import dataclasses
+import math
 import sys
 import threading
 import time
@@ -51,13 +53,12 @@ from orca_core.hardware.sensing.serial_discovery import (
     probe_orca_info,
 )
 from orca_core.hardware.tactile_client import NoSensorsAvailableError, TactileClient
-from orca_core.utils.utils import get_model_path
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 
 REFRESH_MS = 100
-MOTOR_SCAN_S = 3.0
-MOTOR_BAUD = 1_000_000
-MOTOR_IDS = tuple(range(1, 18))
-ADDR_PRESENT_VOLTAGE, ADDR_PRESENT_TEMP = 144, 146
+MOTOR_RECONNECT_S = 3.0
+MOTOR_POLL_S = 1.0
+MOTOR_MISSES_BEFORE_RECONNECT = 5
 HEALTH_WINDOW_S = 1.0
 TACTILE_RESCAN_S = 2.0
 RECONNECT_DELAY_S = 1.0
@@ -88,6 +89,7 @@ FONT, FONT_B, FONT_MONO, FONT_H = ("Helvetica", 12), ("Helvetica", 12, "bold"), 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    add_hand_arguments(p, feedback_flag=False)
     p.add_argument("--port", default=None,
                    help="Sensor serial port. Default: autodetect the board (and follow re-plugs).")
     p.add_argument("--baud", type=int, default=None,
@@ -325,35 +327,36 @@ class ConnectionManager(threading.Thread):
 # Motor bus (background thread; read-only: pings, positions, voltage, temp)
 # ---------------------------------------------------------------------------
 
-ADDR_PRESENT_POSITION = 132
-POSITION_UNIT_DEG = 360.0 / 4096
-POSITION_POLL_S = 0.15
-
 
 @dataclass
 class MotorSnapshot:
     port: str | None = None
-    message: str = "searching for motor bus..."
-    motors: dict = field(default_factory=dict)  # id -> {"model", "volt", "temp", "pos"}
+    message: str = "connecting to the motor bus..."
+    motors: dict = field(default_factory=dict)      # id -> {"pos", "cur", "temp"}
+    joint_map: dict = field(default_factory=dict)   # id -> joint, from the hand's config
+    motor_ids: tuple = ()
 
 
 class MotorBus(threading.Thread):
-    """Finds the Dynamixel bus, pings every motor on a slow loop and polls
-    present positions on a fast one. Read-only: never torques or moves motors.
-    The sensor port owned by :class:`ConnectionManager` is skipped.
+    """Reads every configured motor once a second through the hand's own
+    motor client, so port, family, baud rate and IDs are resolved exactly as a
+    control session resolves them. One sync read per poll for position and
+    current, one for temperature. Read-only: never torques or moves motors.
     """
 
-    def __init__(self, fixed_port: str | None, sensor_port_fn):
+    def __init__(self, hand):
         super().__init__(name="MotorBus", daemon=True)
-        self._fixed_port = fixed_port
-        self._sensor_port_fn = sensor_port_fn
+        self._hand = hand
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._snap = MotorSnapshot()
-        self._port: str | None = None
-        self._handler = None
-        self._packet = None
-        self._motors: dict[int, dict] = {}
+        cfg = hand.config
+        self._snap = MotorSnapshot(
+            joint_map={abs(m): j for j, m in cfg.joint_to_motor_map.items()},
+            motor_ids=tuple(cfg.motor_ids),
+        )
+        self._connected = False
+        self._misses = 0
+        self._probe_pending = False
 
     def snapshot(self) -> MotorSnapshot:
         with self._lock:
@@ -367,112 +370,85 @@ class MotorBus(threading.Thread):
             for k, v in fields.items():
                 setattr(self._snap, k, v)
 
-    def _candidates(self) -> list[str]:
-        if self._fixed_port:
-            return [self._fixed_port]
-        import serial.tools.list_ports
-        sensor_port = self._sensor_port_fn()
-        ports = sorted(p.device for p in serial.tools.list_ports.comports() if p.vid is not None)
-        return [p for p in ports if p != sensor_port]
+    def _bus_label(self) -> str:
+        cfg = self._hand.config
+        return f"{cfg.motor_type} @ {cfg.baudrate} baud on {cfg.port}"
 
-    def _open_bus(self) -> None:
-        import dynamixel_sdk
-        candidates = self._candidates()
-        for port in candidates:
-            handler = dynamixel_sdk.PortHandler(port)
-            try:
-                if not handler.openPort():
-                    continue
-                handler.setBaudRate(MOTOR_BAUD)
-                packet = dynamixel_sdk.PacketHandler(2.0)
-                if not any(packet.ping(handler, mid)[1] == 0 for mid in MOTOR_IDS):
-                    handler.closePort()
-                    continue
-                self._port, self._handler, self._packet = port, handler, packet
-                return
-            except Exception:
-                try:
-                    handler.closePort()
-                except Exception:
-                    pass
-        self._set(port=None, motors={},
-                  message="no motors answering" if candidates else "searching for motor bus...")
+    def connect(self) -> bool:
+        ok, msg = self._hand.connect(interactive=False)
+        if not ok:
+            self._set(port=None, motors={}, message=msg)
+            return False
+        self._misses = 0
+        self._set(port=self._hand.config.port, message=self._bus_label())
+        return True
 
-    def _close_bus(self) -> None:
-        if self._handler is not None:
-            try:
-                self._handler.closePort()
-            except Exception:
-                pass
-        self._handler = self._packet = self._port = None
-        self._motors = {}
+    def disconnect(self) -> None:
+        try:
+            self._hand.disconnect()
+        except Exception:
+            pass
         self._set(port=None, motors={})
 
-    def _scan(self) -> None:
-        motors = {}
-        for mid in MOTOR_IDS:
-            model, comm, _ = self._packet.ping(self._handler, mid)
-            if comm != 0:
-                continue
-            volt = temp = None
-            v, comm, _ = self._packet.read2ByteTxRx(self._handler, mid, ADDR_PRESENT_VOLTAGE)
-            if comm == 0:
-                volt = v / 10.0
-            t, comm, _ = self._packet.read1ByteTxRx(self._handler, mid, ADDR_PRESENT_TEMP)
-            if comm == 0:
-                temp = t
-            prev = self._motors.get(mid, {})
-            motors[mid] = {"model": model, "volt": volt, "temp": temp, "pos": prev.get("pos")}
-        if not motors:
-            self._close_bus()
-            return
-        self._motors = motors
-        self._set(port=self._port, motors=motors,
-                  message=f"{len(motors)}/{len(MOTOR_IDS)} motors on {self._port}")
+    def _probe_motors(self) -> None:
+        """One read per motor to name the ones not answering. Only runs in the
+        cycle after a bus-wide read failed; a healthy bus never pays for it."""
+        client = self._hand.motor_client
+        answering = [m for m in self._snap.motor_ids if client.read_hardware_error(m) is not None]
+        missing = [m for m in self._snap.motor_ids if m not in answering]
+        with self._lock:
+            kept = {m: self._snap.motors.get(m, {}) for m in answering}
+        self._set(motors=kept,
+                  message=f"{len(answering)}/{len(self._snap.motor_ids)} motors answering"
+                          + (f", missing {missing}" if missing else "") + f", {self._bus_label()}")
 
-    def _poll_positions(self) -> None:
-        for mid, motor in self._motors.items():
-            raw, comm, _ = self._packet.read4ByteTxRx(self._handler, mid, ADDR_PRESENT_POSITION)
-            if comm != 0:
-                continue
-            if raw >= 0x80000000:  # signed 32-bit (multi-turn positions go negative)
-                raw -= 0x100000000
-            motor["pos"] = raw * POSITION_UNIT_DEG
-        self._set(motors={k: dict(v) for k, v in self._motors.items()})
+    def poll_once(self) -> None:
+        """Read every motor: position and current in one transaction, then
+        temperature. A failed bus read is followed, next cycle, by a per-motor
+        probe that names the silent motors."""
+        if self._probe_pending:
+            self._probe_pending = False
+            self._probe_motors()
+        state = self._hand.get_motor_state()
+        if not self._hand.last_read_ok:
+            self._misses += 1
+            self._probe_pending = True
+            if self._misses >= MOTOR_MISSES_BEFORE_RECONNECT:
+                raise ConnectionError("motor bus stopped answering")
+            self._set(message=f"bus read failed ({self._misses}); probing motors next cycle")
+            return
+        self._misses = 0
+        temps = self._hand.get_motor_temp()
+        motors = {}
+        for i, mid in enumerate(self._snap.motor_ids):
+            motors[mid] = {
+                "pos": math.degrees(float(state.position[i])),
+                "cur": float(state.current[i]),
+                "temp": float(temps[i]) if temps is not None else None,
+            }
+        self._set(port=self._hand.config.port, motors=motors,
+                  message=f"{len(motors)}/{len(self._snap.motor_ids)} motors, {self._bus_label()}")
 
     def run(self) -> None:
-        next_scan = 0.0
         try:
             while not self._stop.is_set():
-                if self._handler is None:
-                    self._open_bus()
-                    if self._handler is None:
-                        self._stop.wait(MOTOR_SCAN_S)
+                if not self._connected:
+                    self._connected = self.connect()
+                    if not self._connected:
+                        self._stop.wait(MOTOR_RECONNECT_S)
                         continue
-                    next_scan = 0.0
                 try:
-                    now = time.monotonic()
-                    if now >= next_scan:
-                        self._scan()
-                        next_scan = now + MOTOR_SCAN_S
-                        if self._handler is None:
-                            continue
-                    self._poll_positions()
-                except Exception:
-                    self._close_bus()
+                    self.poll_once()
+                except Exception as e:
+                    self._set(message=f"motor bus lost: {e}; reconnecting")
+                    self.disconnect()
+                    self._connected = False
                     continue
-                self._stop.wait(POSITION_POLL_S)
+                self._stop.wait(MOTOR_POLL_S)
         finally:
-            self._close_bus()
-
-
-def motor_joint_map(side: str) -> dict[int, str]:
-    """Motor ID -> joint name for hands of ``side``, from the packaged model."""
-    import yaml
-    path = get_model_path(model_name=f"orcahand-full-{side}")
-    with open(os.path.join(path, "config.yaml")) as f:
-        cfg = yaml.safe_load(f)
-    return {abs(m): j for j, m in cfg["joint_to_motor_map"].items()}
+            if self._connected:
+                self.disconnect()
+                self._connected = False
 
 
 # ---------------------------------------------------------------------------
@@ -535,9 +511,9 @@ class MotorRow:
         self.dot.set(C_OK)
         pos = motor.get("pos")
         self.pos.config(text=f"{pos:7.1f}\N{DEGREE SIGN}" if pos is not None else "   --  ", fg=C_TEXT)
-        volt = f'{motor["volt"]:.1f}V' if motor["volt"] is not None else ""
-        temp = f'{motor["temp"]}\N{DEGREE SIGN}C' if motor["temp"] is not None else ""
-        self.info.config(text=" ".join(x for x in (volt, temp) if x), fg=C_TEXT)
+        cur = f'{motor["cur"]:.0f}mA' if motor.get("cur") is not None else ""
+        temp = f'{motor["temp"]:.0f}\N{DEGREE SIGN}C' if motor.get("temp") is not None else ""
+        self.info.config(text=" ".join(x for x in (cur, temp) if x), fg=C_TEXT)
 
 
 class TactileCard:
@@ -590,7 +566,6 @@ class SensorMonitorUI:
         self.tac_cards: dict[str, TactileCard] = {}
         self.motor_rows: dict[str, MotorRow] = {}
         self.motor_summ: dict[str, tk.Label] = {}
-        self._joint_maps: dict[str, dict[int, str]] = {}
         self._health = EncoderStreamHealth()
         self._health_t0 = time.monotonic()
         self._last_verdicts = {s: "no frames" for s in range(AUTO_ENC_NUM_JOINTS)}
@@ -706,7 +681,7 @@ class SensorMonitorUI:
         enc_live = self._refresh_encoders(s)
         motors_ok = self._refresh_motors(s)
         tac_ok = self._refresh_tactile(s)
-        total = AUTO_ENC_NUM_JOINTS + len(MOTOR_IDS) + len(FINGER_NAMES)
+        total = AUTO_ENC_NUM_JOINTS + len(self.motors.snapshot().motor_ids) + len(FINGER_NAMES)
         ok = enc_live + motors_ok + tac_ok
         pct = 100.0 * ok / total
         self.health_lbl.config(
@@ -749,19 +724,9 @@ class SensorMonitorUI:
                                       f"grey = no encoder on this slot, amber = parity errors, red = chip angle error")
         return live_total
 
-    def _joint_map(self, side: str) -> dict[int, str]:
-        if side not in self._joint_maps:
-            try:
-                self._joint_maps[side] = motor_joint_map(side)
-            except Exception:
-                self._joint_maps[side] = {}
-        return self._joint_maps[side]
-
     def _refresh_motors(self, s: Snapshot) -> int:
         m = self.motors.snapshot()
-        side = s.side or "right"
-        id_to_joint = self._joint_map(side)
-        joint_to_id = {j: i for i, j in id_to_joint.items()}
+        joint_to_id = {j: i for i, j in m.joint_map.items()}
         total = 0
         for finger, joints in FINGER_JOINTS.items():
             present = 0
@@ -773,9 +738,7 @@ class SensorMonitorUI:
             total += present
             self.motor_summ[finger].config(text=f"{present}/{len(joints)}",
                                            fg=C_OK if present == len(joints) else C_MUTED)
-        side_note = f"{side} hand map" + ("" if s.side else " (assumed, board side unknown)")
-        self.motor_note.config(text=f"{m.message}  ·  {side_note}" if m.port or not m.motors
-                               else side_note)
+        self.motor_note.config(text=m.message)
         return total
 
     def _verdict(self, slot: int) -> str:
@@ -806,9 +769,14 @@ class SensorMonitorUI:
 
 def main() -> int:
     args = parse_args()
+    # Motors only: the monitor opens the sensing port itself, and detection
+    # runs here, before that thread starts, so the two never race for it.
+    hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
+    if args.motor_port:
+        hand.config = dataclasses.replace(hand.config, port=args.motor_port)
     manager = ConnectionManager(args.port, args.baud, args.start_mode)
     manager.start()
-    motors = MotorBus(args.motor_port, lambda: manager.snapshot().port)
+    motors = MotorBus(hand)
     motors.start()
 
     root = tk.Tk()

@@ -256,7 +256,7 @@ The two sensing scripts split by intent: `monitor_sensors.py` shows you the data
 <details>
 <summary><strong>monitor_sensors.py</strong></summary>
 
-Live view of the hand's sensing link: joint-encoder angles for all 17 slots plus tactile forces, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Each stream shows its measured frame rate. Autodetects the connector-board serial port; pass <code>--port</code> to override.
+Assembly and bring-up dashboard: every configured motor with its joint, live position, current and temperature, read once a second through the hand's own motor client (port, family, baud rate and IDs resolved exactly as a control session resolves them, read-only); every joint encoder grouped by finger with a health verdict; and a card per tactile sensor, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Reconnects when the sensor board is unplugged and plugged back in. Takes the shared hand flags (<code>config_path</code>, <code>--model-name</code>, <code>--mock</code>); <code>--port</code> overrides the sensor board port and <code>--motor-port</code> the motor bus port, both for bring-up only.
 
 <strong>Example:</strong>
 ```bash
