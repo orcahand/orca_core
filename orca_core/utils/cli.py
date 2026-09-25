@@ -136,7 +136,119 @@ def print_calibration_progress(event: dict) -> None:
             f"  WARNING: torque release failed for motor {event['motor']} "
             f"({event['joint']}); limit not recorded"
         )
+    elif name == "travel_checked":
+        low, high = event["bounds_deg"]
+        mark = "ok" if event["within_margin"] else "OUT OF MARGIN"
+        print(
+            f"  {event['joint']} motor travel {event['travel_deg']:.1f} deg "
+            f"vs {event['expected_deg']:.1f} deg baseline "
+            f"({event['deviation'] * 100:+.0f}%, accept {low:.1f}-{high:.1f}) [{mark}]"
+        )
+    elif name == "travel_baseline_missing":
+        print(
+            f"  {event['joint']} motor travel {event['travel_deg']:.1f} deg "
+            f"(no joint_motor_travel baseline; not checked)"
+        )
+    elif name == "travel_excess":
+        print(
+            f"  WARNING: {event['joint']} travelled {event['travel_deg']:.1f} deg, "
+            f"{event['deviation'] * 100:+.0f}% past its "
+            f"{event['expected_deg']:.1f} deg baseline; check the tendon for slip."
+        )
+    elif name == "travel_retry_started":
+        print(
+            f"  {event['joint']} fell short; re-driving at "
+            f"{event['current']:.0f} mA "
+            f"(attempt {event['attempt']}/{event['attempts']})"
+        )
+    elif name == "travel_retry_succeeded":
+        print(
+            f"  {event['joint']} recovered to {event['travel_deg']:.1f} deg "
+            f"at {event['current']:.0f} mA "
+            f"({event['deviation'] * 100:+.0f}% vs baseline)"
+        )
+    elif name == "travel_retry_exhausted":
+        print(
+            f"  WARNING: {event['joint']} still short at "
+            f"{event['travel_deg']:.1f} deg of {event['expected_deg']:.1f} deg "
+            f"after {event['attempts']} re-drive(s); calibrated over a "
+            f"shortened range."
+        )
+    elif name == "travel_retry_unavailable":
+        print(
+            f"  WARNING: {event['joint']} short at {event['travel_deg']:.1f} deg "
+            f"of {event['expected_deg']:.1f} deg; its control mode ignores the "
+            f"current cap, so no re-drive can help."
+        )
+    elif name == "travel_retry_disabled":
+        print(
+            f"  WARNING: {event['joint']} short at {event['travel_deg']:.1f} deg "
+            f"of {event['expected_deg']:.1f} deg; re-drive disabled "
+            f"(calibration_travel_retries: 0)."
+        )
+    elif name == "measured_rom_recorded":
+        lo, hi = event["rom"]
+        print(
+            f"  {event['joint']} measured ROM {lo:.1f}..{hi:.1f} deg "
+            f"({event['deviation_deg']:+.1f} deg vs config)"
+        )
+    elif name == "measured_rom_rejected":
+        print(
+            f"  WARNING: {event['joint']} measured span {event['span_deg']:.1f} deg "
+            f"is {event['deviation_deg']:+.1f} deg off the config ROM; keeping the "
+            f"config ROM for this joint."
+        )
+    elif name == "motor_faulted":
+        flags = " + ".join(event.get("flags") or []) or "a hardware fault"
+        temp = event.get("temperature_c")
+        temp_note = f" at {temp:.0f} degC" if temp is not None else ""
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) has latched "
+            f"{flags}{temp_note}; skipped. Power-cycle the hand once it has cooled."
+        )
+    elif name == "torque_enable_failed":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) did not "
+            f"acknowledge torque enable; skipped this step."
+        )
+    elif name == "sweep_no_motion":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) did not move "
+            f"during its {event.get('direction') or ''} sweep "
+            f"({event['moved_deg']:.1f} deg); check the tendon and the joint."
+        )
+    elif name == "drive_step_timeout":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) never settled "
+            f"on a hardstop; giving up on this direction, limit not recorded."
+        )
+    elif name == "limits_rejected":
+        print(
+            f"  ERROR: {event['joint']} swept only {event['travel_deg']:.1f} deg "
+            f"of motor travel ({event.get('reason', 'rejected')}); limits not "
+            f"recorded, previous calibration kept."
+        )
+    elif name == "travel_retry_skipped":
+        print(
+            f"  ERROR: {event['joint']} travelled {event['travel_deg']:.1f} deg "
+            f"of its {event['expected_deg']:.1f} deg baseline, under the "
+            f"{event['floor_deg']:.1f} deg floor: it did not move, so no "
+            f"re-drive was attempted."
+        )
+    elif name == "manual_capture_started":
+        print(
+            f"  Move {event['joint']} to its {event['direction']} hardstop "
+            f"(motor {event['motor']})."
+        )
+    elif name == "manual_capture_skipped":
+        print(f"  {event['joint']} {event['direction']} skipped; previous limit kept.")
     elif name == "calibration_done":
+        boosted = event.get("boosted_joints") or {}
+        if boosted:
+            joints = ", ".join(
+                f"{j} @ {c:.0f} mA" for j, c in sorted(boosted.items())
+            )
+            print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
     elif name == "calibration_aborted":
         print("Calibration aborted.")

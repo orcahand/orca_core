@@ -14,6 +14,12 @@ drives a terminal, a GUI, or a web front-end.
 """
 
 from .calibration_routine import run_calibration
+from .motor_travel import (
+    measured_travel_by_joint,
+    motor_travel_deg,
+    travel_deviation,
+    write_joint_motor_travel,
+)
 from .tensioning import run_jitter, run_tension
 from .motor_chain import (
     ChainScan,
@@ -38,6 +44,8 @@ __all__ = [
     "change_all_baudrates",
     "configure_motor_chain",
     "detect_motor_type",
+    "measured_travel_by_joint",
+    "motor_travel_deg",
     "plan_motor_chain",
     "reset_all_motors",
     "resolve_port",
@@ -45,5 +53,7 @@ __all__ = [
     "run_jitter",
     "run_tension",
     "scan_configured_motors",
+    "travel_deviation",
     "valid_baudrates",
+    "write_joint_motor_travel",
 ]

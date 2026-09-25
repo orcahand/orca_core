@@ -143,3 +143,10 @@ CLAUDE.local.md
 # Recordings from examples/record_*.py (per-hand captures, not shared assets;
 # curated sequences live in examples/sequences/)
 replay_sequences/
+
+# Per-hand calibration artifacts written next to a model's config.yaml: a
+# backup of the previous calibration, the calibration event log, and the
+# joint usage counters. All are one hand's history, not shared assets.
+calibration.yaml.bak-*
+calibration_history.jsonl
+joint_usage.json
