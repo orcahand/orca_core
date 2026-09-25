@@ -507,11 +507,33 @@ class TestDetectScript:
         assert module.main() == 0
         assert "no motor answered" in capsys.readouterr().out
 
-    def test_reports_a_missing_motor_bus(self, capsys, monkeypatch):
+    def test_bare_adapter_hand_is_not_called_unplugged(self, capsys, monkeypatch):
+        """A motor bus found by vendor ID with no controller board gets the
+        no-identity note, not the nothing-plugged-in one."""
         module = _load("scripts/detect.py")
         monkeypatch.setattr(
             module, "detect_hand",
-            lambda: self._detection(motor_port=None, motor_type=None, motor_baudrate=None),
+            lambda: self._detection(identity=None, sensing_port=None, has_tactile=False,
+                                    has_encoders=False, model_name="orcahand-right", side="right"),
+        )
+        monkeypatch.setattr(sys, "argv", ["detect.py"])
+
+        assert module.main() == 0
+
+        out = capsys.readouterr().out
+        assert "USB-vendor-ID probing" in out
+        assert "nothing plugged in" not in out
+
+    def test_reports_a_missing_motor_bus(self, capsys, monkeypatch):
+        """A board answered but nothing spoke on the motor bus."""
+        from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+        board = OrcaBoardInfo(role="sensor", side="left", serial="ser-0000")
+        module = _load("scripts/detect.py")
+        monkeypatch.setattr(
+            module, "detect_hand",
+            lambda: self._detection(identity=board, motor_port=None,
+                                    motor_type=None, motor_baudrate=None),
         )
         monkeypatch.setattr(sys, "argv", ["detect.py"])
 

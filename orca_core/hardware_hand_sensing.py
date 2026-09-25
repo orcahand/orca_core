@@ -712,7 +712,7 @@ class OrcaHandJointFeedback(OrcaHand):
     @contextmanager
     def _loop_writes_paused(self):
         """Pause the joint loop's motor writes for the duration of a round-trip
-        motor op. The loop's 100 Hz sync_writes otherwise interleave with the
+        motor op. The loop's sync_writes otherwise interleave with the
         op's status-packet reads on the shared motor CDC and intermittently
         stall them into "no status packet" timeouts. Encoder decoding keeps
         running, so ``get_measured_joints`` stays live throughout."""
@@ -744,7 +744,7 @@ class OrcaHandJointFeedback(OrcaHand):
         if self._loop is not None:
             raise RuntimeError(
                 f"{routine}() while the joint-feedback loop is running is not "
-                f"supported: the 100 Hz loop and the {routine} routine would "
+                f"supported: the joint loop and the {routine} routine would "
                 "command the same motors. Connect without engaging feedback "
                 "(e.g. via the maintenance scripts) and retry."
             )
@@ -787,7 +787,7 @@ class OrcaHandJointFeedback(OrcaHand):
             raise RuntimeError(
                 "force_calibrate requires connecting without the "
                 "joint-feedback loop: calibration cannot run while the "
-                "100 Hz loop commands the motors."
+                "joint loop commands the motors."
             )
         self._init_skip_calibrate = self._loop is not None
         try:
