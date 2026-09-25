@@ -45,6 +45,12 @@ class CalibrationResult:
             gear ratio. Zero before calibration.
         joint_encoder_calibration_dict: Maps joint name → :class:`JointEncoderCal`.
             Empty for hands without joint encoders.
+        joint_roms_measured_dict: Maps joint name → ``[lower, upper]`` joint ROM
+            in degrees, with the span between the hardstops measured by the
+            joint encoders rather than taken from the config nominal. The upper
+            endpoint equals the config ROM upper — it is the anchor pose the
+            encoder frame is pinned to, so only the lower endpoint moves. Empty
+            for hands without joint encoders; config ROMs are the fallback.
         calibrated: ``True`` when all joints have been fully calibrated.
         wrist_calibrated: ``True`` when the wrist joint has been calibrated.
     """
@@ -54,6 +60,7 @@ class CalibrationResult:
     calibrated: bool
     wrist_calibrated: bool
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] = field(default_factory=dict)
+    joint_roms_measured_dict: Dict[str, List[float]] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, motor_ids: List[int]) -> "CalibrationResult":
@@ -64,6 +71,7 @@ class CalibrationResult:
             calibrated=False,
             wrist_calibrated=False,
             joint_encoder_calibration_dict={},
+            joint_roms_measured_dict={},
         )
 
     @classmethod
@@ -100,12 +108,24 @@ class CalibrationResult:
             for joint, entry in encoder_raw.items()
         }
 
+        measured_raw = calibration.get("joint_roms_measured", {}) or {}
+        joint_roms_measured_dict = {}
+        for joint, rom in measured_raw.items():
+            if not isinstance(rom, (list, tuple)) or len(rom) != 2:
+                print(
+                    f"\033[93mWarning: dropping malformed joint_roms_measured "
+                    f"entry for {joint}: {rom!r}\033[0m"
+                )
+                continue
+            joint_roms_measured_dict[joint] = [float(rom[0]), float(rom[1])]
+
         return cls(
             motor_limits_dict=motor_limits_dict,
             joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
             calibrated=calibration.get("calibrated", False) or False,
             wrist_calibrated=calibration.get("wrist_calibrated", False) or False,
             joint_encoder_calibration_dict=joint_encoder_calibration_dict,
+            joint_roms_measured_dict=joint_roms_measured_dict,
         )
 
 

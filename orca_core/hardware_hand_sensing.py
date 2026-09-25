@@ -286,15 +286,17 @@ class OrcaHandTouch(OrcaHand):
         self._require_tactile_client().stop_stream()
 
     def zero_tactile_sensors(
-        self, num_samples: int = 100, timeout_s: float | None = None
+        self, num_samples: int = 100, timeout_s: float | None = None,
+        gate_noise: bool = True,
     ) -> dict:
         """Capture current readings as zero baseline and return offsets.
 
         ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
-        deadline from ``num_samples``.
+        deadline from ``num_samples``. ``gate_noise`` also measures each
+        taxel's dither from the same frames and gates readings below it.
         """
         return self._require_tactile_client().capture_taxel_offsets(
-            num_samples=num_samples, timeout_s=timeout_s
+            num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise,
         )
 
     def clear_tactile_zero(self) -> None:

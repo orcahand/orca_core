@@ -7,6 +7,10 @@ Each cycle reads joint angles from a ``JointEncoderClient``, asks the
 target on the motor encoder; this thread trims the residual offset
 between motor angle and joint angle.
 
+Measurements come off the client's unfiltered stream; the smoothing behind
+``get_latest()`` is for display, and its phase lag would cost the loop
+stability margin.
+
 Encoder-freshness watchdog (the motor PID keeps holding the last
 commanded position even without host updates, so the higher tiers do not
 drop torque):
@@ -192,7 +196,7 @@ class JointLoopThread:
 
         self._stats["last_dt_s"] = float(dt)
 
-        reading = self._encoder_client.get_latest()
+        reading = self._encoder_client.get_latest_unfiltered()
         if reading is None:
             self._stats["cycles_no_reading"] += 1
             return
@@ -347,7 +351,12 @@ class JointLoopThread:
         encoder_dict = self._hand.calibration.joint_encoder_calibration_dict
         joint_to_motor = self._hand.config.joint_to_motor_map
         inversion = self._hand.config.joint_inversion_dict
-        joint_roms = self._hand.config.joint_roms_dict
+        # The map runs in the hand's effective (encoder-measured where
+        # available) ROM frame; the encoder anchor angle is the config ROM
+        # upper by definition — it is the assumed absolute reference the
+        # measured span is laid out from, not something the sweep measures.
+        joint_roms = self._hand.effective_joint_roms_dict
+        config_roms = self._hand.config.joint_roms_dict
         motor_limits = self._hand.motor_limits_dict
         ratios = self._hand.calibration.joint_to_motor_ratios_dict
         polarity = joint_encoder_polarity_for_side(self._hand.config.type)
@@ -400,7 +409,7 @@ class JointLoopThread:
             [polarity[j] for j in joints], dtype=np.int64
         )
         self._anchor_angles = np.array(
-            [joint_roms[j][1] for j in joints], dtype=np.float64
+            [config_roms[j][1] for j in joints], dtype=np.float64
         )
         self._motor_ids = [joint_to_motor[j] for j in joints]
         self._motor_limits_lower = np.array(
@@ -489,7 +498,7 @@ class JointLoopThread:
         reading would latch a bogus target the PI then drives toward, so
         retry and raise on persistent failure rather than anchor to garbage."""
         for _ in range(retries):
-            reading = self._encoder_client.get_latest()
+            reading = self._encoder_client.get_latest_unfiltered()
             if (
                 reading is not None
                 and float(reading.freshness_ms) <= WATCHDOG_HOLD_MS
