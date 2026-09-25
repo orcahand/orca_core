@@ -192,6 +192,44 @@ def _to_plain(value):
     return value
 
 
+def is_packaged_model_path(path) -> bool:
+    """Whether ``path`` lies inside the package's bundled ``models/`` tree.
+
+    Packaged configs are shared by every hand of a model; anything measured
+    on one hand must never be written into them.
+    """
+    models_dir = os.path.realpath(_get_models_dir())
+    return os.path.commonpath([os.path.realpath(path), models_dir]) == models_dir
+
+
+def write_text_atomic(file_path, text: str) -> None:
+    """Write ``text`` to ``file_path`` via a same-directory temp file and
+    ``os.replace``, keeping the target's permissions, so a crash mid-write
+    never leaves a truncated file."""
+    real_path = os.path.realpath(file_path)
+    try:
+        mode = os.stat(real_path).st_mode & 0o7777
+    except FileNotFoundError:
+        mode = None
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(real_path) or ".", prefix=".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, real_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def write_yaml_atomic(file_path, data):
     """Replace a YAML file with ``data`` as its complete document, atomically.
 

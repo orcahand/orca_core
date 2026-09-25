@@ -181,8 +181,8 @@ joint_motor_travel:
   index_pip: 102.13
   ...
 calibration_travel_margin: 0.25
-calibration_retry_current: 450
 calibration_travel_retries: 1
+# calibration_max_current: <mA>   # optional headroom for the re-drive
 ```
 
 `joint_motor_travel` records how far each joint's motor turns between that
@@ -197,20 +197,26 @@ of its hardstops, the routine compares the travel it just measured against this
 baseline. An over-tensioned tendon makes the drive stall *before* the hardstop,
 so the two limits come out too close together and every angle derived from them
 is wrong. When the measurement falls more than `calibration_travel_margin`
-(a fraction, default `0.25`) below the baseline, that joint alone is re-driven
-at a higher current, then the nominal calibration current is restored for the
-rest of the run. Travel *above* the baseline is reported but never re-driven —
+(a fraction, default `0.25`) below the baseline, that joint alone is re-driven,
+at a higher current when `calibration_max_current` grants headroom, then the
+nominal calibration current is restored for the rest of the run. Travel *above* the baseline is reported but never re-driven —
 more current cannot shorten a span; that points at a slipped tendon or a stale
 baseline.
 
 - `calibration_travel_margin` — accepted fractional deviation. Default `0.25`.
-- `calibration_retry_current` — current (mA) the last re-drive uses. Must exceed
-  `calibration_current`. Omit it and it defaults to 1.5x `calibration_current`.
+- `calibration_max_current` — ceiling (mA) the re-drive may use. Omit it and
+  every re-drive repeats the sweep at `calibration_current`, which still helps
+  a joint that only needed a second pass but gives no extra torque. Set it
+  above `calibration_current` to let the re-drive escalate. Never below the
+  motor family's protection limit is enforced by the client.
+- `calibration_retry_current` — current (mA) the last re-drive aims for. Must
+  exceed `calibration_current`. Omit it and it defaults to 1.5x
+  `calibration_current`. Only reached when `calibration_max_current` allows it.
 - `calibration_travel_retries` — how many re-drives to attempt. Default `1`.
   With more than one, the current ramps evenly from `calibration_current` up to
-  `calibration_retry_current`, so a joint that only needs a nudge is not driven
-  at the full retry current on the first try. Set `0` to report the shortfall
-  and never re-drive.
+  the target, capped by `calibration_max_current`, so a joint that only needs
+  a nudge is not driven at the full retry current on the first try. Set `0` to
+  report the shortfall and never re-drive.
 
 **What should be changed?**
 

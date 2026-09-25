@@ -261,14 +261,12 @@ Cycles <code>thumb_mcp</code> and <code>thumb_dip</code> across their full confi
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, uses the default config path.</li><br>
     <li><strong>--num-steps</strong>: Interpolation steps per move.</li><br>
     <li><strong>--step-size</strong>: Sleep between interpolation steps in seconds.</li><br>
-    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li><br>
-    <li><strong>--freeze-abduction</strong>: Leave every <code>*_abd</code> joint out of the commanded pose so it holds wherever it already is, instead of fanning the fingers out.</li>
+    <li><strong>--hold</strong>: Seconds to hold each pose after motion completes (default: 2).</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
 python scripts/stress_test.py /path/to/orcahand-right/config.yaml --hold 1
-python scripts/stress_test.py --freeze-abduction
 ```
 </details>
 

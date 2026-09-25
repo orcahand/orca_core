@@ -154,6 +154,14 @@ class FeetechClient(MotorClient):
     # Mode 0 is position control under the goal-current limit, which is what
     # backs CURRENT_BASED_POSITION here.
     supported_modes = frozenset({POSITION, VELOCITY, CURRENT_BASED_POSITION})
+    # The status byte the servo returns with every reply (vendored SDK ERRBIT_*).
+    hardware_error_bits = (
+        (0x01, "input_voltage"),
+        (0x02, "angle_sensor"),
+        (0x04, "overheating"),
+        (0x08, "overcurrent"),
+        (0x20, "overload"),
+    )
     position_range_rad = POSITION_RANGE_RAD
     current_scale_ma = HLS.CURRENT_SCALE_MA
     max_current_ma = HLS.GOAL_CURRENT_MAX_RAW * HLS.CURRENT_SCALE_MA

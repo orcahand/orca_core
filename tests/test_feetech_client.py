@@ -473,3 +473,15 @@ def test_connect_succeeds_when_flock_unavailable(monkeypatch):
     finally:
         feetech._connected = False
         FeetechClient.OPEN_CLIENTS.discard(feetech)
+
+
+def test_feetech_decodes_its_own_status_byte_layout():
+    """The servo's status byte is not Dynamixel's: bit 1 is the angle sensor
+    and bit 3 over-current, so the calibration fault gate must read them as such."""
+    from orca_core.hardware.dynamixel_client import DynamixelClient
+
+    assert FeetechClient.decode_hardware_error(0x02) == ["angle_sensor"]
+    assert FeetechClient.decode_hardware_error(0x08) == ["overcurrent"]
+    assert FeetechClient.decode_hardware_error(0x0C) == ["overheating", "overcurrent"]
+    assert FeetechClient.decode_hardware_error(0) == []
+    assert DynamixelClient.decode_hardware_error(0x08) == ["motor_encoder"]

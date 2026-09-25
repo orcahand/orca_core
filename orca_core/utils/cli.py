@@ -186,6 +186,62 @@ def print_calibration_progress(event: dict) -> None:
             f"of {event['expected_deg']:.1f} deg; re-drive disabled "
             f"(calibration_travel_retries: 0)."
         )
+    elif name == "measured_rom_recorded":
+        lo, hi = event["rom"]
+        print(
+            f"  {event['joint']} measured ROM {lo:.1f}..{hi:.1f} deg "
+            f"({event['deviation_deg']:+.1f} deg vs config)"
+        )
+    elif name == "measured_rom_rejected":
+        print(
+            f"  WARNING: {event['joint']} measured span {event['span_deg']:.1f} deg "
+            f"is {event['deviation_deg']:+.1f} deg off the config ROM; keeping the "
+            f"config ROM for this joint."
+        )
+    elif name == "motor_faulted":
+        flags = " + ".join(event.get("flags") or []) or "a hardware fault"
+        temp = event.get("temperature_c")
+        temp_note = f" at {temp:.0f} degC" if temp is not None else ""
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) has latched "
+            f"{flags}{temp_note}; skipped. Power-cycle the hand once it has cooled."
+        )
+    elif name == "torque_enable_failed":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) did not "
+            f"acknowledge torque enable; skipped this step."
+        )
+    elif name == "sweep_no_motion":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) did not move "
+            f"during its {event.get('direction') or ''} sweep "
+            f"({event['moved_deg']:.1f} deg); check the tendon and the joint."
+        )
+    elif name == "drive_step_timeout":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) never settled "
+            f"on a hardstop; giving up on this direction, limit not recorded."
+        )
+    elif name == "limits_rejected":
+        print(
+            f"  ERROR: {event['joint']} swept only {event['travel_deg']:.1f} deg "
+            f"of motor travel ({event.get('reason', 'rejected')}); limits not "
+            f"recorded, previous calibration kept."
+        )
+    elif name == "travel_retry_skipped":
+        print(
+            f"  ERROR: {event['joint']} travelled {event['travel_deg']:.1f} deg "
+            f"of its {event['expected_deg']:.1f} deg baseline, under the "
+            f"{event['floor_deg']:.1f} deg floor: it did not move, so no "
+            f"re-drive was attempted."
+        )
+    elif name == "manual_capture_started":
+        print(
+            f"  Move {event['joint']} to its {event['direction']} hardstop "
+            f"(motor {event['motor']})."
+        )
+    elif name == "manual_capture_skipped":
+        print(f"  {event['joint']} {event['direction']} skipped; previous limit kept.")
     elif name == "calibration_done":
         boosted = event.get("boosted_joints") or {}
         if boosted:

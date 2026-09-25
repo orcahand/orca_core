@@ -102,11 +102,19 @@ def main():
     try:
         if not args.from_calibration:
             if args.current is not None:
-                hand.config = dataclasses.replace(
-                    hand.config,
+                cfg = hand.config
+                updates = dict(
                     calibration_current=args.current,
-                    max_current=max(args.current, hand.config.max_current),
+                    wrist_calibration_current=args.current,
+                    max_current=max(args.current, cfg.max_current),
                 )
+                # A pinned retry ceiling below the new sweep current would fail
+                # validation; fall back to the derived values for this run.
+                if cfg.calibration_retry_current is not None and cfg.calibration_retry_current <= args.current:
+                    updates["calibration_retry_current"] = None
+                if cfg.calibration_max_current is not None and cfg.calibration_max_current < args.current:
+                    updates["calibration_max_current"] = None
+                hand.config = dataclasses.replace(cfg, **updates)
                 print(f"Sweeping at {args.current} mA.")
             print("Driving every joint onto both hardstops...")
             hand.calibrate(
@@ -125,9 +133,13 @@ def main():
             print("Dry run: config.yaml not written.")
             return
 
-        stored = write_joint_motor_travel(
-            hand.config.config_path, measured, merge=not args.replace
-        )
+        try:
+            stored = write_joint_motor_travel(
+                hand.config.config_path, measured, merge=not args.replace
+            )
+        except ValueError as e:
+            print(f"Not written: {e}")
+            sys.exit(1)
         print(
             f"Wrote joint_motor_travel for {len(stored)} joint(s) to "
             f"{hand.config.config_path}"
