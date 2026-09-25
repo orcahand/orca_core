@@ -575,3 +575,16 @@ def test_null_calibration_max_current_means_unset(model_dir):
 
     path = _write_config(model_dir, calibration_max_current=None)
     assert OrcaHandConfig.from_config_path(config_path=path).calibration_max_current is None
+
+
+def test_packaged_path_check_treats_another_drive_as_outside_the_package(monkeypatch):
+    """On Windows commonpath raises for paths on different drives; a temp dir on
+    C: while the package sits on D: is simply not a packaged path."""
+    import os
+    from orca_core.utils import utils
+
+    def other_drive(paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", other_drive)
+    assert utils.is_packaged_model_path("/somewhere/else/config.yaml") is False

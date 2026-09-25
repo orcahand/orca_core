@@ -198,8 +198,13 @@ def is_packaged_model_path(path) -> bool:
     Packaged configs are shared by every hand of a model; anything measured
     on one hand must never be written into them.
     """
-    models_dir = os.path.realpath(_get_models_dir())
-    return os.path.commonpath([os.path.realpath(path), models_dir]) == models_dir
+    models_dir = os.path.normcase(os.path.realpath(_get_models_dir()))
+    candidate = os.path.normcase(os.path.realpath(path))
+    try:
+        return os.path.commonpath([candidate, models_dir]) == models_dir
+    except ValueError:
+        # Different drives on Windows: cannot be inside the package tree.
+        return False
 
 
 def write_text_atomic(file_path, text: str) -> None:
