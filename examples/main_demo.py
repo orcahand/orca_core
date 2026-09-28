@@ -10,9 +10,18 @@ def main() -> int:
         description="Run a simple open-close-pinch demo using the current hand config."
     )
     add_hand_arguments(parser)
-    parser.add_argument("--cycles", type=int, default=3)
-    parser.add_argument("--num-steps", type=int, default=8)
-    parser.add_argument("--step-size", type=float, default=0.02)
+    parser.add_argument(
+        "--cycles", type=int, default=3,
+        help="Times the pose sequence is repeated.",
+    )
+    parser.add_argument(
+        "--num-steps", type=int, default=8,
+        help="Interpolation steps per pose transition; higher is smoother and slower.",
+    )
+    parser.add_argument(
+        "--step-size", type=float, default=0.02,
+        help="Seconds to pause between interpolation steps.",
+    )
     args = parser.parse_args()
 
     hand = create_hand_from_args(args)

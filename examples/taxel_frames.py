@@ -53,8 +53,15 @@ def main():
         "config_path", nargs="?", default=None,
         help="Path to config.yaml; omit to autodetect the connected hand.",
     )
-    parser.add_argument("--frame", default=frames.FINGERTIP, choices=frames.FRAMES)
-    parser.add_argument("--mock", action="store_true", help="run without hardware")
+    parser.add_argument(
+        "--frame", default=frames.FINGERTIP, choices=frames.FRAMES,
+        help="Frame the taxel positions and forces are expressed in. palm, base "
+             "and world need live joint angles, so they also open the motor bus.",
+    )
+    parser.add_argument(
+        "--mock", action="store_true",
+        help="Run without hardware, on synthetic tactile data and a fixed joint pose.",
+    )
     args = parser.parse_args()
 
     needs_joints = args.frame in (frames.PALM, frames.BASE, frames.WORLD)
