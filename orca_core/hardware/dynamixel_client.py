@@ -93,9 +93,12 @@ DEFAULT_CUR_SCALE = 1.0
 GAIN_MAX = 16383
 PROFILE_MAX = 32767
 
-# A rebooting motor is off the bus while its firmware restarts; writes sent
-# before it answers again are lost.
+# A rebooting motor is off the bus while its firmware restarts (about 340 ms
+# on an XC330); writes sent before it answers again are lost without a trace,
+# so the client pings until it is back before restoring anything.
 MOTOR_REBOOT_SETTLE_S = 0.3
+MOTOR_REBOOT_TIMEOUT_S = 2.0
+MOTOR_REBOOT_POLL_S = 0.02
 
 # Baud rate mapping for Dynamixel motors, see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/#baud-rate
 BAUD_RATE_MAP = {
@@ -598,6 +601,7 @@ class DynamixelClient(MotorClient):
         (Goal Current, unlike Operating Mode, which is EEPROM and survives).
         Without this a recovered motor runs uncapped until something calls
         set_max_current again, drawing far more than its configured limit.
+        Returns once the motor answers again, or after ``MOTOR_REBOOT_TIMEOUT_S``.
         Torque is deliberately left off: re-energizing is the caller's call.
         """
         with self._bus_lock:
@@ -621,9 +625,28 @@ class DynamixelClient(MotorClient):
 
     def _restore_ram_after_reboot(self, motor_id: int) -> None:
         """Re-apply the RAM settings a reboot cleared, once the motor answers."""
-        if self._ram_settings.get(int(motor_id)):
-            time.sleep(MOTOR_REBOOT_SETTLE_S)
-            self._replay_ram(motor_id)
+        if not self._ram_settings.get(int(motor_id)):
+            return
+        if not self._await_motor_after_reboot(motor_id):
+            logging.error(
+                '[Motor ID: %d] did not answer within %.1f s of its reboot; its '
+                'RAM settings (current ceiling, servo gains) were not restored.',
+                motor_id, MOTOR_REBOOT_TIMEOUT_S)
+            return
+        self._replay_ram(motor_id)
+
+    def _await_motor_after_reboot(self, motor_id: int) -> bool:
+        """Ping until the rebooted motor answers; False if it never does."""
+        deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
+        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        while True:
+            _, comm_result, _ = self.packet_handler.ping(self.port_handler, motor_id)
+            if comm_result == self.dxl.COMM_SUCCESS:
+                return True
+            if time.monotonic() >= deadline:
+                self._flush_input_buffer()
+                return False
+            time.sleep(MOTOR_REBOOT_POLL_S)
 
     def _replay_ram(self, motor_id: int) -> None:
         for (address, size), value in self._ram_settings.get(int(motor_id), {}).items():
