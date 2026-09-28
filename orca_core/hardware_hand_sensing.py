@@ -809,7 +809,12 @@ class OrcaHandJointFeedback(OrcaHand):
         self._refuse_routine_while_loop_runs("jitter")
         return super().jitter(*args, **kwargs)
 
-    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
+    def init_joints(
+        self,
+        force_calibrate: bool = False,
+        move_to_neutral: bool = True,
+        progress_callback=None,
+    ):
         """Prepare the hand for operation (see :meth:`OrcaHand.init_joints`).
 
         With the joint loop running, calibration cannot run: joints
@@ -826,7 +831,9 @@ class OrcaHandJointFeedback(OrcaHand):
         self._init_skip_calibrate = self._loop is not None
         try:
             return super().init_joints(
-                force_calibrate=force_calibrate, move_to_neutral=move_to_neutral
+                force_calibrate=force_calibrate,
+                move_to_neutral=move_to_neutral,
+                progress_callback=progress_callback,
             )
         finally:
             self._init_skip_calibrate = False

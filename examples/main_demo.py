@@ -1,6 +1,12 @@
 import argparse
 
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
+from orca_core.utils.cli import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand_from_args,
+    print_calibration_progress,
+    shutdown_hand,
+)
 
 from demo_runner import run_demo
 
@@ -27,7 +33,7 @@ def main() -> int:
     hand = create_hand_from_args(args)
     try:
         connect_hand(hand)
-        hand.init_joints()
+        hand.init_joints(progress_callback=print_calibration_progress)
 
         print("Cycling through open_hand -> power_grasp -> pinch -> neutral")
         run_demo(

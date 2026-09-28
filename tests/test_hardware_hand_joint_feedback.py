@@ -537,3 +537,18 @@ def test_teardown_warns_when_loop_join_times_out(joint_feedback_config, caplog):
         hand.disconnect()
 
     assert any("did not stop" in record.message for record in caplog.records)
+
+
+def test_init_joints_forwards_the_progress_callback(joint_feedback_config):
+    """A joint-feedback hand calibrates through its own init_joints override,
+    which must not drop the caller's reporter on the way through."""
+    hand = make_calibrated_joint_feedback_hand(joint_feedback_config)
+    hand.connect(engage_feedback=False)
+    events = []
+    try:
+        hand.init_joints(force_calibrate=True, move_to_neutral=False,
+                         progress_callback=events.append)
+    finally:
+        hand.disconnect()
+
+    assert "calibration_started" in {e["event"] for e in events}
