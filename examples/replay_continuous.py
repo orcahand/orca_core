@@ -18,7 +18,14 @@ from orca_core.utils.cli import (
 def main() -> int:
     parser = argparse.ArgumentParser(description="Replay a continuous joint recording.")
     add_hand_arguments(parser)
-    parser.add_argument("--replay-file", type=str, required=True)
+    parser.add_argument(
+        "--replay-file", type=str, required=True,
+        help="Recording to replay; its sampling_frequency_hz sets the replay rate.",
+    )
+    parser.add_argument(
+        "--approach-time", type=float, default=1.0,
+        help="Seconds spent moving onto the first recorded frame.",
+    )
     args = parser.parse_args()
 
     replay_path = resolve_input_path(args.replay_file)
@@ -58,8 +65,16 @@ def main() -> int:
                 f"but the connected config is {hand.config.type}."
             )
 
-        print(f"Replaying {len(waypoints)} frames from {replay_path}")
         step_time = 1.0 / sampling_frequency
+        # Neutral is wherever init_joints left the hand, so the first frame is
+        # approached gradually instead of at full speed.
+        hand.set_joint_positions(
+            np.asarray(waypoints[0], dtype=np.float64),
+            num_steps=max(1, int(args.approach_time * sampling_frequency)),
+            step_size=step_time,
+        )
+
+        print(f"Replaying {len(waypoints)} frames from {replay_path}")
         start_time = time.time()
         for index, pose in enumerate(waypoints):
             hand.set_joint_positions(np.asarray(pose, dtype=np.float64))
