@@ -11,6 +11,7 @@ deregistered by ``disconnect()`` even when its torque-off raises.
 """
 
 import inspect
+import logging
 import types
 
 import numpy as np
@@ -28,7 +29,7 @@ from orca_core.hardware.mock_feetech_client import (
     MockFeetechClient,
     feetech_cleanup_handler as mock_feetech_cleanup_handler,
 )
-from orca_core.hardware.motor_client import MotorClient
+from orca_core.hardware.motor_client import MotorClient, ServoGains
 
 # (mock class, its module, its atexit cleanup handler) for every family.
 MOCK_FAMILIES = [
@@ -271,3 +272,72 @@ def test_every_family_declares_its_current_defaults(real, mock, expected):
         assert isinstance(cls.default_calibration_current_ma, int)
     assert (mock.default_max_current_ma, mock.default_calibration_current_ma) == (
         real.default_max_current_ma, real.default_calibration_current_ma)
+
+
+def test_read_hardware_errors_is_uniform_across_family():
+    """Every client answers for a whole chain in one call.
+
+    The bus is half-duplex, so a caller sweeping latched errors must not be
+    forced into a round trip per motor. Families that cannot batch inherit the
+    ABC's per-motor fallback, but the entry point is the same everywhere.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "read_hardware_errors"), cls.__name__
+
+    # A family with no batch primitive still answers, via the ABC default.
+    per_motor = types.SimpleNamespace(
+        read_hardware_error=lambda motor_id: 0x20 if motor_id == 2 else 0,
+    )
+    fallback = MotorClient.read_hardware_errors(per_motor, [1, 2])
+    assert fallback == {1: 0, 2: 0x20}
+    assert MotorClient.read_hardware_errors(per_motor, []) == {}
+
+
+def test_take_hardware_alerts_is_uniform_across_family():
+    """Noticing a latched fault is free; acting on it is the caller's call.
+
+    Every client offers the same drain, so a front-end never has to know which
+    family it is talking to. Families that cannot see the byte report nothing
+    rather than making the caller pay for a second read.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "take_hardware_alerts"), cls.__name__
+
+    blind = types.SimpleNamespace()
+    assert MotorClient.take_hardware_alerts(blind) == {}
+
+
+def test_servo_gains_are_uniform_across_family():
+    """Every client answers the same way, so a front-end never branches on
+    motor family. Families that cannot reach the registers report None
+    rather than raising."""
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert hasattr(cls, "read_servo_gains"), cls.__name__
+        assert hasattr(cls, "write_servo_gains"), cls.__name__
+
+    blind = types.SimpleNamespace()
+    assert MotorClient.read_servo_gains(blind, [1, 2]) == {1: None, 2: None}
+    assert MotorClient.write_servo_gains(blind, {1: ServoGains(kp=1)}) is None
+
+
+def test_a_family_without_servo_registers_says_so_instead_of_dropping_the_write(caplog):
+    blind = types.SimpleNamespace()
+    with caplog.at_level(logging.WARNING, logger="orca_core.hardware.motor_client"):
+        MotorClient.write_servo_gains(blind, {1: ServoGains(kp=1)})
+        MotorClient.write_servo_profile(blind, {})
+    assert caplog.text.count("was ignored") == 1
+
+
+def test_partial_gain_writes_leave_the_other_fields_alone(connected_mock):
+    """A caller nudging one gain must not silently zero the rest."""
+    if not isinstance(connected_mock, MockDynamixelClient):
+        pytest.skip("gain registers are Dynamixel-only for now")
+    before = connected_mock.read_servo_gains([1])[1]
+    connected_mock.write_servo_gains({1: ServoGains(kp=1234)})
+    after = connected_mock.read_servo_gains([1])[1]
+    assert after.kp == 1234
+    assert (after.ki, after.kd, after.ff_1st, after.ff_2nd) == (
+        before.ki, before.kd, before.ff_1st, before.ff_2nd)

@@ -68,6 +68,18 @@ def _make_sdk(models: dict[int, int], writes: list):
             self.data_dict[motor_id] = [None, address, size]
             return True
 
+    class GroupSyncRead:
+        """Same shape as the SDK's: one address and size for every motor."""
+
+        def __init__(self, port, packet_handler, address, size):
+            self.address = address
+            self.size = size
+            self.data_dict = {}
+
+        def addParam(self, motor_id):
+            self.data_dict[motor_id] = [None, self.address, self.size]
+            return True
+
     class GroupSyncWrite:
         def __init__(self, port, packet_handler, address, size):
             self.address = address
@@ -91,6 +103,7 @@ def _make_sdk(models: dict[int, int], writes: list):
     sdk.PortHandler = PortHandler
     sdk.PacketHandler = PacketHandler
     sdk.GroupBulkRead = GroupBulkRead
+    sdk.GroupSyncRead = GroupSyncRead
     sdk.GroupSyncWrite = GroupSyncWrite
     return sdk
 

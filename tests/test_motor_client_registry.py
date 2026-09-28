@@ -93,12 +93,14 @@ def _make_fake_dxl_sdk():
         def getRxPacketError(self, dxl_error):
             return str(dxl_error)
 
-    class GroupBulkRead:
-        def __init__(self, port, packet_handler):
+    class GroupSyncRead:
+        def __init__(self, port, packet_handler, address, size):
+            self.start_address = address
+            self.data_length = size
             self.data_dict = {}
 
-        def addParam(self, motor_id, address, size):
-            self.data_dict[motor_id] = [None, address, size]
+        def addParam(self, motor_id):
+            self.data_dict[motor_id] = []
             return True
 
     class GroupSyncWrite:
@@ -120,7 +122,7 @@ def _make_fake_dxl_sdk():
     sdk.COMM_NOT_AVAILABLE = -3002
     sdk.PortHandler = PortHandler
     sdk.PacketHandler = PacketHandler
-    sdk.GroupBulkRead = GroupBulkRead
+    sdk.GroupSyncRead = GroupSyncRead
     sdk.GroupSyncWrite = GroupSyncWrite
     return sdk
 

@@ -430,6 +430,16 @@ def test_init_joints_force_calibrate_on_mock_leaves_disk_untouched(fresh_mock_di
     assert not (fresh_mock_dir / "calibration.yaml").exists()
 
 
+def test_init_joints_leaves_every_motor_torqued_after_calibrating(fresh_mock_dir):
+    """Calibration torques motors step by step; a hand that comes out of
+    init_joints() with most motors limp cannot hold the neutral pose."""
+    hand = MockOrcaHand(config_path=str(fresh_mock_dir / "config.yaml"))
+    hand.connect()
+    hand.init_joints(force_calibrate=True)
+    torqued = hand.motor_client._torque_enabled
+    assert all(torqued[mid] for mid in hand.config.motor_ids), torqued
+
+
 def test_synthesized_mock_limits_fit_mock_motor_travel(fresh_mock_dir):
     hand = MockOrcaHand(config_path=str(fresh_mock_dir / "config.yaml"))
     hand.connect()
