@@ -21,7 +21,12 @@ from ..constants import (
     POSITION,
     VELOCITY,
 )
-from .motor_client import MotionTimeoutError, MotorClient, MotorRead
+from .motor_client import (
+    MotionTimeoutError,
+    MotorClient,
+    MotorRead,
+    ServoGains,
+)
 from .feetech import (
     PortHandler,
     protocol_packet_handler,
@@ -679,6 +684,74 @@ class FeetechClient(MotorClient):
             self._log_status_error(motor_id, error, 'mode read')
         self._motor_modes[motor_id] = mode
         return mode
+
+    def read_servo_gains(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoGains | None]":
+        """The position-loop gains each servo is running.
+
+        Kp, Kd and Ki live at 50-52 in SRAM, loaded from their EEPROM
+        counterparts at power-up. This family has no feedforward terms, so
+        those are reported as ``None`` rather than zero: nothing to set is
+        not the same as set to nothing.
+        """
+        out: "dict[int, ServoGains | None]" = {}
+        with self._bus_lock:
+            for motor_id in motor_ids:
+                motor_id = int(motor_id)
+                values = []
+                for offset in range(HLS.GAIN_BLOCK_LEN):
+                    value, result, error = self.packet_handler.read1ByteTxRx(
+                        motor_id, HLS.GAIN_BLOCK + offset)
+                    if result != COMM_SUCCESS or error != 0:
+                        values = []
+                        break
+                    values.append(int(value))
+                if len(values) != HLS.GAIN_BLOCK_LEN:
+                    self._flush_input_buffer()
+                    out[motor_id] = None
+                    continue
+                kp, kd, ki = values
+                out[motor_id] = ServoGains(kp=kp, ki=ki, kd=kd)
+        return out
+
+    def write_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set the position-loop gains, per motor.
+
+        SRAM registers, so a power cycle restores whatever EEPROM holds and
+        these are forgotten. Feedforward fields are refused rather than
+        silently dropped: a caller that asked for one is tuning against a
+        term this family does not have.
+        """
+        for motor_id, wanted in gains.items():
+            for name in ("ff_1st", "ff_2nd"):
+                if getattr(wanted, name) is not None:
+                    raise ValueError(
+                        f"{type(self).__name__} has no {name}: this family's "
+                        "position loop is PID only")
+            for name in ("kp", "ki", "kd"):
+                value = getattr(wanted, name)
+                if value is not None and value > HLS.GAIN_MAX:
+                    raise ValueError(
+                        f"{name} must be 0..{HLS.GAIN_MAX}, got {value}")
+
+        with self._bus_lock:
+            for motor_id, wanted in gains.items():
+                motor_id = int(motor_id)
+                for address, value in (
+                    (HLS.KP, wanted.kp),
+                    (HLS.KD, wanted.kd),
+                    (HLS.KI, wanted.ki),
+                ):
+                    if value is None:
+                        continue
+                    result, error = self.packet_handler.write1ByteTxRx(
+                        motor_id, address, int(value))
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"gain write to motor {motor_id} register "
+                            f"{address} failed: result={result}, error={error}")
 
     def read_current_limits(self) -> "dict[int, float | None]":
         """Read each motor's protection current (register 28), its goal-current ceiling, in mA.

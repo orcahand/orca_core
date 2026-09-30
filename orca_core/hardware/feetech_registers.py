@@ -19,6 +19,9 @@ class HLS:
     GOAL_CURRENT = 44         # 6.5 mA/unit, -2047..2047; caps the running current in modes 0-2
     GOAL_SPEED = 46           # 0.732 rpm/unit, BIT15 sign
     TORQUE_LIMIT = 48         # 0.1 %/unit, 0..1000; a different register from GOAL_CURRENT, never written
+    KP = 50                   # position loop P, 0..254; loaded from EEPROM 21 at power-up
+    KD = 51                   # position loop D, 0..254; loaded from EEPROM 22
+    KI = 52                   # position loop I, 0..254; loaded from EEPROM 23
     LOCK = 55                 # 0: EEPROM writes persist across power-down, 1: they do not
 
     # SRAM, read-only
@@ -27,6 +30,10 @@ class HLS:
     PRESENT_TEMPERATURE = 63
     MOVING = 66
     PRESENT_CURRENT = 69      # 6.5 mA/unit, BIT15 sign
+
+    GAIN_BLOCK = KP           # KP, KD, KI are contiguous and read/write as one block
+    GAIN_BLOCK_LEN = 3
+    GAIN_MAX = 254
 
     CURRENT_SCALE_MA = 6.5
     GOAL_CURRENT_MAX_RAW = 2047
