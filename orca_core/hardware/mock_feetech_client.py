@@ -51,6 +51,7 @@ class MockFeetechClient(MotorClient):
     supports_multi_turn = FeetechClient.supports_multi_turn
     supported_modes = FeetechClient.supported_modes
     position_range_rad = FeetechClient.position_range_rad
+    servo_gain_max = FeetechClient.servo_gain_max
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma

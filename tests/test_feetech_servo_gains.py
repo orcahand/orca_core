@@ -85,3 +85,23 @@ def test_a_gain_above_the_register_range_is_refused():
     with pytest.raises(ValueError) as caught:
         client.write_servo_gains({1: ServoGains(kp=HLS.GAIN_MAX + 1)})
     assert str(HLS.GAIN_MAX) in str(caught.value)
+
+
+def test_each_family_reports_its_own_register_width():
+    """A front-end that assumes one family's width offers values the other
+    refuses: the X-series holds gains in two bytes, an HLS servo in one."""
+    from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+
+    assert MockFeetechClient.servo_gain_max == HLS.GAIN_MAX == 254
+    assert MockDynamixelClient.servo_gain_max == 16383
+
+
+def test_the_bound_is_absent_where_gains_are():
+    """None is the honest answer for a family exposing no gains at all."""
+    assert MotorClient.servo_gain_max is None
+
+
+def test_the_mocks_carry_the_same_bound_as_the_hardware():
+    from orca_core.hardware.feetech_client import FeetechClient
+
+    assert MockFeetechClient.servo_gain_max == FeetechClient.servo_gain_max

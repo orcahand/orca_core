@@ -206,6 +206,15 @@ class MotorClient(ABC):
     position_range_rad: ClassVar["tuple[float, float] | None"] = None
     """Commandable position span in radians; ``None`` means unbounded/wrapping."""
 
+    servo_gain_max: ClassVar["int | None"] = None
+    """Largest value the servo's position-PID registers accept.
+
+    A register width, not a tuning recommendation: the X-series holds gains in
+    two bytes capped at 16383, an HLS servo in one byte capped at 254. A
+    front-end that assumes one family's width offers values the other refuses.
+    ``None`` where the family exposes no gains at all.
+    """
+
     max_operating_temp_c: ClassVar[float] = 70.0
     """Maximum rated operating temperature in degrees Celsius (XC330/XC430, HLS3930/HLS3915)."""
 

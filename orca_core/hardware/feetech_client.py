@@ -149,6 +149,7 @@ class FeetechClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 1_000_000
     baud_rate_map = FEETECH_BAUD_RATE_MAP
+    servo_gain_max = HLS.GAIN_MAX
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
