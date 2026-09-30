@@ -91,6 +91,7 @@ class MockDynamixelClient(MotorClient):
     factory_default_id = DynamixelClient.factory_default_id
     factory_default_baudrate = DynamixelClient.factory_default_baudrate
     baud_rate_map = DynamixelClient.baud_rate_map
+    servo_gain_max = DynamixelClient.servo_gain_max
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma

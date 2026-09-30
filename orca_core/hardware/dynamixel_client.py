@@ -173,6 +173,7 @@ class DynamixelClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
+    servo_gain_max = GAIN_MAX
     return_delay_time_us = DYNAMIXEL_RETURN_DELAY_TIME_US
 
     # Goal Current (102) on the XC330-T288-T: 1 mA per unit, bounded by its

@@ -17,7 +17,7 @@ import numpy as np
 
 from .feetech_client import FeetechClient
 from .feetech_registers import HLS
-from .motor_client import MotorClient, MotorRead
+from .motor_client import MotorClient, MotorRead, ServoGains
 
 
 def feetech_cleanup_handler():
@@ -51,6 +51,7 @@ class MockFeetechClient(MotorClient):
     supports_multi_turn = FeetechClient.supports_multi_turn
     supported_modes = FeetechClient.supported_modes
     position_range_rad = FeetechClient.position_range_rad
+    servo_gain_max = FeetechClient.servo_gain_max
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma
@@ -91,6 +92,11 @@ class MockFeetechClient(MotorClient):
 
         self.port_handler = _MockPortHandler(port)
 
+        # The gains a Feetech servo powers up with, from its EEPROM
+        # counterparts. Read off a real chain: Kp 32, Kd 32, Ki 0.
+        self._servo_gains = {
+            int(mid): ServoGains(kp=32, ki=0, kd=32) for mid in self.motor_ids}
+
         # States for simulation.
         self._connected = False
         self._torque_enabled = {mid: False for mid in self.motor_ids}
@@ -127,6 +133,31 @@ class MockFeetechClient(MotorClient):
         # never make the hand stiffen, move, or change a mode register.
 
         self.OPEN_CLIENTS.add(self)
+
+    def read_servo_gains(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}
+
+    def write_servo_gains(self, gains) -> None:
+        """Merge the named fields; ``None`` leaves one as it was.
+
+        Refuses feedforward for the same reason the hardware client does:
+        this family's position loop is PID only.
+        """
+        self.check_connected()
+        for motor_id, wanted in gains.items():
+            for name in ("ff_1st", "ff_2nd"):
+                if getattr(wanted, name) is not None:
+                    raise ValueError(
+                        f"{type(self).__name__} has no {name}: this family's "
+                        "position loop is PID only")
+            motor_id = int(motor_id)
+            current = self._servo_gains.get(motor_id) or ServoGains()
+            self._servo_gains[motor_id] = ServoGains(
+                kp=current.kp if wanted.kp is None else int(wanted.kp),
+                ki=current.ki if wanted.ki is None else int(wanted.ki),
+                kd=current.kd if wanted.kd is None else int(wanted.kd),
+            )
 
     def disconnect(self) -> None:
         """Disconnects from the simulated Feetech device.
