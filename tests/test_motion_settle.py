@@ -388,3 +388,38 @@ class TestDefaultProfile:
         default = client.default_profile([1])[1]
 
         assert default.velocity_rad_s / default.acceleration_rad_s2 < 0.6
+
+
+class TestFeetechPerMotorProfile:
+    """Each motor keeps its own profile. A single chain-wide acceleration
+    meant setting one motor's quietly set every motor's."""
+
+    def _client(self, ids):
+        cls = mock_motor_client_class("feetech")
+        client = cls(ids)
+        client.connect()
+        return client
+
+    def test_setting_one_motors_acceleration_leaves_the_others(self):
+        from orca_core.hardware.motor_client import ServoProfile
+
+        client = self._client([1, 2, 3])
+        before = client.read_servo_profile([2])[2].acceleration_rad_s2
+        client.write_servo_profile({1: ServoProfile(acceleration_rad_s2=5.0)})
+        after = client.read_servo_profile([1, 2, 3])
+
+        assert after[1].acceleration_rad_s2 == pytest.approx(5.0, abs=0.2)
+        assert after[2].acceleration_rad_s2 == pytest.approx(before)
+        assert after[3].acceleration_rad_s2 == pytest.approx(before)
+
+    def test_motors_can_hold_different_accelerations_at_once(self):
+        from orca_core.hardware.motor_client import ServoProfile
+
+        client = self._client([1, 2])
+        client.write_servo_profile({
+            1: ServoProfile(acceleration_rad_s2=5.0),
+            2: ServoProfile(acceleration_rad_s2=20.0),
+        })
+        profile = client.read_servo_profile([1, 2])
+
+        assert profile[1].acceleration_rad_s2 != profile[2].acceleration_rad_s2

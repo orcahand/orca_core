@@ -734,10 +734,15 @@ class OrcaHand(BaseHand):
             return self._motor_client.read_position_velocity_current()
 
     def wait_for_motion(self, timeout: float = 5.0) -> None:
-        """Block until all motors have settled at their commanded position.
+        """Block until every motor has settled at its commanded position.
 
-        No-op for motor types fast enough that callers don't need to wait
-        (e.g., Dynamixel). Feetech polls a per-motor moving flag.
+        Settled means both that the servo has dropped its moving flag and
+        that it is within tolerance of the goal, because neither alone is
+        enough: the flag clears below a threshold that is still a real speed,
+        and position alone cannot tell arrival from passing through.
+
+        Whole-chain, so a motor that arrives first waits for the rest. A
+        recorded motion is implicitly synchronous.
 
         Args:
             timeout: Max seconds to wait.

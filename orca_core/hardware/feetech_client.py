@@ -266,7 +266,7 @@ class FeetechClient(MotorClient):
         # Per-motor motion parameters. Goal current and speed are registers the
         # motor keeps until overwritten, so they are commanded on their own
         # rather than re-sent with every position.
-        self._default_acc = DEFAULT_ACC
+        self._motor_acc = {mid: DEFAULT_ACC for mid in self.motor_ids}
         self._motor_speed = {mid: DEFAULT_SPEED for mid in self.motor_ids}
         self._model_numbers: dict[int, int] = {}
         # What each motor was last told to reach, in radians, so a cleared
@@ -817,7 +817,7 @@ class FeetechClient(MotorClient):
         with self._bus_lock:
             for motor_id, (acc_raw, speed_raw) in plan.items():
                 if acc_raw is not None:
-                    self._default_acc = acc_raw
+                    self._motor_acc[int(motor_id)] = acc_raw
                     result, error = self.packet_handler.write1ByteTxRx(
                         motor_id, HLS.ACC, acc_raw)
                     if result != COMM_SUCCESS or error != 0:
@@ -941,7 +941,8 @@ class FeetechClient(MotorClient):
         motion_write = self._sync_write(HLS.GOAL_CURRENT, 4)
         motion_write.clearParam()
         for motor_id in motor_ids:
-            acc_write.addParam(motor_id, [self._default_acc])
+            acc_write.addParam(
+                motor_id, [self._motor_acc.get(motor_id, DEFAULT_ACC)])
             motion_write.addParam(
                 motor_id, self._current_bytes(motor_id) + self._speed_bytes(motor_id))
         for writer, name in ((acc_write, 'acceleration'), (motion_write, 'current/speed')):
@@ -1483,7 +1484,6 @@ class FeetechClient(MotorClient):
         )
 
         with self._bus_lock:
-            acc = acc if acc is not None else self._default_acc
             sync_write = self._sync_write(HLS.ACC, HLS.POSITION_PROFILE_LEN)
             sync_write.clearParam()
 
@@ -1496,19 +1496,23 @@ class FeetechClient(MotorClient):
                     speed if speed is not None
                     else self._motor_speed.get(motor_id, DEFAULT_SPEED)
                 )
+                motor_acc = (
+                    acc if acc is not None
+                    else self._motor_acc.get(motor_id, DEFAULT_ACC)
+                )
                 if motor_id in override:
                     self._current_limit_raw[motor_id] = override[motor_id]
                 motor_current = self._current_limit_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
 
                 logging.debug(
                     'Position profile: motor=%d, pos=%d, speed=%d, acc=%d, current=%d',
-                    motor_id, pos_raw, motor_speed, acc, motor_current
+                    motor_id, pos_raw, motor_speed, motor_acc, motor_current
                 )
 
                 # One block per motor: acceleration, goal position, goal current, goal speed.
                 sync_write.addParam(
                     motor_id,
-                    [acc]
+                    [motor_acc]
                     + self._word_bytes(self.packet_handler.scs_toscs(pos_raw, 15))
                     + self._word_bytes(motor_current)
                     + self._word_bytes(self.packet_handler.scs_toscs(motor_speed, 15)),
