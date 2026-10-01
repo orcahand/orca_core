@@ -67,8 +67,8 @@ FEETECH_MODELS: dict[int, str] = {
 # or needlessly slow on the other.
 FEETECH_NO_LOAD_RPM: dict[int, float] = {
     4106: 45.0,
-    6922: 110.0,
-    5130: 110.0,
+    6922: 100.0,
+    5130: 100.0,
 }
 # For a motor that does not say what it is. The slowest catalogued model,
 # because the two errors are not symmetric: too low only makes a default

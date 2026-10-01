@@ -322,7 +322,7 @@ class TestFeetechProfileCeiling:
         client._model_numbers = {1: 4106, 2: 6922}
 
         assert client.no_load_speed_rad_s_for(1) == pytest.approx(4.712, abs=0.01)
-        assert client.no_load_speed_rad_s_for(2) == pytest.approx(11.519, abs=0.01)
+        assert client.no_load_speed_rad_s_for(2) == pytest.approx(10.472, abs=0.01)
         assert len(set(FEETECH_NO_LOAD_RPM.values())) > 1
 
     def test_a_motor_that_will_not_name_itself_gets_the_slowest(self):
