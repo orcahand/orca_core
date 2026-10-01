@@ -101,11 +101,16 @@ def test_disconnect_disables_torque_and_discards_client(mock_hand):
 
 
 def test_wait_for_motion_skips_the_bus_for_non_waiting_clients(mock_hand):
-    """Clients that report no motion wait must not reach the motor lock."""
+    """A client that reports no motion wait must not reach the motor lock.
+
+    The flag is set explicitly rather than taken from the family: every
+    shipped family waits now, because a goal write is only instantaneous
+    while the trajectory profile is zero.
+    """
     calls = []
     mock_hand._motor_client.wait_for_motion_complete = lambda **kw: calls.append(kw)
+    mock_hand._motor_client.waits_for_motion = False
 
-    assert not mock_hand._motor_client.waits_for_motion
     mock_hand.wait_for_motion(timeout=0.1)
     assert calls == []
 

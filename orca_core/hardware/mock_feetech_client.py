@@ -15,9 +15,9 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from .feetech_client import FeetechClient
+from .feetech_client import DEFAULT_ACC, DEFAULT_SPEED, FeetechClient
 from .feetech_registers import HLS
-from .motor_client import MotorClient, MotorRead, ServoGains
+from .motor_client import MotorClient, MotorRead, ServoGains, ServoProfile
 
 
 def feetech_cleanup_handler():
@@ -52,6 +52,9 @@ class MockFeetechClient(MotorClient):
     supported_modes = FeetechClient.supported_modes
     position_range_rad = FeetechClient.position_range_rad
     servo_gain_max = FeetechClient.servo_gain_max
+    profile_velocity_max_rad_s = FeetechClient.profile_velocity_max_rad_s
+    profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
+    profile_ceiling_source = FeetechClient.profile_ceiling_source
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma
@@ -96,6 +99,13 @@ class MockFeetechClient(MotorClient):
         # counterparts. Read off a real chain: Kp 32, Kd 32, Ki 0.
         self._servo_gains = {
             int(mid): ServoGains(kp=32, ki=0, kd=32) for mid in self.motor_ids}
+        # What orca_core writes at mode-set time, in SI units.
+        self._servo_profiles = {
+            int(mid): ServoProfile(
+                velocity_rad_s=DEFAULT_SPEED * HLS.SPEED_SCALE_RAD_S,
+                acceleration_rad_s2=DEFAULT_ACC * HLS.ACC_SCALE_RAD_S2,
+            )
+            for mid in self.motor_ids}
 
         # States for simulation.
         self._connected = False
@@ -133,6 +143,37 @@ class MockFeetechClient(MotorClient):
         # never make the hand stiffen, move, or change a mode register.
 
         self.OPEN_CLIENTS.add(self)
+
+    def read_servo_profile(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(mid): self._servo_profiles.get(int(mid)) for mid in motor_ids}
+
+    def write_servo_profile(self, profiles) -> None:
+        """Merge the named fields, translating 0 the way the hardware does.
+
+        Goal speed 0 stops this family rather than uncapping it, so the
+        client turns a requested 0 into the register maximum; the mock
+        reports back what the hardware would then hold.
+        """
+        self.check_connected()
+        for motor_id, wanted in profiles.items():
+            motor_id = int(motor_id)
+            current = self._servo_profiles.get(motor_id) or ServoProfile()
+            velocity = current.velocity_rad_s
+            if wanted.velocity_rad_s is not None:
+                value = float(wanted.velocity_rad_s)
+                if value < 0:
+                    raise ValueError("velocity must be non-negative")
+                velocity = 0.0 if value == 0.0 else value
+            acceleration = current.acceleration_rad_s2
+            if wanted.acceleration_rad_s2 is not None:
+                value = float(wanted.acceleration_rad_s2)
+                if value < 0:
+                    raise ValueError("acceleration must be non-negative")
+                acceleration = min(
+                    value, HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2)
+            self._servo_profiles[motor_id] = ServoProfile(
+                velocity_rad_s=velocity, acceleration_rad_s2=acceleration)
 
     def read_servo_gains(self, motor_ids: Sequence[int]):
         self.check_connected()

@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
-from .motor_client import MotorClient, MotorRead
+from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
 
@@ -37,6 +37,12 @@ ADDR_ID = 7
 ADDR_BAUD_RATE = 8
 ADDR_RETURN_DELAY_TIME = 9  # EEPROM, units of 2 us
 ADDR_OPERATING_MODE = 11
+ADDR_ACCELERATION_LIMIT = 40
+ADDR_VELOCITY_LIMIT = 44
+# 40..47 is contiguous, so both ceilings read back in one transaction.
+ADDR_LIMIT_BLOCK = ADDR_ACCELERATION_LIMIT
+LEN_LIMIT_BLOCK = 8
+LEN_LIMIT = 4
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
 # Position-PID and feedforward gains occupy one contiguous block, 80..91,
@@ -174,6 +180,15 @@ class DynamixelClient(MotorClient):
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
     servo_gain_max = GAIN_MAX
+    profile_velocity_max_rad_s = PROFILE_MAX * DEFAULT_VEL_SCALE
+    profile_ceiling_source = ("Velocity Limit (register 44) and Acceleration "
+                              "Limit (40), read per motor and enforced by the "
+                              "servo's own trajectory generator")
+    profile_acceleration_max_rad_s2 = PROFILE_MAX * PROFILE_ACC_SCALE
+    # A goal write is a step only while the trajectory profile is zero. Once
+    # a velocity or acceleration is set the servo ramps, and a caller that
+    # did not wait would move on mid-travel.
+    waits_for_motion = True
     return_delay_time_us = DYNAMIXEL_RETURN_DELAY_TIME_US
 
     # Goal Current (102) on the XC330-T288-T: 1 mA per unit, bounded by its
@@ -250,6 +265,9 @@ class DynamixelClient(MotorClient):
         )
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
+        # What each motor was last told to reach, in radians, for the
+        # arrival check. The servo does not volunteer its goal.
+        self._goal_positions: "dict[int, float]" = {}
         self._sync_writers = {}
         self._operating_modes = {}
         # RAM registers worth restoring after a reboot, per motor:
@@ -493,11 +511,68 @@ class DynamixelClient(MotorClient):
         """
         assert len(motor_ids) == len(positions)
 
+        # Remembered before the scaling: arrival is checked in radians, and
+        # the servo does not report what it was asked for without a read.
+        for motor_id, goal in zip(motor_ids, positions):
+            self._goal_positions[int(motor_id)] = float(goal)
+
         # Convert to Dynamixel position space.
         positions = positions / self._pos_vel_cur_reader.pos_scale
         times = self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
                         LEN_GOAL_POSITION)
         return times
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
+        """Block until every motor has stopped within tolerance of its goal.
+
+        Two conditions, because either alone lies. The moving flag clears on
+        a servo stalled short of its target, and position alone passes
+        through the goal while still travelling.
+
+        Raises:
+            MotionTimeoutError: naming the motors still unsettled.
+        """
+        self.check_connected()
+        deadline = time.time() + timeout
+        unsettled: "list[int]" = []
+        while True:
+            unsettled = self._unsettled_motors()
+            if not unsettled:
+                return
+            if time.time() >= deadline:
+                break
+            time.sleep(poll_interval)
+        raise MotionTimeoutError(
+            f"motors {sorted(unsettled)} did not settle within {timeout:g}s "
+            f"of their goal (tolerance {self.arrival_tolerance_rad:g} rad)")
+
+    def _unsettled_motors(self) -> "list[int]":
+        """Motors still moving, or stopped too far from where they were sent.
+
+        One bus read each for the moving flags and the positions, so the
+        whole chain is judged from the same instant rather than motor by
+        motor.
+        """
+        try:
+            moving = self._moving_status_reader.read().astype(np.int64)
+            positions = self._pos_vel_cur_reader.read()[0]
+        except Exception:
+            logging.debug("arrival poll failed", exc_info=True)
+            return list(self.motor_ids)
+        unsettled = []
+        for index, motor_id in enumerate(self.motor_ids):
+            if int(moving[index]) & 0x01:
+                unsettled.append(int(motor_id))
+                continue
+            goal = self._goal_positions.get(int(motor_id))
+            if goal is None:
+                # Never commanded through this client: a cleared moving flag
+                # is all we have, and it is enough.
+                continue
+            if abs(float(positions[index]) - goal) > self.arrival_tolerance_rad:
+                unsettled.append(int(motor_id))
+        return unsettled
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
         plan = self._goal_current_plan(motor_ids, current)
@@ -726,6 +801,60 @@ class DynamixelClient(MotorClient):
                 if ids:
                     self.sync_write(ids, values, address, LEN_GAIN)
                     self._remember_ram(ids, values, address, LEN_GAIN)
+
+    def read_profile_limits(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, ServoProfile]":
+        """Read Velocity Limit and Acceleration Limit for every motor at once.
+
+        These are what the servo's trajectory generator honours, and they are
+        far below what Profile Velocity will store: a chain of these motors
+        reports limits around 320 raw, roughly seven radians a second, against
+        a register that accepts 32767. A write above the limit is accepted and
+        reads back unchanged, so this is the only way to learn the real bound.
+
+        Either limit reading zero means that axis is unbounded, which is
+        reported as the register width. A motor that does not answer falls
+        back to the register width too, so a dropped packet cannot narrow a
+        caller's idea of the range.
+        """
+        motor_ids = [int(mid) for mid in motor_ids]
+        unbounded = ServoProfile(
+            velocity_rad_s=self.profile_velocity_max_rad_s,
+            acceleration_rad_s2=self.profile_acceleration_max_rad_s2,
+        )
+        out: "dict[int, ServoProfile]" = {mid: unbounded for mid in motor_ids}
+        if not motor_ids:
+            return out
+        vel_scale = self._pos_vel_cur_reader.vel_scale
+        with self._bus_lock:
+            reader = self.dxl.GroupSyncRead(
+                self.port_handler, self.packet_handler,
+                ADDR_LIMIT_BLOCK, LEN_LIMIT_BLOCK)
+            try:
+                for mid in motor_ids:
+                    if not reader.addParam(mid):
+                        return out
+                if reader.txRxPacket() != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    return out
+                for mid in motor_ids:
+                    if not reader.isAvailable(mid, ADDR_LIMIT_BLOCK,
+                                              LEN_LIMIT_BLOCK):
+                        continue
+                    acc = int(reader.getData(mid, ADDR_ACCELERATION_LIMIT,
+                                             LEN_LIMIT))
+                    vel = int(reader.getData(mid, ADDR_VELOCITY_LIMIT,
+                                             LEN_LIMIT))
+                    out[mid] = ServoProfile(
+                        velocity_rad_s=(vel * vel_scale if vel
+                                        else unbounded.velocity_rad_s),
+                        acceleration_rad_s2=(acc * PROFILE_ACC_SCALE if acc
+                                             else unbounded.acceleration_rad_s2),
+                    )
+            finally:
+                reader.clearParam()
+        return out
 
     def read_servo_profile(
         self, motor_ids: Sequence[int]

@@ -133,6 +133,12 @@ class MotorClient(ABC):
     # blocks; callers can use it to skip locking around no-op waits.
     waits_for_motion: bool = False
 
+    # How close to its goal a motor must be to count as arrived, in radians.
+    # A moving flag alone is not enough: a servo stalled against a load
+    # reports stopped while short of its target, and a caller that advanced
+    # on that would desynchronise a chain mid-motion.
+    arrival_tolerance_rad: ClassVar[float] = 0.02
+
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
         ser = getattr(getattr(self, "port_handler", None), "ser", None)
@@ -206,6 +212,37 @@ class MotorClient(ABC):
     position_range_rad: ClassVar["tuple[float, float] | None"] = None
     """Commandable position span in radians; ``None`` means unbounded/wrapping."""
 
+    profile_velocity_max_rad_s: ClassVar["float | None"] = None
+    """Largest speed the trajectory register can express. ``None`` where the
+    family exposes no profile.
+
+    A register width, not a reachable speed. Both families accept the register
+    maximum and read it back unchanged while the motor turns no faster than its
+    own no-load speed, which is two orders of magnitude lower. Offer this to an
+    operator and they are offered a speed nothing can reach; use
+    :meth:`read_profile_limits` for the ceiling that actually binds.
+    """
+
+    profile_acceleration_max_rad_s2: ClassVar["float | None"] = None
+    """Largest acceleration the trajectory register can express.
+
+    A register width, with the same caveat as the velocity above. Note the two
+    families are nothing alike here: one holds acceleration in four bytes and
+    the other in one, so the same figure is a rounding error of one family's
+    range and a quarter of the other's.
+    """
+
+    profile_ceiling_source: ClassVar[str] = (
+        "the motor's own no-load speed; the protocol exposes no limit register, "
+        "so nothing rejects a faster request"
+    )
+    """Where :meth:`read_profile_limits` gets its numbers, in words.
+
+    Worth reporting because the answer differs in kind: one family publishes
+    its ceiling in a register the firmware enforces, the other leaves it as a
+    datasheet fact that only physics applies.
+    """
+
     servo_gain_max: ClassVar["int | None"] = None
     """Largest value the servo's position-PID registers accept.
 
@@ -252,6 +289,67 @@ class MotorClient(ABC):
         if value is None:
             return None
         return [name for bit, name in cls.hardware_error_bits if value & bit]
+
+    @classmethod
+    def servo_limits(cls) -> dict:
+        """What each tunable accepts, in the units it is set in.
+
+        A front-end cannot infer these: register widths and units differ by
+        family, and the same number means different things — a velocity of
+        zero removes the cap, and on one family that is written as the
+        register maximum because a literal zero stops the motor. Reported so
+        the operator can be shown the real range and what its ends mean,
+        rather than a bound someone guessed.
+
+        ``None`` for a tunable the family does not expose.
+        """
+        return {
+            "gain": {
+                "min": 0,
+                "max": cls.servo_gain_max,
+                "unit": "",
+                "zero_means": "no contribution from this term",
+            },
+            "velocity_rad_s": {
+                "min": 0.0,
+                "max": cls.profile_velocity_max_rad_s,
+                "unit": "rad/s",
+                "zero_means": "no speed cap",
+                "register_width_only": True,
+                "ceiling_source": cls.profile_ceiling_source,
+            },
+            "acceleration_rad_s2": {
+                "min": 0.0,
+                "max": cls.profile_acceleration_max_rad_s2,
+                "unit": "rad/s^2",
+                "zero_means": "maximum acceleration",
+                "register_width_only": True,
+                "ceiling_source": cls.profile_ceiling_source,
+            },
+        }
+
+    def read_profile_limits(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile]":
+        """The fastest profile each motor will actually honour.
+
+        Not the same question as how wide the register is, and the difference
+        is not small: a motor whose firmware caps it at seven radians a second
+        still stores, and reads back, a request for seven hundred. Nothing in
+        the protocol objects, so only this tells a caller what the hardware
+        will do.
+
+        Reported per motor because it is a property of the motor and not of
+        the family — a wrist and a finger joint on one chain answer differently.
+        A zero means that axis is unbounded.
+        """
+        return {
+            int(mid): ServoProfile(
+                velocity_rad_s=self.profile_velocity_max_rad_s or 0.0,
+                acceleration_rad_s2=self.profile_acceleration_max_rad_s2 or 0.0,
+            )
+            for mid in motor_ids
+        }
 
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
@@ -580,13 +678,26 @@ class MotorClient(ABC):
             f"{type(self).__name__} does not implement check_connected")
 
     def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
-        """Block until all motors finish their commanded motion.
+        """Block until *every* motor has settled at its commanded position.
 
-        Default implementation is a no-op for motor families that respond
-        fast enough that callers don't need to wait (e.g., Dynamixel, mock).
-        Subclasses that actually block (e.g., Feetech) must set
-        ``waits_for_motion = True`` and override this to poll a per-motor
-        moving flag, raising ``MotionTimeoutError`` on timeout.
+        A recorded motion is implicitly synchronous: letting one motor start
+        its next leg because it arrived first, while others are still
+        travelling, is not a faster version of the same move, it is a
+        different one. So this waits for the whole chain or raises.
+
+        Settled means two things at once. The motor's moving flag is clear,
+        and it is within :attr:`arrival_tolerance_rad` of its goal. The flag
+        alone is not enough — a servo stalled against a load reports stopped
+        short of its target.
+
+        A family whose motion is effectively instantaneous may leave this a
+        no-op and ``waits_for_motion`` False, but note that setting a
+        trajectory profile makes a goal write a ramp rather than a step, so
+        that is a property of how the family is being driven and not of the
+        family itself.
+
+        Raises:
+            MotionTimeoutError: if any motor is still unsettled at ``timeout``.
         """
 
     @property

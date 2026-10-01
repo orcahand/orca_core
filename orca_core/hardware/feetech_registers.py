@@ -35,6 +35,15 @@ class HLS:
     GAIN_BLOCK_LEN = 3
     GAIN_MAX = 254
 
+    # Trajectory shaping, both live in the position-profile block.
+    ACC_SCALE_RAD_S2 = 0.15184364492350666   # 8.7 deg/s^2 per unit
+    ACC_MAX_RAW = 254                        # 0 = maximum acceleration
+    SPEED_SCALE_RAD_S = 0.07665191429188092  # 0.732 rpm per unit
+    # Goal Speed 0 means STOP on this family, not "uncapped" as it does on a
+    # Dynamixel. Asking for no cap therefore writes the largest value the
+    # register holds; the firmware clamps to what the hardware can sustain.
+    SPEED_MAX_RAW = 32767
+
     CURRENT_SCALE_MA = 6.5
     GOAL_CURRENT_MAX_RAW = 2047
     POSITION_PROFILE_LEN = 7  # ACC through GOAL_SPEED, written as one sync-write block

@@ -369,6 +369,11 @@ def test_mock_clients_carry_their_family_capabilities():
             "factory_default_baudrate",
             "baud_rate_map",
             "requires_unpowered_hotplug",
+            "arrival_tolerance_rad",
+            "servo_gain_max",
+            "profile_velocity_max_rad_s",
+            "profile_acceleration_max_rad_s2",
+            "profile_ceiling_source",
         ):
             assert getattr(mock, attribute) == getattr(real, attribute), (
                 f"{mock.__name__}.{attribute}"

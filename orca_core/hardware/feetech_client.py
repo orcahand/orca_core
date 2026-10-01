@@ -26,6 +26,7 @@ from .motor_client import (
     MotorClient,
     MotorRead,
     ServoGains,
+    ServoProfile,
 )
 from .feetech import (
     PortHandler,
@@ -150,6 +151,8 @@ class FeetechClient(MotorClient):
     factory_default_baudrate = 1_000_000
     baud_rate_map = FEETECH_BAUD_RATE_MAP
     servo_gain_max = HLS.GAIN_MAX
+    profile_velocity_max_rad_s = HLS.SPEED_MAX_RAW * HLS.SPEED_SCALE_RAD_S
+    profile_acceleration_max_rad_s2 = HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
@@ -244,6 +247,9 @@ class FeetechClient(MotorClient):
         # rather than re-sent with every position.
         self._default_acc = DEFAULT_ACC
         self._motor_speed = {mid: DEFAULT_SPEED for mid in self.motor_ids}
+        # What each motor was last told to reach, in radians, so a cleared
+        # moving flag can be checked against where it was actually sent.
+        self._goal_positions: "dict[int, float]" = {}
         # Goal-current limit and its per-motor ceiling, in register units; both
         # start at full scale until connect() reads the motor's protection current.
         self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
@@ -686,6 +692,85 @@ class FeetechClient(MotorClient):
         self._motor_modes[motor_id] = mode
         return mode
 
+    def read_servo_profile(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile | None]":
+        """The trajectory limits each motor is shaping its moves with.
+
+        Acceleration at 41 and goal speed at 46, both live in position mode,
+        which is why this family already ramps where a bare Dynamixel steps.
+        A goal speed at the register maximum is reported as 0.0, the shared
+        "no cap" value, so one reading means the same thing on every family.
+        """
+        out: "dict[int, ServoProfile | None]" = {}
+        with self._bus_lock:
+            for motor_id in motor_ids:
+                motor_id = int(motor_id)
+                acc, r1, e1 = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.ACC)
+                speed, r2, e2 = self.packet_handler.read2ByteTxRx(
+                    motor_id, HLS.GOAL_SPEED)
+                if r1 != COMM_SUCCESS or e1 != 0 or r2 != COMM_SUCCESS or e2 != 0:
+                    self._flush_input_buffer()
+                    out[motor_id] = None
+                    continue
+                out[motor_id] = ServoProfile(
+                    velocity_rad_s=(
+                        0.0 if int(speed) >= HLS.SPEED_MAX_RAW
+                        else int(speed) * HLS.SPEED_SCALE_RAD_S),
+                    acceleration_rad_s2=int(acc) * HLS.ACC_SCALE_RAD_S2,
+                )
+        return out
+
+    def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set the trajectory limits, per motor. ``None`` fields are untouched.
+
+        Zero means "no cap" in the shared contract, and on this family that
+        needs translating: writing 0 to goal speed does not uncap the motor,
+        it stops it dead. So a requested 0 becomes the register maximum,
+        which the firmware clamps to whatever the hardware can sustain.
+        Acceleration needs no such care — 0 is maximum there already.
+        """
+        plan: "dict[int, tuple[int | None, int | None]]" = {}
+        for motor_id, wanted in profiles.items():
+            acc_raw = speed_raw = None
+            if wanted.acceleration_rad_s2 is not None:
+                value = float(wanted.acceleration_rad_s2)
+                if value < 0:
+                    raise ValueError("acceleration must be non-negative")
+                acc_raw = min(HLS.ACC_MAX_RAW,
+                              int(round(value / HLS.ACC_SCALE_RAD_S2)))
+            if wanted.velocity_rad_s is not None:
+                value = float(wanted.velocity_rad_s)
+                if value < 0:
+                    raise ValueError("velocity must be non-negative")
+                speed_raw = (
+                    HLS.SPEED_MAX_RAW if value == 0.0
+                    else min(HLS.SPEED_MAX_RAW,
+                             max(1, int(round(value / HLS.SPEED_SCALE_RAD_S)))))
+            plan[int(motor_id)] = (acc_raw, speed_raw)
+
+        with self._bus_lock:
+            for motor_id, (acc_raw, speed_raw) in plan.items():
+                if acc_raw is not None:
+                    self._default_acc = acc_raw
+                    result, error = self.packet_handler.write1ByteTxRx(
+                        motor_id, HLS.ACC, acc_raw)
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"acceleration write to motor {motor_id} failed: "
+                            f"result={result}, error={error}")
+                if speed_raw is not None:
+                    self._motor_speed[motor_id] = speed_raw
+                    result, error = self.packet_handler.write2ByteTxRx(
+                        motor_id, HLS.GOAL_SPEED, speed_raw)
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"goal speed write to motor {motor_id} failed: "
+                            f"result={result}, error={error}")
+
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
     ) -> "dict[int, ServoGains | None]":
@@ -948,6 +1033,7 @@ class FeetechClient(MotorClient):
         """
         self._check_connected()
         deadline = time.monotonic() + timeout
+        stalled: "list[int]" = []
         while time.monotonic() < deadline:
             # Lock per poll (not across the sleeps) so waiting for motion
             # never starves other bus traffic for the whole timeout.
@@ -969,12 +1055,42 @@ class FeetechClient(MotorClient):
                             break
 
             if all_stopped:
-                return
+                short = self._motors_short_of_goal()
+                if not short:
+                    return
+                # Flag clear but not there: stalled against a load. Keep
+                # waiting rather than reporting the chain settled, because a
+                # recorded motion that advances on one stalled motor is a
+                # different motion, not a faster one.
+                stalled = short
             time.sleep(poll_interval)
 
         raise MotionTimeoutError(
             f'Motors did not settle within {timeout:.1f}s'
+            + (f' (still short of goal: {sorted(stalled)})' if stalled else '')
         )
+
+    def _motors_short_of_goal(self) -> "list[int]":
+        """Motors whose moving flag is clear but which never arrived.
+
+        Only consults motors this client has actually commanded; one driven
+        from elsewhere has no goal here to judge it against.
+        """
+        if not self._goal_positions:
+            return []
+        try:
+            positions = self.read_position_velocity_current().position
+        except Exception:
+            logging.debug('arrival position read failed', exc_info=True)
+            return []
+        short = []
+        for index, motor_id in enumerate(self.motor_ids):
+            goal = self._goal_positions.get(int(motor_id))
+            if goal is None:
+                continue
+            if abs(float(positions[index]) - goal) > self.arrival_tolerance_rad:
+                short.append(int(motor_id))
+        return short
 
     def write_desired_pos(
         self,
@@ -1020,6 +1136,7 @@ class FeetechClient(MotorClient):
             sync_write = self._sync_write(HLS.GOAL_POSITION, 2)
             sync_write.clearParam()
             for motor_id, pos_rad in zip(motor_ids, positions):
+                self._goal_positions[int(motor_id)] = float(pos_rad)
                 pos_raw = self._clamp_position(
                     self._rad_to_raw(pos_rad, self.pos_scale), motor_id)
                 pos_scs = self.packet_handler.scs_toscs(pos_raw, 15)
@@ -1307,6 +1424,7 @@ class FeetechClient(MotorClient):
             sync_write.clearParam()
 
             for motor_id, pos_rad in zip(motor_ids, positions):
+                self._goal_positions[int(motor_id)] = float(pos_rad)
                 # Servo mode uses raw 0–4095 (single rotation); clamp before sending.
                 pos_raw = self._clamp_position(
                     self._rad_to_raw(pos_rad, self.pos_scale), motor_id)
