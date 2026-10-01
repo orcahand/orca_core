@@ -458,6 +458,9 @@ def test_set_operating_mode_writes_once_across_repeated_calls(client):
 
 def test_change_motor_baudrate_relocks_eeprom_at_the_new_baud(client):
     feetech, handler = client
+    # Connecting pings every motor for its model number; this is about the
+    # one confirming ping the baud change itself makes.
+    handler.pings.clear()
     assert feetech.change_motor_baudrate(1, 500_000) is True
 
     assert feetech.port_handler.baudrate == 500_000

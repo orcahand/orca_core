@@ -60,6 +60,22 @@ FEETECH_MODELS: dict[int, str] = {
     5130: 'HLS3915',
 }
 
+# Model-number → no-load speed in rpm, from each model's datasheet. Kept per
+# model because the spread within one chain is wide enough that a family
+# figure is worse than useless: the wrist turns at under half the speed of a
+# finger joint, so a single number is either not a cap at all on one of them
+# or needlessly slow on the other.
+FEETECH_NO_LOAD_RPM: dict[int, float] = {
+    4106: 45.0,
+    6922: 110.0,
+    5130: 110.0,
+}
+# For a motor that does not say what it is. The slowest catalogued model,
+# because the two errors are not symmetric: too low only makes a default
+# sluggish, where too high stops it binding and is indistinguishable from
+# asking for no cap.
+FEETECH_FALLBACK_NO_LOAD_RPM = 45.0
+
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
 DEFAULT_VEL_SCALE = 0.732 * 2.0 * np.pi / 60.0  # Convert 0.732 RPM/unit to rad/s
@@ -153,11 +169,11 @@ class FeetechClient(MotorClient):
     servo_gain_max = HLS.GAIN_MAX
     profile_velocity_max_rad_s = HLS.SPEED_MAX_RAW * HLS.SPEED_SCALE_RAD_S
     profile_acceleration_max_rad_s2 = HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2
-    # HLS2915M-C001 datasheet, 110 rpm unloaded. The protocol has no limit
-    # register, so without this the reported ceiling would be the register
-    # width -- 2512 rad/s, some two hundred times anything the motor does.
-    # Unconfirmed for the HLS3930M, whose higher gearing likely turns slower.
-    no_load_speed_rad_s = 110.0 * 2.0 * np.pi / 60.0
+    # The protocol has no limit register, so without a datasheet figure the
+    # reported ceiling would be the register width -- 2512 rad/s, some two
+    # hundred times anything these motors do. This is the family fallback;
+    # read_profile_limits prefers the model each motor reports.
+    no_load_speed_rad_s = FEETECH_FALLBACK_NO_LOAD_RPM * 2.0 * np.pi / 60.0
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
@@ -252,6 +268,7 @@ class FeetechClient(MotorClient):
         # rather than re-sent with every position.
         self._default_acc = DEFAULT_ACC
         self._motor_speed = {mid: DEFAULT_SPEED for mid in self.motor_ids}
+        self._model_numbers: dict[int, int] = {}
         # What each motor was last told to reach, in radians, so a cleared
         # moving flag can be checked against where it was actually sent.
         self._goal_positions: "dict[int, float]" = {}
@@ -308,6 +325,7 @@ class FeetechClient(MotorClient):
                 # by set_operating_mode, which disables torque first. The one
                 # bus access here is a read of each motor's protection current.
                 self.read_current_limits()
+                self._read_model_numbers()
 
                 self.OPEN_CLIENTS.add(self)
             except Exception:
@@ -317,6 +335,47 @@ class FeetechClient(MotorClient):
                 except Exception:
                     pass
                 raise
+
+    def _read_model_numbers(self) -> None:
+        """Ping every motor for its model number; a silent motor stays unknown.
+
+        Best-effort: this only sharpens the reported speed ceiling, so a motor
+        that will not answer falls back to the family figure rather than
+        failing a connect.
+        """
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                try:
+                    model, result, _ = self.packet_handler.ping(motor_id)
+                except Exception:
+                    continue
+                if result == 0 and model:
+                    self._model_numbers[motor_id] = int(model)
+
+    def read_profile_limits(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile]":
+        """The speed each motor can reach, by the model it reports.
+
+        This family publishes no limit register, so nothing on the bus will
+        refuse a faster request -- the ceiling is a datasheet fact and has to
+        be looked up. Per motor, because one chain mixes models whose no-load
+        speeds differ by more than a factor of two.
+        """
+        acceleration = self.profile_acceleration_max_rad_s2 or 0.0
+        return {
+            int(mid): ServoProfile(
+                velocity_rad_s=self.no_load_speed_rad_s_for(int(mid)),
+                acceleration_rad_s2=acceleration,
+            )
+            for mid in motor_ids
+        }
+
+    def no_load_speed_rad_s_for(self, motor_id: int) -> float:
+        """Datasheet no-load speed for the model this motor reports."""
+        rpm = FEETECH_NO_LOAD_RPM.get(
+            self._model_numbers.get(motor_id, -1), FEETECH_FALLBACK_NO_LOAD_RPM)
+        return rpm * 2.0 * np.pi / 60.0
 
     def _apply_port_options(self) -> None:
         """Advisory-lock the open port and enable low latency mode, best-effort."""

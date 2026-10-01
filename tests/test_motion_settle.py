@@ -301,15 +301,42 @@ class TestFeetechProfileCeiling:
     register width plus a statement that nothing enforces it."""
 
     def test_it_reports_a_speed_the_motor_can_reach(self):
-        """110 rpm from the datasheet, not the 2512 rad/s the register holds."""
+        """A datasheet speed, not the 2512 rad/s the register holds."""
         cls = mock_motor_client_class("feetech")
         client = cls([1])
         client.connect()
         limits = client.read_profile_limits([1])
 
-        assert limits[1].velocity_rad_s == pytest.approx(11.52, abs=0.01)
         assert limits[1].velocity_rad_s < cls.profile_velocity_max_rad_s / 100
         assert "no limit register" in cls.profile_ceiling_source
+
+    def test_the_ceiling_follows_the_model_each_motor_reports(self):
+        """One chain carries models whose no-load speeds differ by well over
+        a factor of two, so a family constant would either not cap the slow
+        motor or needlessly throttle the fast one."""
+        from orca_core.hardware.feetech_client import FEETECH_NO_LOAD_RPM
+
+        cls = motor_client_class("feetech")
+        client = cls.__new__(cls)
+        client.motor_ids = [1, 2]
+        client._model_numbers = {1: 4106, 2: 6922}
+
+        assert client.no_load_speed_rad_s_for(1) == pytest.approx(4.712, abs=0.01)
+        assert client.no_load_speed_rad_s_for(2) == pytest.approx(11.519, abs=0.01)
+        assert len(set(FEETECH_NO_LOAD_RPM.values())) > 1
+
+    def test_a_motor_that_will_not_name_itself_gets_the_slowest(self):
+        """The two errors are not symmetric: too low is merely sluggish, too
+        high is indistinguishable from no cap at all."""
+        from orca_core.hardware.feetech_client import FEETECH_NO_LOAD_RPM
+
+        cls = motor_client_class("feetech")
+        client = cls.__new__(cls)
+        client.motor_ids = [1]
+        client._model_numbers = {}
+
+        assert client.no_load_speed_rad_s_for(1) == pytest.approx(
+            min(FEETECH_NO_LOAD_RPM.values()) * 2 * np.pi / 60, abs=0.01)
 
     def test_the_two_families_do_not_claim_the_same_source(self):
         assert (motor_client_class("dynamixel").profile_ceiling_source
