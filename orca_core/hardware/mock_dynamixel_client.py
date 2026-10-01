@@ -91,7 +91,13 @@ class MockDynamixelClient(MotorClient):
     factory_default_id = DynamixelClient.factory_default_id
     factory_default_baudrate = DynamixelClient.factory_default_baudrate
     baud_rate_map = DynamixelClient.baud_rate_map
+    waits_for_motion = DynamixelClient.waits_for_motion
+    arrival_tolerance_rad = DynamixelClient.arrival_tolerance_rad
     servo_gain_max = DynamixelClient.servo_gain_max
+    profile_velocity_max_rad_s = DynamixelClient.profile_velocity_max_rad_s
+    profile_acceleration_max_rad_s2 = DynamixelClient.profile_acceleration_max_rad_s2
+    profile_ceiling_source = DynamixelClient.profile_ceiling_source
+    no_load_speed_rad_s = DynamixelClient.no_load_speed_rad_s
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma
@@ -289,6 +295,16 @@ class MockDynamixelClient(MotorClient):
         self.check_connected()
         temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
         return temp_array
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
+        """Settled the instant it is asked: a mock write lands immediately.
+
+        It still answers the call rather than inheriting the no-op, so a
+        caller that depends on the wait is exercised against the mock
+        instead of only against hardware.
+        """
+        self.check_connected()
 
     def read_servo_gains(self, motor_ids: Sequence[int]):
         self.check_connected()
