@@ -808,7 +808,12 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             self._motor_client.write_desired_pos(motor_ids, positions)
 
-    def init_joints(self, force_calibrate: bool = False, move_to_neutral: bool = True):
+    def init_joints(
+        self,
+        force_calibrate: bool = False,
+        move_to_neutral: bool = True,
+        progress_callback=None,
+    ):
         """Prepare the hand for operation.
 
         Enables torque, sets the configured control mode and Goal Current,
@@ -825,13 +830,16 @@ class OrcaHand(BaseHand):
             move_to_neutral: Move to the configured neutral pose at the end
                 of initialization (default ``True``). Set to ``False`` when
                 the caller will immediately command a different pose.
+            progress_callback: Forwarded to :meth:`calibrate` when this call
+                calibrates, so a front-end can report a run it did not start
+                itself. Never called when the hand is already calibrated.
         """
         self.enable_torque()
         self.set_control_mode(self.config.control_mode)
         self.set_max_current(self.config.max_current)
 
         if not self.calibrated or force_calibrate:
-            self.calibrate()
+            self.calibrate(progress_callback=progress_callback)
             # Calibration drives in current_based_position and leaves torque
             # off on every motor but the last step's.
             if self.config.control_mode != CURRENT_BASED_POSITION:

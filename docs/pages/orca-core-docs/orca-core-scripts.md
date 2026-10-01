@@ -277,11 +277,16 @@ The two sensing scripts split by intent: `monitor_sensors.py` shows you the data
 <details>
 <summary><strong>monitor_sensors.py</strong></summary>
 
-Assembly and bring-up dashboard: every configured motor with its joint, live position, current and temperature, read once a second through the hand's own motor client (port, family, baud rate and IDs resolved exactly as a control session resolves them, read-only); every joint encoder grouped by finger with a health verdict; and a card per tactile sensor, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Reconnects when the sensor board is unplugged and plugged back in. Takes the shared hand flags (<code>config_path</code>, <code>--model-name</code>, <code>--mock</code>); <code>--port</code> overrides the sensor board port and <code>--motor-port</code> the motor bus port, both for bring-up only.
+Assembly and bring-up dashboard: every configured motor with its joint, live position, current and temperature, read once a second through the hand's own motor client (port, family, baud rate and IDs resolved exactly as a control session resolves them, read-only); every joint encoder grouped by finger with a health verdict; and a card per tactile sensor, in a mode you pick with radio buttons (Off / Resultant / Taxels / Combined). Reconnects when the sensor board is unplugged and plugged back in.
+
+The sensing panels follow what the hand declares. A stream counts towards the working/total score once the config declares it, or once a session opens one anyway: a hand with a <code>sensors</code> block and no <code>joint_encoder_joints</code> is not graded against 17 encoders, one that names three encoder joints is graded on those three, and one that declares no sensing is graded on its motors until a board turns up. Ports come from the config the same way <code>connect()</code> resolves them, so a tactile sensor on its own adapter gets its own link and a port that will not open costs only its own stream. The config's <code>finger_to_sensor_id</code> decides which finger each sensor's readings belong to.
+
+Takes the shared hand flags (<code>config_path</code>, <code>--model-name</code>, <code>--mock</code>); <code>--port</code> puts both sensing streams on one port and <code>--motor-port</code> overrides the motor bus port, both for bring-up only.
 
 <strong>Example:</strong>
 ```bash
 python scripts/monitor_sensors.py
+python scripts/monitor_sensors.py orca_core/models/v2/orcahand-touch-left/config.yaml
 python scripts/monitor_sensors.py --port /dev/cu.usbmodemXXXX
 ```
 </details>

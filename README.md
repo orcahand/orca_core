@@ -6,9 +6,22 @@
   <br>
   <a href="https://github.com/orcahand/orca_core" target="_blank"><img alt="GitHub stars" src="https://img.shields.io/github/stars/orcahand/orca_core?style=social"/></a>
   <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
+  <a href="https://deepwiki.com/orcahand/orca_core" target="_blank"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg"/></a>
 </div>
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space.
+
+## Documentation
+
+The docs live in this repository under [`docs/pages/`](docs/pages) — start with the
+[quickstart](docs/pages/getting-started-docs/quickstart-with-core-package.md), the
+[script reference](docs/pages/orca-core-docs/orca-core-scripts.md) and the
+[OrcaHand API](docs/pages/orca-core-docs/orcahand-api.md).
+
+If it helps, [DeepWiki](https://deepwiki.com/orcahand/orca_core) also hosts a browsable
+wiki for this repository, and you can ask it questions about the code. It is AI-generated
+by a third party and is not maintained by us, so treat it as a way to get oriented rather
+than a reference: the docs above and the code itself are the source of truth.
 
 ## Get Started
 

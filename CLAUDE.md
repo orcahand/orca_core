@@ -246,8 +246,10 @@ uv run python scripts/manual_control.py orca_core/models/v2/orcahand-right/confi
 uv run python scripts/check_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
 uv run python scripts/check_sensors.py --port /dev/cu.usbmodemXXXX
 
-# Live sensor data view (autodetects the port; --port to override, no config_path)
+# Live sensor data view (autodetects the hand; config_path picks the model,
+# --port forces both sensing streams onto one port for bring-up)
 uv run python scripts/monitor_sensors.py
+uv run python scripts/monitor_sensors.py orca_core/models/v2/orcahand-touch-right/config.yaml
 ```
 
 ### Configuration

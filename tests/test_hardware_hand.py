@@ -427,6 +427,30 @@ def test_init_joints_on_synthesized_mock_skips_calibration(fresh_mock_dir, monke
     assert not (fresh_mock_dir / "calibration.yaml").exists()
 
 
+def test_init_joints_reports_a_calibration_it_starts(fresh_mock_dir):
+    """A front-end that never calls calibrate() itself still has to be able to
+    report the run init_joints() launches on its behalf."""
+    hand = MockOrcaHand(config_path=str(fresh_mock_dir / "config.yaml"))
+    hand.connect()
+    events = []
+
+    hand.init_joints(force_calibrate=True, move_to_neutral=False,
+                     progress_callback=events.append)
+
+    assert [e["event"] for e in events][:1] == ["calibration_started"]
+    assert "calibration_done" in {e["event"] for e in events}
+
+
+def test_init_joints_does_not_report_when_it_skips_calibration(fresh_mock_dir):
+    hand = MockOrcaHand(config_path=str(fresh_mock_dir / "config.yaml"))
+    hand.connect()
+    events = []
+
+    hand.init_joints(move_to_neutral=False, progress_callback=events.append)
+
+    assert events == []
+
+
 def test_init_joints_force_calibrate_on_mock_leaves_disk_untouched(fresh_mock_dir):
     hand = MockOrcaHand(config_path=str(fresh_mock_dir / "config.yaml"))
     hand.connect()
