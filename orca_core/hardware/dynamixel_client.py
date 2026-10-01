@@ -185,6 +185,10 @@ class DynamixelClient(MotorClient):
                               "Limit (40), read per motor and enforced by the "
                               "servo's own trajectory generator")
     profile_acceleration_max_rad_s2 = PROFILE_MAX * PROFILE_ACC_SCALE
+    # XC330-T288-T performance curve, ~70 rpm unloaded. Only a fallback: the
+    # limit this family really enforces is read per motor from register 44,
+    # and a chain reports values close to this (320 raw, 7.67 rad/s).
+    no_load_speed_rad_s = 70.0 * 2.0 * np.pi / 60.0
     # A goal write is a step only while the trajectory profile is zero. Once
     # a velocity or acceleration is set the servo ramps, and a caller that
     # did not wait would move on mid-travel.
@@ -820,7 +824,7 @@ class DynamixelClient(MotorClient):
         """
         motor_ids = [int(mid) for mid in motor_ids]
         unbounded = ServoProfile(
-            velocity_rad_s=self.profile_velocity_max_rad_s,
+            velocity_rad_s=self.no_load_speed_rad_s,
             acceleration_rad_s2=self.profile_acceleration_max_rad_s2,
         )
         out: "dict[int, ServoProfile]" = {mid: unbounded for mid in motor_ids}

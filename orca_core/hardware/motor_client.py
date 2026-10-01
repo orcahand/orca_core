@@ -232,6 +232,32 @@ class MotorClient(ABC):
     range and a quarter of the other's.
     """
 
+    no_load_speed_rad_s: ClassVar["float | None"] = None
+    """Datasheet speed with nothing on the output shaft.
+
+    The ceiling for a family whose protocol publishes none, so that
+    :meth:`read_profile_limits` can answer with a speed the motor can reach
+    instead of one the register merely stores. ``None`` where the limit is
+    read from the motor itself.
+    """
+
+    default_profile_velocity_fraction: ClassVar[float] = 0.5
+    """Share of a motor's own ceiling used as its default speed cap.
+
+    A fraction rather than a figure because the ceiling is per motor: the
+    same hand holds motors that top out at different speeds, and a default
+    that is deliberate on one of them would be arbitrary on the next.
+    """
+
+    default_profile_acceleration_rad_s2: ClassVar[float] = 10.0
+    """Default ramp, in rad/s^2.
+
+    Not a fraction of anything: acceleration is unbounded on one family and
+    capped at 38.6 on the other, so a share of the range would mean two
+    unrelated things. A ramp time is the quantity that transfers -- this
+    reaches a typical default cruise speed in about a third of a second.
+    """
+
     profile_ceiling_source: ClassVar[str] = (
         "the motor's own no-load speed; the protocol exposes no limit register, "
         "so nothing rejects a faster request"
@@ -343,12 +369,32 @@ class MotorClient(ABC):
         the family — a wrist and a finger joint on one chain answer differently.
         A zero means that axis is unbounded.
         """
+        velocity = (self.no_load_speed_rad_s
+                    or self.profile_velocity_max_rad_s or 0.0)
         return {
             int(mid): ServoProfile(
-                velocity_rad_s=self.profile_velocity_max_rad_s or 0.0,
+                velocity_rad_s=velocity,
                 acceleration_rad_s2=self.profile_acceleration_max_rad_s2 or 0.0,
             )
             for mid in motor_ids
+        }
+
+    def default_profile(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile]":
+        """A starting trajectory profile, derived per motor from its ceiling.
+
+        Half speed, which is deliberate on any motor without needing a figure
+        chosen for one of them, and a fixed ramp. Both are a starting point an
+        operator is expected to adjust, not a limit.
+        """
+        return {
+            mid: ServoProfile(
+                velocity_rad_s=round(
+                    limits.velocity_rad_s * self.default_profile_velocity_fraction, 3),
+                acceleration_rad_s2=self.default_profile_acceleration_rad_s2,
+            )
+            for mid, limits in self.read_profile_limits(motor_ids).items()
         }
 
     def read_servo_gains(

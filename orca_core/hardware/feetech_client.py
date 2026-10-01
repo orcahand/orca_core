@@ -153,6 +153,11 @@ class FeetechClient(MotorClient):
     servo_gain_max = HLS.GAIN_MAX
     profile_velocity_max_rad_s = HLS.SPEED_MAX_RAW * HLS.SPEED_SCALE_RAD_S
     profile_acceleration_max_rad_s2 = HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2
+    # HLS2915M-C001 datasheet, 110 rpm unloaded. The protocol has no limit
+    # register, so without this the reported ceiling would be the register
+    # width -- 2512 rad/s, some two hundred times anything the motor does.
+    # Unconfirmed for the HLS3930M, whose higher gearing likely turns slower.
+    no_load_speed_rad_s = 110.0 * 2.0 * np.pi / 60.0
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True

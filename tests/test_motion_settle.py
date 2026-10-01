@@ -273,7 +273,7 @@ class TestDynamixelProfileCeiling:
         cls = motor_client_class("dynamixel")
         limits = self._limits(acc_raw=0, vel_raw=0)
 
-        assert limits[1].velocity_rad_s == cls.profile_velocity_max_rad_s
+        assert limits[1].velocity_rad_s == cls.no_load_speed_rad_s
         assert limits[1].acceleration_rad_s2 == cls.profile_acceleration_max_rad_s2
 
     def test_a_silent_bus_does_not_narrow_the_range(self):
@@ -282,14 +282,14 @@ class TestDynamixelProfileCeiling:
         cls = motor_client_class("dynamixel")
         limits = self._limits(acc_raw=0, vel_raw=320, comm_ok=False)
 
-        assert limits[1].velocity_rad_s == cls.profile_velocity_max_rad_s
+        assert limits[1].velocity_rad_s == cls.no_load_speed_rad_s
 
     def test_a_motor_that_skips_its_turn_keeps_the_width(self):
         answers = {2: {self.ADDR_ACC_LIMIT: 0, self.ADDR_VEL_LIMIT: 320}}
         cls = motor_client_class("dynamixel")
         limits = self._client(answers).read_profile_limits([1, 2])
 
-        assert limits[1].velocity_rad_s == cls.profile_velocity_max_rad_s
+        assert limits[1].velocity_rad_s == cls.no_load_speed_rad_s
         assert limits[2].velocity_rad_s == pytest.approx(7.674, abs=0.01)
 
     def test_no_motors_is_not_a_bus_transaction(self):
@@ -300,15 +300,64 @@ class TestFeetechProfileCeiling:
     """This family publishes no limit register, so the honest answer is the
     register width plus a statement that nothing enforces it."""
 
-    def test_it_reports_the_width_and_says_why(self):
+    def test_it_reports_a_speed_the_motor_can_reach(self):
+        """110 rpm from the datasheet, not the 2512 rad/s the register holds."""
         cls = mock_motor_client_class("feetech")
         client = cls([1])
         client.connect()
         limits = client.read_profile_limits([1])
 
-        assert limits[1].velocity_rad_s == cls.profile_velocity_max_rad_s
+        assert limits[1].velocity_rad_s == pytest.approx(11.52, abs=0.01)
+        assert limits[1].velocity_rad_s < cls.profile_velocity_max_rad_s / 100
         assert "no limit register" in cls.profile_ceiling_source
 
     def test_the_two_families_do_not_claim_the_same_source(self):
         assert (motor_client_class("dynamixel").profile_ceiling_source
                 != motor_client_class("feetech").profile_ceiling_source)
+
+
+class TestDefaultProfile:
+    """A default has to be defensible on every motor it lands on, and the
+    motors differ, so it is derived per motor rather than chosen once."""
+
+    def test_it_is_half_of_what_the_motor_can_do(self):
+        for motor_type in ("dynamixel", "feetech"):
+            cls = mock_motor_client_class(motor_type)
+            client = cls([1])
+            client.connect()
+            ceiling = client.read_profile_limits([1])[1].velocity_rad_s
+            default = client.default_profile([1])[1]
+
+            assert default.velocity_rad_s == pytest.approx(ceiling / 2, abs=0.01)
+
+    def test_the_default_is_reachable_on_both_families(self):
+        """The point of the exercise: a default above the ceiling is silently
+        clamped and is indistinguishable from asking for no cap at all."""
+        for motor_type in ("dynamixel", "feetech"):
+            cls = mock_motor_client_class(motor_type)
+            client = cls([1])
+            client.connect()
+            default = client.default_profile([1])[1]
+
+            assert 0 < default.velocity_rad_s < client.read_profile_limits([1])[1].velocity_rad_s
+            assert default.velocity_rad_s < 20.0
+
+    def test_acceleration_is_a_ramp_not_a_share_of_the_range(self):
+        """The two families' acceleration ranges differ by a factor of 300, so
+        the same fraction would mean two unrelated things; the same ramp does
+        not, and it has to fit inside the smaller family's register."""
+        dxl = motor_client_class("dynamixel")
+        fee = motor_client_class("feetech")
+
+        assert dxl.default_profile_acceleration_rad_s2 == fee.default_profile_acceleration_rad_s2
+        assert dxl.default_profile_acceleration_rad_s2 < fee.profile_acceleration_max_rad_s2
+
+    def test_the_ramp_reaches_the_default_speed_promptly(self):
+        """A default that takes seconds to come up to speed is a default
+        nobody would keep."""
+        cls = mock_motor_client_class("dynamixel")
+        client = cls([1])
+        client.connect()
+        default = client.default_profile([1])[1]
+
+        assert default.velocity_rad_s / default.acceleration_rad_s2 < 0.6

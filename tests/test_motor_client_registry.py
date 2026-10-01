@@ -374,6 +374,7 @@ def test_mock_clients_carry_their_family_capabilities():
             "profile_velocity_max_rad_s",
             "profile_acceleration_max_rad_s2",
             "profile_ceiling_source",
+            "no_load_speed_rad_s",
         ):
             assert getattr(mock, attribute) == getattr(real, attribute), (
                 f"{mock.__name__}.{attribute}"

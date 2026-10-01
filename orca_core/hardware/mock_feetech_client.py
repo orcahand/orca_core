@@ -55,6 +55,7 @@ class MockFeetechClient(MotorClient):
     profile_velocity_max_rad_s = FeetechClient.profile_velocity_max_rad_s
     profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
     profile_ceiling_source = FeetechClient.profile_ceiling_source
+    no_load_speed_rad_s = FeetechClient.no_load_speed_rad_s
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma

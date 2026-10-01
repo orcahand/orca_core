@@ -97,6 +97,7 @@ class MockDynamixelClient(MotorClient):
     profile_velocity_max_rad_s = DynamixelClient.profile_velocity_max_rad_s
     profile_acceleration_max_rad_s2 = DynamixelClient.profile_acceleration_max_rad_s2
     profile_ceiling_source = DynamixelClient.profile_ceiling_source
+    no_load_speed_rad_s = DynamixelClient.no_load_speed_rad_s
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma
