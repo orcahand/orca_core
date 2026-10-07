@@ -287,12 +287,13 @@ def test_short_travel_re_drives_at_a_higher_current(model_dir):
     currents = []
     original = hand.set_max_current
 
+    index_mcp_idx = hand.config.motor_ids.index(hand.config.joint_to_motor_map["index_mcp"])
+
     def _record(current):
-        # The nominal passes set a per-motor list; the re-drive sets one
-        # scalar. Record a single value either way, so the sequence below
-        # reads as the currents the run actually applied.
-        values = set(current) if isinstance(current, (list, tuple)) else {current}
-        currents.append(values.pop() if len(values) == 1 else tuple(sorted(values)))
+        # Record the limit applied to index_mcp's motor, so the sequence below
+        # reads as the currents that joint was actually driven with.
+        value = current[index_mcp_idx] if isinstance(current, (list, tuple)) else current
+        currents.append(value)
         return original(current)
 
     hand.set_max_current = _record
@@ -535,10 +536,13 @@ def test_write_joint_motor_travel_refuses_a_packaged_model_config():
         with open(packaged, encoding="utf-8") as f:
             assert f.read() == original
     finally:
-        # Should the refusal ever regress, the test must not leave the
-        # packaged model rewritten behind it.
-        with open(packaged, "w", encoding="utf-8") as f:
-            f.write(original)
+        # Restore only after a regression: an unconditional rewrite races
+        # parallel tests that read this packaged config.
+        with open(packaged, encoding="utf-8") as f:
+            changed = f.read() != original
+        if changed:
+            with open(packaged, "w", encoding="utf-8") as f:
+                f.write(original)
 
 
 def test_write_joint_motor_travel_keeps_comments_and_other_lines(tmp_path):

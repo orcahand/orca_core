@@ -69,6 +69,25 @@ class CalibrationResult:
     joint_roms_measured_dict: Dict[str, List[float]] = field(default_factory=dict)
     motor_travel_measured_dict: Dict[str, float] = field(default_factory=dict)
 
+    def _motor_has_limits(self, motor_id: int) -> bool:
+        """Whether the motor has a non-empty limits list with no None entries."""
+        limits = self.motor_limits_dict.get(motor_id)
+        return bool(limits) and all(limit is not None for limit in limits)
+
+    def _motor_has_ratio(self, motor_id: int) -> bool:
+        """Whether the motor has a usable (present and nonzero) joint-to-motor ratio."""
+        ratio = self.joint_to_motor_ratios_dict.get(motor_id)
+        return ratio is not None and ratio != 0
+
+    def _motor_ready(self, motor_id: int) -> bool:
+        """Whether the motor has both limits and a usable joint-to-motor ratio."""
+        return self._motor_has_limits(motor_id) and self._motor_has_ratio(motor_id)
+
+    def _all_motors_ready(self) -> bool:
+        """Whether every motor in the result is :meth:`_motor_ready`."""
+        motor_ids = set(self.motor_limits_dict) | set(self.joint_to_motor_ratios_dict)
+        return all(self._motor_ready(motor_id) for motor_id in motor_ids)
+
     @classmethod
     def empty(cls, motor_ids: List[int]) -> "CalibrationResult":
         """Return a blank (uncalibrated) result for the given motor IDs."""

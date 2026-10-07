@@ -38,6 +38,8 @@ class FakeBus:
         self._reads_left = 0
         self.violations = 0
         self.log = []
+        self.writes1 = []  # (motor_id, address, value) of every 1-byte write
+        self.sync_writes = []  # (address, {motor_id: value}) of every sync write
         self.op_delay = 0.0
         # Failure injection.
         self.sync_tx_results = []  # queue of comm results for sync-read txPacket
@@ -130,6 +132,7 @@ def make_fake_sdk(bus):
 
         def write1ByteTxRx(self, port, motor_id, address, value):
             bus.instant('write1')
+            bus.writes1.append((motor_id, address, value))
             if bus.write1_hook is not None:
                 return bus.write1_hook(motor_id)
             return COMM_SUCCESS, 0
@@ -222,6 +225,7 @@ def make_fake_sdk(bus):
     class GroupSyncWrite:
         def __init__(self, port, packet_handler, address, size):
             self.params = {}
+            self.address = address
 
         def addParam(self, motor_id, value):
             self.params[motor_id] = value
@@ -229,6 +233,7 @@ def make_fake_sdk(bus):
 
         def txPacket(self):
             bus.instant('sync_tx')
+            bus.sync_writes.append((self.address, dict(self.params)))
             return COMM_SUCCESS
 
         def clearParam(self):
@@ -469,6 +474,12 @@ def test_connect_succeeds_when_flock_fails(client, monkeypatch):
     assert client.is_connected
 
 
+def test_connecting_a_connected_client_raises_runtime_error(client):
+    """A second connect raises even under -O instead of re-opening a live port."""
+    with pytest.raises(RuntimeError, match='already connected'):
+        client.connect()
+
+
 def test_connect_succeeds_without_fileno(client):
     # FakeSerial has no fileno(); the AttributeError must be swallowed.
     client.port_handler.is_open = False
@@ -494,6 +505,89 @@ def test_check_overload_retries_once_then_skips_on_no_reply(
     assert not bus.events('reboot')
 
 
+class _SteppedClock:
+    """Stand-in for the client's ``time`` module whose sleeps advance a counter."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    import orca_core.hardware.dynamixel_client as dxl_mod
+
+    stepped = _SteppedClock()
+    monkeypatch.setattr(dxl_mod, 'time', stepped)
+    return stepped
+
+
+def _all_overloaded(motor_id):
+    return 0x20, COMM_SUCCESS, 0
+
+
+def test_connect_reboots_faulted_motors_without_energizing_them(client, bus, clock):
+    """Connecting must never make a motor stiffen or move, so a reboot writes
+    neither Torque Enable (64) nor Operating Mode (11)."""
+    bus.read1_hook = _all_overloaded
+    client.port_handler.is_open = False
+
+    client.connect()
+
+    assert bus.events('reboot') == ['reboot', 'reboot']
+    assert not [w for w in bus.writes1 if w[1] in (11, 64)]
+    assert not [w for w in bus.sync_writes if w[0] in (11, 64)]
+
+
+def test_motors_rebooted_together_share_one_settle_and_one_deadline(
+        client, bus, clock):
+    bus.read1_hook = _all_overloaded
+    bus.ping_hook = lambda motor_id: COMM_RX_FAIL
+
+    client.check_overload_and_reboot([1, 2])
+
+    assert bus.events('reboot') == ['reboot', 'reboot']
+    assert 2.3 <= clock.now < 2.4
+
+
+def test_a_reboot_that_raises_mid_batch_still_restores_the_motors_already_rebooted(
+        client, bus, clock, monkeypatch):
+    client.write_desired_current([1, 2], np.array([300, 300]))
+    bus.sync_writes.clear()
+    bus.read1_hook = _all_overloaded
+    real_reboot = client.packet_handler.reboot
+
+    def reboot(port, motor_id):
+        if motor_id == 2:
+            raise RuntimeError('bus fault')
+        return real_reboot(port, motor_id)
+
+    monkeypatch.setattr(client.packet_handler, 'reboot', reboot)
+
+    with pytest.raises(RuntimeError, match='bus fault'):
+        client.check_overload_and_reboot([1, 2])
+
+    assert [(address, list(params)) for address, params in bus.sync_writes] == [(102, [1])]
+
+
+def test_signed_values_wrap_to_the_register_width():
+    from orca_core.hardware.dynamixel_client import signed_to_unsigned
+
+    assert signed_to_unsigned(-1, 4) == 0xFFFFFFFF
+    assert signed_to_unsigned(-1, 1) == 0xFF
+    assert signed_to_unsigned(5, 4) == 5
+
+
 def test_full_fallback_is_rate_limited(client, bus):
     bus.sync_tx_results = [COMM_RX_FAIL] * 4  # two reads x two attempts
     bus.read4_hook = lambda motor_id, address: (2048, COMM_SUCCESS, 0)
@@ -515,6 +609,12 @@ def test_failed_motor_enters_cooldown(client, bus):
     reader = client._pos_vel_cur_reader
     reader.read(retries=1)
     assert set(reader._fallback_skip_until) == set(reader.motor_ids)
+
+
+def test_the_settle_check_reads_the_moving_register_at_122(client):
+    """Address 123 bit 0 is In-Position (1 means arrived); Moving is 122."""
+    moving = client._moving_reader
+    assert (moving.address, moving.size) == (122, 1)
 
 
 # ----- fast sync read ------------------------------------------------------

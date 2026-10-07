@@ -54,7 +54,7 @@ class TestDynamixelArrival:
         cls = motor_client_class("dynamixel")
         client = cls.__new__(cls)
         client.motor_ids = [1, 2]
-        client._moving_status_reader = _Reader(np.array(moving))
+        client._moving_reader = _Reader(np.array(moving))
         client._pos_vel_cur_reader = _Reader(
             (np.array(positions), np.zeros(2), np.zeros(2)))
         client._goal_positions = dict(goals)
@@ -91,7 +91,7 @@ class TestDynamixelArrival:
         def boom():
             raise OSError("bus")
 
-        client._moving_status_reader.read = boom
+        client._moving_reader.read = boom
         assert client._unsettled_motors() == [1, 2]
 
     def test_the_timeout_names_what_never_settled(self):
@@ -230,8 +230,6 @@ class TestDynamixelProfileCeiling:
         client._bus_lock = threading.RLock()
         client.port_handler = object()
         client.packet_handler = object()
-        client._pos_vel_cur_reader = _Reader(None)
-        client._pos_vel_cur_reader.vel_scale = 0.229 * 2.0 * np.pi / 60.0
         client._flush_input_buffer = lambda: None
         reader = _FakeSyncReader(answers, comm_ok)
 

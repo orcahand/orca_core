@@ -8,288 +8,34 @@
 
 """Communication using a simulated Dynamixel client."""
 
-import atexit
 import logging
-import time
-import random
-from typing import Optional, Sequence, Union, Tuple
+from dataclasses import asdict, replace
+from typing import Sequence, Union
+
 import numpy as np
 
-from ..constants import DYNAMIXEL
 from .dynamixel_client import DynamixelClient
-from .motor_client import MotorClient, MotorRead
-
-PROTOCOL_VERSION = 2.0
-
-ADDR_OPERATING_MODE = 11
-ADDR_TORQUE_ENABLE = 64
-ADDR_GOAL_POSITION = 116
-ADDR_GOAL_PWM = 100
-ADDR_GOAL_CURRENT = 102
-ADDR_PROFILE_VELOCITY = 112
-ADDR_PRESENT_POSITION = 132
-ADDR_PRESENT_VELOCITY = 128
-ADDR_PRESENT_CURRENT = 126
-ADDR_PRESENT_POS_VEL_CUR = 126
-ADDR_MOVING_STATUS = 123
-ADDR_PRESENT_TEMPERATURE = 146
-
-# Data Byte Length
-LEN_OPERATING_MODE = 1
-LEN_PRESENT_POSITION = 4
-LEN_PRESENT_VELOCITY = 4
-LEN_PRESENT_CURRENT = 2
-LEN_PRESENT_POS_VEL_CUR = 10
-LEN_GOAL_POSITION = 4
-LEN_GOAL_PWM = 2
-LEN_GOAL_CURRENT = 2
-LEN_PROFILE_VELOCITY = 4
-LEN_MOVING_STATUS = 1
-LEN_PRESENT_TEMPERATURE = 1
-
-DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
-# See http://emanual.robotis.com/docs/en/dxl/x/xh430-v210/#goal-velocity
-DEFAULT_VEL_SCALE = 0.229 * 2.0 * np.pi / 60.0  # 0.229 rpm
-# The current registers are already in mA, the unit the control table and
-# the Dynamixel Wizard both use, so readings need no conversion.
-DEFAULT_CUR_SCALE = 1.0
-
-
-def dynamixel_cleanup_handler():
-    """Disconnect every open mock client at interpreter exit."""
-    MockDynamixelClient.cleanup_open_clients()
-
-
-def signed_to_unsigned(value: int, size: int) -> int:
-    """Converts the given value to its unsigned representation."""
-    if value < 0:
-        bit_size = 8 * size
-        max_value = (1 << bit_size) - 1
-        value = max_value + value
-    return value
-
-
-def unsigned_to_signed(value: int, size: int) -> int:
-    """Converts the given value from its unsigned representation."""
-    bit_size = 8 * size
-    if (value & (1 << (bit_size - 1))) != 0:
-        value = -((1 << bit_size) - value)
-    return value
-
-
-from dataclasses import asdict, replace
-
+from .mock_motor_client import MockMotorClient
 from .motor_client import ServoGains, ServoProfile
 
-class MockDynamixelClient(MotorClient):
+
+class MockDynamixelClient(MockMotorClient):
     """Mock client for simulating communication with Dynamixel motors.
 
     NOTE: This only supports Protocol 2.
     """
 
-    motor_type = DYNAMIXEL
-    factory_default_id = DynamixelClient.factory_default_id
-    factory_default_baudrate = DynamixelClient.factory_default_baudrate
-    baud_rate_map = DynamixelClient.baud_rate_map
-    waits_for_motion = DynamixelClient.waits_for_motion
-    arrival_tolerance_rad = DynamixelClient.arrival_tolerance_rad
-    servo_gain_max = DynamixelClient.servo_gain_max
-    profile_velocity_max_rad_s = DynamixelClient.profile_velocity_max_rad_s
-    profile_acceleration_max_rad_s2 = DynamixelClient.profile_acceleration_max_rad_s2
-    profile_ceiling_source = DynamixelClient.profile_ceiling_source
-    no_load_speed_rad_s = DynamixelClient.no_load_speed_rad_s
-    config_registers = DynamixelClient.config_registers
+    real_client = DynamixelClient
+    default_operating_mode = 3
+    # Factory-default position P gain; the rest start at zero, matching a
+    # servo straight out of the box.
+    default_servo_gains = ServoGains(kp=800, ki=0, kd=0, ff_1st=0, ff_2nd=0)
+    # Factory state: no profile at all, so Goal Position is a step.
+    default_servo_profile = ServoProfile(velocity_rad_s=0.0, acceleration_rad_s2=0.0)
 
-    @property
-    def _config_values(self):
-        if not hasattr(self, '_cfgvals'):
-            self._cfgvals = {}
-        return self._cfgvals
-
-    def _config_register(self, key):
-        return DynamixelClient._config_register(self, key)
-
-    def read_config_register(self, motor_id, key):
-        self._config_register(key)
-        return self._config_values.setdefault(int(motor_id), {}).get(key)
-
-    def write_config_register(self, motor_id, key, value):
-        entry = self._config_register(key)
-        if entry.minimum is not None and value < entry.minimum:
-            raise ValueError(f"{key}={value} below {entry.minimum}")
-        if entry.maximum is not None and value > entry.maximum:
-            raise ValueError(f"{key}={value} above {entry.maximum}")
-        if entry.choices and value not in entry.choices:
-            raise ValueError(
-                f"{key}={value} is not one of {sorted(entry.choices)}")
-        store = self._config_values.setdefault(int(motor_id), {})
-        # Through to_raw and back, so a value the register cannot hold is
-        # reported as what it actually became, exactly as hardware would.
-        store[key] = entry.from_raw(entry.to_raw(int(value)))
-        if key == "id":
-            self._config_values[int(value)] = store
-        # What the register holds, not what was asked for -- the real clients
-        # read back, and a mock that answered otherwise would hide exactly the
-        # mismatch this is here to surface.
-        return store[key]
-
-    requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
-    current_scale_ma = DynamixelClient.current_scale_ma
-    max_current_ma = DynamixelClient.max_current_ma
-    default_max_current_ma = DynamixelClient.default_max_current_ma
-    default_calibration_current_ma = DynamixelClient.default_calibration_current_ma
-
-    # Clients with an open (simulated) port; registered on successful
-    # connect() so the atexit cleanup only ever touches live connections.
-    OPEN_CLIENTS = set()
-
-    def __init__(self,
-                 motor_ids: Sequence[int],
-                 port: str = '/dev/ttyUSB0',
-                 baudrate: int = 1000000,
-                 lazy_connect: bool = False,
-                 pos_scale: Optional[float] = None,
-                 vel_scale: Optional[float] = None,
-                 cur_scale: Optional[float] = None):
-        """Initializes a new client.
-
-        Args:
-            motor_ids: All motor IDs being used by the client.
-            port: The Dynamixel device to talk to. e.g.
-                - Linux: /dev/ttyUSB0
-                - Mac: /dev/tty.usbserial-*
-                - Windows: COM1
-            baudrate: The Dynamixel baudrate to communicate with.
-            lazy_connect: If True, automatically connects when calling a method
-                that requires a connection, if not already connected.
-            pos_scale: The scaling factor for the positions. This is
-                motor-dependent. If not provided, uses the default scale.
-            vel_scale: The scaling factor for the velocities. This is
-                motor-dependent. If not provided uses the default scale.
-            cur_scale: The scaling factor for the currents. This is
-                motor-dependent. If not provided uses the default scale.
-        """
-        import dynamixel_sdk
-        self.dxl = dynamixel_sdk
-
-        self.motor_ids = list(motor_ids)
-        self.port_name = port
-        self.baudrate = baudrate
-        self.lazy_connect = lazy_connect
-        
-        # States for simulation.
-        self._connected = False
-        self._torque_enabled = {mid: False for mid in self.motor_ids}
-        self._operating_mode = {mid: 3 for mid in self.motor_ids}
-        self._pos = {mid: 0.0 for mid in self.motor_ids}
-        self._vel = {mid: 0.0 for mid in self.motor_ids}
-        self._cur = {mid: 0.0 for mid in self.motor_ids}
-        # Per-motor goal-current ceilings a test may script; None = no current register.
-        self.current_ceilings_ma: dict = {}
-        self._temp = {mid: 0.0 for mid in self.motor_ids}
-        self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
-        # Factory-default position P gain; the rest start at zero, matching a
-        # servo straight out of the box.
-        self._servo_gains = {mid: ServoGains(kp=800, ki=0, kd=0,
-                                             ff_1st=0, ff_2nd=0)
-                             for mid in self.motor_ids}
-        # Factory state: no profile at all, so Goal Position is a step.
-        self._servo_profile = {mid: ServoProfile(velocity_rad_s=0.0,
-                                                 acceleration_rad_s2=0.0)
-                               for mid in self.motor_ids}
-        
-        # This is specific to the ORCA Hand and simulates the hardstops
-        self._max_motor_pos = 1.0
-        self._min_pos = -1.0
-
-        self.port_handler = self.dxl.PortHandler(port)
-        self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
-        
-        self._pos_vel_cur_reader = DynamixelPosVelCurReader(
-            self,
-            self.motor_ids,
-            pos_scale=pos_scale if pos_scale is not None else DEFAULT_POS_SCALE,
-            vel_scale=vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE,
-            cur_scale=cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE,
-        )
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
-
-    def connect(self):
-        """Connects to the simulated Dynamixel motors.
-
-        Mirrors the real clients' registry contract: the client joins
-        ``OPEN_CLIENTS`` only once the connect completed, so a failed
-        connect never leaves a dead entry for the exit cleanup.
-        """
-        assert not self.is_connected, 'Client is already connected.'
-
-        logging.info('Succeeded to open port: %s', self.port_name)
-        logging.info('Succeeded to set baudrate to %d', self.baudrate)
-
-        self._connected = True
-
-        # Torque is left as-is, mirroring the real clients: connecting must
-        # never make the hand stiffen or move.
-
-        self.OPEN_CLIENTS.add(self)
-
-    def disconnect(self):
-        """Disconnects from the simulated Dynamixel device.
-
-        The client is always marked disconnected and deregistered, even when
-        the final torque-disable raises; that exception propagates after
-        cleanup, mirroring the real clients.
-        """
-        if not self.is_connected:
-            return
-
-        try:
-            self.set_torque_enabled(self.motor_ids, False, retries=0)
-        finally:
-            self._connected = False
-            self.OPEN_CLIENTS.discard(self)
-
-    def disconnect_fixed_lock_order(self) -> None:
-        """Equivalent to :meth:`disconnect` here.
-
-        The real clients check the SDK's in-use flag before taking the bus
-        lock and abandon the teardown when it is set; this one has no such
-        shortcut to correct. Carried so the two agree on what a client offers.
-        """
-        self.disconnect()
-
-    def set_torque_enabled(self,
-                           motor_ids: Sequence[int],
-                           enabled: bool,
-                           retries: int = 3,
-                           retry_interval: float = 0.25) -> "list[int]":
-        """Sets whether torque is enabled for the motors.
-
-        Args:
-            motor_ids: The motor IDs to configure.
-            enabled: Whether to engage or disengage the motors.
-            retries: The number of times to retry after the first attempt.
-                0 means a single attempt; <0 retries forever.
-            retry_interval: The number of seconds to wait between retries.
-
-        Returns:
-            A list of motor IDs that could not be set (unknown IDs, matching
-            a real client's silent motors).
-        """
-        self.check_connected()
-        failed_ids = []
-        for mid in motor_ids:
-            if mid not in self._torque_enabled:
-                failed_ids.append(mid)
-                continue
-            self._torque_enabled[mid] = enabled
-        if failed_ids:
-            logging.error('Could not set torque %s for IDs: %s',
-                          'enabled' if enabled else 'disabled', str(failed_ids))
-        return failed_ids
+    # Simulated hardstops of the ORCA hand, in radians.
+    _max_motor_pos = 1.0
+    _min_pos = -1.0
 
     def set_operating_mode(self, motor_ids: Sequence[int], mode_value: int):
         """
@@ -308,52 +54,6 @@ class MockDynamixelClient(MotorClient):
             self._operating_mode[mid] = mode_value
             logging.info('Set operating mode for motor %d to %d', mid, mode_value)
 
-    def read_position_velocity_current(self) -> MotorRead:
-        """Returns the simulated positions, velocities, and currents."""
-        self.check_connected()
-
-        pos_array = np.array([self._pos[mid] for mid in self.motor_ids])
-        vel_array = np.array([self._vel[mid] for mid in self.motor_ids])
-        cur_array = np.array([self._cur[mid] for mid in self.motor_ids])
-
-        return MotorRead(position=pos_array, velocity=vel_array, current=cur_array)
-
-    @property
-    def last_read_ok(self) -> bool:
-        # Delegates to the (never-failing) reader so tests can force a
-        # stale-read condition by flipping the reader's flag.
-        return self._pos_vel_cur_reader.last_read_ok
-
-    def read_status_is_done_moving(self) -> bool:
-        """Returns the last bit of moving status"""
-        self.check_connected()
-        return True
-
-    def read_hardware_error(self, motor_id: int) -> "int | None":
-        """A configured motor answers fault-free; any other ID is silent."""
-        self.check_connected()
-        return 0 if motor_id in self.motor_ids else None
-
-    def read_temperature(self) -> np.ndarray:
-        """Reads and returns the simulated temperatures."""
-        self.check_connected()
-        temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
-        return temp_array
-
-    def wait_for_motion_complete(self, timeout: float = 5.0,
-                                 poll_interval: float = 0.02) -> None:
-        """Settled the instant it is asked: a mock write lands immediately.
-
-        It still answers the call rather than inheriting the no-op, so a
-        caller that depends on the wait is exercised against the mock
-        instead of only against hardware.
-        """
-        self.check_connected()
-
-    def read_servo_gains(self, motor_ids: Sequence[int]):
-        self.check_connected()
-        return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}
-
     def write_servo_gains(self, gains) -> None:
         """Merge the named fields, leaving ``None`` fields as they were."""
         self.check_connected()
@@ -367,75 +67,28 @@ class MockDynamixelClient(MotorClient):
                 for field, value in asdict(entry).items() if value is not None
             })
 
-    def read_servo_profile(self, motor_ids: Sequence[int]):
-        self.check_connected()
-        return {int(m): self._servo_profile.get(int(m)) for m in motor_ids}
-
     def write_servo_profile(self, profiles) -> None:
         self.check_connected()
         for motor_id, entry in profiles.items():
             motor_id = int(motor_id)
-            current = self._servo_profile.get(motor_id)
+            current = self._servo_profiles.get(motor_id)
             if current is None:
                 continue
-            self._servo_profile[motor_id] = replace(current, **{
+            self._servo_profiles[motor_id] = replace(current, **{
                 field: value
                 for field, value in asdict(entry).items() if value is not None
             })
 
     def write_desired_pos(self, motor_ids: Sequence[int],
-                          positions: np.ndarray):
-        """Writes the given desired positions.
+                          positions: np.ndarray) -> None:
+        """Writes the given desired positions, clamped to the simulated hardstops.
 
         Args:
             motor_ids: The motor IDs to write to.
             positions: The joint angles in radians to write.
         """
-        assert len(motor_ids) == len(positions)
-        self.check_connected()
-        # The real client stamps these inside sync_write; the mock writes
-        # straight to its dict, so it stamps the equivalent point. The
-        # intervals are meaningless -- this only keeps the tooling runnable
-        # without hardware.
-
-        for mid in motor_ids:
-            if mid not in self._pos:
-                logging.error('Write ignored for unknown motor ID %d', mid)
-                continue
-
-            if positions[motor_ids.index(mid)] > self._max_motor_pos:
-                self._pos[mid] = self._max_motor_pos
-            elif positions[motor_ids.index(mid)] < self._min_pos:
-                self._pos[mid] = self._min_pos
-            else:
-                self._pos[mid] = positions[motor_ids.index(mid)]
-
-        times = [0.0]
-        for _ in range(4):
-            times.append(times[-1] + random.uniform(0.01, 0.05))
-        return times
-
-    def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
-        self.check_connected()
-
-        for mid, raw in self._goal_current_plan(motor_ids, current).items():
-            if mid not in self._cur:
-                logging.error('Write ignored for unknown motor ID %d', mid)
-                continue
-            self._cur[mid] = raw * self.current_scale_ma
-
-    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
-        return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
-
-    def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
-            assert len(motor_ids) == len(profile_velocity)
-            self.check_connected()
-
-            for mid in motor_ids:
-                if mid not in self._profile_velocity:
-                    logging.error('Write ignored for unknown motor ID %d', mid)
-                    continue
-                self._profile_velocity[mid] = profile_velocity[motor_ids.index(mid)]
+        self._write_clamped_positions(
+            motor_ids, positions, self._min_pos, self._max_motor_pos)
 
     def write_byte(
             self,
@@ -458,7 +111,7 @@ class MockDynamixelClient(MotorClient):
 
     def sync_write(self, motor_ids: Sequence[int],
                    values: Sequence[Union[int, float]], address: int,
-                   size: int):
+                   size: int) -> None:
         """Writes values to a group of motors.
 
         Args:
@@ -468,222 +121,3 @@ class MockDynamixelClient(MotorClient):
             size: The size of the control table value being written to.
         """
         self.check_connected()
-        times = [0.0]
-        for _ in range(4):
-            times.append(times[-1] + random.uniform(0.01, 0.05))
-        return times
-
-    def check_connected(self):
-        """Ensures the robot is connected."""
-        if self.lazy_connect and not self.is_connected:
-            self.connect()
-        if not self.is_connected:
-            raise OSError('Must call connect() first.')
-
-    def handle_packet_result(self,
-                             comm_result: int,
-                             dxl_error: Optional[int] = None,
-                             dxl_id: Optional[int] = None,
-                             context: Optional[str] = None):
-        """Handles the result from a communication request."""
-        return True
-
-    def convert_to_unsigned(self, value: int, size: int) -> int:
-        """Converts the given value to its unsigned representation."""
-        if value < 0:
-            max_value = (1 << (8 * size)) - 1
-            value = max_value + value
-        return value
-
-    def __enter__(self):
-        """Enables use as a context manager."""
-        if not self.is_connected:
-            self.connect()
-        return self
-
-    def __exit__(self, *args):
-        """Enables use as a context manager."""
-        self.disconnect()
-
-    def __del__(self):
-        """Automatically disconnect on destruction."""
-        self.disconnect()
-
-
-class DynamixelReader:
-    """Reads data from Dynamixel motors.
-
-    All motors are read at the same address and length, so this wraps a
-    GroupSyncRead from the DynamixelSDK.
-    """
-
-    def __init__(self, client: MockDynamixelClient, motor_ids: Sequence[int],
-                 address: int, size: int):
-        """Initializes a new reader."""
-        self.client = client
-        self.motor_ids = motor_ids
-        self.address = address
-        self.size = size
-        # The mock never fails a read; tests flip this to simulate one.
-        self.last_read_ok = True
-        self._initialize_data()
-
-        self.operation = self.client.dxl.GroupSyncRead(client.port_handler,
-                                                       client.packet_handler,
-                                                       address, size)
-
-        for motor_id in motor_ids:
-            success = self.operation.addParam(motor_id)
-            if not success:
-                raise OSError(
-                    '[Motor ID: {}] Could not add parameter to sync read.'
-                    .format(motor_id))
-
-    def read(self, retries: int = 1):
-        """Reads data from the motors."""
-        self.client.check_connected()
-        success = False
-        while not success and retries >= 0:
-            comm_result = self.operation.txRxPacket()
-            success = self.client.handle_packet_result(
-                comm_result, context='read')
-            retries -= 1
-
-        # If we failed, send a copy of the previous data.
-        if not success:
-            return self._get_data()
-
-        errored_ids = []
-        for i, motor_id in enumerate(self.motor_ids):
-            # Check if the data is available.
-            available = self.operation.isAvailable(motor_id, self.address,
-                                                   self.size)
-            if not available:
-                errored_ids.append(motor_id)
-                continue
-
-            self._update_data(i, motor_id)
-
-        if errored_ids:
-            logging.error('Sync read data is unavailable for: %s',
-                          str(errored_ids))
-
-        return self._get_data()
-
-    def _initialize_data(self):
-        """Initializes the cached data."""
-        self._data = np.zeros(len(self.motor_ids), dtype=np.float32)
-
-    def _update_data(self, index: int, motor_id: int):
-        """Updates the data index for the given motor ID."""
-        self._data[index] = self.operation.getData(motor_id, self.address,
-                                                   self.size)
-
-    def _get_data(self):
-        """Returns a copy of the data."""
-        return self._data.copy()
-
-
-class DynamixelPosVelCurReader(DynamixelReader):
-    """Reads positions and velocities."""
-
-    def __init__(self,
-                 client: MockDynamixelClient,
-                 motor_ids: Sequence[int],
-                 pos_scale: float = 1.0,
-                 vel_scale: float = 1.0,
-                 cur_scale: float = 1.0):
-        super().__init__(
-            client,
-            motor_ids,
-            address=ADDR_PRESENT_POS_VEL_CUR,
-            size=LEN_PRESENT_POS_VEL_CUR,
-        )
-        self.pos_scale = pos_scale
-        self.vel_scale = vel_scale
-        self.cur_scale = cur_scale
-
-    def _initialize_data(self):
-        """Initializes the cached data."""
-        self._pos_data = np.zeros(len(self.motor_ids), dtype=np.float32)
-        self._vel_data = np.zeros(len(self.motor_ids), dtype=np.float32)
-        self._cur_data = np.zeros(len(self.motor_ids), dtype=np.float32)
-
-    def _update_data(self, index: int, motor_id: int):
-        """Updates the data index for the given motor ID."""
-        cur = self.operation.getData(motor_id, ADDR_PRESENT_CURRENT,
-                                     LEN_PRESENT_CURRENT)
-        vel = self.operation.getData(motor_id, ADDR_PRESENT_VELOCITY,
-                                     LEN_PRESENT_VELOCITY)
-        pos = self.operation.getData(motor_id, ADDR_PRESENT_POSITION,
-                                     LEN_PRESENT_POSITION)
-        cur = unsigned_to_signed(cur, size=2)
-        vel = unsigned_to_signed(vel, size=4)
-        pos = unsigned_to_signed(pos, size=4)
-        self._pos_data[index] = float(pos) * self.pos_scale
-        self._vel_data[index] = float(vel) * self.vel_scale
-        self._cur_data[index] = float(cur) * self.cur_scale
-
-    def _get_data(self):
-        """Returns a copy of the data."""
-        return (self._pos_data.copy(), self._vel_data.copy(),
-                self._cur_data.copy())
-
-class DynamixelTempReader(DynamixelReader):
-    """Reads present temperature (1 byte) for each Dynamixel motor."""
-    
-    def _initialize_data(self):
-        # We'll store one float per motor for the temperature values.
-        self._temp_data = np.zeros(len(self.motor_ids), dtype=np.float32)
-
-    def _update_data(self, index: int, motor_id: int):
-        # The raw value from the control table is 1 byte = 1 degree Celsius.
-        raw_val = self.operation.getData(motor_id, self.address, self.size)
-        self._temp_data[index] = float(raw_val)
-
-    def _get_data(self):
-        return self._temp_data.copy()
-
-# Register global cleanup function.
-atexit.register(dynamixel_cleanup_handler)
-
-if __name__ == '__main__':
-    import argparse
-    import itertools
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-m',
-        '--motors',
-        required=True,
-        help='Comma-separated list of motor IDs.')
-    parser.add_argument(
-        '-d',
-        '--device',
-        default=None,
-        help='The Dynamixel device. Default: auto-detect the motor adapter.')
-    parser.add_argument(
-        '-b', '--baud', default=1000000, help='The baudrate to connect with.')
-    from ..utils.utils import auto_detect_port
-
-    parsed_args = parser.parse_args()
-    motors = [int(motor) for motor in parsed_args.motors.split(',')]
-    
-    way_points = [np.zeros(len(motors)), np.full(len(motors), np.pi)]
-
-    device = parsed_args.device or auto_detect_port('dynamixel')
-
-    with MockDynamixelClient(motors, device, parsed_args.baud) as dxl_client:
-        for step in itertools.count():
-            if step > 0 and step % 50 == 0:
-                way_point = way_points[(step // 100) % len(way_points)]
-                print('Writing: {}'.format(way_point.tolist()))
-                dxl_client.write_desired_pos(motors, way_point)
-            read_start = time.time()
-            pos_now, vel_now, cur_now = dxl_client.read_position_velocity_current()
-            if step % 5 == 0:
-                print('[{}] Frequency: {:.2f} Hz'.format(
-                    step, 1.0 / (time.time() - read_start)))
-                print('> Pos: {}'.format(pos_now.tolist()))
-                print('> Vel: {}'.format(vel_now.tolist()))
-                print('> Cur: {}'.format(cur_now.tolist()))

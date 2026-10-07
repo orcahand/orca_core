@@ -18,45 +18,16 @@ Usage:
 import argparse
 import sys
 import time
+from contextlib import ExitStack
 
-from orca_core.hardware.hand_serial_link import HandSerialLink
-from orca_core.hardware.joint_encoder_client import (
-    EncodersNotAvailableError,
-    JointEncoderClient,
-)
 from orca_core.hardware.sensing.constants import (
     JOINT_TO_ENCODER_SLOT,
     joint_encoder_polarity_for_side,
 )
-from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args, open_encoder_stream
 
 
 REFRESH_S = 0.2
-
-
-def _open_encoder_client(port_override, baudrate):
-    """Resolve the encoder port, open the link and start the stream."""
-    ports = resolve_sensing_ports(
-        tactile_override="disabled", encoder_override=port_override
-    )
-    if ports.encoder is None:
-        raise RuntimeError(
-            "no encoder port found "
-            f"(encoder_serial_port={port_override!r}). Pass --encoder-port."
-        )
-    link = HandSerialLink(ports.encoder, baudrate=baudrate)
-    link.connect()
-    client = JointEncoderClient(link)
-    client.connect()
-    try:
-        client.start_stream(timeout=2.0)
-    except EncodersNotAvailableError:
-        client.disconnect()
-        link.disconnect()
-        raise
-    print(f"Encoder stream active on {ports.encoder}")
-    return link, client
 
 
 def _render(joints, polarity, encoder_angles, motor_angles, raw):
@@ -116,13 +87,15 @@ def main():
         print(f"Failed to connect to the hand: {msg}")
         sys.exit(1)
 
-    link = client = None
+    stream = ExitStack()
     try:
         if args.mock:
             client = hand._encoder_client
         else:
             port = args.encoder_port or hand.config.encoder_serial_port
-            link, client = _open_encoder_client(port, hand.config.encoder_baudrate)
+            client = stream.enter_context(
+                open_encoder_stream(port, hand.config.encoder_baudrate)
+            )
 
         if not args.hold:
             hand.disable_torque()
@@ -144,14 +117,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        if client is not None and not args.mock:
-            try:
-                client.stop_stream()
-            except Exception:
-                pass
-            client.disconnect()
-        if link is not None:
-            link.disconnect()
+        stream.close()
         hand.disconnect()
 
 

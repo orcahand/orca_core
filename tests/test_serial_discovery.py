@@ -8,7 +8,12 @@ from unittest.mock import patch
 import pytest
 import serial as pyserial
 
-from orca_core.constants import ORCA_ID_RESP_MOTOR, ORCA_ID_RESP_SENSOR
+from orca_core.constants import (
+    ORCA_ID_QUERY,
+    ORCA_ID_RESP_MOTOR,
+    ORCA_ID_RESP_SENSOR,
+    ORCA_INFO_QUERY,
+)
 from orca_core.hardware.sensing.constants import (
     AUTO_ENC_PAYLOAD_BYTES,
     DEFAULT_ENCODER_BAUDRATE,
@@ -18,6 +23,7 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.serial_discovery import (
+    OrcaBoardInfo,
     SensingPorts,
     _probe_orca_id,
     _tactile_responds_at,
@@ -27,6 +33,7 @@ from orca_core.hardware.sensing.serial_discovery import (
     find_motor_port,
     find_tactile_port,
     port_in_use,
+    probe_orca_info,
     resolve_sensing_ports,
 )
 from orca_core.utils.utils import auto_detect_port
@@ -299,6 +306,100 @@ def test_detect_encoder_stream_busy_port_is_false():
     with patch("serial.Serial",
                side_effect=pyserial.SerialException("Could not exclusively lock port")):
         assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+# ----- ORCA_INFO? / ORCA_ID? probes ------------------------------------------
+
+STREAM_NOISE = b"\xaa\xa9\x00\x0a\x00\xff\n\x80" * 6
+
+
+class ScriptedPort(FakeSerial):
+    """FakeSerial that answers each written query from a reply table and idles on the virtual clock."""
+
+    def __init__(self, replies: dict, clock):
+        super().__init__(b"")
+        self._replies = replies
+        self._clock = clock
+        self.writes: list = []
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+        self._data, self._pos = self._replies.get(data, b""), 0
+
+    def read(self, n: int = 1) -> bytes:
+        chunk = super().read(n)
+        if not chunk:
+            self._clock.sleep(0.05)
+        return chunk
+
+    def flush(self) -> None:
+        pass
+
+
+@pytest.fixture
+def scripted_port(virtual_clock, monkeypatch):
+    """Build a ScriptedPort from a reply table and route serial.Serial and the module clock to it."""
+    monkeypatch.setattr(f"{DISCOVERY}.time", virtual_clock)
+
+    def install(replies: dict) -> ScriptedPort:
+        port = ScriptedPort(replies, virtual_clock)
+        monkeypatch.setattr("serial.Serial", lambda *args, **kwargs: port)
+        return port
+
+    return install
+
+
+@pytest.mark.parametrize("line,expected", [
+    pytest.param(
+        b"ORCA:MOTOR;SIDE=L;HW=2;FW=7;SN=ser-0001;BID=0123456789ABCDEF;CFG=3\n",
+        OrcaBoardInfo(role="motor", side="left", hw_version=2, fw_version=7,
+                      serial="ser-0001", board_id="0123456789ABCDEF", config=3),
+        id="motor",
+    ),
+    pytest.param(
+        b"ORCA:SENSOR;SIDE=R;SN=ser-0002\n",
+        OrcaBoardInfo(role="sensor", side="right", serial="ser-0002"),
+        id="sensor",
+    ),
+])
+def test_probe_orca_info_finds_the_identity_line_inside_an_active_stream(scripted_port, line, expected):
+    port = scripted_port({ORCA_INFO_QUERY: STREAM_NOISE + line + STREAM_NOISE})
+
+    assert probe_orca_info(OH_MOTOR_PORT) == expected
+    assert port.writes == [ORCA_INFO_QUERY]
+
+
+@pytest.mark.parametrize("legacy_reply,role", [
+    (ORCA_ID_RESP_MOTOR, "motor"),
+    (ORCA_ID_RESP_SENSOR, "sensor"),
+])
+def test_probe_orca_info_falls_back_to_the_legacy_id_for_a_board_that_ignores_it(
+    scripted_port, legacy_reply, role
+):
+    port = scripted_port({ORCA_ID_QUERY: STREAM_NOISE + legacy_reply + STREAM_NOISE})
+
+    assert probe_orca_info(OH_MOTOR_PORT) == OrcaBoardInfo(role=role)
+    assert port.writes == [ORCA_INFO_QUERY, ORCA_ID_QUERY]
+
+
+def test_probe_orca_info_gives_up_after_both_queries_time_out(scripted_port, virtual_clock):
+    port = scripted_port({})
+    start_clock = virtual_clock.monotonic()
+    start_slept = virtual_clock.offset
+
+    assert probe_orca_info(OH_MOTOR_PORT, timeout=0.2) is None
+
+    assert port.writes == [ORCA_INFO_QUERY, ORCA_ID_QUERY]
+    # Real time counts toward each 0.2 s deadline, so only the total is bounded below.
+    assert virtual_clock.monotonic() - start_clock >= 0.4
+    assert virtual_clock.offset - start_slept <= 0.5
+
+
+@pytest.mark.parametrize("probe", [probe_orca_info, _probe_orca_id])
+def test_probes_treat_an_open_error_as_no_board(probe):
+    with patch("serial.Serial", side_effect=OSError("device vanished")) as ser:
+        assert probe(OH_MOTOR_PORT) is None
+    assert ser.call_count == 1
 
 
 # ----- FTDI encoder-stream fallback ------------------------------------------

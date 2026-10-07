@@ -13,7 +13,7 @@ import os
 import threading
 import time
 from threading import RLock
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 
@@ -475,15 +475,7 @@ class OrcaHand(BaseHand):
             Failures are also logged, so best-effort callers may ignore
             the return value.
         """
-        motor_ids = self.config.motor_ids if motor_ids is None else motor_ids
-
-        with self._motor_lock:
-            failed_ids = list(self._motor_client.set_torque_enabled(motor_ids, True))
-        if failed_ids:
-            logger.warning(
-                "Torque enable not acknowledged by motor IDs: %s", failed_ids
-            )
-        return failed_ids
+        return self._set_torque(motor_ids, True)
 
     def disable_torque(self, motor_ids: List[int] = None) -> List[int]:
         """Disable torque on the specified motors.
@@ -497,13 +489,19 @@ class OrcaHand(BaseHand):
             Failures are also logged, so best-effort callers may ignore
             the return value.
         """
+        return self._set_torque(motor_ids, False)
+
+    def _set_torque(self, motor_ids: Optional[List[int]], enabled: bool) -> List[int]:
+        """Switch torque on or off for ``motor_ids`` (all motors when ``None``); return the motors that did not ack."""
         motor_ids = self.config.motor_ids if motor_ids is None else motor_ids
 
         with self._motor_lock:
-            failed_ids = list(self._motor_client.set_torque_enabled(motor_ids, False))
+            failed_ids = list(self._motor_client.set_torque_enabled(motor_ids, enabled))
         if failed_ids:
             logger.warning(
-                "Torque disable not acknowledged by motor IDs: %s", failed_ids
+                "Torque %s not acknowledged by motor IDs: %s",
+                "enable" if enabled else "disable",
+                failed_ids,
             )
         return failed_ids
 
@@ -559,6 +557,10 @@ class OrcaHand(BaseHand):
                 ),
             )
 
+    def _unknown_motor_ids(self, motor_ids) -> List[int]:
+        """The IDs in ``motor_ids`` that are not configured on this hand, in input order."""
+        return [motor_id for motor_id in motor_ids if motor_id not in self.config.motor_ids]
+
     def get_servo_gains(self) -> "dict[int, ServoGains | None]":
         """Read every motor's own position-PID and feedforward gains.
 
@@ -576,7 +578,7 @@ class OrcaHand(BaseHand):
         whenever the hand is brought up. The client replays them itself after
         a motor reboot.
         """
-        unknown = set(gains) - set(self.config.motor_ids)
+        unknown = self._unknown_motor_ids(gains)
         if unknown:
             raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
         with self._motor_lock:
@@ -594,7 +596,7 @@ class OrcaHand(BaseHand):
         point-to-point moves, so it shapes teleop and replay too. RAM
         registers: re-apply on bring-up.
         """
-        unknown = set(profiles) - set(self.config.motor_ids)
+        unknown = self._unknown_motor_ids(profiles)
         if unknown:
             raise ValueError(f"unknown motor id(s): {sorted(unknown)}")
         with self._motor_lock:
@@ -632,7 +634,7 @@ class OrcaHand(BaseHand):
         with self._motor_lock:
             if motor_ids is None:
                 motor_ids = self.config.motor_ids
-            elif not all(motor_id in self.config.motor_ids for motor_id in motor_ids):
+            elif self._unknown_motor_ids(motor_ids):
                 raise ValueError("Invalid motor IDs.")
 
             if mode_value in (MODE_MAP[CURRENT_BASED_POSITION], MODE_MAP[CURRENT]):
@@ -686,14 +688,7 @@ class OrcaHand(BaseHand):
         """
         with self._motor_lock:
             motor_pos = self._motor_client.read_position_velocity_current().position
-
-            if as_dict:
-                return {
-                    motor_id: pos
-                    for motor_id, pos in zip(self.config.motor_ids, motor_pos)
-                }
-
-            return motor_pos
+            return self._per_motor(motor_pos, as_dict)
 
     def get_motor_current(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present current drawn by each motor.
@@ -710,14 +705,7 @@ class OrcaHand(BaseHand):
         """
         with self._motor_lock:
             motor_current = self._motor_client.read_position_velocity_current().current
-
-            if as_dict:
-                return {
-                    motor_id: current
-                    for motor_id, current in zip(self.config.motor_ids, motor_current)
-                }
-
-            return motor_current
+            return self._per_motor(motor_current, as_dict)
 
     def get_motor_state(self) -> MotorRead:
         """Read position, velocity, and current in a single bus transaction.
@@ -779,14 +767,11 @@ class OrcaHand(BaseHand):
         """
         with self._motor_lock:
             motor_temp = self._motor_client.read_temperature()
+            return self._per_motor(motor_temp, as_dict)
 
-            if as_dict:
-                return {
-                    motor_id: temp
-                    for motor_id, temp in zip(self.config.motor_ids, motor_temp)
-                }
-
-            return motor_temp
+    def _per_motor(self, values, as_dict: bool):
+        """``values`` as read, or keyed by motor ID when ``as_dict``."""
+        return dict(zip(self.config.motor_ids, values)) if as_dict else values
 
     def _get_joint_positions(self) -> OrcaJointPositions:
         motor_pos = self.get_motor_pos()
@@ -841,11 +826,7 @@ class OrcaHand(BaseHand):
         self._compute_wrap_offsets_dict()
 
         if move_to_neutral:
-            self.set_joint_positions(
-                OrcaJointPositions.from_dict(self.config.neutral_position),
-                num_steps=NUM_STEPS
-            )
-            self._settle_neutral_move()
+            self.set_neutral_position()
 
     def is_calibrated(
         self, verbose: bool = False, use_joint_feedback: bool | None = None
@@ -868,8 +849,8 @@ class OrcaHand(BaseHand):
         uncalibrated_messages = []
         motors_with_warnings = set()
 
-        for motor_id, limits in self.motor_limits_dict.items():
-            if any(limit is None for limit in limits):
+        for motor_id in self.motor_limits_dict:
+            if not self.calibration._motor_has_limits(motor_id):
                 overall_calibrated = False
                 if not verbose:
                     return False
@@ -879,8 +860,8 @@ class OrcaHand(BaseHand):
                 )
                 motors_with_warnings.add(motor_id)
 
-        for motor_id, ratio in self.calibration.joint_to_motor_ratios_dict.items():
-            if ratio is None or ratio == 0.0:
+        for motor_id in self.calibration.joint_to_motor_ratios_dict:
+            if not self.calibration._motor_has_ratio(motor_id):
                 overall_calibrated = False
                 if not verbose:
                     return False
@@ -1049,28 +1030,17 @@ class OrcaHand(BaseHand):
         """
         if persist is None:
             persist = self._persist_calibration
-        if blocking:
-            self._task_stop_event.clear()
-            self._calibrate_and_apply(
-                force_wrist=force_wrist,
-                joints=joints,
-                joint_encoder_client=joint_encoder_client,
-                progress_callback=progress_callback,
-                persist=persist,
-                manual=manual,
-                prompt_callback=prompt_callback,
-            )
-        else:
-            self._start_task(
-                self._calibrate_and_apply,
-                force_wrist=force_wrist,
-                joints=joints,
-                joint_encoder_client=joint_encoder_client,
-                progress_callback=progress_callback,
-                persist=persist,
-                manual=manual,
-                prompt_callback=prompt_callback,
-            )
+        self._dispatch_task(
+            blocking,
+            self._calibrate_and_apply,
+            force_wrist=force_wrist,
+            joints=joints,
+            joint_encoder_client=joint_encoder_client,
+            progress_callback=progress_callback,
+            persist=persist,
+            manual=manual,
+            prompt_callback=prompt_callback,
+        )
 
     def _calibrate_and_apply(self, **kwargs):
         """Run the calibration routine and apply a completed result."""
@@ -1290,62 +1260,47 @@ class OrcaHand(BaseHand):
                     )
                     return
 
-            motor_ids_to_write = []
-            positions_to_write = []
-
             if isinstance(desired_pos, dict):
-                for motor_id, pos_val in desired_pos.items():
-                    if motor_id not in self.config.motor_ids:
-                        print(
-                            f"Warning: Motor ID {motor_id} in desired_pos dict is not in self.config.motor_ids. Skipping."
-                        )
-                        continue
-                    if pos_val is None or math.isnan(pos_val):
-                        continue
-
-                    pos_to_write = float(pos_val)
-                    if rel_to_current:
-                        pos_to_write += current_positions[
-                            self.config.motor_id_to_idx_dict[motor_id]
-                        ]
-
-                    motor_ids_to_write.append(motor_id)
-                    positions_to_write.append(pos_to_write)
-
-                if not motor_ids_to_write:
-                    return
-                positions_to_write = np.array(positions_to_write, dtype=float)
-
+                for motor_id in self._unknown_motor_ids(desired_pos):
+                    print(
+                        f"Warning: Motor ID {motor_id} in desired_pos dict is not in self.config.motor_ids. Skipping."
+                    )
+                targets = {
+                    motor_id: pos_val
+                    for motor_id, pos_val in desired_pos.items()
+                    if motor_id in self.config.motor_ids
+                }
             elif isinstance(desired_pos, (np.ndarray, list)):
                 if len(desired_pos) != len(self.config.motor_ids):
                     raise ValueError(
                         f"Length of desired_pos (list/ndarray) ({len(desired_pos)}) must match the number of configured motor_ids ({len(self.config.motor_ids)})."
                     )
-
-                for idx, pos_val in enumerate(desired_pos):
-                    if pos_val is None or math.isnan(pos_val):
-                        continue
-
-                    motor_ids_to_write.append(self.config.motor_ids[idx])
-                    if rel_to_current:
-                        positions_to_write.append(
-                            float(pos_val) + current_positions[idx]
-                        )
-                    else:
-                        positions_to_write.append(float(pos_val))
-
-                if not motor_ids_to_write:
-                    print(
-                        "\033[93mWarning: All positions in desired_pos (list/array) were None. No motor commands sent.\033[0m"
-                    )
-                    return
-
-                positions_to_write = np.array(positions_to_write, dtype=float)
-
+                targets = dict(zip(self.config.motor_ids, desired_pos))
             else:
                 raise ValueError("desired_pos must be a dict, np.ndarray, or list.")
 
-            self._motor_client.write_desired_pos(motor_ids_to_write, positions_to_write)
+            to_write = {
+                motor_id: float(pos_val)
+                for motor_id, pos_val in targets.items()
+                if pos_val is not None and not math.isnan(pos_val)
+            }
+            if rel_to_current:
+                to_write = {
+                    motor_id: pos
+                    + current_positions[self.config.motor_id_to_idx_dict[motor_id]]
+                    for motor_id, pos in to_write.items()
+                }
+
+            if not to_write:
+                if not isinstance(desired_pos, dict):
+                    print(
+                        "\033[93mWarning: All positions in desired_pos (list/array) were None. No motor commands sent.\033[0m"
+                    )
+                return
+
+            self._motor_client.write_desired_pos(
+                list(to_write), np.array(list(to_write.values()), dtype=float)
+            )
 
     def _warn_uncalibrated(self, motor_id: int, joint_name: str, missing: str) -> None:
         """Warn once per motor about missing calibration data (reads can run at loop rate)."""
@@ -1366,26 +1321,23 @@ class OrcaHand(BaseHand):
         for idx, pos in enumerate(motor_pos):
             motor_id = self.config.motor_ids[idx]
             joint_name = self.config.motor_to_joint_dict.get(motor_id)
-            if any(limit is None for limit in self.motor_limits_dict[motor_id]):
+            if not self.calibration._motor_has_limits(motor_id):
                 joint_pos[joint_name] = None
                 self._warn_uncalibrated(motor_id, joint_name, "motor limits")
-            elif self.calibration.joint_to_motor_ratios_dict[motor_id] == 0:
+            elif not self.calibration._motor_has_ratio(motor_id):
                 joint_pos[joint_name] = None
                 self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
-                if self.config.joint_inversion_dict.get(joint_name, False):
-                    joint_pos[joint_name] = (
-                        joint_roms[joint_name][1]
-                        - (wrapped_pos - self.motor_limits_dict[motor_id][0])
-                        / self.calibration.joint_to_motor_ratios_dict[motor_id]
-                    )
-                else:
-                    joint_pos[joint_name] = (
-                        joint_roms[joint_name][0]
-                        + (wrapped_pos - self.motor_limits_dict[motor_id][0])
-                        / self.calibration.joint_to_motor_ratios_dict[motor_id]
-                    )
+                d = (
+                    wrapped_pos - self.motor_limits_dict[motor_id][0]
+                ) / self.calibration.joint_to_motor_ratios_dict[motor_id]
+                lo, hi = joint_roms[joint_name]
+                joint_pos[joint_name] = (
+                    hi - d
+                    if self.config.joint_inversion_dict.get(joint_name, False)
+                    else lo + d
+                )
         return joint_pos
 
     def _joint_to_motor_pos(self, joint_pos: dict) -> np.ndarray:
@@ -1404,30 +1356,22 @@ class OrcaHand(BaseHand):
                 motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = None
                 continue
 
-            if (
-                self.motor_limits_dict[motor_id][0] is None
-                or self.motor_limits_dict[motor_id][1] is None
-                or self.calibration.joint_to_motor_ratios_dict[motor_id] == 0
-            ):
-                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = None
+            idx = self.config.motor_id_to_idx_dict[motor_id]
+            if not self.calibration._motor_ready(motor_id):
+                motor_pos[idx] = None
                 self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
                 continue
 
-            if self.config.joint_inversion_dict.get(joint_name, False):
-                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
-                    self.motor_limits_dict[motor_id][0]
-                    + (joint_roms[joint_name][1] - pos)
-                    * self.calibration.joint_to_motor_ratios_dict[motor_id]
-                )
-            else:
-                motor_pos[self.config.motor_id_to_idx_dict[motor_id]] = (
-                    self.motor_limits_dict[motor_id][0]
-                    + (pos - joint_roms[joint_name][0])
-                    * self.calibration.joint_to_motor_ratios_dict[motor_id]
-                )
-
-            motor_pos[self.config.motor_id_to_idx_dict[motor_id]] += (
-                self._wrap_offsets_dict.get(motor_id, 0.0)
+            lo, hi = joint_roms[joint_name]
+            d = (
+                (hi - pos)
+                if self.config.joint_inversion_dict.get(joint_name, False)
+                else (pos - lo)
+            ) * self.calibration.joint_to_motor_ratios_dict[motor_id]
+            motor_pos[idx] = (
+                self.motor_limits_dict[motor_id][0]
+                + d
+                + self._wrap_offsets_dict.get(motor_id, 0.0)
             )
 
         return motor_pos
@@ -1440,10 +1384,7 @@ class OrcaHand(BaseHand):
         claims ``calibrated: true``; constructing a hand never creates or
         rewrites the file otherwise, and mock hands never write at all.
         """
-        if not any(
-            any(limit is None for limit in limits)
-            for limits in self.motor_limits_dict.values()
-        ):
+        if all(self.calibration._motor_has_limits(m) for m in self.motor_limits_dict):
             return
         self.calibration = dataclasses.replace(self.calibration, calibrated=False)
         if not self._persist_calibration:
@@ -1478,13 +1419,9 @@ class OrcaHand(BaseHand):
                 be fast and non-blocking. Exceptions raised by the callback
                 are swallowed.
         """
-        if blocking:
-            self._task_stop_event.clear()
-            self._tension(move_motors, progress_callback=progress_callback)
-        else:
-            self._start_task(
-                self._tension, move_motors, progress_callback=progress_callback
-            )
+        self._dispatch_task(
+            blocking, self._tension, move_motors, progress_callback=progress_callback
+        )
 
     def jitter(
         self,
@@ -1515,13 +1452,9 @@ class OrcaHand(BaseHand):
         Raises:
             ValueError: If *amplitude* exceeds 10°.
         """
-        if blocking:
-            self._task_stop_event.clear()
-            self._jitter(motor_ids, amplitude, frequency, duration, include_wrist)
-        else:
-            self._start_task(
-                self._jitter, motor_ids, amplitude, frequency, duration, include_wrist
-            )
+        self._dispatch_task(
+            blocking, self._jitter, motor_ids, amplitude, frequency, duration, include_wrist
+        )
 
     def _jitter(
         self,
@@ -1548,6 +1481,14 @@ class OrcaHand(BaseHand):
             progress_callback=progress_callback,
             should_stop=self._task_stop_event.is_set,
         )
+
+    def _dispatch_task(self, blocking, task_fn, *args, **kwargs):
+        """Run ``task_fn`` to completion here, or in the background thread."""
+        if blocking:
+            self._task_stop_event.clear()
+            task_fn(*args, **kwargs)
+        else:
+            self._start_task(task_fn, *args, **kwargs)
 
     def _run_task(self, task_fn, *args, **kwargs):
         with self._lock:
@@ -1641,31 +1582,25 @@ class MockMotorResolutionMixin:
             rom = roms.get(joint)
             if rom is None:
                 continue
-            limits = motor_limits.get(motor_id)
-            if not limits or any(limit is None for limit in limits):
+            if not self.calibration._motor_has_limits(motor_id):
                 # Lower limit of 0 matches the mock motors' rest position, so
                 # wrap-offset detection doesn't read them as below-limit.
                 span = abs(float(rom[1]) - float(rom[0])) * MOCK_JOINT_TO_MOTOR_RATIO
                 motor_limits[motor_id] = [0.0, span]
                 changed = True
-            if not ratios.get(motor_id):
+            if not self.calibration._motor_has_ratio(motor_id):
                 ratios[motor_id] = MOCK_JOINT_TO_MOTOR_RATIO
                 changed = True
 
-        calibrated = all(
-            limits[0] is not None and limits[1] is not None
-            for limits in motor_limits.values()
-        ) and all(
-            ratio is not None and ratio != 0.0 for ratio in ratios.values()
+        filled = dataclasses.replace(
+            self.calibration,
+            motor_limits_dict=motor_limits,
+            joint_to_motor_ratios_dict=ratios,
         )
+        calibrated = filled._all_motors_ready()
 
         if changed or calibrated != self.calibration.calibrated:
-            self.calibration = dataclasses.replace(
-                self.calibration,
-                motor_limits_dict=motor_limits,
-                joint_to_motor_ratios_dict=ratios,
-                calibrated=calibrated,
-            )
+            self.calibration = dataclasses.replace(filled, calibrated=calibrated)
 
     def connect(self, interactive: bool = True, **kwargs) -> tuple[bool, str]:
         if self.config.port == "auto":

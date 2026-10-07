@@ -15,7 +15,7 @@ once here.
 Two facts make this geometry trivial to use alongside the force stream:
 
 * **Index alignment.** Position row ``i`` is intended to correspond to taxel
-  ``i`` in the decoded force stream (see ``decode_taxels_auto``), so positions
+  ``i`` in the decoded force stream (see ``decode_auto_payload``), so positions
   ``(n, 3)`` and a frame's forces ``(n, 3)`` line up by row with no bookkeeping.
 * **Frame.** Positions are in the *sensor* frame: origin on the mounting plane
   at the connector tail, X across the sensor width, Y along the sensor toward

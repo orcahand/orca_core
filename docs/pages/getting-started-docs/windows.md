@@ -64,7 +64,7 @@ uv run python -m serial.tools.list_ports -v
 
 This lists every serial port with its USB vendor and product IDs, the same information the auto-detection uses. A v2 hand shows two ports from the same board.
 
-Port selection works exactly as on other platforms: `port: auto` in `config.yaml` finds the adapter by USB ID, and only asks you to choose when it cannot decide. On Windows that question is a numbered list rather than the arrow-key menu, because the Python builds for Windows ship without `curses`.
+Port selection works exactly as on other platforms: `port: auto` in `config.yaml` finds the adapter by USB ID, and only asks you to choose when it cannot decide. That question is a numbered list on every platform.
 
 To pin a port by hand:
 

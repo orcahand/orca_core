@@ -7,10 +7,17 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import time
 from argparse import ArgumentParser, Namespace
+from contextlib import contextmanager
 from pathlib import Path
 
+import yaml
+
 from orca_core import BaseHand, load_hand
+from orca_core.hardware.hand_serial_link import HandSerialLink
+from orca_core.hardware.joint_encoder_client import JointEncoderClient
+from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 
 
 def add_hand_arguments(
@@ -97,6 +104,111 @@ def connect_hand(hand, *, interactive: bool = True) -> None:
     print(f"connect() -> success={success}, message={message}")
     if not success:
         raise RuntimeError(message)
+
+
+@contextmanager
+def open_encoder_stream(port_override: str, baudrate: int, *, timeout: float = 2.0):
+    """Open the encoder link and its stream, yield the client, and close both on exit."""
+    ports = resolve_sensing_ports(tactile_override="disabled", encoder_override=port_override)
+    if ports.encoder is None:
+        raise RuntimeError(
+            f"no encoder port found (encoder_serial_port={port_override!r}). "
+            "Pass --encoder-port to override."
+        )
+    link = HandSerialLink(ports.encoder, baudrate=baudrate)
+    link.connect()
+    client = None
+    try:
+        client = JointEncoderClient(link)
+        client.connect()
+        client.start_stream(timeout=timeout)
+        print(f"Encoder stream active on {ports.encoder}")
+        yield client
+    finally:
+        if client is not None:
+            try:
+                client.stop_stream()
+            except Exception:
+                pass
+            client.disconnect()
+        link.disconnect()
+
+
+def group_joints_by_finger(joint_ids: list[str]) -> dict[str, list[str]]:
+    """Group joint names by finger prefix ({finger}_{type}; bare wrist)."""
+    groups: dict[str, list[str]] = {}
+    for joint in joint_ids:
+        groups.setdefault(joint.split("_", 1)[0], []).append(joint)
+    return groups
+
+
+def select_joints(
+    joint_ids: list[str], fingers: list[str] | None = None, joints: list[str] | None = None,
+) -> list[str] | None:
+    """Expand ``fingers`` or validate ``joints`` against ``joint_ids``, returning ``None`` when neither is given."""
+    if fingers:
+        by_finger = group_joints_by_finger(joint_ids)
+        unknown = [f for f in fingers if f not in by_finger]
+        if unknown:
+            raise ValueError(f"Unknown finger(s) {unknown}; this hand has {sorted(by_finger)}.")
+        return [joint for finger in fingers for joint in by_finger[finger]]
+    if joints:
+        unknown = [j for j in joints if j not in joint_ids]
+        if unknown:
+            raise ValueError(f"Unknown joint(s) {unknown}; this hand has {joint_ids}.")
+        return list(joints)
+    return None
+
+
+def _recording_timestamp() -> str:
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
+def build_recording_path(output_dir: Path, kind: str, prefix: str = "") -> Path:
+    """Timestamped YAML path ``[prefix_]kind_<time>.yaml`` inside ``output_dir``."""
+    stem = f"{prefix}_{kind}_{_recording_timestamp()}" if prefix else f"{kind}_{_recording_timestamp()}"
+    return output_dir / f"{stem}.yaml"
+
+
+def recording_metadata(recording_type: str, hand, **fields) -> dict:
+    """Metadata header for a recording: its type, creation time, and the joint order and side it is valid for."""
+    return {
+        "type": recording_type,
+        "created_at": _recording_timestamp(),
+        "joint_ids": hand.config.joint_ids,
+        "hand_type": hand.config.type,
+        **fields,
+    }
+
+
+def load_recording(path: str) -> tuple[Path, dict] | None:
+    """Read a recording by name or path; print and return ``None`` when it is missing."""
+    resolved = resolve_input_path(path)
+    try:
+        return resolved, yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        print(f"Replay file not found: {resolved}")
+        return None
+
+
+def check_recording_matches_hand(
+    metadata: dict, hand, *, force: bool = False, force_flag: str | None = None,
+) -> None:
+    """Raise ``ValueError`` if the recording's joint order or side differs from ``hand``'s."""
+    expected_joint_ids = metadata.get("joint_ids")
+    if expected_joint_ids is not None and expected_joint_ids != hand.config.joint_ids:
+        raise ValueError("Replay joint order does not match the connected hand configuration.")
+
+    # Left and right hands share a joint order, so only hand_type catches a
+    # sequence recorded on the mirrored hand.
+    if not force and metadata.get("hand_type") not in (None, hand.config.type):
+        message = (
+            f"Replay was recorded for hand_type={metadata['hand_type']}, "
+            f"but the connected config is {hand.config.type}."
+        )
+        if force_flag:
+            message += f" Pass {force_flag} to replay it anyway."
+        raise ValueError(message)
 
 
 def print_calibration_progress(event: dict) -> None:

@@ -1,9 +1,9 @@
 """OPEN_CLIENTS registry lifecycle for the real motor clients.
 
-A client must appear in its family's exit-cleanup registry only while its
+A client must appear in the exit-cleanup registry only while its
 port is actually open: registered on successful connect(), never on
 construction or failed connect, and removed on disconnect(). The atexit
-cleanup handlers must survive one client failing so the remaining clients
+cleanup must survive one client failing so the remaining clients
 still get their torque disabled.
 
 Also pins the motor-family factory: every family resolves to a real and a
@@ -11,22 +11,18 @@ mock client, and an unknown family is a ValueError rather than a silent
 Dynamixel fallback.
 """
 
+import subprocess
 import sys
+import textwrap
 import types
 
 import numpy as np
 import pytest
 
 import orca_core.hardware.feetech_client as feetech_client_module
-from orca_core.hardware.dynamixel_client import (
-    DynamixelClient,
-    dynamixel_cleanup_handler,
-)
-from orca_core.hardware.feetech_client import (
-    COMM_SUCCESS,
-    FeetechClient,
-    feetech_cleanup_handler,
-)
+from orca_core.hardware.dynamixel_client import DynamixelClient
+from orca_core.hardware.feetech_client import COMM_SUCCESS, FeetechClient
+from orca_core.hardware.motor_client import MotorClient
 from orca_core.hardware.motor_factory import (
     create_mock_motor_client,
     mock_motor_client_class,
@@ -164,7 +160,7 @@ class FakeHlsHandler:
 def dxl_registry(monkeypatch):
     monkeypatch.setitem(sys.modules, "dynamixel_sdk", _make_fake_dxl_sdk())
     registry = _BadFirstSet()
-    monkeypatch.setattr(DynamixelClient, "OPEN_CLIENTS", registry)
+    monkeypatch.setattr(MotorClient, "OPEN_CLIENTS", registry)
     return registry
 
 
@@ -173,7 +169,7 @@ def feetech_registry(monkeypatch):
     monkeypatch.setattr(feetech_client_module, "PortHandler", FakeFeetechPortHandler)
     monkeypatch.setattr(feetech_client_module, "HLSPacketHandler", FakeHlsHandler)
     registry = _BadFirstSet()
-    monkeypatch.setattr(FeetechClient, "OPEN_CLIENTS", registry)
+    monkeypatch.setattr(MotorClient, "OPEN_CLIENTS", registry)
     return registry
 
 
@@ -242,7 +238,7 @@ def test_dxl_cleanup_handler_survives_a_failing_client(dxl_registry):
 
     bad.disconnect = boom
     try:
-        dynamixel_cleanup_handler()
+        MotorClient.cleanup_open_clients()
     finally:
         del bad.disconnect  # restore the real method for __del__
 
@@ -292,6 +288,25 @@ def test_feetech_failure_after_open_closes_port_before_raising(
     assert feetech_registry == set()
 
 
+def test_feetech_is_not_connected_once_the_port_is_closed(feetech_registry):
+    client = _make_feetech()
+    client.connect()
+
+    client.port_handler.is_open = False
+
+    assert client.is_connected is False
+
+
+def test_feetech_disconnect_forgets_the_cached_motor_modes(feetech_registry):
+    client = _make_feetech()
+    client.connect()
+    client._motor_modes[1] = 3
+
+    client.disconnect()
+
+    assert client._motor_modes == {}
+
+
 def test_feetech_scan_for_motors_is_an_instance_method(feetech_registry):
     """maintenance.motor_chain.scan_motors calls it on a constructed client."""
     client = _make_feetech()
@@ -299,23 +314,38 @@ def test_feetech_scan_for_motors_is_an_instance_method(feetech_registry):
                                   baud_rates=[]) == []
 
 
-def test_feetech_cleanup_handler_survives_a_failing_client(feetech_registry):
-    bad, good = _make_feetech("/dev/bad"), _make_feetech("/dev/good")
-    bad.connect()
-    good.connect()
-    bad._cleanup_rank, good._cleanup_rank = 0, 1
+def test_the_exit_hook_is_installed_once_by_the_first_connect_and_disconnects_open_clients():
+    """Checked in a fresh interpreter, since atexit handlers only run when a process ends."""
+    script = textwrap.dedent(
+        """
+        import atexit
+        hooked = []
+        real_register = atexit.register
 
-    def boom():
-        raise OSError("port died")
+        def register(fn, *args, **kwargs):
+            hooked.append(fn.__module__)
+            return real_register(fn, *args, **kwargs)
 
-    bad.disconnect = boom
-    try:
-        feetech_cleanup_handler()
-    finally:
-        del bad.disconnect  # restore the real method for __del__
+        atexit.register = register
+        import orca_core.hardware.dynamixel_client
+        import orca_core.hardware.feetech_client
+        from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
 
-    assert not good.port_handler.is_open, "good client must still be closed"
-    assert good not in feetech_registry
+        def ours():
+            return sum(module.startswith("orca_core") for module in hooked)
+
+        print(ours())
+        clients = [MockDynamixelClient([1]), MockDynamixelClient([2])]
+        atexit.register(lambda: print(sum(c.is_connected for c in clients)))
+        for client in clients:
+            client.connect()
+        print(ours())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["0", "1", "0"]
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +405,7 @@ def test_mock_clients_carry_their_family_capabilities():
             "profile_acceleration_max_rad_s2",
             "profile_ceiling_source",
             "no_load_speed_rad_s",
+            "hardware_error_bits",
         ):
             assert getattr(mock, attribute) == getattr(real, attribute), (
                 f"{mock.__name__}.{attribute}"

@@ -377,6 +377,18 @@ class TestWhatTheTransportCanCarry:
 
         assert motor_baud_rates_over_link(Board()) == OH_BOARD_MOTOR_BAUD_RATES
 
+    def test_a_sensor_board_reply_sets_no_motor_rate_limit(self):
+        from orca_core.hardware.sensing.serial_discovery import (
+            motor_baud_rates_over_link)
+
+        class SensorBoard:
+            def reset_input_buffer(self): pass
+            def write(self, data): pass
+            def flush(self): pass
+            def read(self, n): return b"ORCA:SENSOR\n"
+
+        assert motor_baud_rates_over_link(SensorBoard()) is None
+
     def test_an_unusable_link_does_not_raise(self):
         """The probe is incidental to whatever the caller was doing; it must not
         turn a closed port into an exception."""

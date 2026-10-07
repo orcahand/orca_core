@@ -35,8 +35,10 @@ from ..constants import (
 from ..hardware.motor_client import MotorClient
 from ..hardware.motor_factory import create_motor_client, motor_client_class
 from ..utils.utils import auto_detect_port, serial_port_exists
+from .progress import ProgressCallback, ShouldStop, progress_emitter
 
 logger = logging.getLogger(__name__)
+_emit = progress_emitter(logger, "motor-chain progress callback failed")
 
 # Timings local to chain assembly: USB device-node polling, re-scan for a freshly
 # plugged motor, and settle time after a motor's ID is rewritten.
@@ -45,9 +47,7 @@ PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
 ID_CHANGE_SETTLE_S = 0.5
 
-ProgressCallback = Callable[[dict], None]
 PromptCallback = Callable[[dict], None]
-ShouldStop = Callable[[], bool]
 
 
 class MotorChainError(RuntimeError):
@@ -140,16 +140,6 @@ class ChainScan:
     valid_ids: list[int]
     invalid_ids: list[int]
     motors_by_id: dict[int, dict] = field(default_factory=dict)
-
-
-def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
-    """Fire a progress event. A misbehaving callback must not abort the operation."""
-    if progress_callback is None:
-        return
-    try:
-        progress_callback({"event": event, **payload})
-    except Exception:
-        logger.exception("motor-chain progress callback failed")
 
 
 def _check_stop(should_stop: Optional[ShouldStop]) -> None:

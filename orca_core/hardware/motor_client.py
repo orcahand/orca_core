@@ -8,8 +8,10 @@
 
 """Abstract base class for motor communication clients."""
 
+import atexit
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Optional, Sequence
@@ -18,6 +20,10 @@ import numpy as np
 from ..constants import CONTROL_MODES
 
 logger = logging.getLogger(__name__)
+
+
+_atexit_registered = False
+_atexit_lock = threading.Lock()
 
 
 class MotorError(Exception):
@@ -149,16 +155,21 @@ class MotorClient(ABC):
         except Exception:
             pass
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # A new motor family gets its own registry; subclasses of an existing
-        # family share theirs, so that family's exit cleanup still sees them.
-        if not any("OPEN_CLIENTS" in base.__dict__ for base in cls.__mro__):
-            cls.OPEN_CLIENTS = set()
+    OPEN_CLIENTS: ClassVar[set] = set()
+    """Connected clients of every family, so exit cleanup only touches live ports."""
+
+    def _register_open(self) -> None:
+        """Add this client to the exit-cleanup registry, hooking atexit on first use."""
+        global _atexit_registered
+        self.OPEN_CLIENTS.add(self)
+        with _atexit_lock:
+            if not _atexit_registered:
+                _atexit_registered = True
+                atexit.register(MotorClient.cleanup_open_clients)
 
     @classmethod
     def cleanup_open_clients(cls):
-        """Disconnect every open client of this family at interpreter exit.
+        """Disconnect every open client at interpreter exit.
 
         Each client is handled independently so one failing client cannot
         prevent torque-disable of the others.
@@ -166,7 +177,7 @@ class MotorClient(ABC):
         for client in list(cls.OPEN_CLIENTS):
             try:
                 if client.port_handler.is_using:
-                    logging.warning("Forcing %s to close.", cls.__name__)
+                    logging.warning("Forcing %s to close.", type(client).__name__)
                 client.port_handler.is_using = False
                 client.disconnect()
             except Exception:
@@ -174,6 +185,23 @@ class MotorClient(ABC):
                     "Exit cleanup failed for client on %s",
                     getattr(client, "port_name", "<unknown>"),
                 )
+
+    def _apply_port_options(self) -> None:
+        """Advisory-lock the open serial port and enable low latency mode, best-effort."""
+        # Exclusive-mode openers elsewhere are rejected while we hold the lock.
+        try:
+            import fcntl
+            fcntl.flock(self.port_handler.ser.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, AttributeError, OSError):
+            pass  # Windows (no fcntl), mocked ports, or lock unavailable
+
+        if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+            try:
+                self.port_handler.ser.set_low_latency_mode(True)
+                logging.info('Enabled low latency mode for USB serial')
+            except Exception:
+                pass  # Not critical if it fails
 
     # ----- Motor-family description ----------------------------------------
 
@@ -405,6 +433,12 @@ class MotorClient(ABC):
     than present-and-disabled, so a caller renders what the connected motor
     actually has.
     """
+
+    def _config_register(self, key: str):
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
 
     def read_config_register(self, motor_id: int, key: str) -> "int | None":
         """Raw value of one declared configuration register, or None.
@@ -738,34 +772,28 @@ class MotorClient(ABC):
                 self.current_scale_ma, zeroed)
         return plan
 
-    def write_profile_velocity(
-        self,
-        motor_ids: Sequence[int],
-        profile_velocity: np.ndarray
-    ) -> None:
-        """Writes the motion-profile velocity limit, in this family's raw speed units.
-
-        Args:
-            motor_ids: The motor IDs to write to.
-            profile_velocity: The per-motor speed limits.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot write a profile velocity")
-
-    def read_status_is_done_moving(self) -> bool:
-        """Returns True once every motor reports it has stopped moving."""
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot report moving status")
-
     def check_connected(self) -> None:
-        """Raises ``OSError`` unless the client is connected.
+        """Raises ``OSError`` unless the client is connected."""
+        if not self.is_connected:
+            raise OSError('Must call connect() first.')
 
-        Connects first when the client was built with ``lazy_connect``.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement check_connected")
+    def __enter__(self):
+        """Connects on entry if needed, so the client works as a context manager."""
+        if not self.is_connected:
+            self.connect()
+        return self
 
-    def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
+    def __exit__(self, *args):
+        self.disconnect()
+
+    def __del__(self):
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
         """Block until *every* motor has settled at its commanded position.
 
         A recorded motion is implicitly synchronous: letting one motor start
@@ -783,6 +811,10 @@ class MotorClient(ABC):
         trajectory profile makes a goal write a ramp rather than a step, so
         that is a property of how the family is being driven and not of the
         family itself.
+
+        Args:
+            timeout: Seconds to wait before giving up.
+            poll_interval: Seconds between polls.
 
         Raises:
             MotionTimeoutError: if any motor is still unsettled at ``timeout``.

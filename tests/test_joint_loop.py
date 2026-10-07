@@ -460,17 +460,15 @@ def test_prime_rejects_failed_motor_read(calibrated_hand):
     """A motor read the bus never answered must not be anchored into the
     feed-forward bias — that would command the affected motors toward
     absolute zero every cycle. The anchor raises instead."""
-    reader = getattr(calibrated_hand._motor_client, "_pos_vel_cur_reader", None)
-    if reader is None:
-        pytest.skip("mock has no SDK reader to simulate a failed read")
+    client = calibrated_hand._motor_client
     encoder = _static_at_zero(calibrated_hand)
     loop = _make_loop(calibrated_hand, encoder)
-    reader.last_read_ok = False
+    client.last_read_ok = False
     try:
         with pytest.raises(RuntimeError, match="anchoring the joint loop"):
             loop.prime_for_step()
     finally:
-        reader.last_read_ok = True
+        client.last_read_ok = True
 
 
 def test_chip_flagged_joint_holds_previous_measurement(calibrated_hand):
@@ -589,9 +587,6 @@ def test_snapshot_rejects_unrecognised_hand_side(calibrated_hand, monkeypatch):
 def test_offset_read_rejects_failed_bus_read(calibrated_hand):
     """A failed bulk read (reader reports not-ok) must not be turned into wrap
     offsets — the guard raises instead of baking -2π from stale cache."""
-    reader = getattr(calibrated_hand._motor_client, "_pos_vel_cur_reader", None)
-    if reader is None:
-        pytest.skip("mock has no SDK reader to simulate a failed read")
-    reader.last_read_ok = False
+    calibrated_hand._motor_client.last_read_ok = False
     with pytest.raises(RuntimeError, match="no status packets"):
         calibrated_hand._read_motor_pos_for_offsets(retries=2, retry_interval=0.0)

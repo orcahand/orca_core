@@ -42,12 +42,14 @@ ORCA_CORE_ROOT = Path(__file__).resolve().parent.parent
 # Sibling repos that import orca_core, mapped to the uv flags their suite needs.
 # None means import-check only: orca_teleop's suite hangs partway and pulls a
 # multi-gigabyte CUDA toolchain first, so only its imports are checked here.
+# orca-console installs orca_core from PyPI and is likewise import-checked only.
 DOWNSTREAM = (
     ("orca_ui", []),
     ("orca_teleop", None),
     ("orca_firmware", None),
     ("orca_stress_tests", None),
     ("orca_ros", None),
+    ("orca-console", None),
 )
 
 SKIP_DIRS = {"node_modules", "__pycache__", "dist", "build"}
