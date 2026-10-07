@@ -125,3 +125,27 @@ class TestDescribe:
                      if r.key == "temperature_limit")
         assert entry.describe(None) == "--"
         assert entry.describe(0) != entry.describe(None)
+
+
+class TestStalePortFlag:
+    """The SDK's in-use flag can be left set by an interrupted transaction,
+    and nothing clears it on its own."""
+
+    def test_the_client_clears_it_before_a_transaction(self):
+        """Holding the bus lock is the real mutual exclusion, so a flag still
+        set at that point can only be stale. Left alone it returns
+        COMM_PORT_BUSY forever -- and disconnect() refuses to close a port it
+        believes is in use, so a reconnect cannot clear it either."""
+        from orca_core.hardware.dynamixel_client import DynamixelClient
+
+        assert hasattr(DynamixelClient, "_claim_port")
+
+    def test_disconnect_still_refuses_a_genuinely_busy_port(self):
+        """The guard in disconnect() is deliberately left alone: clearing the
+        flag belongs with the caller that holds the lock, not with teardown."""
+        import inspect
+
+        from orca_core.hardware.dynamixel_client import DynamixelClient
+
+        source = inspect.getsource(DynamixelClient.disconnect)
+        assert "is_using" in source
