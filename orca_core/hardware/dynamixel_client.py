@@ -201,6 +201,9 @@ def unsigned_to_signed(value: int, size: int) -> int:
 
 from .motor_client import ServoGains, ServoProfile
 
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
+
 class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
 
@@ -298,6 +301,7 @@ class DynamixelClient(MotorClient):
         self.port_handler = self.dxl.PortHandler(port)
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
 
+        self._transport_bauds = _UNPROBED
         # RLock: alert handling re-enters from within a locked read/write path.
         self._bus_lock = threading.RLock()
 
@@ -467,6 +471,22 @@ class DynamixelClient(MotorClient):
             finally:
                 self.port_handler.closePort()
                 self.OPEN_CLIENTS.discard(self)
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
 
     def disconnect_fixed_lock_order(self) -> None:
         """Disconnect, waiting for the bus rather than giving up on it.

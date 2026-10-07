@@ -425,6 +425,20 @@ class MotorClient(ABC):
         """
         raise NotImplementedError
 
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """Bus rates the transport between host and motors can actually carry.
+
+        ``None`` -- the default, and the answer for a plain USB-TTL adapter --
+        means the transport imposes no limit, so ``baud_rate_map`` is the only
+        bound. A bridge that only retunes its wire for certain rates returns
+        those: moving a motor to a rate outside the list strands it, because the
+        host has no way to follow it there.
+
+        A caller offering a bus-wide baud change must intersect this with
+        ``baud_rate_map`` rather than offering the family's map raw.
+        """
+        return None
+
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
     ) -> "dict[int, ServoGains | None]":

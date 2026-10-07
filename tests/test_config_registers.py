@@ -300,3 +300,87 @@ class TestUnits:
     def test_an_unscaled_register_is_unaffected(self):
         client = _client("dynamixel")
         assert client.write_config_register(1, "temperature_limit", 65) == 65
+
+
+class TestWhatTheTransportCanCarry:
+    """A bus-wide baud change is only safe to the rates the thing between host
+    and motors will follow. That is a property of the transport, not of the
+    motor family, so it cannot live in ``baud_rate_map``."""
+
+    def test_no_limit_is_the_default(self):
+        """So a plain adapter, a mock, and any third-party client all answer
+        'the family's map is the only bound' without implementing anything."""
+        from orca_core.hardware.motor_client import MotorClient
+        from orca_core.hardware.motor_factory import mock_motor_client_class
+
+        assert MotorClient.transport_baud_rates(object()) is None
+        for motor_type in FAMILIES:
+            assert _client(motor_type).transport_baud_rates() is None
+
+    def test_both_real_clients_override_the_default(self):
+        """They have a port to ask through, so they answer for real."""
+        from orca_core.hardware.motor_client import MotorClient
+        from orca_core.hardware.motor_factory import motor_client_class
+
+        for motor_type in FAMILIES:
+            assert (motor_client_class(motor_type).transport_baud_rates
+                    is not MotorClient.transport_baud_rates)
+
+    def test_the_board_cannot_carry_the_rates_probing_tools_open_at(self):
+        """9600 and 115200 are the rates ModemManager and serial terminals pick
+        by default. A board that followed them would retune a live bus, so it
+        does not -- which also means a motor sent to one is stranded."""
+        from orca_core.hardware.sensing.serial_discovery import (
+            OH_BOARD_MOTOR_BAUD_RATES)
+
+        assert 9600 not in OH_BOARD_MOTOR_BAUD_RATES
+        assert 115200 not in OH_BOARD_MOTOR_BAUD_RATES
+        assert 57600 in OH_BOARD_MOTOR_BAUD_RATES  # the factory default
+        assert 1_000_000 in OH_BOARD_MOTOR_BAUD_RATES  # the hands' own rate
+
+    def test_the_dynamixel_map_offers_three_rates_the_board_cannot_follow(self):
+        """Which is what made a bus-wide change dangerous: the family map is a
+        strict superset of what this transport can carry."""
+        from orca_core.hardware.motor_factory import motor_client_class
+        from orca_core.hardware.sensing.serial_discovery import (
+            OH_BOARD_MOTOR_BAUD_RATES)
+
+        family = set(motor_client_class("dynamixel").baud_rate_map)
+        assert family - set(OH_BOARD_MOTOR_BAUD_RATES) == {
+            9600, 115200, 10_500_000}
+
+    def test_a_silent_link_reads_as_unconstrained(self):
+        """A plain adapter does not answer the query, and the motors ignore it
+        (no 0xFF header). Silence must mean 'no limit', not 'no rates'."""
+        from orca_core.hardware.sensing.serial_discovery import (
+            motor_baud_rates_over_link)
+
+        class Silent:
+            def reset_input_buffer(self): pass
+            def write(self, data): pass
+            def flush(self): pass
+            def read(self, n): return b""
+
+        assert motor_baud_rates_over_link(Silent(), timeout=0.01) is None
+
+    def test_a_board_that_identifies_itself_reports_its_allowlist(self):
+        from orca_core.hardware.sensing.serial_discovery import (
+            OH_BOARD_MOTOR_BAUD_RATES,
+            motor_baud_rates_over_link,
+        )
+
+        class Board:
+            def reset_input_buffer(self): pass
+            def write(self, data): pass
+            def flush(self): pass
+            def read(self, n): return b"ORCA:MOTOR\n"
+
+        assert motor_baud_rates_over_link(Board()) == OH_BOARD_MOTOR_BAUD_RATES
+
+    def test_an_unusable_link_does_not_raise(self):
+        """The probe is incidental to whatever the caller was doing; it must not
+        turn a closed port into an exception."""
+        from orca_core.hardware.sensing.serial_discovery import (
+            motor_baud_rates_over_link)
+
+        assert motor_baud_rates_over_link(None) is None

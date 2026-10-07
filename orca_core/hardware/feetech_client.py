@@ -38,6 +38,9 @@ from .feetech import (
 )
 from .feetech_registers import HLS
 
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
+
 # Map host-facing baud rates to the firmware's register code.
 FEETECH_BAUD_RATE_MAP: dict[int, int] = {
     1_000_000: 0,
@@ -284,6 +287,7 @@ class FeetechClient(MotorClient):
 
         # RLock: mode/EEPROM sequences re-enter via set_torque_enabled.
         self._bus_lock = threading.RLock()
+        self._transport_bauds = _UNPROBED
 
         self._connected = False
 
@@ -483,6 +487,22 @@ class FeetechClient(MotorClient):
                 # The next connect may find different motors on this port.
                 self._motor_modes.clear()
                 self.OPEN_CLIENTS.discard(self)
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
 
     def disconnect_fixed_lock_order(self) -> None:
         """Disconnect, waiting for the bus rather than giving up on it.
