@@ -56,6 +56,36 @@ class MockFeetechClient(MotorClient):
     profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
     profile_ceiling_source = FeetechClient.profile_ceiling_source
     no_load_speed_rad_s = FeetechClient.no_load_speed_rad_s
+    config_registers = FeetechClient.config_registers
+
+    @property
+    def _config_values(self):
+        if not hasattr(self, '_cfgvals'):
+            self._cfgvals = {}
+        return self._cfgvals
+
+    def _config_register(self, key):
+        return FeetechClient._config_register(self, key)
+
+    def read_config_register(self, motor_id, key):
+        self._config_register(key)
+        return self._config_values.setdefault(int(motor_id), {}).get(key)
+
+    def write_config_register(self, motor_id, key, value):
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+        store = self._config_values.setdefault(int(motor_id), {})
+        store[key] = int(value)
+        if key == "id":
+            self._config_values[int(value)] = store
+        return int(value)
+
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma

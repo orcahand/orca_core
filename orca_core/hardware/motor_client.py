@@ -397,6 +397,34 @@ class MotorClient(ABC):
             for mid, limits in self.read_profile_limits(motor_ids).items()
         }
 
+    config_registers: "ClassVar[tuple]" = ()
+    """Operator-editable configuration registers this family exposes.
+
+    A tuple of :class:`~orca_core.hardware.config_registers.ConfigRegister`.
+    Empty where a family exposes none. What a family lacks is absent rather
+    than present-and-disabled, so a caller renders what the connected motor
+    actually has.
+    """
+
+    def read_config_register(self, motor_id: int, key: str) -> "int | None":
+        """Raw value of one declared configuration register, or None.
+
+        None means the motor did not answer, which is not the same as a zero.
+        """
+        raise NotImplementedError
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "int | None":
+        """Write one declared register and read it back; returns what stuck.
+
+        The read-back is the point. A sync write carries no acknowledgement,
+        and a chain here was found holding gains a write had never landed on,
+        so a caller that trusts the write alone will eventually be wrong
+        without knowing it. The returned value is what the motor now reports,
+        which the caller compares against what it asked for.
+        """
+        raise NotImplementedError
+
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
     ) -> "dict[int, ServoGains | None]":

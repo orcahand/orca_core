@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
+from .config_registers import ConfigRegister
 from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -37,6 +38,13 @@ ADDR_ID = 7
 ADDR_BAUD_RATE = 8
 ADDR_RETURN_DELAY_TIME = 9  # EEPROM, units of 2 us
 ADDR_OPERATING_MODE = 11
+ADDR_DRIVE_MODE = 10
+ADDR_SECONDARY_ID = 12
+# Protocol type (13) is deliberately not in CONFIG_REGISTERS: this client
+# speaks 2.0 only, so switching a motor to 1.0 strands it with no way back
+# from inside the tool.
+ADDR_PROTOCOL_TYPE = 13
+ADDR_TEMPERATURE_LIMIT = 31
 ADDR_ACCELERATION_LIMIT = 40
 ADDR_VELOCITY_LIMIT = 44
 # 40..47 is contiguous, so both ceilings read back in one transaction.
@@ -125,6 +133,48 @@ DYNAMIXEL_MODELS = {
     1220: 'XC330-T288-T',
     1080: 'XC430-T240BB-T',
 }
+
+# Operator-editable settings. Addresses and ranges from the XC330-T288-T and
+# XC430-W240-T control tables.
+CONFIG_REGISTERS = (
+    ConfigRegister(
+        key="id", label="ID", address=ADDR_ID, size=1, eeprom=True,
+        minimum=0, maximum=252, reidentifies=True,
+        note="the motor answers at the new id immediately"),
+    ConfigRegister(
+        key="baud_rate", label="Baud rate", address=ADDR_BAUD_RATE, size=1,
+        eeprom=True, reidentifies=True,
+        choices={index: f"{rate:,}".replace(",", " ")
+                 for rate, index in BAUD_RATE_MAP.items()},
+        note="the motor switches rate the moment the write lands"),
+    ConfigRegister(
+        key="return_delay_time", label="Return delay time",
+        address=ADDR_RETURN_DELAY_TIME, size=1, eeprom=True,
+        unit="x2 us", minimum=0, maximum=254,
+        note="factory 250 (500 us); chain setup programs 10 (20 us)"),
+    ConfigRegister(
+        key="drive_mode", label="Drive mode", address=ADDR_DRIVE_MODE, size=1,
+        eeprom=True, minimum=0, maximum=13,
+        choices={0: "normal", 1: "reverse"},
+        note="bit 0 reverses the direction of travel"),
+    ConfigRegister(
+        key="operating_mode", label="Operating mode",
+        address=ADDR_OPERATING_MODE, size=1, eeprom=True,
+        choices={0: "current", 1: "velocity", 3: "position",
+                 4: "extended position", 5: "current-based position",
+                 16: "PWM"},
+        note="models without a current register accept only 1, 3, 4 and 16"),
+    ConfigRegister(
+        key="secondary_id", label="Shadow ID", address=ADDR_SECONDARY_ID,
+        size=1, eeprom=True, minimum=0, maximum=255,
+        note="a second address the motor also answers to; 255 disables it"),
+    ConfigRegister(
+        key="temperature_limit", label="Temperature limit",
+        address=ADDR_TEMPERATURE_LIMIT, size=1, eeprom=True,
+        unit="degC", minimum=0, maximum=100,
+        note="the shutdown threshold, not a warning level"),
+)
+
 
 def dynamixel_cleanup_handler():
     """Disconnect every open Dynamixel client at interpreter exit."""
@@ -742,6 +792,65 @@ class DynamixelClient(MotorClient):
         ("ff_1st", ADDR_FEEDFORWARD_1ST_GAIN),
         ("ff_2nd", ADDR_FEEDFORWARD_2ND_GAIN),
     )
+
+    config_registers = CONFIG_REGISTERS
+
+    def _config_register(self, key: str) -> ConfigRegister:
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
+    def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
+        entry = self._config_register(key)
+        reader = {1: self.packet_handler.read1ByteTxRx,
+                  2: self.packet_handler.read2ByteTxRx,
+                  4: self.packet_handler.read4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            value, result, error = reader(
+                self.port_handler, int(motor_id), entry.address)
+        if result != self.dxl.COMM_SUCCESS or error != 0:
+            self._flush_input_buffer()
+            return None
+        return int(value)
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "Optional[int]":
+        """Write one register and read it back. Returns what the motor holds.
+
+        EEPROM needs torque off, so torque is dropped for the write. An id or
+        baud change moves the motor, so the read-back follows it to where it
+        now answers rather than asking the old address.
+        """
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+
+        motor_id = int(motor_id)
+        writer = {1: self.packet_handler.write1ByteTxRx,
+                  2: self.packet_handler.write2ByteTxRx,
+                  4: self.packet_handler.write4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            if entry.eeprom:
+                self.set_torque_enabled([motor_id], False, retries=0)
+            result, error = writer(
+                self.port_handler, motor_id, entry.address, int(value))
+            if result != self.dxl.COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                raise RuntimeError(
+                    f"motor {motor_id}: {key} write failed "
+                    f"(result={result}, error={error})")
+        # Where the motor answers now. Baud is the caller's problem: the
+        # motor has already moved and this port has not.
+        after = motor_id if key != "id" else int(value)
+        if key == "baud_rate":
+            return int(value)
+        return self.read_config_register(after, key)
 
     def read_servo_gains(
         self, motor_ids: Sequence[int]
