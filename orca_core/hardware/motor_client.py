@@ -397,6 +397,48 @@ class MotorClient(ABC):
             for mid, limits in self.read_profile_limits(motor_ids).items()
         }
 
+    config_registers: "ClassVar[tuple]" = ()
+    """Operator-editable configuration registers this family exposes.
+
+    A tuple of :class:`~orca_core.hardware.config_registers.ConfigRegister`.
+    Empty where a family exposes none. What a family lacks is absent rather
+    than present-and-disabled, so a caller renders what the connected motor
+    actually has.
+    """
+
+    def read_config_register(self, motor_id: int, key: str) -> "int | None":
+        """Raw value of one declared configuration register, or None.
+
+        None means the motor did not answer, which is not the same as a zero.
+        """
+        raise NotImplementedError
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "int | None":
+        """Write one declared register and read it back; returns what stuck.
+
+        The read-back is the point. A sync write carries no acknowledgement,
+        and a chain here was found holding gains a write had never landed on,
+        so a caller that trusts the write alone will eventually be wrong
+        without knowing it. The returned value is what the motor now reports,
+        which the caller compares against what it asked for.
+        """
+        raise NotImplementedError
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """Bus rates the transport between host and motors can actually carry.
+
+        ``None`` -- the default, and the answer for a plain USB-TTL adapter --
+        means the transport imposes no limit, so ``baud_rate_map`` is the only
+        bound. A bridge that only retunes its wire for certain rates returns
+        those: moving a motor to a rate outside the list strands it, because the
+        host has no way to follow it there.
+
+        A caller offering a bus-wide baud change must intersect this with
+        ``baud_rate_map`` rather than offering the family's map raw.
+        """
+        return None
+
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
     ) -> "dict[int, ServoGains | None]":

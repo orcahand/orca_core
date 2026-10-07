@@ -56,6 +56,41 @@ class MockFeetechClient(MotorClient):
     profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
     profile_ceiling_source = FeetechClient.profile_ceiling_source
     no_load_speed_rad_s = FeetechClient.no_load_speed_rad_s
+    config_registers = FeetechClient.config_registers
+
+    @property
+    def _config_values(self):
+        if not hasattr(self, '_cfgvals'):
+            self._cfgvals = {}
+        return self._cfgvals
+
+    def _config_register(self, key):
+        return FeetechClient._config_register(self, key)
+
+    def read_config_register(self, motor_id, key):
+        self._config_register(key)
+        return self._config_values.setdefault(int(motor_id), {}).get(key)
+
+    def write_config_register(self, motor_id, key, value):
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+        store = self._config_values.setdefault(int(motor_id), {})
+        # Through to_raw and back, so a value the register cannot hold is
+        # reported as what it actually became, exactly as hardware would.
+        store[key] = entry.from_raw(entry.to_raw(int(value)))
+        if key == "id":
+            self._config_values[int(value)] = store
+        # What the register holds, not what was asked for -- the real clients
+        # read back, and a mock that answered otherwise would hide exactly the
+        # mismatch this is here to surface.
+        return store[key]
+
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma
@@ -217,6 +252,15 @@ class MockFeetechClient(MotorClient):
             self._connected = False
             self.port_handler.is_open = False
             self.OPEN_CLIENTS.discard(self)
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Equivalent to :meth:`disconnect` here.
+
+        The real clients check the SDK's in-use flag before taking the bus
+        lock and abandon the teardown when it is set; this one has no such
+        shortcut to correct. Carried so the two agree on what a client offers.
+        """
+        self.disconnect()
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

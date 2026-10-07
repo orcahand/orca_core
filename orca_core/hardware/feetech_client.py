@@ -21,6 +21,7 @@ from ..constants import (
     POSITION,
     VELOCITY,
 )
+from .config_registers import ConfigRegister
 from .motor_client import (
     MotionTimeoutError,
     MotorClient,
@@ -36,6 +37,9 @@ from .feetech import (
     COMM_SUCCESS,
 )
 from .feetech_registers import HLS
+
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
 
 # Map host-facing baud rates to the firmware's register code.
 FEETECH_BAUD_RATE_MAP: dict[int, int] = {
@@ -103,6 +107,37 @@ CLAMP_WARN_INTERVAL_S = 5.0
 # latch until the condition clears, so an unthrottled log would repeat them at
 # the read rate.
 STATUS_WARN_INTERVAL_S = 5.0
+
+
+# Operator-editable settings. Three of the Dynamixel entries have no HLS
+# counterpart and are absent rather than disabled: return delay time (this
+# family has no such register), drive mode, and protocol type.
+CONFIG_REGISTERS = (
+    ConfigRegister(
+        key="id", label="ID", address=HLS.ID, size=1, eeprom=True,
+        minimum=0, maximum=253, reidentifies=True,
+        note="the motor answers at the new id immediately"),
+    ConfigRegister(
+        key="baud_rate", label="Baud rate", address=HLS.BAUD_RATE, size=1,
+        eeprom=True, reidentifies=True,
+        choices={index: f"{rate:,}".replace(",", " ")
+                 for rate, index in FEETECH_BAUD_RATE_MAP.items()},
+        note="indices run the opposite way to Dynamixel: 0 is the fastest"),
+    ConfigRegister(
+        key="operating_mode", label="Operating mode", address=HLS.MODE,
+        size=1, eeprom=True,
+        choices={0: "position", 1: "speed", 2: "current", 3: "PWM"},
+        note="position here is current-limited by register 44"),
+    ConfigRegister(
+        key="secondary_id", label="Shadow ID", address=HLS.SECONDARY_ID,
+        size=1, eeprom=True, minimum=0, maximum=253,
+        note="a second address the motor also answers to; 253 disables it"),
+    ConfigRegister(
+        key="temperature_limit", label="Temperature limit",
+        address=HLS.MAX_TEMPERATURE, size=1, eeprom=True,
+        unit="degC", minimum=0, maximum=100,
+        note="the shutdown threshold, not a warning level"),
+)
 
 
 def _raw_units_to_rad(raw: float, scale: float) -> float:
@@ -252,6 +287,7 @@ class FeetechClient(MotorClient):
 
         # RLock: mode/EEPROM sequences re-enter via set_torque_enabled.
         self._bus_lock = threading.RLock()
+        self._transport_bauds = _UNPROBED
 
         self._connected = False
 
@@ -449,6 +485,52 @@ class FeetechClient(MotorClient):
                 self.port_handler.closePort()
                 self._connected = False
                 # The next connect may find different motors on this port.
+                self._motor_modes.clear()
+                self.OPEN_CLIENTS.discard(self)
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Disconnect, waiting for the bus rather than giving up on it.
+
+        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
+        lock, and returns when it finds it set -- so a sampler legitimately
+        mid-transaction makes the teardown silently not happen, with no retry.
+        The port stays open, the client stays registered, and a reconnect
+        cannot replace the handler. A momentary condition becomes permanent.
+
+        Taking the lock first waits for any in-flight exchange to finish,
+        after which no live transaction can hold the flag, so the check is
+        unnecessary rather than skipped.
+
+        Deliberately a separate method. ``disconnect`` is on every consumer's
+        path and changing its locking is its own change with its own testing;
+        this exists so the behaviour can be proven in the one place that
+        provokes the race -- a reconnect triggered by a bus transaction --
+        before it is merged into the shared path.
+        """
+        if not self._connected:
+            return
+        with self._bus_lock:
+            try:
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self._connected = False
                 self._motor_modes.clear()
                 self.OPEN_CLIENTS.discard(self)
 
@@ -834,6 +916,64 @@ class FeetechClient(MotorClient):
                         raise RuntimeError(
                             f"goal speed write to motor {motor_id} failed: "
                             f"result={result}, error={error}")
+
+    config_registers = CONFIG_REGISTERS
+
+    def _config_register(self, key: str) -> ConfigRegister:
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
+    def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
+        entry = self._config_register(key)
+        reader = {1: self.packet_handler.read1ByteTxRx,
+                  2: self.packet_handler.read2ByteTxRx,
+                  4: self.packet_handler.read4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            value, result, error = reader(int(motor_id), entry.address)
+        if result != COMM_SUCCESS or error != 0:
+            self._flush_input_buffer()
+            return None
+        return entry.from_raw(int(value))
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "Optional[int]":
+        """Write one register and read it back. Returns what the motor holds.
+
+        These are all EEPROM, which this family keeps behind a lock register:
+        torque off, unlock, write, re-lock. An id change moves the motor, so
+        the re-lock and the read-back go to where it now answers.
+        """
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+
+        motor_id, raw = int(motor_id), entry.to_raw(value)
+        writer = {1: self.packet_handler.write1ByteTxRx,
+                  2: self.packet_handler.write2ByteTxRx,
+                  4: self.packet_handler.write4ByteTxRx}[entry.size]
+        after = int(value) if key == "id" else motor_id
+        with self._bus_lock:
+            if entry.eeprom:
+                self.set_torque_enabled([motor_id], False, retries=0)
+                self._unlock_eeprom(motor_id)
+            result, error = writer(motor_id, entry.address, raw)
+            if entry.eeprom:
+                self._lock_eeprom(after)
+            if result != COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                raise RuntimeError(
+                    f"motor {motor_id}: {key} write failed "
+                    f"(result={result}, error={error})")
+        if key == "baud_rate":
+            return int(value)
+        return self.read_config_register(after, key)
 
     def read_servo_gains(
         self, motor_ids: "Sequence[int]"
