@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
+from .config_registers import ConfigRegister
 from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
@@ -36,6 +37,13 @@ ADDR_ID = 7
 ADDR_BAUD_RATE = 8
 ADDR_RETURN_DELAY_TIME = 9  # EEPROM, units of 2 us
 ADDR_OPERATING_MODE = 11
+ADDR_DRIVE_MODE = 10
+ADDR_SECONDARY_ID = 12
+# Protocol type (13) is deliberately not in CONFIG_REGISTERS: this client
+# speaks 2.0 only, so switching a motor to 1.0 strands it with no way back
+# from inside the tool.
+ADDR_PROTOCOL_TYPE = 13
+ADDR_TEMPERATURE_LIMIT = 31
 ADDR_ACCELERATION_LIMIT = 40
 ADDR_VELOCITY_LIMIT = 44
 # 40..47 is contiguous, so both ceilings read back in one transaction.
@@ -123,6 +131,49 @@ DYNAMIXEL_MODELS = {
     1080: 'XC430-T240BB-T',
 }
 
+# Operator-editable settings. Addresses and ranges from the XC330-T288-T and
+# XC430-W240-T control tables.
+CONFIG_REGISTERS = (
+    ConfigRegister(
+        key="id", label="ID", address=ADDR_ID, size=1, eeprom=True,
+        minimum=0, maximum=252, reidentifies=True,
+        note="the motor answers at the new id immediately"),
+    ConfigRegister(
+        key="baud_rate", label="Baud rate", address=ADDR_BAUD_RATE, size=1,
+        eeprom=True, reidentifies=True,
+        choices={index: f"{rate:,}".replace(",", " ")
+                 for rate, index in BAUD_RATE_MAP.items()},
+        note="the motor switches rate the moment the write lands"),
+    ConfigRegister(
+        key="return_delay_time", label="Return delay time",
+        address=ADDR_RETURN_DELAY_TIME, size=1, eeprom=True,
+        unit="us", scale=2.0, minimum=0, maximum=508,
+        note="factory 500 us; chain setup programs 20 us. The register counts "
+             "in twos, so an odd value lands on the one below"),
+    ConfigRegister(
+        key="drive_mode", label="Drive mode", address=ADDR_DRIVE_MODE, size=1,
+        eeprom=True, minimum=0, maximum=13,
+        choices={0: "normal", 1: "reverse"},
+        note="bit 0 reverses the direction of travel"),
+    ConfigRegister(
+        key="operating_mode", label="Operating mode",
+        address=ADDR_OPERATING_MODE, size=1, eeprom=True,
+        choices={0: "current", 1: "velocity", 3: "position",
+                 4: "extended position", 5: "current-based position",
+                 16: "PWM"},
+        note="models without a current register accept only 1, 3, 4 and 16"),
+    ConfigRegister(
+        key="secondary_id", label="Shadow ID", address=ADDR_SECONDARY_ID,
+        size=1, eeprom=True, minimum=0, maximum=255,
+        note="a second address the motor also answers to; 255 disables it"),
+    ConfigRegister(
+        key="temperature_limit", label="Temperature limit",
+        address=ADDR_TEMPERATURE_LIMIT, size=1, eeprom=True,
+        unit="degC", minimum=0, maximum=100,
+        note="the shutdown threshold, not a warning level"),
+)
+
+
 def signed_to_unsigned(value: int, size: int) -> int:
     """Converts the given value to its unsigned representation."""
     return value & ((1 << (8 * size)) - 1)
@@ -137,6 +188,9 @@ def unsigned_to_signed(value: int, size: int) -> int:
 
 
 from .motor_client import ServoGains, ServoProfile
+
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
 
 class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
@@ -218,6 +272,7 @@ class DynamixelClient(MotorClient):
         self.port_handler = self.dxl.PortHandler(port)
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
 
+        self._transport_bauds = _UNPROBED
         # RLock: alert handling re-enters from within a locked read/write path.
         self._bus_lock = threading.RLock()
 
@@ -369,6 +424,50 @@ class DynamixelClient(MotorClient):
         with self._bus_lock:
             try:
                 # Ensure motors are disabled at the end.
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self.OPEN_CLIENTS.discard(self)
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Disconnect, waiting for the bus rather than giving up on it.
+
+        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
+        lock, and returns when it finds it set -- so a sampler legitimately
+        mid-transaction makes the teardown silently not happen, with no retry.
+        The port stays open, the client stays registered, and a reconnect
+        cannot replace the handler. A momentary condition becomes permanent.
+
+        Taking the lock first waits for any in-flight exchange to finish,
+        after which no live transaction can hold the flag, so the check is
+        unnecessary rather than skipped.
+
+        Deliberately a separate method. ``disconnect`` is on every consumer's
+        path and changing its locking is its own change with its own testing;
+        this exists so the behaviour can be proven in the one place that
+        provokes the race -- a reconnect triggered by a bus transaction --
+        before it is merged into the shared path.
+        """
+        if not self.is_connected:
+            return
+        with self._bus_lock:
+            try:
                 self.set_torque_enabled(self.motor_ids, False, retries=0)
             finally:
                 self.port_handler.closePort()
@@ -701,6 +800,53 @@ class DynamixelClient(MotorClient):
         ("ff_1st", ADDR_FEEDFORWARD_1ST_GAIN),
         ("ff_2nd", ADDR_FEEDFORWARD_2ND_GAIN),
     )
+
+    config_registers = CONFIG_REGISTERS
+
+    def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
+        entry = self._config_register(key)
+        reader = {1: self.packet_handler.read1ByteTxRx,
+                  2: self.packet_handler.read2ByteTxRx,
+                  4: self.packet_handler.read4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            value, result, error = reader(
+                self.port_handler, int(motor_id), entry.address)
+        if result != self.dxl.COMM_SUCCESS or error != 0:
+            self._flush_input_buffer()
+            return None
+        return entry.from_raw(int(value))
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "Optional[int]":
+        """Write one register and read it back. Returns what the motor holds.
+
+        EEPROM needs torque off, so torque is dropped for the write. An id or
+        baud change moves the motor, so the read-back follows it to where it
+        now answers rather than asking the old address.
+        """
+        entry = self._config_register(key)
+        entry.check(value)
+
+        motor_id, raw = int(motor_id), entry.to_raw(value)
+        writer = {1: self.packet_handler.write1ByteTxRx,
+                  2: self.packet_handler.write2ByteTxRx,
+                  4: self.packet_handler.write4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            if entry.eeprom:
+                self.set_torque_enabled([motor_id], False, retries=0)
+            result, error = writer(
+                self.port_handler, motor_id, entry.address, raw)
+            if result != self.dxl.COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                raise RuntimeError(
+                    f"motor {motor_id}: {key} write failed "
+                    f"(result={result}, error={error})")
+        # Where the motor answers now. Baud is the caller's problem: the
+        # motor has already moved and this port has not.
+        after = motor_id if key != "id" else int(value)
+        if key == "baud_rate":
+            return int(value)
+        return self.read_config_register(after, key)
 
     def read_servo_gains(
         self, motor_ids: Sequence[int]

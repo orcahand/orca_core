@@ -8,6 +8,8 @@ Only the registers the client touches are listed.
 class HLS:
     # EEPROM
     ID = 5
+    SECONDARY_ID = 7
+    MAX_TEMPERATURE = 13
     BAUD_RATE = 6
     PROTECTION_CURRENT = 28   # 6.5 mA/unit, 0..2047; copied into GOAL_CURRENT at power-up
     MODE = 33                 # 0 position under current limit, 1 speed, 2 current, 3 PWM

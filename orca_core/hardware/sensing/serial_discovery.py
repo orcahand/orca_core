@@ -104,6 +104,45 @@ def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
     )
 
 
+OH_BOARD_MOTOR_BAUD_RATES: "tuple[int, ...]" = (
+    57600, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 4_500_000)
+"""Motor-bus rates an OH board will follow from the host's CDC line coding.
+
+The board bridges USB to the motor bus and retunes the wire to match the rate
+the host opened the port at -- but only for these. Anything else it ignores and
+leaves the wire where it was, so a motor moved to an unlisted rate becomes
+unreachable through the board: the host cannot follow it there. 9600 and 115200
+are left out on purpose, because probing tools open ports at them and following
+that would retune a live bus.
+
+Mirrors ``motorBaudAllowed`` in the board firmware. A plain USB-TTL adapter has
+no such filter, which is why this is a property of the transport and not of the
+motor family.
+"""
+
+
+def _query_link(
+    link,
+    timeout: float,
+    query: bytes,
+    is_complete: "Callable[[bytearray], bool]",
+) -> Optional[bytes]:
+    """Send ``query`` on an open ``link`` and return the reply once ``is_complete`` accepts it, else ``None`` at the timeout."""
+    link.reset_input_buffer()
+    link.write(query)
+    link.flush()
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = link.read(256)
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if is_complete(buf):
+            return bytes(buf)
+    return None
+
+
 def _query_until(
     port: str,
     baudrate: int,
@@ -111,22 +150,36 @@ def _query_until(
     query: bytes,
     is_complete: "Callable[[bytearray], bool]",
 ) -> Optional[bytes]:
-    """Send ``query`` on an exclusively opened ``port`` and return the reply once ``is_complete`` accepts it, else ``None`` at the timeout."""
+    """Open ``port`` exclusively and query it with :func:`_query_link`."""
     import serial
 
     with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
-        link.reset_input_buffer()
-        link.write(query)
-        link.flush()
-        deadline = time.monotonic() + timeout
-        buf = bytearray()
-        while time.monotonic() < deadline:
-            chunk = link.read(256)
-            if not chunk:
-                continue
-            buf.extend(chunk)
-            if is_complete(buf):
-                return bytes(buf)
+        return _query_link(link, timeout, query, is_complete)
+
+
+def motor_baud_rates_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
+    """Rates the transport behind an already-open ``link`` can carry.
+
+    Returns ``None`` when the transport imposes no limit of its own, which is
+    both the plain-adapter answer and the answer when nothing identifies
+    itself -- the motor family's own map is then the only bound.
+
+    Asks in band, over the open link, because the question is worth asking
+    while a session holds the port: an OH board answers ``ORCA_ID?`` from the
+    bridge itself without putting it on the wire. On a plain adapter the query
+    reaches the motors as unframed bytes, which they ignore, and the silence is
+    the answer.
+    """
+    try:
+        reply = _query_link(
+            link, timeout, ORCA_ID_QUERY,
+            lambda buf: ORCA_ID_RESP_MOTOR in buf or ORCA_ID_RESP_SENSOR in buf)
+    except Exception as exc:
+        logger.debug("in-band transport probe failed: %s", exc)
+        return None
+    # A sensor reply means the motor bus is not behind this port at all.
+    if reply is not None and ORCA_ID_RESP_MOTOR in reply:
+        return OH_BOARD_MOTOR_BAUD_RATES
     return None
 
 
