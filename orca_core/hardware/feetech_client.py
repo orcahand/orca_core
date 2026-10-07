@@ -885,7 +885,7 @@ class FeetechClient(MotorClient):
         if result != COMM_SUCCESS or error != 0:
             self._flush_input_buffer()
             return None
-        return int(value)
+        return entry.from_raw(int(value))
 
     def write_config_register(self, motor_id: int, key: str,
                               value: int) -> "Optional[int]":
@@ -904,7 +904,7 @@ class FeetechClient(MotorClient):
             raise ValueError(
                 f"{key}={value} is not one of {sorted(entry.choices)}")
 
-        motor_id = int(motor_id)
+        motor_id, raw = int(motor_id), entry.to_raw(value)
         writer = {1: self.packet_handler.write1ByteTxRx,
                   2: self.packet_handler.write2ByteTxRx,
                   4: self.packet_handler.write4ByteTxRx}[entry.size]
@@ -913,7 +913,7 @@ class FeetechClient(MotorClient):
             if entry.eeprom:
                 self.set_torque_enabled([motor_id], False, retries=0)
                 self._unlock_eeprom(motor_id)
-            result, error = writer(motor_id, entry.address, int(value))
+            result, error = writer(motor_id, entry.address, raw)
             if entry.eeprom:
                 self._lock_eeprom(after)
             if result != COMM_SUCCESS or error != 0:

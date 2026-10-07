@@ -150,8 +150,9 @@ CONFIG_REGISTERS = (
     ConfigRegister(
         key="return_delay_time", label="Return delay time",
         address=ADDR_RETURN_DELAY_TIME, size=1, eeprom=True,
-        unit="x2 us", minimum=0, maximum=254,
-        note="factory 250 (500 us); chain setup programs 10 (20 us)"),
+        unit="us", scale=2.0, minimum=0, maximum=508,
+        note="factory 500 us; chain setup programs 20 us. The register counts "
+             "in twos, so an odd value lands on the one below"),
     ConfigRegister(
         key="drive_mode", label="Drive mode", address=ADDR_DRIVE_MODE, size=1,
         eeprom=True, minimum=0, maximum=13,
@@ -828,7 +829,7 @@ class DynamixelClient(MotorClient):
         if result != self.dxl.COMM_SUCCESS or error != 0:
             self._flush_input_buffer()
             return None
-        return int(value)
+        return entry.from_raw(int(value))
 
     def write_config_register(self, motor_id: int, key: str,
                               value: int) -> "Optional[int]":
@@ -847,7 +848,7 @@ class DynamixelClient(MotorClient):
             raise ValueError(
                 f"{key}={value} is not one of {sorted(entry.choices)}")
 
-        motor_id = int(motor_id)
+        motor_id, raw = int(motor_id), entry.to_raw(value)
         writer = {1: self.packet_handler.write1ByteTxRx,
                   2: self.packet_handler.write2ByteTxRx,
                   4: self.packet_handler.write4ByteTxRx}[entry.size]
@@ -856,7 +857,7 @@ class DynamixelClient(MotorClient):
             if entry.eeprom:
                 self.set_torque_enabled([motor_id], False, retries=0)
             result, error = writer(
-                self.port_handler, motor_id, entry.address, int(value))
+                self.port_handler, motor_id, entry.address, raw)
             if result != self.dxl.COMM_SUCCESS or error != 0:
                 self._flush_input_buffer()
                 raise RuntimeError(

@@ -149,3 +149,38 @@ class TestStalePortFlag:
 
         source = inspect.getsource(DynamixelClient.disconnect)
         assert "is_using" in source
+
+
+class TestUnits:
+    """An operator works in the unit, never in register counts."""
+
+    def test_return_delay_is_microseconds(self):
+        from orca_core.hardware.motor_factory import motor_client_class
+
+        entry = next(r for r in motor_client_class("dynamixel").config_registers
+                     if r.key == "return_delay_time")
+        assert entry.unit == "us"
+        assert (entry.minimum, entry.maximum) == (0, 508)
+        assert entry.to_raw(20) == 10
+        assert entry.from_raw(10) == 20
+
+    def test_a_write_in_microseconds_reads_back_in_microseconds(self):
+        client = _client("dynamixel")
+        assert client.write_config_register(1, "return_delay_time", 20) == 20
+        assert client.read_config_register(1, "return_delay_time") == 20
+
+    def test_a_value_the_register_cannot_hold_reports_what_it_became(self):
+        """The register counts in twos, so 21 us is 20. Refusing it would be
+        pedantic; saying nothing would be a lie."""
+        client = _client("dynamixel")
+        assert client.write_config_register(1, "return_delay_time", 21) == 20
+
+    def test_the_bound_is_in_microseconds_not_register_counts(self):
+        client = _client("dynamixel")
+        with pytest.raises(ValueError):
+            client.write_config_register(1, "return_delay_time", 509)
+        assert client.write_config_register(1, "return_delay_time", 508) == 508
+
+    def test_an_unscaled_register_is_unaffected(self):
+        client = _client("dynamixel")
+        assert client.write_config_register(1, "temperature_limit", 65) == 65

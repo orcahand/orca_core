@@ -123,10 +123,15 @@ class MockDynamixelClient(MotorClient):
             raise ValueError(
                 f"{key}={value} is not one of {sorted(entry.choices)}")
         store = self._config_values.setdefault(int(motor_id), {})
-        store[key] = int(value)
+        # Through to_raw and back, so a value the register cannot hold is
+        # reported as what it actually became, exactly as hardware would.
+        store[key] = entry.from_raw(entry.to_raw(int(value)))
         if key == "id":
             self._config_values[int(value)] = store
-        return int(value)
+        # What the register holds, not what was asked for -- the real clients
+        # read back, and a mock that answered otherwise would hide exactly the
+        # mismatch this is here to surface.
+        return store[key]
 
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma

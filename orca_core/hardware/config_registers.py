@@ -25,6 +25,10 @@ class ConfigRegister:
     size: int                      # bytes
     eeprom: bool                   # EEPROM writes need torque off and persist
     unit: str = ""
+    # What one raw register unit is worth in `unit`. A caller works entirely
+    # in `unit` -- bounds, writes and reads are all in it -- so nobody has to
+    # know that a return delay register counts in twos.
+    scale: float = 1.0
     minimum: "int | None" = None
     maximum: "int | None" = None
     # Raw value -> what it means. Set for registers whose number is an index
@@ -35,9 +39,25 @@ class ConfigRegister:
     reidentifies: bool = False
     note: str = ""
 
-    def describe(self, raw: "int | None") -> str:
+    def from_raw(self, raw: "int | None") -> "int | None":
+        """Register contents as the operator sees them."""
         if raw is None:
+            return None
+        return int(round(raw * self.scale))
+
+    def to_raw(self, value: int) -> int:
+        """An operator's value as the register holds it.
+
+        Rounded, because not every value is representable -- a return delay
+        counts in twos, so 21 us is 20. The caller is told what actually
+        stuck by reading the register back, rather than being refused here.
+        """
+        return int(round(value / self.scale))
+
+    def describe(self, value: "int | None") -> str:
+        """``value`` is in `unit`, not raw."""
+        if value is None:
             return "--"
         if self.choices:
-            return self.choices.get(raw, f"{raw} (unknown)")
-        return f"{raw}{(' ' + self.unit) if self.unit else ''}"
+            return self.choices.get(value, f"{value} (unknown)")
+        return f"{value}{(' ' + self.unit) if self.unit else ''}"
