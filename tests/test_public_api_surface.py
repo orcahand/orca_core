@@ -14,6 +14,7 @@ import pytest
 import orca_core
 from orca_core import (
     BaseHand,
+    CalibrationResult,
     OrcaHand,
     OrcaHandFull,
     OrcaHandJointFeedback,
@@ -146,6 +147,11 @@ JOINT_POSITIONS = frozenset({
     "register_joint_names",
 })
 
+CALIBRATION_RESULT = frozenset({
+    "empty",
+    "from_calibration_path",
+})
+
 
 def public_names(cls) -> frozenset:
     return frozenset(name for name, _ in inspect.getmembers(cls) if not name.startswith("_"))
@@ -164,6 +170,7 @@ def test_package_exports_are_pinned():
         (OrcaHandJointFeedback, ORCA_HAND | JOINT_FEEDBACK_SURFACE),
         (OrcaHandFull, ORCA_HAND | TACTILE_SURFACE | JOINT_FEEDBACK_SURFACE),
         (OrcaJointPositions, JOINT_POSITIONS),
+        (CalibrationResult, CALIBRATION_RESULT),
     ],
     ids=lambda value: getattr(value, "__name__", ""),
 )

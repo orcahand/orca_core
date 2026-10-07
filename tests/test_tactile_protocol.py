@@ -6,21 +6,12 @@ import pytest
 
 from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.tactile_protocol import (
-    validate_auto_frame_lrc,
-    read_response_body_size,
     build_read_request,
     build_write_request,
     parse_read_response,
     parse_write_response,
-    extract_write_response_data_length,
-    extract_auto_frame_effective_length,
     unpack_auto_payload,
-    compute_resultant_payload_size,
-    compute_taxel_payload_size,
-    compute_combined_payload_size,
-    decode_resultant_auto,
-    decode_taxels_auto,
-    decode_combined_auto,
+    decode_auto_payload,
     decode_resultant_register,
     decode_connected_sensors,
     decode_num_taxels,
@@ -40,9 +31,6 @@ from orca_core.hardware.sensing.constants import (
     FUNC_CODE_WRITE,
     AUTO_DATA_RESULTANT,
     AUTO_DATA_TAXELS,
-    BYTES_PER_RESULTANT,
-    BYTES_PER_TAXEL,
-    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
 )
 
@@ -78,30 +66,6 @@ def test_calculate_checksum(frame, expected):
     checksum = calculate_checksum(frame)
     assert checksum == expected
     assert (sum(frame) + checksum) & 0xFF == 0
-
-
-@pytest.mark.parametrize("lrc,expected", [
-    pytest.param(None, True, id="matching"),   # None = compute the correct LRC
-    pytest.param(0xFF, False, id="bad"),
-])
-def test_validate_auto_frame_lrc(lrc, expected):
-    meta = b"\x00" + (3).to_bytes(2, "little")
-    payload = b"\x00\x01\x02"
-    if lrc is None:
-        lrc = calculate_checksum(PROTOCOL_HEADER_AUTO + meta + payload)
-    assert validate_auto_frame_lrc(meta, payload, lrc) is expected
-
-
-# ---------------------------------------------------------------------------
-# Frame size helpers
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("count,expected", [
-    (4, 11),  # meta(6) + data(4) + LRC(1)
-    (1, 8),
-])
-def test_read_response_body_size(count, expected):
-    assert read_response_body_size(count) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -249,33 +213,9 @@ def test_parse_write_response_wrong_header_raises():
         parse_write_response(bytes(frame))
 
 
-def test_extract_write_response_data_length_known_value():
-    # meta: reserved(1) + func(1) + addr(2) + nbytes(2)
-    meta = bytes([0x00, FUNC_CODE_WRITE, 0x17, 0x00, 0x03, 0x00])
-    assert extract_write_response_data_length(meta) == 3
-
-
-def test_extract_write_response_data_length_wrong_size_raises():
-    with pytest.raises(ValueError, match="must be 6 bytes"):
-        extract_write_response_data_length(b"\x00\x00\x00\x00")
-
-
 # ---------------------------------------------------------------------------
 # Auto-stream frame parsers
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("value", [42, MAX_AUTO_FRAME_EFFECTIVE_LENGTH])
-def test_extract_auto_frame_effective_length_valid(value):
-    # meta layout: reserved(1) + effective_length(2 LE) = 3 bytes
-    meta = b"\x00" + value.to_bytes(2, "little")
-    assert extract_auto_frame_effective_length(meta) == value
-
-
-def test_extract_auto_frame_effective_length_exceeds_max_raises():
-    meta = b"\x00" + (MAX_AUTO_FRAME_EFFECTIVE_LENGTH + 1).to_bytes(2, "little")
-    with pytest.raises(ValueError, match="Invalid effective_length"):
-        extract_auto_frame_effective_length(meta)
-
 
 @pytest.mark.parametrize("payload,expected_err,expected_data", [
     (b"\x00\x01\x02\x03", 0, b"\x01\x02\x03"),
@@ -286,33 +226,6 @@ def test_unpack_auto_payload(payload, expected_err, expected_data):
     err, data = unpack_auto_payload(payload)
     assert err == expected_err
     assert data == expected_data
-
-
-# ---------------------------------------------------------------------------
-# Payload size computation
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("n", [0, 1, 3, 5])
-def test_compute_resultant_payload_size(n):
-    assert compute_resultant_payload_size(n) == n * BYTES_PER_RESULTANT
-
-
-def test_compute_taxel_payload_size():
-    active = ["thumb", "index"]
-    num_taxels = {"thumb": 51, "index": 87}
-    assert compute_taxel_payload_size(active, num_taxels) == (51 + 87) * BYTES_PER_TAXEL
-
-
-def test_compute_taxel_payload_size_missing_finger_raises():
-    with pytest.raises(KeyError):
-        compute_taxel_payload_size(["thumb"], {"index": 87})
-
-
-def test_compute_combined_payload_size():
-    active = ["thumb", "index"]
-    num_taxels = {"thumb": 51, "index": 87}
-    expected = 2 * BYTES_PER_RESULTANT + (51 + 87) * BYTES_PER_TAXEL
-    assert compute_combined_payload_size(active, num_taxels) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -353,49 +266,36 @@ def _resultant_slot(fx: int, fy: int, fz: int, hi: int = 0x00) -> bytes:
         ),
     ],
 )
-def test_decode_resultant_auto(raw, expected, hi_byte):
+def test_decode_auto_payload_resultant(raw, expected, hi_byte):
     data = b"".join(_resultant_slot(fx, fy, fz, hi=hi_byte) for (fx, fy, fz) in raw)
     fingers = list(expected.keys())
-    assert decode_resultant_auto(data, fingers) == expected
+    assert decode_auto_payload(data, fingers, {}, True, False) == (expected, None)
 
 
-def test_decode_resultant_auto_wrong_size_raises():
-    with pytest.raises(ValueError, match="size mismatch"):
-        decode_resultant_auto(b"\x00" * 5, ["thumb"])
+def test_decode_auto_payload_wrong_size_raises_with_its_bytes():
+    with pytest.raises(ValueError, match="size mismatch.*first bytes: dead"):
+        decode_auto_payload(b"\xDE\xAD", ["thumb"], {"thumb": 2}, True, True)
 
 
-def test_decode_resultant_auto_error_includes_hex():
-    with pytest.raises(ValueError, match="first bytes"):
-        decode_resultant_auto(b"\xDE\xAD", ["thumb"])
-
-
-def test_decode_taxels_auto_known_values():
+def test_decode_auto_payload_taxels_only():
     data = struct.pack("bbB", 10, -5, 20) + struct.pack("bbB", 0, 0, 50)
-    result = decode_taxels_auto(data, ["thumb"], {"thumb": 2})
-    assert len(result["thumb"]) == 2
-    assert result["thumb"][0] == [1.0, -0.5, 2.0]
-    assert result["thumb"][1] == [0.0, 0.0, 5.0]
+    assert decode_auto_payload(data, ["thumb"], {"thumb": 2}, False, True) == (
+        None, {"thumb": [[1.0, -0.5, 2.0], [0.0, 0.0, 5.0]]},
+    )
 
 
-def test_decode_taxels_auto_wrong_size_raises():
-    with pytest.raises(ValueError, match="size mismatch"):
-        decode_taxels_auto(b"\x00" * 5, ["thumb"], {"thumb": 2})
-
-
-def test_decode_combined_auto_interleaved():
+def test_decode_auto_payload_interleaved():
     data = (
         _resultant_slot(100, 0, 50)
         + struct.pack("bbB", 10, 0, 5)
         + _resultant_slot(0, -100, 200, hi=0xFF)  # index fz > 127, firmware sign-extends
         + struct.pack("bbB", 0, -10, 20)
+        + struct.pack("bbB", -3, 4, 255)
     )
-    forces, taxels = decode_combined_auto(
-        data, ["thumb", "index"], {"thumb": 1, "index": 1},
+    assert decode_auto_payload(data, ["thumb", "index"], {"thumb": 1, "index": 2}, True, True) == (
+        {"thumb": [10.0, 0.0, 5.0], "index": [0.0, -10.0, 20.0]},
+        {"thumb": [[1.0, 0.0, 0.5]], "index": [[0.0, -1.0, 2.0], [-0.3, 0.4, 25.5]]},
     )
-    assert forces["thumb"] == [10.0, 0.0, 5.0]
-    assert forces["index"] == [0.0, -10.0, 20.0]
-    assert taxels["thumb"][0] == [1.0, 0.0, 0.5]
-    assert taxels["index"][0] == [0.0, -1.0, 2.0]
 
 
 @pytest.mark.parametrize("forces", [
@@ -409,7 +309,7 @@ def test_decode_combined_auto_interleaved():
 def test_resultant_encode_decode_roundtrip(forces):
     fingers = list(forces.keys())
     wire = encode_resultant_auto_for_mock(forces, fingers)
-    assert decode_resultant_auto(wire, fingers) == forces
+    assert decode_auto_payload(wire, fingers, {}, True, False) == (forces, None)
 
 
 def test_combined_encode_decode_roundtrip():
@@ -417,8 +317,8 @@ def test_combined_encode_decode_roundtrip():
     taxels = {"thumb": [[1.0, -0.5, 2.0]], "index": [[0.0, 0.0, 0.5]]}
     fingers = ["thumb", "index"]
     wire = encode_combined_auto_for_mock(forces, taxels, fingers)
-    decoded_forces, decoded_taxels = decode_combined_auto(
-        wire, fingers, {"thumb": 1, "index": 1},
+    decoded_forces, decoded_taxels = decode_auto_payload(
+        wire, fingers, {"thumb": 1, "index": 1}, True, True,
     )
     assert decoded_forces == forces
     assert decoded_taxels == taxels

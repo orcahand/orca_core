@@ -1,4 +1,4 @@
-"""Windows portability: COM-port existence, the curses-free port picker, ANSI enabling.
+"""Windows portability: COM-port existence, the numbered port picker, ANSI enabling.
 
 Windows COM ports are not files, so every ``os.path.exists(port)`` in the
 package went through :func:`serial_port_exists`; these tests pin that path
@@ -25,11 +25,6 @@ def com_port(device: str, vid: int = 0x2F5D):
 @pytest.fixture
 def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-
-
-@pytest.fixture
-def no_curses(monkeypatch):
-    monkeypatch.setitem(sys.modules, "curses", None)
 
 
 # --- serial_port_exists -------------------------------------------------------
@@ -84,9 +79,9 @@ def test_wait_for_port_times_out_when_com_port_never_appears(windows, patch_comp
         mc.wait_for_port("COM5", present=True, timeout=0.01)
 
 
-# --- port picker without curses -----------------------------------------------------
+# --- port picker -----------------------------------------------------
 
-def test_port_picker_falls_back_to_numbered_prompt(no_curses, patch_comports, monkeypatch, capsys):
+def test_port_picker_takes_a_number(patch_comports, monkeypatch, capsys):
     patch_comports([com_port("COM3"), com_port("COM4", vid=0x0403)])
     answers = iter(["x", "9", "2"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
@@ -95,13 +90,13 @@ def test_port_picker_falls_back_to_numbered_prompt(no_curses, patch_comports, mo
     assert "1. COM3" in out and "2. COM4" in out
 
 
-def test_port_picker_plain_quits_on_q(no_curses, patch_comports, monkeypatch):
+def test_port_picker_quits_on_q(patch_comports, monkeypatch):
     patch_comports([com_port("COM3")])
     monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
     assert utils.get_and_choose_port() is None
 
 
-def test_port_picker_plain_with_no_ports(no_curses, patch_comports):
+def test_port_picker_with_no_ports(patch_comports):
     patch_comports([])
     assert utils.get_and_choose_port() is None
 

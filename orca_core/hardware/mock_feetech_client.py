@@ -8,33 +8,18 @@
 
 """Communication using a simulated Feetech client."""
 
-import atexit
 import logging
-import random
-from typing import Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 
 from .feetech_client import DEFAULT_ACC, DEFAULT_SPEED, FeetechClient
 from .feetech_registers import HLS
-from .motor_client import MotorClient, MotorRead, ServoGains, ServoProfile
+from .mock_motor_client import MockMotorClient
+from .motor_client import ServoGains, ServoProfile
 
 
-def feetech_cleanup_handler():
-    """Disconnect every open mock client at interpreter exit."""
-    MockFeetechClient.cleanup_open_clients()
-
-
-class _MockPortHandler:
-    """Stands in for the SDK port handler the exit cleanup inspects."""
-
-    def __init__(self, port: str):
-        self.port_name = port
-        self.is_open = False
-        self.is_using = False
-
-
-class MockFeetechClient(MotorClient):
+class MockFeetechClient(MockMotorClient):
     """Mock client for simulating communication with Feetech SCServo motors.
 
     Carries FeetechClient's capability attributes, so code that branches on
@@ -42,112 +27,23 @@ class MockFeetechClient(MotorClient):
     against the mock as against the hardware.
     """
 
-    motor_type = FeetechClient.motor_type
-    factory_default_id = FeetechClient.factory_default_id
-    factory_default_baudrate = FeetechClient.factory_default_baudrate
-    baud_rate_map = FeetechClient.baud_rate_map
-    requires_unpowered_hotplug = FeetechClient.requires_unpowered_hotplug
-    waits_for_motion = FeetechClient.waits_for_motion
-    supports_multi_turn = FeetechClient.supports_multi_turn
-    supported_modes = FeetechClient.supported_modes
-    position_range_rad = FeetechClient.position_range_rad
-    servo_gain_max = FeetechClient.servo_gain_max
-    profile_velocity_max_rad_s = FeetechClient.profile_velocity_max_rad_s
-    profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
-    profile_ceiling_source = FeetechClient.profile_ceiling_source
-    no_load_speed_rad_s = FeetechClient.no_load_speed_rad_s
-    current_scale_ma = FeetechClient.current_scale_ma
-    max_current_ma = FeetechClient.max_current_ma
-    default_max_current_ma = FeetechClient.default_max_current_ma
-    default_calibration_current_ma = FeetechClient.default_calibration_current_ma
-
-    # Clients with an open (simulated) port; registered on successful
-    # connect() so the atexit cleanup only ever touches live connections.
-    OPEN_CLIENTS = set()
+    real_client = FeetechClient
+    # Servo mode, the family's power-on default.
+    default_operating_mode = 0
+    # The gains a Feetech servo powers up with, from its EEPROM
+    # counterparts. Read off a real chain: Kp 32, Kd 32, Ki 0.
+    default_servo_gains = ServoGains(kp=32, ki=0, kd=32)
+    # What orca_core writes at mode-set time, in SI units.
+    default_servo_profile = ServoProfile(
+        velocity_rad_s=DEFAULT_SPEED * HLS.SPEED_SCALE_RAD_S,
+        acceleration_rad_s2=DEFAULT_ACC * HLS.ACC_SCALE_RAD_S2,
+    )
 
     def __init__(self,
                  motor_ids: Sequence[int],
                  port: str = '/dev/ttyUSB0',
-                 baudrate: int = 1000000,
-                 lazy_connect: bool = False,
-                 pos_scale: Optional[float] = None,
-                 vel_scale: Optional[float] = None,
-                 cur_scale: Optional[float] = None):
-        """Initializes a new mock client.
-
-        Args:
-            motor_ids: All motor IDs being used by the client.
-            port: The serial port the real client would talk to.
-            baudrate: The baudrate the real client would communicate at.
-            lazy_connect: If True, automatically connects when calling a method
-                that requires a connection, if not already connected.
-            pos_scale: The scaling factor for positions (raw to radians).
-            vel_scale: The scaling factor for velocities.
-            cur_scale: The scaling factor for currents.
-        """
-        self.motor_ids = list(motor_ids)
-        self.port_name = port
-        self.baudrate = baudrate
-        self.lazy_connect = lazy_connect
-
-        self.pos_scale = pos_scale
-        self.vel_scale = vel_scale
-        self.cur_scale = cur_scale
-
-        self.port_handler = _MockPortHandler(port)
-
-        # The gains a Feetech servo powers up with, from its EEPROM
-        # counterparts. Read off a real chain: Kp 32, Kd 32, Ki 0.
-        self._servo_gains = {
-            int(mid): ServoGains(kp=32, ki=0, kd=32) for mid in self.motor_ids}
-        # What orca_core writes at mode-set time, in SI units.
-        self._servo_profiles = {
-            int(mid): ServoProfile(
-                velocity_rad_s=DEFAULT_SPEED * HLS.SPEED_SCALE_RAD_S,
-                acceleration_rad_s2=DEFAULT_ACC * HLS.ACC_SCALE_RAD_S2,
-            )
-            for mid in self.motor_ids}
-
-        # States for simulation.
-        self._connected = False
-        self._torque_enabled = {mid: False for mid in self.motor_ids}
-        # Servo mode, the family's power-on default.
-        self._operating_mode = {mid: 0 for mid in self.motor_ids}
-        self._pos = {mid: 0.0 for mid in self.motor_ids}
-        self._vel = {mid: 0.0 for mid in self.motor_ids}
-        self._cur = {mid: 0.0 for mid in self.motor_ids}
-        self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
-        # Per-motor goal-current ceilings a test may script, in mA.
-        self.current_ceilings_ma: dict = {}
-        self._profile_velocity = {mid: 0.0 for mid in self.motor_ids}
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
-
-    def connect(self) -> None:
-        """Connects to the simulated Feetech motors.
-
-        Mirrors the real client's registry contract: the client joins
-        ``OPEN_CLIENTS`` only once the connect completed, so a failed connect
-        never leaves a dead entry for the exit cleanup.
-        """
-        if self._connected:
-            raise RuntimeError('Client is already connected.')
-
-        logging.info('Succeeded to open port: %s', self.port_name)
-
-        self._connected = True
-        self.port_handler.is_open = True
-
-        # Motor state is left as-is, mirroring the real client: connecting must
-        # never make the hand stiffen, move, or change a mode register.
-
-        self.OPEN_CLIENTS.add(self)
-
-    def read_servo_profile(self, motor_ids: Sequence[int]):
-        self.check_connected()
-        return {int(mid): self._servo_profiles.get(int(mid)) for mid in motor_ids}
+                 baudrate: int = 1000000):
+        super().__init__(motor_ids, port, baudrate)
 
     def write_servo_profile(self, profiles) -> None:
         """Merge the named fields, translating 0 the way the hardware does.
@@ -176,10 +72,6 @@ class MockFeetechClient(MotorClient):
             self._servo_profiles[motor_id] = ServoProfile(
                 velocity_rad_s=velocity, acceleration_rad_s2=acceleration)
 
-    def read_servo_gains(self, motor_ids: Sequence[int]):
-        self.check_connected()
-        return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}
-
     def write_servo_gains(self, gains) -> None:
         """Merge the named fields; ``None`` leaves one as it was.
 
@@ -201,46 +93,6 @@ class MockFeetechClient(MotorClient):
                 kd=current.kd if wanted.kd is None else int(wanted.kd),
             )
 
-    def disconnect(self) -> None:
-        """Disconnects from the simulated Feetech device.
-
-        The client is always marked disconnected and deregistered, even when
-        the final torque-disable raises; that exception propagates after
-        cleanup, mirroring the real client.
-        """
-        if not self._connected:
-            return
-
-        try:
-            self.set_torque_enabled(self.motor_ids, False, retries=0)
-        finally:
-            self._connected = False
-            self.port_handler.is_open = False
-            self.OPEN_CLIENTS.discard(self)
-
-    def set_torque_enabled(self,
-                           motor_ids: Sequence[int],
-                           enabled: bool,
-                           retries: int = 3,
-                           retry_interval: float = 0.25) -> "list[int]":
-        """Sets whether torque is enabled for the motors.
-
-        Returns:
-            A list of motor IDs that could not be set (unknown IDs, matching
-            a real client's silent motors).
-        """
-        self.check_connected()
-        failed_ids = []
-        for mid in motor_ids:
-            if mid not in self._torque_enabled:
-                failed_ids.append(mid)
-                continue
-            self._torque_enabled[mid] = enabled
-        if failed_ids:
-            logging.error('Could not set torque %s for IDs: %s',
-                          'enabled' if enabled else 'disabled', str(failed_ids))
-        return failed_ids
-
     def set_operating_mode(self, motor_ids: Sequence[int], mode: int) -> None:
         """Sets the operating mode, mapping unsupported modes to servo mode.
 
@@ -257,34 +109,6 @@ class MockFeetechClient(MotorClient):
             self._operating_mode[mid] = feetech_mode
             self._torque_enabled[mid] = True
 
-    def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
-        """Returns immediately; simulated motion lands the instant it is commanded."""
-
-    def read_position_velocity_current(self) -> MotorRead:
-        """Returns the simulated positions, velocities, and currents."""
-        self.check_connected()
-
-        return MotorRead(
-            position=np.array([self._pos[mid] for mid in self.motor_ids]),
-            velocity=np.array([self._vel[mid] for mid in self.motor_ids]),
-            current=np.array([self._cur[mid] for mid in self.motor_ids]),
-        )
-
-    def read_hardware_error(self, motor_id: int) -> "int | None":
-        """A configured motor answers fault-free; any other ID is silent."""
-        self.check_connected()
-        return 0 if motor_id in self.motor_ids else None
-
-    def read_temperature(self) -> np.ndarray:
-        """Reads and returns the simulated temperatures."""
-        self.check_connected()
-        return np.array([random.uniform(40, 60) for _ in self.motor_ids])
-
-    def read_status_is_done_moving(self) -> bool:
-        """The simulated motors always reach their target immediately."""
-        self.check_connected()
-        return True
-
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray) -> None:
         """Writes the given desired positions, clamped to the one-turn range.
@@ -293,42 +117,7 @@ class MockFeetechClient(MotorClient):
             motor_ids: The motor IDs to write to.
             positions: The joint angles in radians to write.
         """
-        assert len(motor_ids) == len(positions)
-        self.check_connected()
-
-        low, high = self.position_range_rad
-        for mid, position in zip(motor_ids, positions):
-            if mid not in self._pos:
-                logging.error('Write ignored for unknown motor ID %d', mid)
-                continue
-            self._pos[mid] = float(np.clip(position, low, high))
-
-    def write_desired_current(self, motor_ids: Sequence[int],
-                              currents: np.ndarray) -> None:
-        """Stores each motor's goal-current limit in register units."""
-        self.check_connected()
-
-        for mid, raw in self._goal_current_plan(motor_ids, currents).items():
-            if mid not in self._cur:
-                logging.error('Write ignored for unknown motor ID %d', mid)
-                continue
-            self._current_limit_raw[mid] = raw
-            self._cur[mid] = raw * self.current_scale_ma
-
-    def _current_ceiling_ma(self, motor_id: int) -> "float | None":
-        return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
-
-    def write_profile_velocity(self, motor_ids: Sequence[int],
-                               profile_velocity: np.ndarray) -> None:
-        """Stores the per-motor goal speed, in raw units of 0.732 RPM."""
-        assert len(motor_ids) == len(profile_velocity)
-        self.check_connected()
-
-        for mid, speed in zip(motor_ids, profile_velocity):
-            if mid not in self._profile_velocity:
-                logging.error('Write ignored for unknown motor ID %d', mid)
-                continue
-            self._profile_velocity[mid] = speed
+        self._write_clamped_positions(motor_ids, positions, *self.position_range_rad)
 
     @property
     def requires_offset_calibration(self) -> bool:
@@ -338,31 +127,3 @@ class MockFeetechClient(MotorClient):
         """Simulates shifting a motor's position frame; always acknowledges."""
         self.check_connected()
         return True
-
-    def check_connected(self) -> None:
-        """Ensures the client is connected."""
-        if self.lazy_connect and not self._connected:
-            self.connect()
-        if not self._connected:
-            raise OSError('Must call connect() first.')
-
-    def __enter__(self):
-        """Enables use as a context manager."""
-        if not self._connected:
-            self.connect()
-        return self
-
-    def __exit__(self, *args):
-        """Enables use as a context manager."""
-        self.disconnect()
-
-    def __del__(self):
-        """Automatically disconnect on destruction."""
-        try:
-            self.disconnect()
-        except Exception:
-            pass
-
-
-# Register global cleanup function.
-atexit.register(feetech_cleanup_handler)

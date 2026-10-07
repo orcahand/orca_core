@@ -55,13 +55,10 @@ from orca_core.hardware.sensing.tactile_protocol import (
     unpack_auto_payload,
     compute_expected_payload_size,
     compute_distal_module_index,
-    decode_resultant_auto,
-    decode_taxels_auto,
-    decode_combined_auto,
+    decode_auto_payload,
     decode_resultant_register,
     decode_connected_sensors,
     decode_num_taxels,
-    decode_auto_data_type,
     encode_auto_data_type,
 )
 
@@ -112,6 +109,15 @@ class TactileSensorConfiguration:
         return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
 
 
+def _subtract_offset(force: list[float], offset: list[float]) -> list[float]:
+    """Return ``force - offset``, rounded, with fz clamped at zero."""
+    return [
+        round(force[0] - offset[0], FORCE_ROUND_DECIMALS),
+        round(force[1] - offset[1], FORCE_ROUND_DECIMALS),
+        round(max(0, force[2] - offset[2]), FORCE_ROUND_DECIMALS),
+    ]
+
+
 def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
     """Per-taxel dither about its own mean, as ``{finger: [gate_n, ...]}``.
 
@@ -121,10 +127,8 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
     since a few seconds of frames will not have caught its rarest excursion.
     The scale is what separates a noisy taxel's gate from a quiet one's.
 
-    Applies the offsets exactly the way :meth:`_apply_taxel_offsets` does,
-    same rounding and same fz clamp, so a gate is expressed in the units it
-    will be compared against. Deriving it any other way leaves the gate
-    subtly off from the values actually reported.
+    Offsets go through ``_subtract_offset``, as in :meth:`_apply_taxel_offsets`, so
+    a gate is in the same units as the values it is compared against.
     """
     gates = {}
     for finger, finger_offsets in offsets.items():
@@ -133,9 +137,7 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
             worst = 0.0
             for frame in frames:
                 taxel = frame[finger][t_idx]
-                dx = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
-                dy = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
-                dz = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                dx, dy, dz = _subtract_offset(taxel, off)
                 squared = dx * dx + dy * dy + dz * dz
                 if squared > worst:
                     worst = squared
@@ -315,11 +317,6 @@ class TactileClient:
         """Return ``{finger: taxel_count}`` from the taxel-count register block."""
         data = self._read_register(ADDR_NUM_TAXELS_START, ADDR_NUM_TAXELS_LENGTH)
         return decode_num_taxels(data, self._sensor_id_to_finger)
-
-    def read_auto_data_type(self) -> dict:
-        """Return the decoded auto-stream data-type register."""
-        data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
-        return decode_auto_data_type(data)
 
     def read_resultant_force(self) -> ResultantForces:
         """Read resultant force from all connected fingertip sensors, applying offsets."""
@@ -778,9 +775,7 @@ class TactileClient:
                 if i >= len(finger_offsets):
                     break
                 off = finger_offsets[i]
-                taxel[0] = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
-                taxel[1] = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
-                taxel[2] = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                taxel[:] = _subtract_offset(taxel, off)
                 # Below this taxel's own measured dither, the reading is noise,
                 # not force — squared compare to keep the sqrt out of a path
                 # that runs on every taxel of every frame.
@@ -798,9 +793,7 @@ class TactileClient:
             off = offsets.get(finger)
             if not off:
                 continue
-            fvec[0] = round(fvec[0] - off[0], FORCE_ROUND_DECIMALS)
-            fvec[1] = round(fvec[1] - off[1], FORCE_ROUND_DECIMALS)
-            fvec[2] = round(max(0, fvec[2] - off[2]), FORCE_ROUND_DECIMALS)
+            fvec[:] = _subtract_offset(fvec, off)
 
     def _apply_stream_offsets(self, parsed_resultant: dict | None, parsed_taxels: dict | None) -> None:
         # Snapshot the references once so a concurrent clear/set on the main
@@ -850,18 +843,9 @@ class TactileClient:
                 self._auto_stats.frames_bad_payload_size += 1
             return
 
-        if mode_resultant and mode_taxels:
-            parsed_resultant, parsed_taxels = decode_combined_auto(
-                valid, config.active_sensors, config.num_taxels,
-            )
-        elif mode_resultant:
-            parsed_resultant = decode_resultant_auto(valid, config.active_sensors)
-            parsed_taxels = None
-        elif mode_taxels:
-            parsed_resultant = None
-            parsed_taxels = decode_taxels_auto(valid, config.active_sensors, config.num_taxels)
-        else:
-            return
+        parsed_resultant, parsed_taxels = decode_auto_payload(
+            valid, config.active_sensors, config.num_taxels, mode_resultant, mode_taxels,
+        )
 
         self._apply_stream_offsets(parsed_resultant, parsed_taxels)
 

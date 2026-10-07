@@ -40,6 +40,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from .constants import motor_family_vids
 from .hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
@@ -50,6 +51,7 @@ from .hardware.sensing.constants import (
     JOINT_ENCODER_POLARITY_BY_SIDE,
 )
 from .hardware.sensing.serial_discovery import (
+    ORCA_ID_PROBE_ATTEMPTS,
     OrcaBoardInfo,
     _tactile_responds_at,
     detect_encoder_stream,
@@ -104,10 +106,6 @@ SENSING_CONFIG_CAPS = {
     2500: (True, True),    # tactile + joint encoders
 }
 
-_OH_PROBE_PASSES = 3
-"""Passes over the controller board's CDCs (the probe is racy on macOS
-composite CDC devices; see serial_discovery.ORCA_ID_PROBE_ATTEMPTS)."""
-
 
 @dataclass(frozen=True)
 class HandDetection:
@@ -160,9 +158,7 @@ def _classic_motor_ports() -> "list[str]":
     """
     import serial.tools.list_ports
 
-    from .constants import KNOWN_VIDS, SUPPORTED_MOTOR_TYPES
-
-    vids = {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}
+    vids = motor_family_vids()
     return [p.device for p in serial.tools.list_ports.comports() if p.vid in vids]
 
 
@@ -223,7 +219,7 @@ def detect_hand() -> HandDetection:
     identity: Optional[OrcaBoardInfo] = None
 
     candidates = oh_board_ports()
-    for _ in range(_OH_PROBE_PASSES):
+    for _ in range(ORCA_ID_PROBE_ATTEMPTS):
         for port in candidates:
             if port in (motor_port, sensing_port):
                 continue

@@ -20,30 +20,20 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from .motor_reads import read_motor_pos_checked
+from .progress import ProgressCallback, ShouldStop, never_stop, progress_emitter
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
 
 logger = logging.getLogger(__name__)
+_emit = progress_emitter(logger, "tension progress callback failed")
 
-ProgressCallback = Callable[[dict], None]
-ShouldStop = Callable[[], bool]
-
-
-def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
-    """Fire a progress event. A misbehaving callback must not abort the routine."""
-    if progress_callback is None:
-        return
-    try:
-        progress_callback({"event": event, **payload})
-    except Exception:
-        logger.exception("tension progress callback failed")
 
 
 def _read_motor_pos_or_none(hand: "OrcaHand") -> Optional[np.ndarray]:
@@ -80,8 +70,7 @@ def run_tension(
         should_stop: Optional ``callable() -> bool`` polled between motor
             commands; return ``True`` to leave the hold cooperatively.
     """
-    if should_stop is None:
-        should_stop = lambda: False  # noqa: E731
+    should_stop = should_stop or never_stop
 
     control_mode = hand.config.control_mode
 
@@ -91,6 +80,7 @@ def run_tension(
         hand.disable_torque()
 
     hand.set_control_mode(CURRENT_BASED_POSITION)
+    completed = False
     try:
         if move_motors:
             _emit(progress_callback, "phase", phase="winding")
@@ -168,18 +158,19 @@ def run_tension(
         _emit(progress_callback, "phase", phase="holding")
         while not should_stop():
             time.sleep(0.1)
-    except BaseException:
-        # Cleanup failures are reported, not raised, so the original error
-        # propagates instead of being masked.
+        completed = True
+    finally:
         _emit(progress_callback, "phase", phase="released")
-        try:
+        if completed:
             _restore_hand()
-        except Exception as e:
-            _emit(progress_callback, "cleanup_failed", error=str(e))
-            logger.warning("cleanup after aborted tension routine failed: %s", e)
-        raise
-    _emit(progress_callback, "phase", phase="released")
-    _restore_hand()
+        else:
+            # Cleanup failures are reported, not raised, so the original error
+            # propagates instead of being masked.
+            try:
+                _restore_hand()
+            except Exception as e:
+                _emit(progress_callback, "cleanup_failed", error=str(e))
+                logger.warning("cleanup after aborted tension routine failed: %s", e)
 
 
 def run_jitter(
@@ -209,8 +200,7 @@ def run_jitter(
     Raises:
         ValueError: If ``amplitude`` exceeds 10°.
     """
-    if should_stop is None:
-        should_stop = lambda: False  # noqa: E731
+    should_stop = should_stop or never_stop
 
     max_amplitude_deg = 10.0
     if amplitude > max_amplitude_deg:

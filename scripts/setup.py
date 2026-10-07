@@ -16,9 +16,14 @@ from orca_core.utils.cli import (
     shutdown_hand,
 )
 from orca_core.constants import NUM_STEPS, STEP_SIZE
+from orca_core.demo_poses import load_demo_poses
 
 
 DIVIDER = "=" * 60
+
+_MAIN_DEMO_POSES = load_demo_poses()["main"].pose_fractions
+OPEN_FRACTIONS = _MAIN_DEMO_POSES["open_hand"]
+CLOSE_FRACTIONS = _MAIN_DEMO_POSES["power_grasp"]
 
 
 def wait_for_enter(msg="Press ENTER to continue..."):
@@ -93,44 +98,8 @@ def run_motion_test(hand, step_num, duration=60):
     hand.enable_torque()
     hand.set_control_mode(hand.config.control_mode)
 
-    open_pos = hand.pose_from_fractions(
-        {
-            "thumb_cmc": 0.70,
-            "thumb_abd": 0.80,
-            "thumb_mcp": 0.85,
-            "thumb_dip": 0.80,
-            "index_abd": 0.10,
-            "middle_abd": 0.50,
-            "ring_abd": 0.70,
-            "pinky_abd": 0.85,
-            "index_mcp": 0.15,
-            "middle_mcp": 0.15,
-            "ring_mcp": 0.15,
-            "pinky_mcp": 0.15,
-            "index_pip": 0.10,
-            "middle_pip": 0.10,
-            "ring_pip": 0.10,
-            "pinky_pip": 0.10,
-            "wrist": 0.30,
-        },
-    )
-    closed_pos = hand.pose_from_fractions(
-        {
-            "thumb_cmc": 0.35,
-            "thumb_abd": 0.55,
-            "thumb_mcp": 0.20,
-            "thumb_dip": 0.85,
-            "index_mcp": 0.85,
-            "middle_mcp": 0.85,
-            "ring_mcp": 0.85,
-            "pinky_mcp": 0.85,
-            "index_pip": 0.90,
-            "middle_pip": 0.90,
-            "ring_pip": 0.90,
-            "pinky_pip": 0.90,
-            "wrist": 0.55,
-        },
-    )
+    open_pos = hand.pose_from_fractions(OPEN_FRACTIONS)
+    closed_pos = hand.pose_from_fractions(CLOSE_FRACTIONS)
 
     try:
         start = time.time()

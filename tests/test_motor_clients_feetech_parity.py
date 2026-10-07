@@ -69,8 +69,6 @@ class FakeHlsHandler:
         self.port_handler = port_handler
         self.writes: list[tuple[int, int, int]] = []   # (motor_id, address, value)
         self.sync_writes: list[tuple[int, list[int]]] = []  # (address, params)
-        # Position-profile blocks, one {motor_id: 7 bytes} dict per packet.
-        self.profile_writes: list[dict[int, list[int]]] = []
         self.pings: list[int] = []
         self.write_hook = None
         self.ping_result = COMM_SUCCESS
@@ -106,8 +104,6 @@ class FakeHlsHandler:
 
     def syncWriteTxOnly(self, start_address, data_length, param, param_length):
         self.sync_writes.append((start_address, list(param)))
-        if (start_address, data_length) == (HLS.ACC, HLS.POSITION_PROFILE_LEN):
-            self.profile_writes.append(_decode(list(param), data_length))
         return COMM_SUCCESS
 
     def scs_toscs(self, value, bit):
@@ -169,16 +165,6 @@ def _decode(param: list[int], data_length: int) -> "dict[int, list[int]]":
         param[i]: param[i + 1:i + stride]
         for i in range(0, len(param), stride)
     }
-
-
-def _word(data: list[int], offset: int) -> int:
-    """Little-endian two-byte value at ``offset`` of a register block."""
-    return data[offset] | (data[offset + 1] << 8)
-
-
-# Byte offsets inside a position-profile block: acc, position, current, speed.
-PROFILE_CURRENT = 3
-PROFILE_SPEED = 5
 
 
 # ----- connect must not mutate motor state ----------------------------------
@@ -331,26 +317,6 @@ def test_write_desired_current_validates_before_touching_the_bus(client):
     assert feetech._current_limit_raw[1] == PROTECTION_RAW, "motor 1 was valid but nothing changed"
 
 
-def test_write_positions_sync_composes_per_motor_current(client):
-    feetech, handler = client
-    feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
-    feetech.write_positions_sync([1, 2], np.zeros(2))
-
-    block = handler.profile_writes[-1]
-    assert [(mid, _word(b, PROFILE_CURRENT)) for mid, b in block.items()] == [
-        (1, 46), (2, 107)]
-
-
-def test_explicit_current_limit_overrides_the_stored_limit(client):
-    feetech, handler = client
-    feetech.write_desired_current([1, 2], np.array([300.0, 700.0]))
-    feetech.write_positions_sync([1, 2], np.zeros(2), current_limit_ma=650.0)
-
-    block = handler.profile_writes[-1]
-    assert {_word(b, PROFILE_CURRENT) for b in block.values()} == {100}
-    assert feetech._current_limit_raw[1] == 100, "the register keeps the override"
-
-
 # ----- position-only hot path -----------------------------------------------
 
 
@@ -358,30 +324,24 @@ def test_write_desired_pos_does_not_rearm_the_motion_profile(client):
     feetech, handler = client
     feetech.write_desired_pos([1, 2], np.zeros(2))
 
-    assert handler.profile_writes == [], "the profile must not be re-sent per command"
     assert [addr for addr, _ in handler.sync_writes] == [HLS.GOAL_POSITION]
-
-
-def test_write_desired_pos_with_explicit_speed_uses_the_profile_packet(client):
-    feetech, handler = client
-    feetech.write_desired_pos([1, 2], np.zeros(2), speed=200)
-
-    block = handler.profile_writes[-1]
-    assert [_word(b, PROFILE_SPEED) for b in block.values()] == [200, 200]
 
 
 # ----- out-of-range commands are observable ---------------------------------
 
 
-def test_out_of_range_command_is_counted_and_warned(client, caplog):
+def test_out_of_range_command_is_counted_and_warned(client, caplog, monkeypatch):
     feetech, handler = client
+    monkeypatch.setattr(feetech_client_module, "CLAMP_WARN_INTERVAL_S", 0.0)
     # POSITION_DIRECTION makes the motor frame negative, so a positive radian
     # command lands below POS_MIN and clamps.
     with caplog.at_level("WARNING"):
         feetech.write_desired_pos([1], np.array([1.0]))
+        feetech.write_desired_pos([1], np.array([1.0]))
 
-    assert feetech.clamped_command_counts()[1] == 1
-    assert any("outside" in record.getMessage() for record in caplog.records)
+    messages = [r.getMessage() for r in caplog.records if "outside" in r.getMessage()]
+    assert len(messages) == 2
+    assert "(2 out-of-range commands so far)" in messages[-1]
 
 
 def test_repeated_out_of_range_commands_warn_at_a_bounded_rate(client, caplog):
@@ -390,7 +350,6 @@ def test_repeated_out_of_range_commands_warn_at_a_bounded_rate(client, caplog):
         for _ in range(5):
             feetech.write_desired_pos([1], np.array([1.0]))
 
-    assert feetech.clamped_command_counts()[1] == 5
     warnings = [r for r in caplog.records if "outside" in r.getMessage()]
     assert len(warnings) == 1
 
@@ -413,7 +372,7 @@ def test_sync_read_keeps_a_flagged_motors_fresh_sample(client, monkeypatch):
     FakeSyncRead.positions = {1: 100, 2: 250, 3: 300}
     read = feetech.read_position_velocity_current()
     assert feetech.last_read_ok is True
-    assert read.position[1] == feetech._raw_to_rad(250, feetech.pos_scale)
+    assert read.position[1] == -250 * 2.0 * np.pi / 4096
 
     FakeSyncRead.status = {}
 

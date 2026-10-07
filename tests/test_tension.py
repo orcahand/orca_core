@@ -194,3 +194,22 @@ def test_winding_skips_ticks_while_the_bus_stays_silent(connected_mock_hand, mon
     monkeypatch.setattr(tensioning, "read_motor_pos_checked", flaky_read)
     tensioning.run_tension(hand, move_motors=True, should_stop=stop_after_a_few_ticks)
     assert calls["reads"] >= 5, "winding stopped reading after the failures"
+
+
+def test_run_tension_restore_failure_on_the_success_path_still_raises(connected_mock_hand, monkeypatch):
+    from orca_core.maintenance.tensioning import run_tension
+
+    def stuck(*args, **kwargs):
+        raise RuntimeError("torque stuck")
+
+    monkeypatch.setattr(connected_mock_hand, "disable_torque", stuck)
+    events = []
+
+    with pytest.raises(RuntimeError, match="torque stuck"):
+        run_tension(
+            connected_mock_hand, move_motors=False, should_stop=lambda: True,
+            progress_callback=events.append,
+        )
+
+    assert [e["event"] for e in events] == ["phase", "phase"]
+    assert [e["phase"] for e in events] == ["holding", "released"]

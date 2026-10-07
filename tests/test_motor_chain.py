@@ -473,12 +473,12 @@ def test_scan_polling_does_not_accumulate_clients(stub_clients):
     assert StubClient.OPEN_CLIENTS == set()
 
 
-def test_scan_motors_leaves_the_real_dynamixel_registry_unchanged():
-    from orca_core.hardware.dynamixel_client import DynamixelClient
+def test_scan_motors_leaves_the_real_dynamixel_registry_unchanged(monkeypatch):
+    from orca_core.hardware.motor_client import MotorClient
 
-    before = set(DynamixelClient.OPEN_CLIENTS)
+    monkeypatch.setattr(MotorClient, "OPEN_CLIENTS", set())
     mc.scan_motors(DYNAMIXEL, "/dev/nonexistent-orca-chain-test", 57600, (1, 1))
-    assert set(DynamixelClient.OPEN_CLIENTS) == before
+    assert MotorClient.OPEN_CLIENTS == set()
 
 
 # --- configure_motor_chain --------------------------------------------------

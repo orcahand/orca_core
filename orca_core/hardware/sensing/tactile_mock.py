@@ -27,17 +27,16 @@ from orca_core.hardware.sensing.constants import (
     DEFAULT_TAXEL_COUNTS,
     FUNC_CODE_READ,
     FUNC_CODE_WRITE,
-    PROTOCOL_HEADER_AUTO,
     PROTOCOL_HEADER_RESPONSE,
-    PROTOCOL_RESERVED,
     RESULTANT_BLOCK_SIZE,
     SLOT_CONNECTED_BIT_POSITIONS,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
 )
-from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.types import ResultantForces, TaxelForces
 from orca_core.hardware.sensing.tactile_protocol import (
     _pack_resultant_for_mock,
+    build_auto_frame,
+    build_register_frame,
     compute_distal_module_index,
     encode_combined_auto_for_mock,
     encode_resultant_auto_for_mock,
@@ -86,7 +85,7 @@ def feed_resultant_frame(
     active_sensors: list[str],
 ) -> None:
     valid = encode_resultant_auto_for_mock(forces, active_sensors)
-    link.feed_bytes(_wrap_auto_frame(valid))
+    link.feed_bytes(build_auto_frame(valid))
 
 
 def feed_taxels_frame(
@@ -95,7 +94,7 @@ def feed_taxels_frame(
     active_sensors: list[str],
 ) -> None:
     valid = encode_taxels_auto_for_mock(taxels, active_sensors)
-    link.feed_bytes(_wrap_auto_frame(valid))
+    link.feed_bytes(build_auto_frame(valid))
 
 
 def feed_combined_frame(
@@ -105,20 +104,7 @@ def feed_combined_frame(
     active_sensors: list[str],
 ) -> None:
     valid = encode_combined_auto_for_mock(forces, taxels, active_sensors)
-    link.feed_bytes(_wrap_auto_frame(valid))
-
-
-def _wrap_auto_frame(valid_bytes: bytes, err_code: int = 0) -> bytes:
-    """Wrap a payload with the AA 56 envelope: header + meta + err + LRC."""
-    payload = bytes([err_code]) + valid_bytes
-    effective_length = len(payload)
-    body = (
-        PROTOCOL_HEADER_AUTO
-        + bytes([PROTOCOL_RESERVED])
-        + effective_length.to_bytes(2, "little")
-        + payload
-    )
-    return body + bytes([calculate_checksum(body)])
+    link.feed_bytes(build_auto_frame(valid))
 
 
 # ---------------------------------------------------------------------------
@@ -190,23 +176,13 @@ def _encode_resultant_register_block(state: TactileMockState) -> bytes:
 
 
 def _build_read_response(address: int, data: bytes) -> bytes:
-    body = (
-        PROTOCOL_HEADER_RESPONSE
-        + bytes([PROTOCOL_RESERVED, FUNC_CODE_READ])
-        + address.to_bytes(2, "little")
-        + len(data).to_bytes(2, "little")
-        + data
+    return build_register_frame(
+        PROTOCOL_HEADER_RESPONSE, FUNC_CODE_READ, address, len(data), data,
     )
-    return body + bytes([calculate_checksum(body)])
 
 
 def _build_write_response(address: int) -> bytes:
-    payload = bytes([0x00])  # status byte: 0 = success
-    body = (
-        PROTOCOL_HEADER_RESPONSE
-        + bytes([PROTOCOL_RESERVED, FUNC_CODE_WRITE])
-        + address.to_bytes(2, "little")
-        + len(payload).to_bytes(2, "little")
-        + payload
+    status_ok = bytes([0x00])
+    return build_register_frame(
+        PROTOCOL_HEADER_RESPONSE, FUNC_CODE_WRITE, address, len(status_ok), status_ok,
     )
-    return body + bytes([calculate_checksum(body)])

@@ -39,7 +39,7 @@ from orca_core import JointGains, OrcaHandJointFeedback
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, create_hand_from_args, select_joints
 
 REFRESH_MS = 100
 
@@ -229,15 +229,6 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _finger_joint_map(joint_ids: List[str]) -> dict[str, List[str]]:
-    """Group the config's joint names by finger prefix ({finger}_{type}; bare wrist)."""
-    mapping: dict[str, List[str]] = {}
-    for joint in joint_ids:
-        finger = joint.split("_", 1)[0]
-        mapping.setdefault(finger, []).append(joint)
-    return mapping
-
-
 def _resolve_joint_set(
     args: argparse.Namespace, hand: OrcaHandJointFeedback,
 ) -> List[str]:
@@ -252,35 +243,71 @@ def _resolve_joint_set(
             "(set joint_encoder_joints in config.yaml)."
         )
 
-    if args.fingers is None and args.joints is None:
+    try:
+        requested = select_joints(hand.config.joint_ids, args.fingers, args.joints)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    if requested is None:
         return encoder_backed
-
-    if args.fingers:
-        finger_map = _finger_joint_map(hand.config.joint_ids)
-        unknown = [f for f in args.fingers if f not in finger_map]
-        if unknown:
-            raise SystemExit(
-                f"Unknown finger(s) {unknown}; this hand has {sorted(finger_map)}."
-            )
-        requested = {j for finger in args.fingers for j in finger_map[finger]}
-    else:
-        unknown = [j for j in args.joints if j not in hand.config.joint_ids]
-        if unknown:
-            raise SystemExit(
-                f"Unknown joint(s) {unknown}; this hand has {hand.config.joint_ids}."
-            )
-        requested = set(args.joints)
 
     selected = [j for j in encoder_backed if j in requested]
     if not selected:
         raise SystemExit(
             f"No encoder-backed joints intersect the requested set "
-            f"({sorted(requested)}). Encoder-backed: {encoder_backed}."
+            f"({sorted(set(requested))}). Encoder-backed: {encoder_backed}."
         )
     return selected
 
 
-class HandControlUI:
+class _TorqueControls:
+    """Torque buttons, state label and enable/disable shared by the slider UIs.
+
+    Subclasses provide ``self.hand`` and may override ``_sync_sliders_to_hand``
+    to refresh their sliders after torque is enabled.
+    """
+
+    def _build_torque_bar(self, root) -> None:
+        torque_frame = ttk.Frame(root)
+        torque_frame.pack(pady=12)
+
+        self.enable_button = ttk.Button(
+            torque_frame, text="Enable Torque", style="Accent.TButton", command=self.enable_torque
+        )
+        self.enable_button.pack(side=tk.LEFT, padx=5)
+        self.disable_button = ttk.Button(
+            torque_frame, text="Disable Torque", style="Danger.TButton", command=self.disable_torque
+        )
+        self.disable_button.pack(side=tk.LEFT, padx=5)
+
+        self.torque_label = ttk.Label(torque_frame, text="TORQUE OFF", style="Dim.TLabel")
+        self.torque_label.pack(side=tk.LEFT, padx=(10, 0))
+
+    def _set_torque_state(self, enabled: bool) -> None:
+        """Grey out whichever torque action is already in effect and show TORQUE ON/OFF."""
+        self.torque_enabled = enabled
+        self.enable_button.state(["disabled" if enabled else "!disabled"])
+        self.disable_button.state(["!disabled" if enabled else "disabled"])
+        self.torque_label.config(
+            text="TORQUE ON" if enabled else "TORQUE OFF",
+            style="Ok.TLabel" if enabled else "Dim.TLabel",
+        )
+
+    def _sync_sliders_to_hand(self) -> None:
+        pass
+
+    def enable_torque(self):
+        self.hand.enable_torque()
+        print("Torque enabled.")
+        self._sync_sliders_to_hand()
+        self._set_torque_state(True)
+
+    def disable_torque(self):
+        self.hand.disable_torque()
+        print("Torque disabled.")
+        self._set_torque_state(False)
+
+
+class HandControlUI(_TorqueControls):
     """Plain motor-only slider UI: one slider per joint + torque buttons.
 
     A joint whose motor lacks calibration data can't be commanded in joint
@@ -302,17 +329,9 @@ class HandControlUI:
         self.create_ui(root)
 
     def _joint_calibrated(self, joint: str) -> bool:
-        """Whether this joint's motor has the calibration data
-        ``_joint_to_motor_pos`` needs. Mirrors the check in
-        ``OrcaHand._joint_to_motor_pos``.
-        """
+        """Whether this joint's motor has the calibration data ``_joint_to_motor_pos`` needs."""
         motor_id = self.hand.config.joint_to_motor_map.get(joint)
-        if motor_id is None:
-            return False
-        limits = self.hand.motor_limits_dict.get(motor_id) or [None, None]
-        if any(limit is None for limit in limits):
-            return False
-        return bool(self.hand.calibration.joint_to_motor_ratios_dict.get(motor_id))
+        return motor_id is not None and self.hand.calibration._motor_ready(motor_id)
 
     def create_ui(self, root):
         _apply_theme(root)
@@ -334,21 +353,7 @@ class HandControlUI:
                 style="Banner.TLabel", wraplength=420, justify=tk.LEFT,
             ).pack(fill=tk.X, padx=12, pady=(8, 0))
 
-        torque_frame = ttk.Frame(root)
-        torque_frame.pack(pady=12)
-
-        self.enable_button = ttk.Button(
-            torque_frame, text="Enable Torque", style="Accent.TButton", command=self.enable_torque
-        )
-        self.enable_button.pack(side=tk.LEFT, padx=5)
-
-        self.disable_button = ttk.Button(
-            torque_frame, text="Disable Torque", style="Danger.TButton", command=self.disable_torque
-        )
-        self.disable_button.pack(side=tk.LEFT, padx=5)
-
-        self.torque_label = ttk.Label(torque_frame, text="TORQUE OFF", style="Dim.TLabel")
-        self.torque_label.pack(side=tk.LEFT, padx=(10, 0))
+        self._build_torque_bar(root)
 
         sliders_frame = ttk.Frame(root)
         sliders_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=10)
@@ -407,22 +412,7 @@ class HandControlUI:
         # separate click is the exact confusion this UI now tries to avoid.
         self.enable_torque()
 
-    def _set_torque_state(self, enabled: bool) -> None:
-        """Reflect torque state in the buttons (grey out whichever action is
-        already in effect) and a TORQUE ON/OFF label, so the state is visible
-        without having to move a slider and see whether anything happens.
-        """
-        self.torque_enabled = enabled
-        self.enable_button.state(["disabled" if enabled else "!disabled"])
-        self.disable_button.state(["!disabled" if enabled else "disabled"])
-        self.torque_label.config(
-            text="TORQUE ON" if enabled else "TORQUE OFF",
-            style="Ok.TLabel" if enabled else "Dim.TLabel",
-        )
-
-    def enable_torque(self):
-        self.hand.enable_torque()
-        print("Torque enabled.")
+    def _sync_sliders_to_hand(self) -> None:
         joint_positions = self.hand.get_joint_position().as_dict()
         motor_positions = self.hand.get_motor_pos(as_dict=True)
         for joint, var in self.joint_values.items():
@@ -432,12 +422,6 @@ class HandControlUI:
                 pos = joint_positions.get(joint)
                 if pos is not None:
                     var.set(pos)
-        self._set_torque_state(True)
-
-    def disable_torque(self):
-        self.hand.disable_torque()
-        print("Torque disabled.")
-        self._set_torque_state(False)
 
     def update_joint_position(self, joint, value):
         try:
@@ -477,7 +461,7 @@ def _motor_slider_range(hand, motor: int, current: float) -> tuple[float, float,
     return clamped_low, clamped_high, (clamped_low, clamped_high) != (low, high)
 
 
-class MotorSliderUI:
+class MotorSliderUI(_TorqueControls):
     """Motor-space slider UI: one slider per motor over a narrow window around
     its startup position, plus torque buttons."""
 
@@ -495,20 +479,7 @@ class MotorSliderUI:
             anchor=tk.W, padx=12, pady=(12, 0)
         )
 
-        torque_frame = ttk.Frame(root)
-        torque_frame.pack(pady=12)
-
-        self.enable_button = ttk.Button(
-            torque_frame, text="Enable Torque", style="Accent.TButton", command=self.enable_torque
-        )
-        self.enable_button.pack(side=tk.LEFT, padx=5)
-        self.disable_button = ttk.Button(
-            torque_frame, text="Disable Torque", style="Danger.TButton", command=self.disable_torque
-        )
-        self.disable_button.pack(side=tk.LEFT, padx=5)
-
-        self.torque_label = ttk.Label(torque_frame, text="TORQUE OFF", style="Dim.TLabel")
-        self.torque_label.pack(side=tk.LEFT, padx=(10, 0))
+        self._build_torque_bar(root)
 
         sliders_frame = ttk.Frame(root)
         sliders_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=10)
@@ -554,25 +525,6 @@ class MotorSliderUI:
         # _run_motor_space() already enabled torque on the hand before this
         # UI was built; sync the buttons/label to that state.
         self.enable_torque()
-
-    def _set_torque_state(self, enabled: bool) -> None:
-        self.torque_enabled = enabled
-        self.enable_button.state(["disabled" if enabled else "!disabled"])
-        self.disable_button.state(["!disabled" if enabled else "disabled"])
-        self.torque_label.config(
-            text="TORQUE ON" if enabled else "TORQUE OFF",
-            style="Ok.TLabel" if enabled else "Dim.TLabel",
-        )
-
-    def enable_torque(self):
-        self.hand.enable_torque()
-        print("Torque enabled.")
-        self._set_torque_state(True)
-
-    def disable_torque(self):
-        self.hand.disable_torque()
-        print("Torque disabled.")
-        self._set_torque_state(False)
 
     def update_motor_position(self, motor, value):
         try:

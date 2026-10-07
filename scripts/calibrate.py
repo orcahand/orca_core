@@ -1,17 +1,14 @@
 import argparse
 import dataclasses
 import sys
+from contextlib import ExitStack
 
-from orca_core.hardware.hand_serial_link import HandSerialLink
-from orca_core.hardware.joint_encoder_client import (
-    EncodersNotAvailableError,
-    JointEncoderClient,
-)
-from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 from orca_core.utils.cli import (
     add_hand_arguments,
     create_hand_from_args,
+    open_encoder_stream,
     print_calibration_progress,
+    select_joints,
     shutdown_hand,
 )
 
@@ -19,66 +16,18 @@ from orca_core.utils.cli import (
 ENCODER_DISABLED = "disabled"
 
 
-def _finger_joint_map(joint_ids: list[str]) -> dict[str, list[str]]:
-    """Group the config's joint names by finger prefix ({finger}_{type}; bare wrist)."""
-    mapping: dict[str, list[str]] = {}
-    for joint in joint_ids:
-        finger = joint.split("_", 1)[0]
-        mapping.setdefault(finger, []).append(joint)
-    return mapping
-
-
 def _resolve_joints(parser, args, joint_ids: list[str]) -> list[str] | None:
     """Expand --fingers / validate --joints against the loaded config."""
+    try:
+        joints = select_joints(joint_ids, args.fingers, args.joints)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.fingers:
-        finger_map = _finger_joint_map(joint_ids)
-        unknown = [f for f in args.fingers if f not in finger_map]
-        if unknown:
-            parser.error(
-                f"Unknown finger(s) {unknown}; this hand has {sorted(finger_map)}."
-            )
-        joints = [j for finger in args.fingers for j in finger_map[finger]]
         print(f"Calibrating fingers: {args.fingers}")
         print(f"Resolved joints: {joints}")
-        return joints
-    if args.joints:
-        unknown = [j for j in args.joints if j not in joint_ids]
-        if unknown:
-            parser.error(
-                f"Unknown joint(s) {unknown}; this hand has {joint_ids}."
-            )
+    elif args.joints:
         print(f"Calibrating joints: {args.joints}")
-        return list(args.joints)
-    return None
-
-
-def _open_encoder_client(encoder_port_override: str, baudrate: int):
-    """Resolve the encoder port, open the link, start the AA A9 stream.
-
-    Returns ``(link, client)`` when the stream is up; raises on missing
-    port or first-frame timeout.
-    """
-    ports = resolve_sensing_ports(
-        tactile_override="disabled", encoder_override=encoder_port_override,
-    )
-    if ports.encoder is None:
-        raise RuntimeError(
-            "use_joint_feedback is enabled but no encoder port was found "
-            f"(encoder_serial_port={encoder_port_override!r}). "
-            "Pass --encoder-port to override."
-        )
-    link = HandSerialLink(ports.encoder, baudrate=baudrate)
-    link.connect()
-    client = JointEncoderClient(link)
-    client.connect()
-    try:
-        client.start_stream(timeout=2.0)
-    except EncodersNotAvailableError:
-        client.disconnect()
-        link.disconnect()
-        raise
-    print(f"Encoder stream active on {ports.encoder}")
-    return link, client
+    return joints
 
 
 def main():
@@ -133,8 +82,8 @@ def main():
         sys.exit(1)
     print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
 
-    link = None
     client = None
+    streams = ExitStack()
     encoder_pass = (
         hand.config.joint_feedback_enabled
         and not args.mock
@@ -142,17 +91,17 @@ def main():
     )
     if hand.config.joint_feedback_enabled and not encoder_pass and not args.mock:
         print("Encoder pass disabled; running the open-loop motor-limits pass only.")
-    if encoder_pass:
-        try:
-            link, client = _open_encoder_client(
-                hand.config.encoder_serial_port, hand.config.encoder_baudrate
-            )
-        except Exception as exc:
-            print(f"FAIL: could not open encoder stream ({exc})")
-            shutdown_hand(hand)
-            sys.exit(1)
 
     try:
+        if encoder_pass:
+            try:
+                client = streams.enter_context(open_encoder_stream(
+                    hand.config.encoder_serial_port, hand.config.encoder_baudrate
+                ))
+            except Exception as exc:
+                print(f"FAIL: could not open encoder stream ({exc})")
+                sys.exit(1)
+
         hand.calibrate(
             force_wrist=args.force_wrist,
             joints=joints,
@@ -162,14 +111,7 @@ def main():
     except KeyboardInterrupt:
         print("\nCalibration interrupted.")
     finally:
-        if client is not None:
-            try:
-                client.stop_stream()
-            except Exception:
-                pass
-            client.disconnect()
-        if link is not None:
-            link.disconnect()
+        streams.close()
         shutdown_hand(hand)
 
 

@@ -25,9 +25,6 @@ from orca_core.hardware.sensing.constants import (
     BYTES_PER_TAXEL,
     SLOT_CONNECTED_BIT_POSITIONS,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
-    MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
-    RESPONSE_META_SIZE,
-    AUTO_FRAME_META_SIZE,
     MODULES_PER_SLOT,
     DISTAL_MODULE_OFFSET,
     MIN_READ_RESPONSE_SIZE,
@@ -51,28 +48,9 @@ class AutoDataTypeInfo(TypedDict):
 # Checksum
 # =========================================================================
 
-def validate_auto_frame_lrc(meta: bytes, payload: bytes, lrc: int) -> bool:
-    """Return ``True`` if ``lrc`` matches the checksum over ``header + meta + payload``.
-
-    Returns bool rather than raising because the auto-stream reader treats a
-    bad LRC as a recoverable counter, not an abort condition.
-    """
-    frame_without_lrc = PROTOCOL_HEADER_AUTO + meta + payload
-    return calculate_checksum(frame_without_lrc) == lrc
-
-
 def _validate_frame_lrc(frame: bytes, context: str) -> None:
     if frame[-1] != calculate_checksum(frame[:-1]):
         raise IOError(f"{context} LRC mismatch")
-
-
-# =========================================================================
-# Frame Size Helpers
-# =========================================================================
-
-def read_response_body_size(count: int) -> int:
-    """Bytes after the AA55 header in a read response with ``count`` data bytes."""
-    return RESPONSE_META_SIZE + count + 1  # meta + data + LRC
 
 
 # =========================================================================
@@ -84,19 +62,43 @@ def _validate_u16(value: int, name: str) -> None:
         raise ValueError(f"{name} must be 0x0000-0xFFFF, got {value}")
 
 
+def _with_checksum(body: bytes) -> bytes:
+    return body + bytes([calculate_checksum(body)])
+
+
+def build_register_frame(
+    header: bytes, func: int, address: int, length: int, data: bytes = b"",
+) -> bytes:
+    """Build an AA 55 / 55 AA register frame: header, reserved, func, address, length, data, LRC."""
+    body = (
+        header
+        + bytes([PROTOCOL_RESERVED, func])
+        + address.to_bytes(2, "little")
+        + length.to_bytes(2, "little")
+        + data
+    )
+    return _with_checksum(body)
+
+
+def build_auto_frame(valid_bytes: bytes, err_code: int = 0) -> bytes:
+    """Wrap force data in the AA 56 auto-stream envelope: header, meta, error code, data, LRC."""
+    payload = bytes([err_code]) + valid_bytes
+    body = (
+        PROTOCOL_HEADER_AUTO
+        + bytes([PROTOCOL_RESERVED])
+        + len(payload).to_bytes(2, "little")
+        + payload
+    )
+    return _with_checksum(body)
+
+
 def build_read_request(address: int, count: int) -> bytes:
     """Build a read-register request frame (55 AA | 00 | 03 | addr | count | LRC)."""
     _validate_u16(address, "address")
     if count <= 0:
         raise ValueError(f"count must be > 0, got {count}")
     _validate_u16(count, "count")
-    body = (
-        PROTOCOL_HEADER_REQUEST
-        + bytes([PROTOCOL_RESERVED, FUNC_CODE_READ])
-        + address.to_bytes(2, "little")
-        + count.to_bytes(2, "little")
-    )
-    return body + bytes([calculate_checksum(body)])
+    return build_register_frame(PROTOCOL_HEADER_REQUEST, FUNC_CODE_READ, address, count)
 
 
 def build_write_request(address: int, data: bytes) -> bytes:
@@ -105,14 +107,7 @@ def build_write_request(address: int, data: bytes) -> bytes:
     if len(data) == 0:
         raise ValueError("data must not be empty")
     _validate_u16(len(data), "data length")
-    body = (
-        PROTOCOL_HEADER_REQUEST
-        + bytes([PROTOCOL_RESERVED, FUNC_CODE_WRITE])
-        + address.to_bytes(2, "little")
-        + len(data).to_bytes(2, "little")
-        + data
-    )
-    return body + bytes([calculate_checksum(body)])
+    return build_register_frame(PROTOCOL_HEADER_REQUEST, FUNC_CODE_WRITE, address, len(data), data)
 
 
 # =========================================================================
@@ -165,13 +160,6 @@ def parse_read_response(frame: bytes, expected_address: int | None = None) -> by
     return bytes(actual_data)
 
 
-def extract_write_response_data_length(meta: bytes) -> int:
-    """Read the payload length from the 6-byte write-response meta block."""
-    if len(meta) != RESPONSE_META_SIZE:
-        raise ValueError(f"Write response meta must be {RESPONSE_META_SIZE} bytes, got {len(meta)}")
-    return int.from_bytes(meta[4:6], "little")
-
-
 def parse_write_response(frame: bytes, expected_address: int | None = None) -> None:
     """Validate a write-response frame's func code, LRC, and status byte.
 
@@ -212,18 +200,6 @@ def parse_write_response(frame: bytes, expected_address: int | None = None) -> N
 # Frame Parsers — auto-stream frames
 # =========================================================================
 
-def extract_auto_frame_effective_length(meta: bytes) -> int:
-    """Read effective_length (includes error_code byte) from the 3-byte auto-frame meta.
-
-    Raises ``ValueError`` if it exceeds ``MAX_AUTO_FRAME_EFFECTIVE_LENGTH``, which would
-    almost always indicate stream corruption rather than a real giant payload.
-    """
-    effective_length = int.from_bytes(meta[1:3], "little")
-    if effective_length > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
-        raise ValueError(f"Invalid effective_length in auto frame: {effective_length} (possible corruption)")
-    return effective_length
-
-
 def unpack_auto_payload(payload: bytes) -> tuple[int, bytes]:
     """Split an auto-stream payload into (error_code, force_data).
 
@@ -239,39 +215,18 @@ def unpack_auto_payload(payload: bytes) -> tuple[int, bytes]:
 # Payload Size Computation
 # =========================================================================
 
-def compute_resultant_payload_size(num_sensors: int) -> int:
-    return num_sensors * BYTES_PER_RESULTANT
-
-
-def compute_taxel_payload_size(
-    active_sensors: list[str], num_taxels: dict[str, int],
-) -> int:
-    return sum(num_taxels[f] for f in active_sensors) * BYTES_PER_TAXEL
-
-
-def compute_combined_payload_size(
-    active_sensors: list[str], num_taxels: dict[str, int],
-) -> int:
-    return (
-        compute_resultant_payload_size(len(active_sensors))
-        + compute_taxel_payload_size(active_sensors, num_taxels)
-    )
-
-
 def compute_expected_payload_size(
-    mode_resultant: bool,
-    mode_taxels: bool,
+    resultant: bool,
+    taxels: bool,
     active_sensors: list[str],
     num_taxels: dict[str, int],
 ) -> int:
-    """Dispatch to the right ``compute_*_payload_size`` for the active mode."""
-    if mode_resultant and mode_taxels:
-        return compute_combined_payload_size(active_sensors, num_taxels)
-    elif mode_resultant:
-        return compute_resultant_payload_size(len(active_sensors))
-    elif mode_taxels:
-        return compute_taxel_payload_size(active_sensors, num_taxels)
-    return 0
+    """Bytes of force data per frame: per sensor, an optional resultant plus optional taxels."""
+    return sum(
+        (BYTES_PER_RESULTANT if resultant else 0)
+        + (num_taxels[finger] * BYTES_PER_TAXEL if taxels else 0)
+        for finger in active_sensors
+    )
 
 
 # =========================================================================
@@ -318,76 +273,31 @@ def _unpack_resultant(data: bytes, offset: int) -> ForceVector:
     ]
 
 
-def decode_resultant_auto(
-    data: bytes,
-    active_sensors: list[str],
-) -> ResultantForces:
-    """Decode auto-stream resultant forces (6 bytes/sensor, in slot order).
-
-    ``active_sensors`` must already be sorted by hardware slot ID ascending —
-    the codec cannot validate this and assumes the caller has done so.
-    """
-    expected_size = len(active_sensors) * BYTES_PER_RESULTANT
-    _validate_payload_size(data, expected_size, f"Resultant auto ({len(active_sensors)} sensors)")
-
-    result = {}
-    for i, finger in enumerate(active_sensors):
-        result[finger] = _unpack_resultant(data, i * BYTES_PER_RESULTANT)
-    return result
-
-
-def decode_taxels_auto(
+def decode_auto_payload(
     data: bytes,
     active_sensors: list[str],
     num_taxels: dict[str, int],
-) -> TaxelForces:
-    """Decode auto-stream taxel data (3 bytes/taxel, sequential by sensor).
+    resultant: bool,
+    taxels: bool,
+) -> tuple[ResultantForces | None, TaxelForces | None]:
+    """Decode an auto-stream payload into ``(resultant_forces, taxel_forces)``, with ``None`` for a part the stream omits."""
+    expected_size = compute_expected_payload_size(resultant, taxels, active_sensors, num_taxels)
+    _validate_payload_size(data, expected_size, f"Auto payload ({len(active_sensors)} sensors)")
 
-    ``active_sensors`` must already be in slot order (see ``decode_resultant_auto``).
-    """
-    expected_size = compute_taxel_payload_size(active_sensors, num_taxels)
-    _validate_payload_size(data, expected_size, "Taxels auto")
-
-    result = {}
+    forces: ResultantForces | None = {} if resultant else None
+    taxel_forces: TaxelForces | None = {} if taxels else None
     offset = 0
     for finger in active_sensors:
-        finger_taxels = []
-        for _ in range(num_taxels[finger]):
-            finger_taxels.append(_unpack_taxel(data, offset))
-            offset += BYTES_PER_TAXEL
-        result[finger] = finger_taxels
-    return result
-
-
-def decode_combined_auto(
-    data: bytes,
-    active_sensors: list[str],
-    num_taxels: dict[str, int],
-) -> tuple[ResultantForces, TaxelForces]:
-    """Decode interleaved auto-stream: per sensor, resultant(6) + taxels(3 each).
-
-    ``active_sensors`` must already be in slot order (see ``decode_resultant_auto``).
-    """
-    expected_size = compute_combined_payload_size(
-        active_sensors, num_taxels,
-    )
-    _validate_payload_size(data, expected_size, "Combined auto")
-
-    offset = 0
-    resultant_forces = {}
-    taxels = {}
-
-    for finger in active_sensors:
-        resultant_forces[finger] = _unpack_resultant(data, offset)
-        offset += BYTES_PER_RESULTANT
-
-        finger_taxels = []
-        for _ in range(num_taxels[finger]):
-            finger_taxels.append(_unpack_taxel(data, offset))
-            offset += BYTES_PER_TAXEL
-        taxels[finger] = finger_taxels
-
-    return resultant_forces, taxels
+        if resultant:
+            forces[finger] = _unpack_resultant(data, offset)
+            offset += BYTES_PER_RESULTANT
+        if taxels:
+            finger_taxels = []
+            for _ in range(num_taxels[finger]):
+                finger_taxels.append(_unpack_taxel(data, offset))
+                offset += BYTES_PER_TAXEL
+            taxel_forces[finger] = finger_taxels
+    return forces, taxel_forces
 
 
 # =========================================================================

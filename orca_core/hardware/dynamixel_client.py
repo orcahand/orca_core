@@ -14,7 +14,6 @@
 
 """Communication using the DynamixelSDK."""
 
-import atexit
 import logging
 import threading
 import time
@@ -54,7 +53,6 @@ ADDR_FEEDFORWARD_2ND_GAIN = 88
 ADDR_FEEDFORWARD_1ST_GAIN = 90
 ADDR_GAIN_BLOCK = ADDR_POSITION_D_GAIN
 LEN_GAIN_BLOCK = 12
-ADDR_GOAL_PWM = 100
 ADDR_GOAL_CURRENT = 102
 ADDR_PROFILE_ACCELERATION = 108
 ADDR_PROFILE_VELOCITY = 112
@@ -65,7 +63,7 @@ ADDR_PRESENT_POSITION = 132
 ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_CURRENT = 126
 ADDR_PRESENT_POS_VEL_CUR = 126
-ADDR_MOVING_STATUS = 123
+ADDR_MOVING = 122
 ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_PRESENT_TEMPERATURE = 146
 
@@ -78,10 +76,9 @@ LEN_PRESENT_CURRENT = 2
 LEN_PRESENT_POS_VEL_CUR = 10
 LEN_GOAL_POSITION = 4
 LEN_GAIN = 2
-LEN_GOAL_PWM = 2
 LEN_GOAL_CURRENT = 2
 LEN_PROFILE_VELOCITY = 4
-LEN_MOVING_STATUS = 1
+LEN_MOVING = 1
 LEN_PRESENT_TEMPERATURE = 1
 
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 0.088 degrees
@@ -126,18 +123,9 @@ DYNAMIXEL_MODELS = {
     1080: 'XC430-T240BB-T',
 }
 
-def dynamixel_cleanup_handler():
-    """Disconnect every open Dynamixel client at interpreter exit."""
-    DynamixelClient.cleanup_open_clients()
-
-
 def signed_to_unsigned(value: int, size: int) -> int:
     """Converts the given value to its unsigned representation."""
-    if value < 0:
-        bit_size = 8 * size
-        max_value = (1 << bit_size) - 1
-        value = max_value + value
-    return value
+    return value & ((1 << (8 * size)) - 1)
 
 
 def unsigned_to_signed(value: int, size: int) -> int:
@@ -206,18 +194,10 @@ class DynamixelClient(MotorClient):
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
 
-    # Clients with an open port; registered on successful connect() so the
-    # atexit cleanup only ever touches live connections.
-    OPEN_CLIENTS = set()
-
     def __init__(self,
                  motor_ids: Sequence[int],
                  port: str = '/dev/ttyUSB0',
-                 baudrate: int = 1000000,
-                 lazy_connect: bool = False,
-                 pos_scale: Optional[float] = None,
-                 vel_scale: Optional[float] = None,
-                 cur_scale: Optional[float] = None):
+                 baudrate: int = 1000000):
         """Initializes a new client.
 
         Args:
@@ -227,14 +207,6 @@ class DynamixelClient(MotorClient):
                 - Mac: /dev/tty.usbserial-*
                 - Windows: COM1
             baudrate: The Dynamixel baudrate to communicate with.
-            lazy_connect: If True, automatically connects when calling a method
-                that requires a connection, if not already connected.
-            pos_scale: The scaling factor for the positions. This is
-                motor-dependent. If not provided, uses the default scale.
-            vel_scale: The scaling factor for the velocities. This is
-                motor-dependent. If not provided uses the default scale.
-            cur_scale: The scaling factor for the currents. This is
-                motor-dependent. If not provided uses the default scale.
         """
         import dynamixel_sdk
         self.dxl = dynamixel_sdk
@@ -242,7 +214,6 @@ class DynamixelClient(MotorClient):
         self.motor_ids = list(motor_ids)
         self.port_name = port
         self.baudrate = baudrate
-        self.lazy_connect = lazy_connect
 
         self.port_handler = self.dxl.PortHandler(port)
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
@@ -256,9 +227,9 @@ class DynamixelClient(MotorClient):
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
             self.motor_ids,
-            pos_scale=pos_scale if pos_scale is not None else DEFAULT_POS_SCALE,
-            vel_scale=vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE,
-            cur_scale=cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE,
+            pos_scale=DEFAULT_POS_SCALE,
+            vel_scale=DEFAULT_VEL_SCALE,
+            cur_scale=DEFAULT_CUR_SCALE,
         )
         
         self._temp_reader = DynamixelTempReader(
@@ -268,12 +239,11 @@ class DynamixelClient(MotorClient):
             size=LEN_PRESENT_TEMPERATURE,
         )
         
-        self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
+        self._moving_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING, LEN_MOVING)
         # What each motor was last told to reach, in radians, for the
         # arrival check. The servo does not volunteer its goal.
         self._goal_positions: "dict[int, float]" = {}
         self._sync_writers = {}
-        self._operating_modes = {}
         # RAM registers worth restoring after a reboot, per motor:
         # {motor_id: {(address, size): value}}. A reboot clears RAM, so
         # anything written here that the caller expects to persist has to be
@@ -291,7 +261,8 @@ class DynamixelClient(MotorClient):
 
     def connect(self):
         """Connects to the Dynamixel motors."""
-        assert not self.is_connected, 'Client is already connected.'
+        if self.is_connected:
+            raise RuntimeError('Client is already connected.')
 
         with self._bus_lock:
             if self.port_handler.openPort():
@@ -311,21 +282,7 @@ class DynamixelClient(MotorClient):
                         ('Failed to set the baudrate to {} (Ensure that the device was '
                          'configured for this baudrate).').format(self.baudrate))
 
-                # Advisory-lock the port so exclusive-mode openers elsewhere are rejected.
-                try:
-                    import fcntl
-                    fcntl.flock(self.port_handler.ser.fileno(),
-                                fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (ImportError, AttributeError, OSError):
-                    pass  # Windows (no fcntl), mocked ports, or lock unavailable — best-effort
-
-                # Enable low latency mode for faster communication (~500 Hz vs ~30 Hz)
-                if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
-                    try:
-                        self.port_handler.ser.set_low_latency_mode(True)
-                        logging.info('Enabled low latency mode for USB serial')
-                    except Exception:
-                        pass  # Not critical if it fails
+                self._apply_port_options()
 
                 # Probed before any reboot below, so a motor still coming
                 # back up cannot be mistaken for firmware without support.
@@ -338,7 +295,7 @@ class DynamixelClient(MotorClient):
                 # Torque is left as-is: connecting must never make the hand
                 # stiffen or move. Callers opt in via enable_torque()/init_joints().
 
-                self.OPEN_CLIENTS.add(self)
+                self._register_open()
             except Exception:
                 try:
                     self.port_handler.closePort()
@@ -349,7 +306,7 @@ class DynamixelClient(MotorClient):
     def _probe_fast_sync_read(self) -> None:
         """Adopt fast sync read on every reader whose motors answer it."""
         readers = (self._pos_vel_cur_reader, self._temp_reader,
-                   self._moving_status_reader)
+                   self._moving_reader)
         adopted = 0
         for reader in readers:
             try:
@@ -479,7 +436,6 @@ class DynamixelClient(MotorClient):
             self.sync_write(acked_ids, [mode_value]*len(acked_ids), ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
             self.set_torque_enabled(acked_ids, True)
             for mid in acked_ids:
-                self._operating_modes[mid] = mode_value
                 # A mode change resets Goal Current, the gains and the profile.
                 self._replay_ram(mid)
 
@@ -495,11 +451,6 @@ class DynamixelClient(MotorClient):
     @property
     def last_read_ok(self) -> bool:
         return self._pos_vel_cur_reader.last_read_ok
-
-    def read_status_is_done_moving(self) -> bool:
-        """Returns the last bit of moving status"""
-        moving_status = self._moving_status_reader.read().astype(np.int8)
-        return np.bitwise_and(moving_status, np.array([0x01] * len(moving_status)).astype(np.int8))
 
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the present temperature for each motor (in deg C)."""
@@ -521,10 +472,9 @@ class DynamixelClient(MotorClient):
             self._goal_positions[int(motor_id)] = float(goal)
 
         # Convert to Dynamixel position space.
-        positions = positions / self._pos_vel_cur_reader.pos_scale
-        times = self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
+        positions = positions / DEFAULT_POS_SCALE
+        self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
                         LEN_GOAL_POSITION)
-        return times
 
     def wait_for_motion_complete(self, timeout: float = 5.0,
                                  poll_interval: float = 0.02) -> None:
@@ -554,19 +504,19 @@ class DynamixelClient(MotorClient):
     def _unsettled_motors(self) -> "list[int]":
         """Motors still moving, or stopped too far from where they were sent.
 
-        One bus read each for the moving flags and the positions, so the
+        One bus read each for the Moving register and the positions, so the
         whole chain is judged from the same instant rather than motor by
         motor.
         """
         try:
-            moving = self._moving_status_reader.read().astype(np.int64)
+            moving = self._moving_reader.read().astype(np.int64)
             positions = self._pos_vel_cur_reader.read()[0]
         except Exception:
             logging.debug("arrival poll failed", exc_info=True)
             return list(self.motor_ids)
         unsettled = []
         for index, motor_id in enumerate(self.motor_ids):
-            if int(moving[index]) & 0x01:
+            if int(moving[index]):
                 unsettled.append(int(motor_id))
                 continue
             goal = self._goal_positions.get(int(motor_id))
@@ -601,11 +551,6 @@ class DynamixelClient(MotorClient):
                     self._model_numbers[motor_id] = model
                 else:
                     self._flush_input_buffer()
-
-    def write_profile_velocity(self, motor_ids: Sequence[int], profile_velocity: np.ndarray):
-            assert len(motor_ids) == len(profile_velocity)
-
-            self.sync_write(motor_ids, profile_velocity, ADDR_PROFILE_VELOCITY, LEN_PROFILE_VELOCITY)
 
     def write_byte(
             self,
@@ -647,7 +592,6 @@ class DynamixelClient(MotorClient):
             address: The control table address to write to.
             size: The size of the control table value being written to.
         """
-        times = [time.monotonic()]
         self.check_connected()
         with self._bus_lock:
             key = (address, size)
@@ -655,7 +599,6 @@ class DynamixelClient(MotorClient):
                 self._sync_writers[key] = self.dxl.GroupSyncWrite(
                     self.port_handler, self.packet_handler, address, size)
             sync_writer = self._sync_writers[key]
-            times.append(time.monotonic())
             errored_ids = []
             for motor_id, desired_pos in zip(motor_ids, values):
                 value = signed_to_unsigned(int(desired_pos), size=size)
@@ -666,36 +609,61 @@ class DynamixelClient(MotorClient):
 
             if errored_ids:
                 logging.error('Sync write failed for: %s', str(errored_ids))
-            times.append(time.monotonic())
 
             comm_result = sync_writer.txPacket()
             self.handle_packet_result(comm_result, context='sync_write')
-            times.append(time.monotonic())
 
             sync_writer.clearParam()
-        times.append(time.monotonic())
-        return times
 
     def reboot_motor(self, motor_id: int):
-        """Reboot one motor and put its RAM settings back.
+        """Reboot one motor, wait for it to answer, and put its RAM settings back.
 
         A reboot clears RAM to defaults, and the current ceiling lives there
         (Goal Current, unlike Operating Mode, which is EEPROM and survives).
         Without this a recovered motor runs uncapped until something calls
         set_max_current again, drawing far more than its configured limit.
-        Returns once the motor answers again, or after ``MOTOR_REBOOT_TIMEOUT_S``.
+        Returns once the motor answers again, or after the settle time plus ``MOTOR_REBOOT_TIMEOUT_S``.
         Torque is deliberately left off: re-energizing is the caller's call.
         """
         with self._bus_lock:
-            comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
-            success = self.handle_packet_result(
-                comm_result, dxl_error, motor_id, context='reboot')
-            if not success:
-                self._flush_input_buffer()
-                return
-            with self._alerts_lock:
-                self._logged_alerts.pop(int(motor_id), None)
-            self._restore_ram_after_reboot(motor_id)
+            self._reboot_motors([motor_id])
+
+    def _reboot_motors(self, motor_ids: Sequence[int]) -> None:
+        """Reboot the motors, wait once for all of them, then replay each one's RAM settings."""
+        sent = []
+        try:
+            for motor_id in motor_ids:
+                if self._send_reboot(motor_id):
+                    sent.append(motor_id)
+        finally:
+            if sent:
+                time.sleep(MOTOR_REBOOT_SETTLE_S)
+                answered = self._await_motors_after_reboot(sent)
+                for motor_id in sent:
+                    if motor_id in answered:
+                        self._replay_ram(motor_id)
+                    else:
+                        self._log_unanswered_reboot(motor_id)
+
+    def _send_reboot(self, motor_id: int) -> bool:
+        """Send the reboot instruction; True if the motor accepted it. Caller holds the bus lock."""
+        comm_result, dxl_error = self.packet_handler.reboot(self.port_handler, motor_id)
+        success = self.handle_packet_result(
+            comm_result, dxl_error, motor_id, context='reboot')
+        if not success:
+            self._flush_input_buffer()
+            return False
+        with self._alerts_lock:
+            self._logged_alerts.pop(int(motor_id), None)
+        return True
+
+    def _log_unanswered_reboot(self, motor_id: int) -> None:
+        unrestored = ('; its RAM settings (current ceiling, servo gains) '
+                      'were not restored.'
+                      if self._ram_settings.get(int(motor_id)) else '.')
+        logging.error(
+            '[Motor ID: %d] did not answer within %.1f s of its reboot%s',
+            motor_id, MOTOR_REBOOT_SETTLE_S + MOTOR_REBOOT_TIMEOUT_S, unrestored)
 
     def _remember_ram(self, motor_ids: Sequence[int],
                       values: Sequence[Union[int, float]],
@@ -705,29 +673,20 @@ class DynamixelClient(MotorClient):
             settings = self._ram_settings.setdefault(int(motor_id), {})
             settings[(address, size)] = int(value)
 
-    def _restore_ram_after_reboot(self, motor_id: int) -> None:
-        """Re-apply the RAM settings a reboot cleared, once the motor answers."""
-        if not self._ram_settings.get(int(motor_id)):
-            return
-        if not self._await_motor_after_reboot(motor_id):
-            logging.error(
-                '[Motor ID: %d] did not answer within %.1f s of its reboot; its '
-                'RAM settings (current ceiling, servo gains) were not restored.',
-                motor_id, MOTOR_REBOOT_TIMEOUT_S)
-            return
-        self._replay_ram(motor_id)
-
-    def _await_motor_after_reboot(self, motor_id: int) -> bool:
-        """Ping until the rebooted motor answers; False if it never does."""
+    def _await_motors_after_reboot(self, motor_ids: Sequence[int]) -> "set[int]":
+        """Ping the rebooted motors against one shared deadline; returns those that answered."""
         deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
-        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        pending = list(motor_ids)
         while True:
-            _, comm_result, _ = self.packet_handler.ping(self.port_handler, motor_id)
-            if comm_result == self.dxl.COMM_SUCCESS:
-                return True
+            pending = [
+                motor_id for motor_id in pending
+                if self.packet_handler.ping(self.port_handler, motor_id)[1] != self.dxl.COMM_SUCCESS
+            ]
+            if not pending:
+                return set(motor_ids)
             if time.monotonic() >= deadline:
                 self._flush_input_buffer()
-                return False
+                return set(motor_ids) - set(pending)
             time.sleep(MOTOR_REBOOT_POLL_S)
 
     def _replay_ram(self, motor_id: int) -> None:
@@ -818,9 +777,10 @@ class DynamixelClient(MotorClient):
         reads back unchanged, so this is the only way to learn the real bound.
 
         Either limit reading zero means that axis is unbounded, which is
-        reported as the register width. A motor that does not answer falls
-        back to the register width too, so a dropped packet cannot narrow a
-        caller's idea of the range.
+        reported as the family's no-load speed for velocity and the register
+        width for acceleration. A motor that does not answer falls back to the
+        same figures, so a dropped packet cannot narrow a caller's idea of the
+        range.
         """
         motor_ids = [int(mid) for mid in motor_ids]
         unbounded = ServoProfile(
@@ -830,7 +790,6 @@ class DynamixelClient(MotorClient):
         out: "dict[int, ServoProfile]" = {mid: unbounded for mid in motor_ids}
         if not motor_ids:
             return out
-        vel_scale = self._pos_vel_cur_reader.vel_scale
         with self._bus_lock:
             reader = self.dxl.GroupSyncRead(
                 self.port_handler, self.packet_handler,
@@ -851,7 +810,7 @@ class DynamixelClient(MotorClient):
                     vel = int(reader.getData(mid, ADDR_VELOCITY_LIMIT,
                                              LEN_LIMIT))
                     out[mid] = ServoProfile(
-                        velocity_rad_s=(vel * vel_scale if vel
+                        velocity_rad_s=(vel * DEFAULT_VEL_SCALE if vel
                                         else unbounded.velocity_rad_s),
                         acceleration_rad_s2=(acc * PROFILE_ACC_SCALE if acc
                                              else unbounded.acceleration_rad_s2),
@@ -868,7 +827,6 @@ class DynamixelClient(MotorClient):
         if not motor_ids:
             return {}
         out: "dict[int, Optional[ServoProfile]]" = {m: None for m in motor_ids}
-        vel_scale = self._pos_vel_cur_reader.vel_scale
         with self._bus_lock:
             reader = self.dxl.GroupSyncRead(
                 self.port_handler, self.packet_handler,
@@ -889,7 +847,7 @@ class DynamixelClient(MotorClient):
                     vel = reader.getData(mid, ADDR_PROFILE_VELOCITY,
                                          LEN_PROFILE_VELOCITY)
                     out[mid] = ServoProfile(
-                        velocity_rad_s=float(vel) * vel_scale,
+                        velocity_rad_s=float(vel) * DEFAULT_VEL_SCALE,
                         acceleration_rad_s2=float(acc) * PROFILE_ACC_SCALE,
                     )
             finally:
@@ -904,10 +862,9 @@ class DynamixelClient(MotorClient):
         """
         if not profiles:
             return
-        vel_scale = self._pos_vel_cur_reader.vel_scale
         fields = (
             ("acceleration_rad_s2", ADDR_PROFILE_ACCELERATION, PROFILE_ACC_SCALE),
-            ("velocity_rad_s", ADDR_PROFILE_VELOCITY, vel_scale),
+            ("velocity_rad_s", ADDR_PROFILE_VELOCITY, DEFAULT_VEL_SCALE),
         )
         with self._bus_lock:
             for field, address, scale in fields:
@@ -980,12 +937,13 @@ class DynamixelClient(MotorClient):
                 reader.clearParam()
 
     def check_overload_and_reboot(self, motor_ids: Sequence[int]) -> list:
-        """Checks for overload errors and reboots affected motors.
+        """Reboots every motor with the overload bit set and returns their IDs.
 
-        Returns list of motor IDs that were rebooted.
+        Torque and Operating Mode are never written: a rebooted motor stays
+        de-energized until the caller enables it.
         """
         OVERLOAD_BIT = 0x20
-        rebooted = []
+        overloaded = []
         with self._bus_lock:
             for mid in motor_ids:
                 error_status = self.read_hardware_error(mid)
@@ -998,29 +956,9 @@ class DynamixelClient(MotorClient):
                     continue
                 if error_status & OVERLOAD_BIT:
                     logging.warning(f'Motor {mid} overload detected (error=0x{error_status:02X}), rebooting...')
-                    self.reboot_motor(mid)
-                    rebooted.append(mid)
-            if rebooted:
-                time.sleep(0.3)
-                for mid in rebooted:
-                    mode = self._operating_modes.get(mid)
-                    if mode is not None:
-                        # Reboot clears RAM — restore operating mode and torque.
-                        # Use retries=0 to avoid hanging if motor isn't ready yet.
-                        self.set_torque_enabled([mid], False, retries=0)
-                        self.sync_write([mid], [mode], ADDR_OPERATING_MODE, LEN_OPERATING_MODE)
-                        self.set_torque_enabled([mid], True, retries=0)
-                        self._operating_modes[mid] = mode
-                    else:
-                        self.set_torque_enabled([mid], True, retries=0)
-        return rebooted
-
-    def check_connected(self):
-        """Ensures the robot is connected."""
-        if self.lazy_connect and not self.is_connected:
-            self.connect()
-        if not self.is_connected:
-            raise OSError('Must call connect() first.')
+                    overloaded.append(mid)
+            self._reboot_motors(overloaded)
+        return overloaded
 
     def handle_packet_result(self,
                              comm_result: int,
@@ -1079,13 +1017,6 @@ class DynamixelClient(MotorClient):
             alerts = dict(self._hardware_alerts)
             self._hardware_alerts.clear()
         return alerts
-
-    def convert_to_unsigned(self, value: int, size: int) -> int:
-        """Converts the given value to its unsigned representation."""
-        if value < 0:
-            max_value = (1 << (8 * size)) - 1
-            value = max_value + value
-        return value
 
     def change_motor_id(self, current_id: int, new_id: int) -> bool:
         """Changes the ID of a Dynamixel motor (1-252)."""
@@ -1158,20 +1089,6 @@ class DynamixelClient(MotorClient):
                 except Exception:
                     pass
         return detected_motors
-
-    def __enter__(self):
-        """Enables use as a context manager."""
-        if not self.is_connected:
-            self.connect()
-        return self
-
-    def __exit__(self, *args):
-        """Enables use as a context manager."""
-        self.disconnect()
-
-    def __del__(self):
-        """Automatically disconnect on destruction."""
-        self.disconnect()
 
 
 class _AlertCaptureSyncRead:
@@ -1560,46 +1477,3 @@ class DynamixelTempReader(DynamixelReader):
 
     def _get_data(self):
         return self._temp_data.copy()
-
-atexit.register(dynamixel_cleanup_handler)
-
-if __name__ == '__main__':
-    import argparse
-    import itertools
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-m',
-        '--motors',
-        required=True,
-        help='Comma-separated list of motor IDs.')
-    parser.add_argument(
-        '-d',
-        '--device',
-        default=None,
-        help='The Dynamixel device. Default: auto-detect the motor adapter.')
-    parser.add_argument(
-        '-b', '--baud', default=1000000, help='The baudrate to connect with.')
-    from ..utils.utils import auto_detect_port
-
-    parsed_args = parser.parse_args()
-    motors = [int(motor) for motor in parsed_args.motors.split(',')]
-    
-    way_points = [np.zeros(len(motors)), np.full(len(motors), np.pi)]
-
-    device = parsed_args.device or auto_detect_port('dynamixel')
-
-    with DynamixelClient(motors, device, parsed_args.baud) as dxl_client:
-        for step in itertools.count():
-            if step > 0 and step % 50 == 0:
-                way_point = way_points[(step // 100) % len(way_points)]
-                print('Writing: {}'.format(way_point.tolist()))
-                dxl_client.write_desired_pos(motors, way_point)
-            read_start = time.time()
-            pos_now, vel_now, cur_now = dxl_client.read_position_velocity_current()
-            if step % 5 == 0:
-                print('[{}] Frequency: {:.2f} Hz'.format(
-                    step, 1.0 / (time.time() - read_start)))
-                print('> Pos: {}'.format(pos_now.tolist()))
-                print('> Vel: {}'.format(vel_now.tolist()))
-                print('> Cur: {}'.format(cur_now.tolist()))

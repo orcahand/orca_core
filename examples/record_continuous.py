@@ -2,15 +2,16 @@
 
 import argparse
 import time
-from pathlib import Path
 
 import yaml
 
 from orca_core.utils.cli import (
     add_hand_arguments,
+    build_recording_path,
     connect_hand,
     create_hand_from_args,
     prepare_output_dir,
+    recording_metadata,
     shutdown_hand,
 )
 
@@ -18,12 +19,6 @@ from orca_core.utils.cli import (
 # and how far the achieved rate may fall short of the requested one silently.
 MAX_STALE_FRACTION = 0.1
 RATE_TOLERANCE = 0.05
-
-
-def _build_output_path(output_dir: Path, prefix: str) -> Path:
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    stem = f"{prefix}_continuous_angles_{timestamp}" if prefix else f"continuous_angles_{timestamp}"
-    return output_dir / f"{stem}.yaml"
 
 
 def main() -> int:
@@ -43,19 +38,19 @@ def main() -> int:
 
     output_dir = prepare_output_dir(args.output_dir)
     prefix = input("Enter an optional filename prefix. Press Enter to skip: ").strip()
-    output_path = _build_output_path(output_dir, prefix)
+    output_path = build_recording_path(output_dir, "continuous_angles", prefix)
     interval = 1.0 / args.frequency
 
     # Recording backdrives the hand with torque off, which a running joint
     # loop would fight and wind its integrator up against.
     hand = create_hand_from_args(args, engage_feedback=False)
     data = {
-        "metadata": {
-            "type": "continuous",
-            "created_at": time.strftime("%Y%m%d_%H%M%S"),
-            "requested_frequency_hz": args.frequency,
-            "sampling_frequency_hz": args.frequency,
-        },
+        "metadata": recording_metadata(
+            "continuous",
+            hand,
+            requested_frequency_hz=args.frequency,
+            sampling_frequency_hz=args.frequency,
+        ),
         "angles": [],
     }
     stale_frames = 0
@@ -66,9 +61,6 @@ def main() -> int:
         connect_hand(hand)
         hand.init_joints(force_calibrate=args.force_calibrate)
         hand.disable_torque()
-
-        data["metadata"]["joint_ids"] = hand.config.joint_ids
-        data["metadata"]["hand_type"] = hand.config.type
 
         input("Press Enter to start recording. Press Ctrl+C to stop.\n")
         start_time = time.monotonic()
