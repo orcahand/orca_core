@@ -54,6 +54,16 @@ class ConfigRegister:
         """
         return int(round(value / self.scale))
 
+    def check(self, value: int) -> None:
+        """Raise ``ValueError`` unless ``value`` is within this register's bounds and choices."""
+        if self.minimum is not None and value < self.minimum:
+            raise ValueError(f"{self.key}={value} below {self.minimum}")
+        if self.maximum is not None and value > self.maximum:
+            raise ValueError(f"{self.key}={value} above {self.maximum}")
+        if self.choices and value not in self.choices:
+            raise ValueError(
+                f"{self.key}={value} is not one of {sorted(self.choices)}")
+
     def describe(self, value: "int | None") -> str:
         """``value`` is in `unit`, not raw."""
         if value is None:

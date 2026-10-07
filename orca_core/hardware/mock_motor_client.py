@@ -42,6 +42,7 @@ FAMILY_ATTRIBUTES = (
     "default_profile_acceleration_rad_s2",
     "max_operating_temp_c",
     "hardware_error_bits",
+    "config_registers",
     "current_scale_ma",
     "max_current_ma",
     "default_max_current_ma",
@@ -111,6 +112,7 @@ class MockMotorClient(MotorClient):
         self.current_ceilings_ma: dict = {}
         self._servo_gains = {int(mid): self.default_servo_gains for mid in self.motor_ids}
         self._servo_profiles = {int(mid): self.default_servo_profile for mid in self.motor_ids}
+        self._config_values: dict = {}
 
     @property
     def is_connected(self) -> bool:
@@ -139,6 +141,24 @@ class MockMotorClient(MotorClient):
             self._connected = False
             self.port_handler.is_open = False
             self.OPEN_CLIENTS.discard(self)
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Same as :meth:`disconnect`; a mock has no in-use flag to wait out."""
+        self.disconnect()
+
+    def read_config_register(self, motor_id: int, key: str) -> "int | None":
+        self._config_register(key)
+        return self._config_values.setdefault(int(motor_id), {}).get(key)
+
+    def write_config_register(self, motor_id: int, key: str, value: int) -> "int | None":
+        """Store ``value`` as the register would hold it and return that, as the real clients read back."""
+        entry = self._config_register(key)
+        entry.check(value)
+        store = self._config_values.setdefault(int(motor_id), {})
+        store[key] = entry.from_raw(entry.to_raw(int(value)))
+        if key == "id":
+            self._config_values[int(value)] = store
+        return store[key]
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

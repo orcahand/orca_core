@@ -878,12 +878,6 @@ class FeetechClient(MotorClient):
 
     config_registers = CONFIG_REGISTERS
 
-    def _config_register(self, key: str) -> ConfigRegister:
-        for entry in self.config_registers:
-            if entry.key == key:
-                return entry
-        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
-
     def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
         entry = self._config_register(key)
         reader = {1: self.packet_handler.read1ByteTxRx,
@@ -905,13 +899,7 @@ class FeetechClient(MotorClient):
         the re-lock and the read-back go to where it now answers.
         """
         entry = self._config_register(key)
-        if entry.minimum is not None and value < entry.minimum:
-            raise ValueError(f"{key}={value} below {entry.minimum}")
-        if entry.maximum is not None and value > entry.maximum:
-            raise ValueError(f"{key}={value} above {entry.maximum}")
-        if entry.choices and value not in entry.choices:
-            raise ValueError(
-                f"{key}={value} is not one of {sorted(entry.choices)}")
+        entry.check(value)
 
         motor_id, raw = int(motor_id), entry.to_raw(value)
         writer = {1: self.packet_handler.write1ByteTxRx,

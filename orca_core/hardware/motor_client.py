@@ -434,6 +434,12 @@ class MotorClient(ABC):
     actually has.
     """
 
+    def _config_register(self, key: str):
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
     def read_config_register(self, motor_id: int, key: str) -> "int | None":
         """Raw value of one declared configuration register, or None.
 
