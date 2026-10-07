@@ -468,6 +468,34 @@ class DynamixelClient(MotorClient):
                 self.port_handler.closePort()
                 self.OPEN_CLIENTS.discard(self)
 
+    def disconnect_fixed_lock_order(self) -> None:
+        """Disconnect, waiting for the bus rather than giving up on it.
+
+        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
+        lock, and returns when it finds it set -- so a sampler legitimately
+        mid-transaction makes the teardown silently not happen, with no retry.
+        The port stays open, the client stays registered, and a reconnect
+        cannot replace the handler. A momentary condition becomes permanent.
+
+        Taking the lock first waits for any in-flight exchange to finish,
+        after which no live transaction can hold the flag, so the check is
+        unnecessary rather than skipped.
+
+        Deliberately a separate method. ``disconnect`` is on every consumer's
+        path and changing its locking is its own change with its own testing;
+        this exists so the behaviour can be proven in the one place that
+        provokes the race -- a reconnect triggered by a bus transaction --
+        before it is merged into the shared path.
+        """
+        if not self.is_connected:
+            return
+        with self._bus_lock:
+            try:
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self.OPEN_CLIENTS.discard(self)
+
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
@@ -802,28 +830,12 @@ class DynamixelClient(MotorClient):
                 return entry
         raise ValueError(f"{type(self).__name__} has no config register {key!r}")
 
-    def _claim_port(self) -> None:
-        """Clear a stale in-use flag before a transaction.
-
-        The SDK sets ``is_using`` when a transaction starts and clears it when
-        it ends, so one interrupted part-way leaves it set and every later
-        call returns COMM_PORT_BUSY -- permanently, because disconnect()
-        refuses to close a port it believes is in use, which stops a reconnect
-        from clearing it either.
-
-        Only ever called while holding the bus lock, which is the real mutual
-        exclusion: if this thread holds it, nothing else is mid-transaction
-        and a set flag can only be stale.
-        """
-        self.port_handler.is_using = False
-
     def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
         entry = self._config_register(key)
         reader = {1: self.packet_handler.read1ByteTxRx,
                   2: self.packet_handler.read2ByteTxRx,
                   4: self.packet_handler.read4ByteTxRx}[entry.size]
         with self._bus_lock:
-            self._claim_port()
             value, result, error = reader(
                 self.port_handler, int(motor_id), entry.address)
         if result != self.dxl.COMM_SUCCESS or error != 0:
@@ -853,7 +865,6 @@ class DynamixelClient(MotorClient):
                   2: self.packet_handler.write2ByteTxRx,
                   4: self.packet_handler.write4ByteTxRx}[entry.size]
         with self._bus_lock:
-            self._claim_port()
             if entry.eeprom:
                 self.set_torque_enabled([motor_id], False, retries=0)
             result, error = writer(

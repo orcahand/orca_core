@@ -127,28 +127,144 @@ class TestDescribe:
         assert entry.describe(0) != entry.describe(None)
 
 
-class TestStalePortFlag:
-    """The SDK's in-use flag can be left set by an interrupted transaction,
-    and nothing clears it on its own."""
+def _unconnected_client():
+    """A real client with a stand-in port handler, so teardown can be driven
+    without hardware."""
+    import threading
 
-    def test_the_client_clears_it_before_a_transaction(self):
-        """Holding the bus lock is the real mutual exclusion, so a flag still
-        set at that point can only be stale. Left alone it returns
-        COMM_PORT_BUSY forever -- and disconnect() refuses to close a port it
-        believes is in use, so a reconnect cannot clear it either."""
-        from orca_core.hardware.dynamixel_client import DynamixelClient
+    from orca_core.hardware.dynamixel_client import DynamixelClient
 
-        assert hasattr(DynamixelClient, "_claim_port")
+    class FakePort:
+        is_open = True
+        is_using = False
 
-    def test_disconnect_still_refuses_a_genuinely_busy_port(self):
-        """The guard in disconnect() is deliberately left alone: clearing the
-        flag belongs with the caller that holds the lock, not with teardown."""
+        def __init__(self):
+            self.closed = False
+
+        def closePort(self):
+            self.closed = True
+            self.is_open = False
+
+    client = DynamixelClient([1, 2])
+    client.port_handler = FakePort()
+    client.set_torque_enabled = lambda *a, **k: None
+    DynamixelClient.OPEN_CLIENTS.add(client)
+    return client, threading
+
+
+class TestTeardownWithTheBusHeld:
+    """A reconnect provoked by a bus transaction tears the client down while
+    the bus is live. Which of the two teardowns is used decides whether a
+    momentary condition becomes a permanent one."""
+
+    def test_the_shared_teardown_gives_up_when_the_bus_looks_busy(self):
+        """Why the new paths do not use it: the flag is read before the lock,
+        so the answer may be a true one about another thread -- and the
+        response is to return, leaving the port open and the client
+        registered, with nothing scheduled to try again."""
+        client, _ = _unconnected_client()
+        client.port_handler.is_using = True
+
+        client.disconnect()
+
+        assert not client.port_handler.closed
+        assert client in type(client).OPEN_CLIENTS
+        type(client).OPEN_CLIENTS.discard(client)
+
+    def test_the_fixed_order_closes_the_port_regardless(self):
+        client, _ = _unconnected_client()
+        client.port_handler.is_using = True
+
+        client.disconnect_fixed_lock_order()
+
+        assert client.port_handler.closed
+        assert client not in type(client).OPEN_CLIENTS
+
+    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self):
+        """The lock is the real mutual exclusion. Taking it first means the
+        teardown queues behind a live exchange rather than reading its flag
+        and declining, so no transaction is cut in half either."""
+        client, threading = _unconnected_client()
+        mid_transaction = threading.Event()
+        released = threading.Event()
+        closed_while_busy = []
+
+        def transaction():
+            with client._bus_lock:
+                client.port_handler.is_using = True
+                mid_transaction.set()
+                released.wait(5)
+                closed_while_busy.append(client.port_handler.closed)
+                client.port_handler.is_using = False
+
+        holder = threading.Thread(target=transaction)
+        holder.start()
+        assert mid_transaction.wait(5)
+
+        teardown = threading.Thread(target=client.disconnect_fixed_lock_order)
+        teardown.start()
+        teardown.join(0.2)
+        assert teardown.is_alive(), "teardown should be waiting on the bus lock"
+
+        released.set()
+        holder.join(5)
+        teardown.join(5)
+
+        assert closed_while_busy == [False]
+        assert client.port_handler.closed
+        assert client not in type(client).OPEN_CLIENTS
+
+    def test_the_shared_teardown_is_left_exactly_as_it_was(self):
+        """Changing the locking of a method every consumer calls is its own
+        change. This branch only adds a path beside it."""
         import inspect
 
         from orca_core.hardware.dynamixel_client import DynamixelClient
 
         source = inspect.getsource(DynamixelClient.disconnect)
         assert "is_using" in source
+        assert "cannot disconnect" in source
+
+    def test_a_register_write_does_not_touch_the_in_use_flag(self):
+        """The register paths hold the bus lock and leave the SDK's own
+        bookkeeping to the SDK."""
+        import inspect
+
+        from orca_core.hardware.dynamixel_client import DynamixelClient
+
+        for method in (DynamixelClient.read_config_register,
+                       DynamixelClient.write_config_register):
+            assert "is_using" not in inspect.getsource(method)
+
+
+class TestEveryClientOffersTheFixedTeardown:
+    """Both families read the in-use flag before taking the lock, so both get
+    the twin, and the mocks carry it so a front-end exercising the path under
+    test is exercising the same surface."""
+
+    def test_real_and_mock_clients_all_have_it(self):
+        from orca_core.hardware.motor_factory import (
+            mock_motor_client_class,
+            motor_client_class,
+        )
+
+        for motor_type in FAMILIES:
+            for factory in (motor_client_class, mock_motor_client_class):
+                assert hasattr(factory(motor_type), "disconnect_fixed_lock_order")
+
+    def test_it_takes_the_lock_before_reading_any_flag(self):
+        """The whole point. Reading first is what turns someone else's live
+        transaction into a refusal to tear down."""
+        import inspect
+
+        from orca_core.hardware.motor_factory import motor_client_class
+
+        for motor_type in FAMILIES:
+            source = inspect.getsource(
+                motor_client_class(motor_type).disconnect_fixed_lock_order)
+            body = source[source.index('"""', source.index('"""') + 3):]
+            assert "is_using" not in body
+            assert body.index("_bus_lock") < body.index("closePort")
 
 
 class TestUnits:

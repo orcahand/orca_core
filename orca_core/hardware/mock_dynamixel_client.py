@@ -252,6 +252,15 @@ class MockDynamixelClient(MotorClient):
             self._connected = False
             self.OPEN_CLIENTS.discard(self)
 
+    def disconnect_fixed_lock_order(self) -> None:
+        """Equivalent to :meth:`disconnect` here.
+
+        The real clients check the SDK's in-use flag before taking the bus
+        lock and abandon the teardown when it is set; this one has no such
+        shortcut to correct. Carried so the two agree on what a client offers.
+        """
+        self.disconnect()
+
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
