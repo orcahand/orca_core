@@ -45,6 +45,7 @@ from .hand_config import (
     OrcaHandTouchConfig,
     _resolve_config_path,
 )
+from .constants import HARDWARE_VERSION_V21
 from .hardware.sensing.constants import (
     DEFAULT_ENCODER_BAUDRATE,
     JOINT_ENCODER_POLARITY_BY_SIDE,
@@ -322,6 +323,19 @@ def detect_hand() -> HandDetection:
     )
 
 
+def _resolve_hardware_version(detection, explicit: int | None) -> int | None:
+    """What the caller said, else what the board reported, else unknown.
+
+    The board is the only source of truth for its own revision, so there is
+    no yaml pin for this. ``None`` leaves the config on its base map.
+    """
+    if explicit is not None:
+        return explicit
+    if detection is not None and detection.identity is not None:
+        return detection.identity.hw_version
+    return None
+
+
 def _overridden(field: str, configured, detected) -> bool:
     """Whether ``config.yaml`` pins ``field`` to something other than what was
     detected. Logs the clash so a pin is never mistaken for a detection bug."""
@@ -421,6 +435,7 @@ def load_hand(
     mock: bool = False,
     engage_feedback: bool = True,
     engage_sensors: bool = True,
+    hardware_version: int | None = None,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -447,6 +462,12 @@ def load_hand(
             tactile link even if the config declares sensors. Tactile and
             encoders can share one CDC, so a caller that opens its own reader
             on the sensing port must not have the hand open it too.
+        hardware_version: The hand's hardware revision as the board reports
+            it (2 for v2.0, 21 for v2.1). Decides which joint_to_motor_map a
+            model puts in force. ``None`` takes what detection read from the
+            board, or leaves the base map when nothing was read. A caller
+            that loads by ``config_path`` skips detection and should pass
+            what it knows here.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -483,6 +504,11 @@ def load_hand(
     )
     if detection is not None:
         config = _pin_detected_ports(config, detection)
+    config = config.with_hardware_version(
+        _resolve_hardware_version(detection, hardware_version)
+    )
+    if config.hardware_version == HARDWARE_VERSION_V21 and config.joint_to_motor_map_v21:
+        logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
 
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:

@@ -20,7 +20,9 @@ from .constants import (
     JOINT_IDS,
     JOINT_MOTOR_TRAVEL,
     JOINT_ROM_DICT,
+    HARDWARE_VERSION_V21,
     JOINT_TO_MOTOR_MAP,
+    JOINT_TO_MOTOR_MAP_V21,
     MOTOR_IDS,
     SUPPORTED_MOTOR_TYPES,
 )
@@ -380,6 +382,16 @@ class OrcaHandConfig(BaseHandConfig):
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
+    # The board's provisioned hardware version (2 = v2.0, 21 = v2.1), as
+    # load_hand resolved it from detection or its caller. Not a yaml key: the
+    # board is the only source. None means not known. It selects which
+    # joint_to_motor_map is in force.
+    hardware_version: int | None = None
+    # The signed map a v2.1 hand uses instead of joint_to_motor_map, kept raw
+    # (sign included). Absent on models whose wiring did not change.
+    # with_hardware_version applies it; the chosen map then passes the same
+    # checks the base map does.
+    joint_to_motor_map_v21: Dict[str, int] = field(default_factory=dict)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -569,6 +581,16 @@ class OrcaHandConfig(BaseHandConfig):
             )
             kwargs["joint_to_motor_map"] = joint_to_motor_map
             kwargs["joint_inversion_dict"] = joint_inversion_dict
+        if JOINT_TO_MOTOR_MAP_V21 in config:
+            raw_v21 = config[JOINT_TO_MOTOR_MAP_V21]
+            if not isinstance(raw_v21, dict):
+                raise HandConfigValidationError(
+                    f"{JOINT_TO_MOTOR_MAP_V21} must be a mapping of joint name to "
+                    f"signed motor ID, got {raw_v21!r}"
+                )
+            kwargs["joint_to_motor_map_v21"] = {
+                str(joint): int(motor_id) for joint, motor_id in raw_v21.items()
+            }
         if "calibration_current" in config:
             kwargs["calibration_current"] = _current_setting(
                 config["calibration_current"], "calibration_current"
@@ -838,6 +860,33 @@ class OrcaHandConfig(BaseHandConfig):
                 self.wrist_calibration_current, client_cls.default_calibration_current_ma
             ),
         )
+
+
+    def with_hardware_version(self, hardware_version: int | None) -> "OrcaHandConfig":
+        """This config as the given hardware revision of the hand sees it.
+
+        Picks the map for the revision. For one that carries its own,
+        ``joint_to_motor_map`` and ``joint_inversion_dict`` are rebuilt from it,
+        exactly as they are built from the base map at load; every consumer
+        then reads it with no idea a revision exists. A model without a map
+        for the revision keeps the base one. ``hardware_version`` is recorded
+        either way, the same way a detected ``motor_type`` is.
+
+        ``None`` means the version is not known, and returns self untouched.
+        """
+        if hardware_version is None:
+            return self
+        if hardware_version == HARDWARE_VERSION_V21 and self.joint_to_motor_map_v21:
+            joint_to_motor_map, joint_inversion_dict = _canonical_joint_to_motor_map(
+                self.joint_to_motor_map_v21
+            )
+            return dataclasses.replace(
+                self,
+                hardware_version=hardware_version,
+                joint_to_motor_map=joint_to_motor_map,
+                joint_inversion_dict=joint_inversion_dict,
+            )
+        return dataclasses.replace(self, hardware_version=hardware_version)
 
 
 @dataclass(frozen=True)

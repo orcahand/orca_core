@@ -9,6 +9,12 @@ FINGER_NAMES: list[FingerName] = ["thumb", "index", "middle", "ring", "pinky"]
 MOTOR_IDS = "motor_ids"
 JOINT_IDS = "joint_ids"
 JOINT_TO_MOTOR_MAP = "joint_to_motor_map"
+# A second map that a config may carry for a later hardware revision of the
+# same model. Same motors, same joints; only the sign (direction) may differ.
+JOINT_TO_MOTOR_MAP_V21 = "joint_to_motor_map_v21"
+# Hardware versions are provisioned on the controller board as one byte,
+# major*10 + minor: 2 is v2.0, 21 is v2.1.
+HARDWARE_VERSION_V21 = 21
 JOINT_ROM_DICT = "joint_roms"
 JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"

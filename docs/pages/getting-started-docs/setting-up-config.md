@@ -90,6 +90,27 @@ If tendon routing is done properly, all joints should have the same sign, except
 
 > **Note:** For abduction joints, flexion refers to movement **away from the thumb** and for the thumb flexion is **towards the fingers**. 
 
+#### Hardware v2.1: a second map for the same model
+
+A later hardware revision can route a tendon the other way without changing which motor drives which joint. Rather than fork the model, the config carries a second map for that revision:
+
+```yaml
+joint_to_motor_map:        # v2.0 boards
+  thumb_mcp: 12
+  thumb_dip: 11
+  ...
+joint_to_motor_map_v21:    # v2.1 boards -- same motors, only the sign may differ
+  thumb_mcp: -12
+  thumb_dip: -11
+  ...
+```
+
+Which map is in force is decided once, when the config is built, by the **hardware version the controller board reports** in its identity (`HW=2` for v2.0, `HW=21` for v2.1 -- one byte, `major*10 + minor`). `load_hand()` reads it from the board; a caller that loads by `config_path` skips detection and passes `hardware_version=` itself. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual and never needs to know a revision exists.
+
+Whichever map is chosen goes through the same checks as the base map (every joint defined, every motor in `motor_ids`). The two maps are hand-maintained copies, so keep them in step by hand.
+
+There is no `hardware_version:` key in the yaml. The board is the only source of its own revision, so a stale copy of a config can never pin the wrong map. Right-hand v2 models carry no `_v21` map: the wiring change was a left-hand change.
+
 ---
 
 
