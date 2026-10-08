@@ -337,7 +337,10 @@ def _resolve_hardware_version(config, detection, detected: int | None) -> int | 
     if detected is None and detection is not None and detection.identity is not None:
         detected = detection.identity.hw_version
     if config.hardware_version is not None:
-        _overridden("hardware_version", config.hardware_version, detected)
+        # Only a *disagreeing* board is worth a warning. No board at all is
+        # the normal case for a pinned config -- that is what the pin is for.
+        if detected is not None:
+            _overridden("hardware_version", config.hardware_version, detected)
         return config.hardware_version
     return detected
 

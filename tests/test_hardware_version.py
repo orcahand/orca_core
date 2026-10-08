@@ -198,6 +198,16 @@ def test_a_pin_that_agrees_with_the_board_is_quiet(caplog):
     assert "hardware_version" not in caplog.text
 
 
+def test_a_pin_with_no_board_is_quiet(caplog):
+    """The pin exists for hands with no board. Warning that 'the detected None
+    is not used' would nag exactly the people using it as intended."""
+    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
+        assert hand_factory._resolve_hardware_version(_pinned(21), None, None) == 21
+        assert hand_factory._resolve_hardware_version(
+            _pinned(21), SimpleNamespace(identity=None), None) == 21
+    assert "hardware_version" not in caplog.text
+
+
 def test_nothing_known_resolves_to_nothing():
     assert hand_factory._resolve_hardware_version(_pinned(None), None, None) is None
     assert hand_factory._resolve_hardware_version(
