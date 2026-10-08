@@ -20,6 +20,7 @@ from .constants import (
     JOINT_IDS,
     JOINT_MOTOR_TRAVEL,
     JOINT_ROM_DICT,
+    HARDWARE_VERSION,
     HARDWARE_VERSION_V21,
     JOINT_TO_MOTOR_MAP,
     JOINT_TO_MOTOR_MAP_V21,
@@ -382,10 +383,11 @@ class OrcaHandConfig(BaseHandConfig):
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
-    # The board's provisioned hardware version (2 = v2.0, 21 = v2.1), as
-    # load_hand resolved it from detection or its caller. Not a yaml key: the
-    # board is the only source. None means not known. It selects which
-    # joint_to_motor_map is in force.
+    # The hand's hardware version (2 = v2.0, 21 = v2.1). It selects which
+    # joint_to_motor_map is in force. Pinned in the yaml by a hand whose motor
+    # bus has no controller board to report it; otherwise `auto`, and load_hand
+    # fills it from the board. A pin beats the board and the clash is logged,
+    # as for port and motor_type. None means not known.
     hardware_version: int | None = None
     # The signed map a v2.1 hand uses instead of joint_to_motor_map, kept raw
     # (sign included). Absent on models whose wiring did not change.
@@ -591,6 +593,14 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_to_motor_map_v21"] = {
                 str(joint): int(motor_id) for joint, motor_id in raw_v21.items()
             }
+        raw_hw = config.get(HARDWARE_VERSION)
+        if raw_hw is not None and not (isinstance(raw_hw, str) and raw_hw.strip().lower() == "auto"):
+            if isinstance(raw_hw, bool) or not isinstance(raw_hw, int) or raw_hw < 0:
+                raise HandConfigValidationError(
+                    f"{HARDWARE_VERSION} must be 'auto' or a non-negative integer "
+                    f"(2 for v2.0, 21 for v2.1), got {raw_hw!r}"
+                )
+            kwargs["hardware_version"] = raw_hw
         if "calibration_current" in config:
             kwargs["calibration_current"] = _current_setting(
                 config["calibration_current"], "calibration_current"

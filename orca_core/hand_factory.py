@@ -323,17 +323,23 @@ def detect_hand() -> HandDetection:
     )
 
 
-def _resolve_hardware_version(detection, explicit: int | None) -> int | None:
-    """What the caller said, else what the board reported, else unknown.
+def _resolve_hardware_version(config, detection, detected: int | None) -> int | None:
+    """A yaml pin, else what the board reported, else unknown.
 
-    The board is the only source of truth for its own revision, so there is
-    no yaml pin for this. ``None`` leaves the config on its base map.
+    The board's value reaches here two ways that rank the same: read by
+    :func:`detect_hand`, or handed in as ``detected`` by a caller that loaded
+    by ``config_path`` and so skipped detection. A pin is a deliberate
+    override -- the only way a hand on a plain adapter, with no board to ask,
+    can say which revision it is -- and wins over the board; the clash is
+    logged by :func:`_overridden` so a stale copied config is never mistaken
+    for a detection bug. ``None`` leaves the config on its base map.
     """
-    if explicit is not None:
-        return explicit
-    if detection is not None and detection.identity is not None:
-        return detection.identity.hw_version
-    return None
+    if detected is None and detection is not None and detection.identity is not None:
+        detected = detection.identity.hw_version
+    if config.hardware_version is not None:
+        _overridden("hardware_version", config.hardware_version, detected)
+        return config.hardware_version
+    return detected
 
 
 def _overridden(field: str, configured, detected) -> bool:
@@ -435,7 +441,7 @@ def load_hand(
     mock: bool = False,
     engage_feedback: bool = True,
     engage_sensors: bool = True,
-    hardware_version: int | None = None,
+    detected_hardware_version: int | None = None,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -462,12 +468,12 @@ def load_hand(
             tactile link even if the config declares sensors. Tactile and
             encoders can share one CDC, so a caller that opens its own reader
             on the sensing port must not have the hand open it too.
-        hardware_version: The hand's hardware revision as the board reports
-            it (2 for v2.0, 21 for v2.1). Decides which joint_to_motor_map a
-            model puts in force. ``None`` takes what detection read from the
-            board, or leaves the base map when nothing was read. A caller
-            that loads by ``config_path`` skips detection and should pass
-            what it knows here.
+        detected_hardware_version: The hardware revision the controller
+            board reported (2 for v2.0, 21 for v2.1), for a caller that loads
+            by ``config_path`` and so skipped detection. Ranks as detection:
+            a ``hardware_version`` pinned in config.yaml still wins, and the
+            clash is logged. ``None`` lets detection answer, or leaves the
+            base map when there is no board.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -505,7 +511,7 @@ def load_hand(
     if detection is not None:
         config = _pin_detected_ports(config, detection)
     config = config.with_hardware_version(
-        _resolve_hardware_version(detection, hardware_version)
+        _resolve_hardware_version(config, detection, detected_hardware_version)
     )
     if config.hardware_version == HARDWARE_VERSION_V21 and config.joint_to_motor_map_v21:
         logger.info("hardware v2.1: joint_to_motor_map_v21 in force")

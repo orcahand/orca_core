@@ -130,40 +130,83 @@ def test_a_v21_map_that_is_not_a_mapping_is_rejected(tmp_path):
         OrcaHandConfig.from_config_path(config_path=path)
 
 
-def test_hardware_version_is_not_a_yaml_key(tmp_path):
-    """The board is the only source of its own revision; a value in the yaml is
-    ignored rather than honoured, so a stale copy cannot pin the wrong map."""
+def test_a_pinned_hardware_version_selects_the_map(tmp_path):
+    """A hand on a plain adapter has no board to ask; its owner pins the
+    revision in their config copy, as they already pick the side by model."""
     path = _config_with(tmp_path, LEFT[0], hardware_version=21)
+    hand = load_hand(config_path=path, mock=True)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert hand.config.hardware_version == 21
+    for joint in FLIPPED:
+        assert hand.config.joint_inversion_dict[joint] != base.joint_inversion_dict[joint]
+
+
+@pytest.mark.parametrize("spelling", ["auto", "Auto", " AUTO "])
+def test_auto_means_not_pinned(tmp_path, spelling):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=spelling)
     config = OrcaHandConfig.from_config_path(config_path=path)
     assert config.hardware_version is None
-    assert config.joint_inversion_dict == OrcaHandConfig.from_config_path(
-        config_path=LEFT[0]).joint_inversion_dict
+
+
+def test_the_packaged_left_configs_ship_on_auto():
+    for path in LEFT:
+        assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None, path
+
+
+@pytest.mark.parametrize("value", [-1, "x", True, 2.5, [21]])
+def test_a_hardware_version_that_is_not_auto_or_a_whole_number_is_rejected(tmp_path, value):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=value)
+    with pytest.raises(HandConfigValidationError, match="hardware_version"):
+        OrcaHandConfig.from_config_path(config_path=path)
 
 
 # --- how load_hand resolves it -------------------------------------------
+# Precedence: a yaml pin, else the board (read by detection or handed in by a
+# caller that skipped it -- the same source two ways), else nothing.
 
 
 def _detection(hw):
     return SimpleNamespace(identity=SimpleNamespace(hw_version=hw))
 
 
-def test_an_explicit_version_wins_over_the_board():
-    assert hand_factory._resolve_hardware_version(_detection(2), 21) == 21
+def _pinned(hw):
+    return SimpleNamespace(hardware_version=hw)
 
 
-def test_the_board_is_used_when_nothing_is_passed():
-    assert hand_factory._resolve_hardware_version(_detection(21), None) == 21
+def test_the_board_is_used_when_nothing_is_pinned():
+    assert hand_factory._resolve_hardware_version(_pinned(None), _detection(21), None) == 21
+
+
+def test_a_handed_in_board_value_ranks_as_detection():
+    """The console loads by config_path, skips detection, and hands the board
+    value in. That is the board speaking through a different door, not an
+    override, so a pin still wins over it."""
+    assert hand_factory._resolve_hardware_version(_pinned(None), None, 21) == 21
+    assert hand_factory._resolve_hardware_version(_pinned(2), None, 21) == 2
+
+
+def test_a_pin_wins_over_the_board_and_says_so(caplog):
+    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
+        assert hand_factory._resolve_hardware_version(_pinned(21), _detection(2), None) == 21
+    assert "pins hardware_version=21" in caplog.text
+    assert "detected 2" in caplog.text
+
+
+def test_a_pin_that_agrees_with_the_board_is_quiet(caplog):
+    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
+        assert hand_factory._resolve_hardware_version(_pinned(21), _detection(21), None) == 21
+    assert "hardware_version" not in caplog.text
 
 
 def test_nothing_known_resolves_to_nothing():
-    assert hand_factory._resolve_hardware_version(None, None) is None
-    assert hand_factory._resolve_hardware_version(SimpleNamespace(identity=None), None) is None
+    assert hand_factory._resolve_hardware_version(_pinned(None), None, None) is None
+    assert hand_factory._resolve_hardware_version(
+        _pinned(None), SimpleNamespace(identity=None), None) is None
 
 
-def test_load_hand_applies_a_passed_version_to_the_mock_hand():
-    """The path a caller that loads by config_path takes: detection is skipped,
-    so the version it knows has to come in by argument."""
-    hand = load_hand(config_path=LEFT[0], mock=True, hardware_version=HARDWARE_VERSION_V21)
+def test_load_hand_applies_a_handed_in_version_to_the_mock_hand():
+    hand = load_hand(config_path=LEFT[0], mock=True,
+                     detected_hardware_version=HARDWARE_VERSION_V21)
     assert hand.config.hardware_version == HARDWARE_VERSION_V21
     base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
     for joint in FLIPPED:

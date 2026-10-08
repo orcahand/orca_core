@@ -79,6 +79,11 @@ joint_to_motor_map_v21:
   pinky_mcp: -15
   pinky_pip: 16
   wrist: -1
+# Which of the two maps above is in force. `auto` takes the version the OH
+# board reports (2 or 21). A left hand on a plain adapter has no board to ask:
+# pin it here instead -- `hardware_version: 21` for the v2.1 build. A pin
+# beats the board and the clash is logged.
+hardware_version: auto
 joint_roms:
   wrist:
   - -65

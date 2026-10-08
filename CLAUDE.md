@@ -270,11 +270,12 @@ All hand-specific settings are in `config.yaml`:
   own copy of a config, never by hand and never into a packaged model: the numbers are per hand.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
-  `joint_to_motor_map`; only the two thumb signs differ. Which map is
-  in force is decided once at config build from the hardware version the board reports (`HW=21`;
-  one byte, `major*10 + minor`), read by `load_hand()` from detection or passed as
-  `hardware_version=` by a caller that loads by path. Never a yaml key: the board is the only
-  source. Consumers read `joint_to_motor_map` / `joint_inversion_dict` as before.
+  `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` picks which is in
+  force: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
+  byte, `major*10 + minor`); a pinned integer is for a hand on a plain adapter with no board to
+  ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A caller
+  that loads by path hands the board's value to `load_hand(detected_hardware_version=)`, which
+  ranks as detection. Consumers read `joint_to_motor_map` / `joint_inversion_dict` as before.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)

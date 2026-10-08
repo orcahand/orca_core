@@ -12,6 +12,7 @@ JOINT_TO_MOTOR_MAP = "joint_to_motor_map"
 # A second map that a config may carry for a later hardware revision of the
 # same model. Same motors, same joints; only the sign (direction) may differ.
 JOINT_TO_MOTOR_MAP_V21 = "joint_to_motor_map_v21"
+HARDWARE_VERSION = "hardware_version"
 # Hardware versions are provisioned on the controller board as one byte,
 # major*10 + minor: 2 is v2.0, 21 is v2.1.
 HARDWARE_VERSION_V21 = 21

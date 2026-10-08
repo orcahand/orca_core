@@ -105,11 +105,18 @@ joint_to_motor_map_v21:    # v2.1 boards -- same motors, only the sign may diffe
   ...
 ```
 
-Which map is in force is decided once, when the config is built, by the **hardware version the controller board reports** in its identity (`HW=2` for v2.0, `HW=21` for v2.1 -- one byte, `major*10 + minor`). `load_hand()` reads it from the board; a caller that loads by `config_path` skips detection and passes `hardware_version=` itself. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual and never needs to know a revision exists.
+Which map is in force is decided once, when the config is built, from the hand's **hardware version** (2 for v2.0, 21 for v2.1 -- one byte, `major*10 + minor`):
 
-Whichever map is chosen goes through the same checks as the base map (every joint defined, every motor in `motor_ids`). The two maps are hand-maintained copies, so keep them in step by hand.
+```yaml
+hardware_version: auto     # take what the OH board reports (the packaged default)
+hardware_version: 21       # pin it: a left hand on a plain adapter has no board to ask
+```
 
-There is no `hardware_version:` key in the yaml. The board is the only source of its own revision, so a stale copy of a config can never pin the wrong map. Right-hand v2 models carry no `_v21` map: the wiring change was a left-hand change.
+Precedence is the same as for `port` and `motor_type`: a value you write **wins** over what the board reports, and the clash is logged (`config.yaml pins hardware_version=21, so the detected 2 is not used`) so a stale copied config is never mistaken for a detection bug. `auto` defers to the board; with no board and no pin the base map runs.
+
+`load_hand()` reads the board through detection. A caller that loads by `config_path` skips detection and passes the board's value as `detected_hardware_version=` -- it ranks as detection, so a pin still wins. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual.
+
+Whichever map is chosen goes through the same checks as the base map (every joint defined, every motor in `motor_ids`). The two maps are hand-maintained copies, so keep them in step by hand. Right-hand v2 models carry no `_v21` map: the wiring change was a left-hand change.
 
 ---
 
