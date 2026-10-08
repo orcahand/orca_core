@@ -57,6 +57,33 @@ joint_to_motor_map:
   pinky_mcp: -15
   pinky_pip: 16
   wrist: -1
+# v2.1 hardware: the thumb MCP and DIP tendons run the other way, so
+# those two motors turn the opposite direction for the same joint motion.
+# Same motors, same joints -- only the sign differs. Selected by the
+# hardware version the board reports (21); v2.0 boards keep the map above.
+joint_to_motor_map_v21:
+  thumb_cmc: -10
+  thumb_abd: -13
+  thumb_mcp: -12
+  thumb_dip: -11
+  index_abd: -7
+  index_mcp: -8
+  index_pip: -9
+  middle_abd: -6
+  middle_mcp: -17
+  middle_pip: -2
+  ring_abd: -5
+  ring_mcp: 4
+  ring_pip: -3
+  pinky_abd: 14
+  pinky_mcp: -15
+  pinky_pip: 16
+  wrist: -1
+# Which of the two maps above is in force. `auto` takes the version the OH
+# board reports (2 or 21). A left hand on a plain adapter has no board to ask:
+# pin it here instead -- `hardware_version: 21` for the v2.1 build. A pin
+# beats the board and the clash is logged.
+hardware_version: auto
 joint_roms:
   wrist:
   - -65

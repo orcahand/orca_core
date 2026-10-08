@@ -116,9 +116,9 @@ def on_progress(event: dict) -> None:
               f"{BOLD}(ID {event['target_id']}){RESET}{ORANGE} to the {event['attaches_to']}{RESET}")
     elif name == "waiting_for_port":
         if event["present"]:
-            print(f"\n{YELLOW}▶  RESTORE POWER:{RESET} Plug the USB cable back in.")
+            print(f"\n{YELLOW}▶  RESTORE POWER:{RESET} Turn on the board.")
         else:
-            print(f"\n{YELLOW}⚠  REMOVE POWER:{RESET} Unplug the USB cable from your computer.")
+            print(f"\n{YELLOW}⚠  REMOVE POWER:{RESET} Turn off the board.")
     elif name == "port_ready":
         print(f"{GREEN}✓ USB {'re' if event['present'] else 'dis'}connected.{RESET}")
     elif name == "awaiting_motor":
