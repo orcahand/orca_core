@@ -10,6 +10,7 @@
 
 import atexit
 import logging
+import math
 import time
 import random
 from typing import Optional, Sequence, Union, Tuple
@@ -134,6 +135,7 @@ class MockDynamixelClient(MotorClient):
         return store[key]
 
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
+    MODELS_WITHOUT_CURRENT_CONTROL = DynamixelClient.MODELS_WITHOUT_CURRENT_CONTROL
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma
     default_max_current_ma = DynamixelClient.default_max_current_ma
@@ -186,6 +188,9 @@ class MockDynamixelClient(MotorClient):
         self.pwm_fraction = {mid: 1.0 for mid in self.motor_ids}
         self._torque_enabled = {mid: False for mid in self.motor_ids}
         self._operating_mode = {mid: 3 for mid in self.motor_ids}
+        self._commanded_current_ma: dict = {}
+        # Model numbers a test may set to exercise per-model capability.
+        self._model_numbers: dict = {}
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
@@ -440,6 +445,31 @@ class MockDynamixelClient(MotorClient):
                 logging.error('Write ignored for unknown motor ID %d', mid)
                 continue
             self._cur[mid] = raw * self.current_scale_ma
+
+    def supports_current_control(self, motor_id: int) -> bool:
+        return self._model_numbers.get(motor_id) not in self.MODELS_WITHOUT_CURRENT_CONTROL
+
+    def operating_mode(self, motor_id: int) -> "int | None":
+        return self._operating_mode.get(motor_id)
+
+    def write_goal_current_signed(self, motor_ids: Sequence[int],
+                                  currents_ma: Sequence[float]) -> None:
+        self.check_connected()
+        if len(motor_ids) != len(currents_ma):
+            raise ValueError('motor_ids and currents must have the same length')
+        for mid, value in zip(motor_ids, currents_ma):
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f'current for motor {mid} must be finite')
+            if not self.supports_current_control(mid):
+                raise ValueError(f'motor {mid} has no current control mode')
+            if self._operating_mode.get(mid) != 0:
+                raise ValueError(f'motor {mid} is not in current control mode')
+            ceiling = self._current_ceiling_ma(mid)
+            if ceiling is not None and abs(value) > ceiling:
+                value = math.copysign(ceiling, value)
+            # The command, signed -- distinct from the stored limit.
+            self._commanded_current_ma[mid] = value
 
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         return self.current_ceilings_ma.get(motor_id, self.max_current_ma)

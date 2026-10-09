@@ -711,6 +711,35 @@ class MotorClient(ABC):
         """
         ...
 
+    def supports_current_control(self, motor_id: int) -> bool:
+        """Whether ``motor_id`` can be driven in current (torque) control mode.
+
+        Distinct from ``supported_modes``, which is a family-wide statement:
+        within one family a model may lack the mode (a Dynamixel XC430 has no
+        current-control mode while the XC330 beside it does). A caller that
+        offers torque control asks per motor.
+        """
+        return CURRENT in self.supported_modes
+
+    def write_goal_current_signed(
+        self, motor_ids: Sequence[int], currents_ma: Sequence[float]
+    ) -> None:
+        """Command a signed goal current, in mA -- a torque command.
+
+        Only meaningful with the motor in current control mode, where the
+        goal-current register is the command rather than a ceiling; the sign
+        is the direction. This is deliberately not :meth:`write_desired_current`:
+        that one sets the *limit* a position mode runs under, must be
+        non-negative, and is remembered so a reboot can restore the ceiling.
+        A torque command is neither -- it is never remembered, so a reboot or
+        mode change can never replay a transient torque as a ceiling.
+
+        Magnitudes are clamped to the motor's ceiling (the same one the limit
+        uses). Raises ``ValueError`` for a motor not in current control mode,
+        for one whose model has no such mode, or for a non-finite value.
+        """
+        raise NotImplementedError
+
     def read_current_limits(self) -> "dict[int, float | None]":
         """Per-motor ceiling for the goal current, in mA.
 

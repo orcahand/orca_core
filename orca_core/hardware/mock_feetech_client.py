@@ -359,6 +359,13 @@ class MockFeetechClient(MotorClient):
             self._current_limit_raw[mid] = raw
             self._cur[mid] = raw * self.current_scale_ma
 
+    def supports_current_control(self, motor_id: int) -> bool:
+        return False
+
+    def write_goal_current_signed(self, motor_ids: Sequence[int],
+                                  currents_ma: Sequence[float]) -> None:
+        raise ValueError('feetech motors are not driven in current control mode by this client')
+
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
 

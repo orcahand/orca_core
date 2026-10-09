@@ -1090,6 +1090,18 @@ class FeetechClient(MotorClient):
                 self._current_limit_raw[motor_id] = min(self._current_limit_raw[motor_id], ceiling)
         return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
 
+    def supports_current_control(self, motor_id: int) -> bool:
+        # This client drives the servo under a goal-current limit and maps a
+        # requested current mode onto that; it never puts a motor in the
+        # family's own current mode, so no motor is driveable by torque here.
+        return False
+
+    def write_goal_current_signed(self, motor_ids: Sequence[int],
+                                  currents_ma: Sequence[float]) -> None:
+        raise ValueError(
+            'feetech motors are not driven in current control mode by this '
+            'client; see supports_current_control')
+
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         ceiling_raw = self._current_ceiling_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
         return ceiling_raw * self.current_scale_ma

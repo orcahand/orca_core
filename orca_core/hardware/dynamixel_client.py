@@ -16,12 +16,13 @@
 
 import atexit
 import logging
+import math
 import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
-from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
+from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US, CURRENT, MODE_MAP
 from .config_registers import ConfigRegister
 from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 
@@ -697,6 +698,47 @@ class DynamixelClient(MotorClient):
             self._remember_ram(list(plan), list(plan.values()), ADDR_GOAL_CURRENT,
                                LEN_GOAL_CURRENT)
             self.sync_write(list(plan), list(plan.values()), ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
+
+    def supports_current_control(self, motor_id: int) -> bool:
+        return self._model_numbers.get(motor_id) not in self.MODELS_WITHOUT_CURRENT_CONTROL
+
+    def operating_mode(self, motor_id: int) -> "int | None":
+        """The motor's operating mode, read from the bus if not yet known.
+
+        The client only learns a mode it set itself; a motor that came up in
+        a mode nobody here chose is unknown until asked. Cached once read.
+        """
+        mode = self._operating_modes.get(motor_id)
+        if mode is None:
+            mode = self.read_config_register(motor_id, "operating_mode")
+            if mode is not None:
+                self._operating_modes[motor_id] = mode
+        return mode
+
+    def write_goal_current_signed(self, motor_ids: Sequence[int],
+                                  currents_ma: Sequence[float]) -> None:
+        if len(motor_ids) != len(currents_ma):
+            raise ValueError('motor_ids and currents must have the same length')
+        values = []
+        for motor_id, value in zip(motor_ids, currents_ma):
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f'current for motor {motor_id} must be finite, got {value!r}')
+            if not self.supports_current_control(motor_id):
+                raise ValueError(
+                    f'motor {motor_id} ({self._model_numbers.get(motor_id)}) has no '
+                    'current control mode')
+            if self.operating_mode(motor_id) != MODE_MAP[CURRENT]:
+                raise ValueError(
+                    f'motor {motor_id} is not in current control mode; a signed goal '
+                    'current would be read as a ceiling by the mode it is in')
+            ceiling = self._current_ceiling_ma(motor_id)
+            if ceiling is not None and abs(value) > ceiling:
+                value = math.copysign(ceiling, value)
+            values.append(int(value / self.current_scale_ma))
+        with self._bus_lock:
+            # Not remembered in _ram_settings on purpose: see the ABC.
+            self.sync_write(list(motor_ids), values, ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT)
 
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         if self._model_numbers.get(motor_id) in self.MODELS_WITHOUT_CURRENT_CONTROL:
