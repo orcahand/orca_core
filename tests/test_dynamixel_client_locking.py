@@ -823,3 +823,38 @@ def test_a_small_limit_never_rounds_into_unlimited(client, bus, monkeypatch):
     client.write_servo_profile({1: ServoProfile(velocity_rad_s=1e-6)})
 
     assert dict(writes)[112] == [1]
+
+
+class TestStalePortBusyFlag:
+    """The SDK refuses every transaction while its busy flag is set. A raise
+    from the serial layer mid-transaction leaves it set, so the client clears
+    it when a read or write raises and when a busy result shows up under the
+    bus lock, where nothing else can be on the wire."""
+
+    def test_a_raising_port_read_releases_the_port(self, client):
+        port = client.port_handler
+        port.is_using = True
+
+        def boom(*_a, **_k):
+            raise OSError("device gone")
+
+        port.readPort = boom
+        from orca_core.hardware.dynamixel_client import _release_port_on_error
+        _release_port_on_error(port)
+        with pytest.raises(OSError):
+            port.readPort(4)
+        assert port.is_using is False
+
+    def test_a_busy_result_under_the_lock_clears_the_flag(self, client, monkeypatch):
+        monkeypatch.setattr(client.dxl, "COMM_PORT_BUSY", -1000, raising=False)
+        client.port_handler.is_using = True
+        with client._bus_lock:
+            ok = client.handle_packet_result(-1000, context="read")
+        assert ok is False
+        assert client.port_handler.is_using is False
+
+    def test_a_busy_result_outside_the_lock_is_left_alone(self, client, monkeypatch):
+        monkeypatch.setattr(client.dxl, "COMM_PORT_BUSY", -1000, raising=False)
+        client.port_handler.is_using = True
+        client.handle_packet_result(-1000, context="read")
+        assert client.port_handler.is_using is True

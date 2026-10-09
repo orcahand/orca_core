@@ -302,7 +302,7 @@ class DynamixelClient(MotorClient):
         self.baudrate = baudrate
         self.lazy_connect = lazy_connect
 
-        self.port_handler = self.dxl.PortHandler(port)
+        self.port_handler = _release_port_on_error(self.dxl.PortHandler(port))
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
 
         self._transport_bauds = _UNPROBED
@@ -1300,6 +1300,14 @@ class DynamixelClient(MotorClient):
         run from here: see :meth:`take_hardware_alerts`.
         """
         error_message = None
+        if (comm_result == getattr(self.dxl, 'COMM_PORT_BUSY', None)
+                and self._bus_lock._is_owned()):
+            # Under the bus lock nothing else can be mid-transaction, so the
+            # SDK's busy flag is stale: a transaction raised before clearing
+            # it. Clear it so the caller's retry goes through.
+            self.port_handler.is_using = False
+            logging.warning('Stale port-busy flag cleared%s',
+                            f' (motor {dxl_id})' if dxl_id is not None else '')
         if comm_result != self.dxl.COMM_SUCCESS:
             error_message = self.packet_handler.getTxRxResult(comm_result)
         elif dxl_error is not None:
@@ -1478,6 +1486,31 @@ def _open_scan_port(port_handler, port: str, baud_rate: int) -> bool:
     logging.warning("Scan could not open %s @ %d baud after %d attempts",
                     port, baud_rate, SCAN_PORT_OPEN_ATTEMPTS)
     return False
+
+
+def _release_port_on_error(handler):
+    """Make a port handler drop its busy flag when a read or write raises.
+
+    The SDK sets ``is_using`` before a transaction and clears it after; an
+    exception from the serial layer in between leaves it set, and every later
+    transaction on that port is refused as busy.
+    """
+    for name in ("readPort", "writePort"):
+        inner = getattr(handler, name, None)
+        if inner is None:
+            continue
+
+        def guarded(*args, _inner=inner, _name=name, **kwargs):
+            try:
+                return _inner(*args, **kwargs)
+            except Exception:
+                handler.is_using = False
+                logging.error('%s raised mid-transaction; port released', _name,
+                              exc_info=True)
+                raise
+
+        setattr(handler, name, guarded)
+    return handler
 
 
 class _AlertCaptureSyncRead:
