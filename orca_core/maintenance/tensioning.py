@@ -35,6 +35,14 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[dict], None]
 ShouldStop = Callable[[], bool]
 
+# How far the finger motors turn counterclockwise (the positive motor direction) under the tensioning
+# current, loading the bottom spools so the ratchet takes up more slack; each
+# "pull more" adds TENSION_EXTRA_DEG. The pull is ramped at PULL_SPEED_DEG_S.
+TENSION_OFFSET_DEG = 15.0
+TENSION_EXTRA_DEG = 15.0
+PULL_SPEED_DEG_S = 10.0
+PULL_STEP_S = 0.05
+
 
 def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
     """Fire a progress event. A misbehaving callback must not abort the routine."""
@@ -55,12 +63,51 @@ def _read_motor_pos_or_none(hand: "OrcaHand") -> Optional[np.ndarray]:
         return None
 
 
+def finger_motor_ids(config) -> List[int]:
+    return [m for joint, m in config.joint_to_motor_map.items()
+            if WRIST not in joint.lower() and m in config.motor_ids]
+
+
+def pull_tendons(
+    hand: "OrcaHand",
+    motor_ids: List[int],
+    offset_deg: float,
+    *,
+    start: Optional[np.ndarray] = None,
+    should_stop: Optional[ShouldStop] = None,
+) -> np.ndarray:
+    """Slowly turn ``motor_ids`` ``offset_deg`` counterclockwise and hold there, at the current limit.
+
+    Starts from ``start`` (the goals of an earlier pull, so a stalled motor still
+    gains the full extra) or else from where the motors stand. Returns the goals.
+    """
+    if start is None:
+        pos = read_motor_pos_checked(hand)
+        start = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
+        hand.write_motor_pos(motor_ids, start)
+    hand.enable_torque(motor_ids)
+    offset = math.radians(offset_deg)
+    steps = max(1, math.ceil(abs(offset_deg) / (PULL_SPEED_DEG_S * PULL_STEP_S)))
+    goals = start
+    for step in range(1, steps + 1):
+        if should_stop is not None and should_stop():
+            break
+        goals = start + offset * step / steps
+        hand.write_motor_pos(motor_ids, goals)
+        if step < steps:
+            time.sleep(PULL_STEP_S)
+    return goals
+
+
 def run_tension(
     hand: "OrcaHand",
     move_motors: bool = True,
     *,
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
+    offset_deg: float = TENSION_OFFSET_DEG,
+    pull_more: Optional[Callable[[], bool]] = None,
+    extra_deg: float = TENSION_EXTRA_DEG,
 ) -> None:
     """Hold motors under current so tendons can be tensioned by hand.
 
@@ -72,10 +119,14 @@ def run_tension(
     Args:
         hand: A connected :class:`~orca_core.OrcaHand`.
         move_motors: When ``True``, wind the tendons taut before holding.
+        offset_deg: How far the finger motors slowly turn counterclockwise once holding,
+            so the bottom spools are loaded while they are ratcheted; 0 holds still.
+        pull_more: Optional ``callable() -> bool`` polled while holding; each
+            True pulls ``extra_deg`` further (emits ``pulled`` with the total).
         progress_callback: Optional ``callable(dict)`` invoked with
             structured progress events (``phase`` with
-            winding/ramp/holding/released, ``winding_progress``,
-            ``cleanup_failed``). Must be fast and non-blocking; exceptions
+            winding/ramp/holding/released, ``winding_progress``, ``pulled``
+            with ``total_deg``, ``cleanup_failed``). Must be fast and non-blocking; exceptions
             it raises are swallowed.
         should_stop: Optional ``callable() -> bool`` polled between motor
             commands; return ``True`` to leave the hold cooperatively.
@@ -94,11 +145,7 @@ def run_tension(
     try:
         if move_motors:
             _emit(progress_callback, "phase", phase="winding")
-            motors_to_move = [
-                motor_id
-                for joint, motor_id in hand.config.joint_to_motor_map.items()
-                if WRIST not in joint.lower() and motor_id in hand.config.motor_ids
-            ]
+            motors_to_move = finger_motor_ids(hand.config)
             hand.set_max_current(hand.config.calibration_current)
 
             increment_per_step = 0.1
@@ -164,9 +211,20 @@ def run_tension(
             time.sleep(0.05)
         hand.set_max_current(max_cur)
         hand.enable_torque()
+        fingers = finger_motor_ids(hand.config)
+        goals = None
+        pulled = 0.0
+        if offset_deg:
+            goals = pull_tendons(hand, fingers, offset_deg, should_stop=should_stop)
+            pulled = offset_deg
+            _emit(progress_callback, "pulled", total_deg=pulled)
         logger.info("holding motors for manual tendon tensioning")
         _emit(progress_callback, "phase", phase="holding")
         while not should_stop():
+            if pull_more is not None and pull_more():
+                goals = pull_tendons(hand, fingers, extra_deg, start=goals, should_stop=should_stop)
+                pulled += extra_deg
+                _emit(progress_callback, "pulled", total_deg=pulled)
             time.sleep(0.1)
     except BaseException:
         # Cleanup failures are reported, not raised, so the original error

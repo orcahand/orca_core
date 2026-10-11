@@ -2,6 +2,7 @@
 
 import argparse
 
+from orca_core.maintenance.tensioning import TENSION_OFFSET_DEG
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 
 
@@ -25,13 +26,20 @@ def main() -> int:
         default=True,
         help="Run the built-in preconditioning motion before holding tension (default: True).",
     )
+    parser.add_argument(
+        "--tension-offset",
+        type=float,
+        default=TENSION_OFFSET_DEG,
+        help=f"Degrees the finger motors turn counterclockwise while holding (default {TENSION_OFFSET_DEG:g}; 0 holds still).",
+    )
     args = parser.parse_args()
 
     # tension() refuses to run against a live joint loop; connect open-loop.
     hand = create_hand_from_args(args, engage_feedback=False)
     try:
         connect_hand(hand)
-        hand.tension(move_motors=args.move_motors, progress_callback=_print_progress)
+        hand.tension(move_motors=args.move_motors, progress_callback=_print_progress,
+                     offset_deg=args.tension_offset)
         return 0
     except KeyboardInterrupt:
         print("\nTension interrupted.")

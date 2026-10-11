@@ -30,6 +30,11 @@ JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 JOINT_ROMS_MEASURED = "joint_roms_measured"
 JOINT_MOTOR_TRAVEL = "joint_motor_travel"
+# The packaged baseline, in force only on v2.1 hardware.
+JOINT_MOTOR_TRAVEL_V21 = "joint_motor_travel_v21"
+CALIBRATION_CURRENT_V21 = "calibration_current_v21"
+# Joint groups calibration_current_v21 sets a current for.
+CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
@@ -37,6 +42,13 @@ DEFAULT_MODEL_NAME = "orcahand-right"
 # multiple of ``calibration_current``, when config.yaml pins no explicit
 # ``calibration_retry_current``.
 DEFAULT_RETRY_CURRENT_SCALE = 1.5
+
+# With neither ``calibration_retry_current`` nor ``calibration_max_current``
+# pinned, each re-drive of a joint that stopped short of its full sweep adds
+# this much to the nominal calibration current (mA) — 300 → 350 → 400 → 450
+# on a Dynamixel hand over the default three attempts.
+CALIBRATION_RETRY_STEP_MA = 50
+DEFAULT_CALIBRATION_TRAVEL_RETRIES = 3
 
 # A calibration sweep that ends with its two motor limits this close together
 # did not find two hardstops: the motor never turned. Committing such a pair

@@ -9,16 +9,22 @@
 import dataclasses
 import math
 import os
+import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from .constants import (
+    CALIBRATION_CURRENT_V21,
+    CALIBRATION_GROUPS,
+    CALIBRATION_RETRY_STEP_MA,
     CONTROL_MODES,
+    DEFAULT_CALIBRATION_TRAVEL_RETRIES,
     DEFAULT_MODEL_NAME,
     DEFAULT_RETRY_CURRENT_SCALE,
     FINGER_NAMES,
     JOINT_IDS,
     JOINT_MOTOR_TRAVEL,
+    JOINT_MOTOR_TRAVEL_V21,
     JOINT_ROM_DICT,
     HARDWARE_VERSION,
     HARDWARE_VERSION_V21,
@@ -26,6 +32,7 @@ from .constants import (
     JOINT_TO_MOTOR_MAP_V21,
     MOTOR_IDS,
     SUPPORTED_MOTOR_TYPES,
+    WRIST,
 )
 from .control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
@@ -40,7 +47,7 @@ from .hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
-from .utils.utils import get_model_path, read_yaml
+from .utils.utils import get_model_path, read_yaml, write_text_atomic
 
 
 # What a current limit says in config.yaml to take the motor family's own value.
@@ -208,6 +215,80 @@ def _canonical_joint_to_motor_map(
         inversion_dict[joint] = motor_id < 0
         normalized_map[joint] = abs(motor_id)
     return normalized_map, inversion_dict
+
+
+def format_hardware_version(version: int | None) -> str:
+    """``21`` -> ``"v2.1"``, ``2`` -> ``"v2.0"``; the board stores major*10 + minor,
+    and a single digit is a bare major."""
+    if version is None:
+        return "an unknown version"
+    major, minor = (version, 0) if version < 10 else divmod(version, 10)
+    return f"v{major}.{minor}"
+
+
+def write_hardware_version(config_path: str, version: int | None) -> None:
+    """Pin ``hardware_version`` in ``config_path``, or put it back on ``auto``
+    for ``None``. Only that line changes; comments and order are kept."""
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 0):
+        raise HandConfigValidationError(
+            f"{HARDWARE_VERSION} must be a non-negative integer or None, got {version!r}"
+        )
+    line = f"{HARDWARE_VERSION}: {'auto' if version is None else version}"
+    with open(config_path, encoding="utf-8") as f:
+        text = f.read()
+    pattern = re.compile(rf"^{HARDWARE_VERSION}:[^\n]*$", re.M)
+    if pattern.search(text):
+        text = pattern.sub(line, text, count=1)
+    else:
+        text = text.rstrip("\n") + f"\n\n{line}\n"
+    write_text_atomic(config_path, text)
+
+
+def calibration_group(joint: str) -> Optional[str]:
+    """``abd`` (the abductions and thumb_cmc), ``mcp``, ``pip`` (the PIPs and thumb_dip), or None for the wrist."""
+    if joint == WRIST:
+        return None
+    if joint.endswith("_abd") or joint == "thumb_cmc":
+        return "abd"
+    return "mcp" if joint.endswith("_mcp") else "pip"
+
+
+def _parse_group_currents(raw, key: str) -> Dict[str, Dict[str, int]]:
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise HandConfigValidationError(
+            f"{key} must map a motor family to per-group currents in mA, got {raw!r}"
+        )
+    by_family = {}
+    for family, groups in raw.items():
+        if not isinstance(groups, dict) or not set(groups) <= set(CALIBRATION_GROUPS):
+            raise HandConfigValidationError(
+                f"{key}[{family}] must map {', '.join(CALIBRATION_GROUPS)} to a current in mA, "
+                f"got {groups!r}"
+            )
+        for group, current in groups.items():
+            if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+                raise HandConfigValidationError(
+                    f"{key}[{family}][{group}] must be a positive number of mA, got {current!r}"
+                )
+        by_family[str(family)] = {str(g): int(c) for g, c in groups.items()}
+    return by_family
+
+
+def _parse_motor_travel(raw, key: str) -> Dict[str, float]:
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise HandConfigValidationError(
+            f"{key} must be a mapping of joint name to motor travel in degrees, got {raw!r}"
+        )
+    travel_by_joint = {}
+    for joint, travel in raw.items():
+        if travel is None or isinstance(travel, bool) or not isinstance(travel, (int, float)):
+            raise HandConfigValidationError(
+                f"{key}[{joint}] must be a number of degrees, got {travel!r}"
+            )
+        travel_by_joint[str(joint)] = float(travel)
+    return travel_by_joint
 
 
 def _validated_gain_partial(raw, where: str) -> Dict[str, float]:
@@ -384,7 +465,7 @@ class OrcaHandConfig(BaseHandConfig):
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
     # The hand's hardware version (2 = v2.0, 21 = v2.1). It selects which
-    # joint_to_motor_map is in force. Pinned in the yaml by a hand whose motor
+    # joint_to_motor_map is in force and gates the v2.1-only features. Pinned in the yaml by a hand whose motor
     # bus has no controller board to report it; otherwise `auto`, and load_hand
     # fills it from the board. A pin beats the board and the clash is logged,
     # as for port and motor_type. None means not known.
@@ -398,6 +479,9 @@ class OrcaHandConfig(BaseHandConfig):
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
     wrist_calibration_current: int | str | None = None
+    # v2.1 only: per motor family, a calibration current per joint group (see
+    # calibration_group) that replaces calibration_current for those joints.
+    calibration_current_v21_dict: Dict[str, Dict[str, int]] = field(default_factory=dict)
     calibration_step_size: float = 0.1  # rad
     calibration_step_period: float = 0.01  # s
     calibration_threshold: float = 0.01  # rad
@@ -406,20 +490,22 @@ class OrcaHandConfig(BaseHandConfig):
     # Motor-shaft travel between a joint's two hardstops, in degrees, keyed by
     # joint name. The travel a joint's motor makes is set by that joint's
     # tendon spool diameter, so it belongs to the joint and is resolved to a
-    # motor only where it is used - motor IDs differ per hand.
+    # motor only where it is used - motor IDs differ per hand. A hand's own
+    # measurement (``joint_motor_travel``) wins over the packaged v2.1 baseline.
     joint_motor_travel_dict: Dict[str, float] = field(default_factory=dict)
+    joint_motor_travel_v21_dict: Dict[str, float] = field(default_factory=dict)
     # Fraction of the expected travel a measured travel may deviate by before
     # the calibration routine re-drives the joint at a higher current.
     calibration_travel_margin: float = 0.25
     # Current the re-drive uses (mA). None derives it from calibration_current.
     calibration_retry_current: int | None = None
-    calibration_travel_retries: int = 1
+    calibration_travel_retries: int = DEFAULT_CALIBRATION_TRAVEL_RETRIES
     # Ceiling for the re-drive only (mA), independent of max_current: getting a
     # joint past an over-tensioned tendon takes more torque than the hand is
     # allowed to use in normal operation, and the routine restores max_current
-    # as soon as it finishes. Unset means no headroom, so the re-drive repeats
-    # at the nominal calibration current: the useful ceiling depends on what
-    # the motors and tendons of that hand tolerate, which is measured per hand.
+    # as soon as it finishes. Unset (with calibration_retry_current unset too)
+    # steps each re-drive CALIBRATION_RETRY_STEP_MA above the last, so the top
+    # attempt is retries x step above the nominal calibration current.
     calibration_max_current: int | None = None
     use_joint_feedback: bool | None = None
     # Joint names or the ["all"] sentinel (every slotted joint, wrist
@@ -454,19 +540,47 @@ class OrcaHandConfig(BaseHandConfig):
         return {joint: self.joint_gains_for(joint) for joint in self.joint_ids}
 
     @property
-    def calibration_retry_current_resolved(self) -> int:
-        """Current (mA) a short-travel joint is re-driven at.
+    def calibration_group_currents(self) -> Dict[str, int]:
+        """The per-group calibration currents in force: v2.1 hardware with an
+        entry for this hand's motor family, else none."""
+        if not self.uses_motor_travel:
+            return {}
+        return dict(self.calibration_current_v21_dict.get(str(self.motor_type), {}))
+
+    def calibration_current_for(self, joint: Optional[str]) -> float:
+        """The current (mA) ``joint`` is driven onto its hardstops with."""
+        if joint == WRIST:
+            return self.wrist_calibration_current
+        group = calibration_group(joint) if joint else None
+        return self.calibration_group_currents.get(group, self.calibration_current)
+
+    def calibration_retry_current_for(self, joint: Optional[str] = None) -> int:
+        """Current (mA) a short-travel ``joint`` is re-driven at.
 
         An over-tensioned tendon stalls the drive before the hardstop, so the
         re-drive needs more torque than the nominal calibration pass. Config
-        may pin it outright; otherwise it scales off ``calibration_current``.
+        may pin it outright; otherwise it scales off the joint's own current.
         """
         if self.calibration_retry_current is not None:
             return self.calibration_retry_current
-        return int(round(self.calibration_current * DEFAULT_RETRY_CURRENT_SCALE))
+        return int(round(self.calibration_current_for(joint) * DEFAULT_RETRY_CURRENT_SCALE))
 
-    def retry_current_for_attempt(self, attempt: int) -> float:
-        """Current (mA) for 1-based re-drive ``attempt``.
+    @property
+    def calibration_retry_current_resolved(self) -> int:
+        """Current (mA) a short-travel joint on the plain calibration current is re-driven at."""
+        return self.calibration_retry_current_for(None)
+
+    @property
+    def retry_steps_by_default(self) -> bool:
+        """Re-drives step up by CALIBRATION_RETRY_STEP_MA, nothing being pinned."""
+        return self.calibration_retry_current is None and self.calibration_max_current is None
+
+    def retry_current_for_attempt(self, attempt: int, joint: Optional[str] = None) -> float:
+        """Current (mA) for 1-based re-drive ``attempt`` of ``joint``.
+
+        With neither ``calibration_retry_current`` nor ``calibration_max_current``
+        pinned, each attempt adds CALIBRATION_RETRY_STEP_MA to the nominal
+        current. Otherwise:
 
         Successive attempts ramp evenly from the nominal calibration current up
         to :attr:`calibration_retry_current_resolved`, so a hand that only
@@ -488,19 +602,33 @@ class OrcaHandConfig(BaseHandConfig):
             raise ValueError(
                 f"attempt {attempt} is outside 1..{self.calibration_travel_retries}"
             )
-        base = float(self.calibration_current)
-        top = float(self.calibration_retry_current_resolved)
+        base = float(self.calibration_current_for(joint))
+        if self.retry_steps_by_default:
+            return base + CALIBRATION_RETRY_STEP_MA * attempt
+        top = float(self.calibration_retry_current_for(joint))
         ramped = base + (top - base) * attempt / self.calibration_travel_retries
         ceiling = (
             self.calibration_max_current
             if self.calibration_max_current is not None
-            else self.calibration_current
+            else base
         )
         return min(ramped, float(ceiling))
 
-    def expected_motor_travel_deg(self, joint: str) -> float | None:
-        """Baseline motor travel for ``joint``, or ``None`` if unmeasured."""
-        return self.joint_motor_travel_dict.get(joint)
+    @property
+    def uses_motor_travel(self) -> bool:
+        """Whether the travel-based features (calibration's short-travel
+        re-drive, guided tensioning) apply: v2.1 hardware only."""
+        return self.hardware_version == HARDWARE_VERSION_V21
+
+    def expected_motor_travel_deg(self, joint: str, *, any_hardware: bool = False) -> float | None:
+        """Baseline motor travel for ``joint``, or ``None`` if there is none.
+
+        ``None`` on anything but v2.1 hardware unless ``any_hardware`` is set,
+        which an operator's explicit override of the version gate uses.
+        """
+        if not (self.uses_motor_travel or any_hardware):
+            return None
+        return self.joint_motor_travel_dict.get(joint, self.joint_motor_travel_v21_dict.get(joint))
 
     @property
     def motor_id_to_idx_dict(self) -> Dict[int, int]:
@@ -619,22 +747,14 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["calibration_num_stable"] = int(config["calibration_num_stable"])
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
-        if JOINT_MOTOR_TRAVEL in config:
-            raw_travel = config[JOINT_MOTOR_TRAVEL] or {}
-            if not isinstance(raw_travel, dict):
-                raise HandConfigValidationError(
-                    f"{JOINT_MOTOR_TRAVEL} must be a mapping of joint name to "
-                    f"motor travel in degrees, got {raw_travel!r}"
-                )
-            travel_by_joint = {}
-            for joint, travel in raw_travel.items():
-                if travel is None or isinstance(travel, bool) or not isinstance(travel, (int, float)):
-                    raise HandConfigValidationError(
-                        f"{JOINT_MOTOR_TRAVEL}[{joint}] must be a number of degrees, "
-                        f"got {travel!r}"
-                    )
-                travel_by_joint[str(joint)] = float(travel)
-            kwargs["joint_motor_travel_dict"] = travel_by_joint
+        if CALIBRATION_CURRENT_V21 in config:
+            kwargs["calibration_current_v21_dict"] = _parse_group_currents(
+                config[CALIBRATION_CURRENT_V21], CALIBRATION_CURRENT_V21
+            )
+        for key, kwarg in ((JOINT_MOTOR_TRAVEL, "joint_motor_travel_dict"),
+                           (JOINT_MOTOR_TRAVEL_V21, "joint_motor_travel_v21_dict")):
+            if key in config:
+                kwargs[kwarg] = _parse_motor_travel(config[key], key)
         if "calibration_travel_margin" in config:
             kwargs["calibration_travel_margin"] = float(
                 config["calibration_travel_margin"]
@@ -672,7 +792,9 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_gains_all"] = gains_all
             kwargs["joint_gains_overrides"] = overrides
 
-        return cls(**kwargs)
+        # A pinned version is in force from load, so a hand built straight from
+        # the path (not through load_hand) still gets that revision's map.
+        return cls(**kwargs).with_hardware_version(kwargs.get("hardware_version"))
 
     def validate_control_mode(self) -> None:
         """Check ``control_mode`` against what the motor family accepts.
@@ -782,17 +904,18 @@ class OrcaHandConfig(BaseHandConfig):
 
     def _validate_travel_check(self) -> None:
         """Validate the dynamic short-travel re-drive settings."""
-        for joint, travel in self.joint_motor_travel_dict.items():
-            if joint not in self.joint_ids:
-                raise HandConfigValidationError(
-                    f"{JOINT_MOTOR_TRAVEL} names joint {joint!r}, which is not "
-                    f"in joint_ids."
-                )
-            if not math.isfinite(travel) or travel <= 0:
-                raise HandConfigValidationError(
-                    f"{JOINT_MOTOR_TRAVEL}[{joint}] must be a positive number "
-                    f"of degrees, got {travel!r}"
-                )
+        for key, travel_by_joint in ((JOINT_MOTOR_TRAVEL, self.joint_motor_travel_dict),
+                                     (JOINT_MOTOR_TRAVEL_V21, self.joint_motor_travel_v21_dict)):
+            for joint, travel in travel_by_joint.items():
+                if joint not in self.joint_ids:
+                    raise HandConfigValidationError(
+                        f"{key} names joint {joint!r}, which is not in joint_ids."
+                    )
+                if not math.isfinite(travel) or travel <= 0:
+                    raise HandConfigValidationError(
+                        f"{key}[{joint}] must be a positive number of degrees, "
+                        f"got {travel!r}"
+                    )
 
         margin = self.calibration_travel_margin
         if not math.isfinite(margin) or not 0 < margin < 1:

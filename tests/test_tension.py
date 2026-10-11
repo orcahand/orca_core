@@ -194,3 +194,33 @@ def test_winding_skips_ticks_while_the_bus_stays_silent(connected_mock_hand, mon
     monkeypatch.setattr(tensioning, "read_motor_pos_checked", flaky_read)
     tensioning.run_tension(hand, move_motors=True, should_stop=stop_after_a_few_ticks)
     assert calls["reads"] >= 5, "winding stopped reading after the failures"
+
+
+def test_the_hold_pulls_counterclockwise_and_more_on_request(connected_mock_hand):
+    import math
+
+    from orca_core.maintenance.tensioning import finger_motor_ids
+
+    hand = connected_mock_hand
+    client = hand.motor_client
+    fingers = finger_motor_ids(hand.config)
+    start = {m: client._pos[m] for m in fingers}
+    totals, holding, pulled_more = [], threading.Event(), threading.Event()
+    requests = [True]
+
+    def on_event(event):
+        if event["event"] == "pulled":
+            totals.append(event["total_deg"])
+            if len(totals) == 2:
+                pulled_more.set()
+        if event.get("phase") == "holding":
+            holding.set()
+
+    hand.tension(move_motors=False, blocking=False, progress_callback=on_event,
+                 offset_deg=15.0, extra_deg=15.0,
+                 pull_more=lambda: holding.is_set() and bool(requests) and requests.pop())
+    assert pulled_more.wait(timeout=10.0), f"never pulled more: {totals}"
+    goals = {m: client._pos[m] for m in fingers}
+    assert hand.stop_task(timeout=10.0)
+    assert totals == [15.0, 30.0]
+    assert all(goals[m] == pytest.approx(start[m] + math.radians(30.0)) for m in fingers)

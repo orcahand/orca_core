@@ -13,7 +13,8 @@ orca_core/
 │   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
 │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
 │   ├── motor_travel.py              # per-joint motor-travel baselines (config.yaml joint_motor_travel)
-│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
+│   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
+│   └── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
@@ -260,18 +261,28 @@ All hand-specific settings are in `config.yaml`:
   (Dynamixel 300/300, Feetech 900/900). A number pins an override for one hand. Resolution
   happens in `load_hand()` when the family is detected or pinned, otherwise at connect, so
   read these fields after `connect()`.
-- `joint_motor_travel:` - motor-shaft travel between each joint's hardstops, in degrees, **keyed by
-  joint name** (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
+- `joint_motor_travel_v21:` / `joint_motor_travel:` - motor-shaft travel between each joint's
+  hardstops, in degrees, **keyed by joint name**. **v2.1 hardware only**: on v2.0 or an unknown
+  version `expected_motor_travel_deg()` is `None`, so calibration is one plain pass (no travel
+  check, no re-drive) and guided tensioning refuses (`any_hardware=True` overrides). The packaged
+  models ship the shared baseline as `joint_motor_travel_v21`; a hand's own measured
+  `joint_motor_travel` wins per joint (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
   routine resolves the motor through `joint_to_motor_map` at the point of use). Calibration re-drives
   a joint that measures more than `calibration_travel_margin` short of its baseline
-  (`calibration_travel_retries`), escalating the current only when `calibration_max_current`
-  grants headroom (`calibration_retry_current` is the target) - the fix for an over-tensioned hand
-  whose joints stall before their hardstops. Generate it with `scripts/measure_travel.py` into your
-  own copy of a config, never by hand and never into a packaged model: the numbers are per hand.
+  (`calibration_travel_retries`, default 3). With nothing pinned each re-drive adds 50 mA
+  (`CALIBRATION_RETRY_STEP_MA`; 300 → 350 → 400 → 450 on Dynamixel); pinning `calibration_max_current`
+  and/or `calibration_retry_current` switches to an even ramp up to the retry current, capped at
+  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. The v2 models ship one shared v2.1 baseline (the spool
+  geometry is the same on every hand), measured with `scripts/measure_travel.py` on a freshly
+  tensioned hand; guided tensioning (`scripts/guided_tension.py`) scores slack against it too.
+- `calibration_current_v21:` - **v2.1 only**: per motor family, a calibration current per joint
+  group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
+  `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
+  The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
-  `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` picks which is in
-  force: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
+  `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
+  config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
   byte, `major*10 + minor`); a pinned integer is for a hand on a plain adapter with no board to
   ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A caller
   that loads by path hands the board's value to `load_hand(detected_hardware_version=)`, which

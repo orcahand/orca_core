@@ -126,13 +126,10 @@ def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) 
 
 
 def _calibration_currents(hand: "OrcaHand") -> "list[float]":
-    """Per-motor calibration currents: the wrist value on the wrist motor, the finger value elsewhere."""
-    wrist_motor = hand.config.joint_to_motor_map.get(WRIST)
-    return [
-        float(hand.config.wrist_calibration_current if motor_id == wrist_motor
-              else hand.config.calibration_current)
-        for motor_id in hand.config.motor_ids
-    ]
+    """Per-motor calibration currents: each motor at its joint's calibration current."""
+    joint_of = {m: j for j, m in hand.config.joint_to_motor_map.items()}
+    return [float(hand.config.calibration_current_for(joint_of.get(motor_id)))
+            for motor_id in hand.config.motor_ids]
 
 
 def run_calibration(
@@ -343,14 +340,7 @@ class _EncoderPass:
 def _nominal_step_current(hand: "OrcaHand") -> Callable[[str], float]:
     """The current each joint is normally driven onto its hardstop with."""
 
-    def current_for(joint: str) -> float:
-        return (
-            hand.config.calibration_current
-            if joint != WRIST
-            else hand.config.wrist_calibration_current
-        )
-
-    return current_for
+    return hand.config.calibration_current_for
 
 
 def _motor_temperature(hand: "OrcaHand", motor_id: int) -> float | None:
@@ -1246,7 +1236,7 @@ def _redrive_joint(
             ) is None:
                 return False
     finally:
-        hand.set_max_current(hand.config.calibration_current)
+        hand.set_max_current(_calibration_currents(hand))
     return True
 
 
@@ -1275,6 +1265,7 @@ def _resolve_short_travel(
     current cannot shorten a span, and the cause is a slipped tendon or a stale
     baseline rather than tension.
 
+    Only v2.1 hardware is checked; on any other a single plain pass is kept.
     A joint with no configured baseline is measured and left alone, as is a
     motor whose torque the current cap does not govern. Returns ``False`` if
     ``should_stop`` fired during a re-drive.
@@ -1282,6 +1273,8 @@ def _resolve_short_travel(
     config = hand.config
     measured = motor_travel_deg(state.pending_limits[motor_id])
     motor_travel_measured[joint] = measured
+    if not config.uses_motor_travel:
+        return True
     expected = config.expected_motor_travel_deg(joint)
 
     if expected is None:
@@ -1416,27 +1409,28 @@ def _resolve_short_travel(
     # current when no ceiling is set. With no headroom it repeats the pass that
     # already stalled, so say so here rather than leaving the operator to
     # wonder why the boost changed nothing.
+    nominal = config.calibration_current_for(joint)
     ceiling = (
         config.calibration_max_current
         if config.calibration_max_current is not None
-        else config.calibration_current
+        else nominal
     )
-    if config.calibration_retry_current_resolved > ceiling:
+    if not config.retry_steps_by_default and config.calibration_retry_current_for(joint) > ceiling:
         logger.warning(
             "the re-drive for %s is capped at calibration_max_current (%d mA): "
             "it would otherwise use %d mA, so it repeats the pass that already "
             "stalled. Raise calibration_max_current or lower "
             "calibration_current (%d mA) to give it headroom.",
             joint, ceiling,
-            config.calibration_retry_current_resolved,
-            config.calibration_current,
+            config.calibration_retry_current_for(joint),
+            nominal,
         )
 
     best_limits = list(state.pending_limits[motor_id])
     best_travel = measured
 
     for attempt in range(1, config.calibration_travel_retries + 1):
-        current = config.retry_current_for_attempt(attempt)
+        current = config.retry_current_for_attempt(attempt, joint)
         _emit(
             progress_callback,
             "travel_retry_started",
@@ -1451,7 +1445,7 @@ def _resolve_short_travel(
         logger.warning(
             "joint %s (motor %d) re-drive %d/%d at %.0f mA (nominal %.0f mA)",
             joint, motor_id, attempt, config.calibration_travel_retries,
-            current, config.calibration_current,
+            current, nominal,
         )
 
         if not _redrive_joint(
@@ -1498,7 +1492,7 @@ def _resolve_short_travel(
                 "at %.0f mA (was %.2f deg at %.0f mA); calibrated from the "
                 "re-driven limits",
                 joint, motor_id, retried, expected, current,
-                measured, config.calibration_current,
+                measured, nominal,
             )
             return True
 
@@ -1513,7 +1507,7 @@ def _resolve_short_travel(
     motor_travel_measured[joint] = best_travel
     if best_travel > measured:
         boosted_joints[joint] = config.retry_current_for_attempt(
-            config.calibration_travel_retries
+            config.calibration_travel_retries, joint
         )
     _emit(
         progress_callback,
@@ -1532,7 +1526,7 @@ def _resolve_short_travel(
         "the joint_motor_travel baseline.",
         joint, motor_id, expected, best_travel,
         config.calibration_travel_retries,
-        config.retry_current_for_attempt(config.calibration_travel_retries),
+        config.retry_current_for_attempt(config.calibration_travel_retries, joint),
     )
     return True
 

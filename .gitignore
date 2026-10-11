@@ -149,4 +149,6 @@ replay_sequences/
 # joint usage counters. All are one hand's history, not shared assets.
 calibration.yaml.bak-*
 calibration_history.jsonl
+last_tension.yaml
+tension_progress.yaml
 joint_usage.json
