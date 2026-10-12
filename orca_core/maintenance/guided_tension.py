@@ -300,7 +300,7 @@ class _SpreadSampler(threading.Thread):
         self._pass_fraction = pass_fraction
         self._round = round_no
         self._progress_callback = progress_callback
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._active = threading.Event()
         self._active.set()
         self._joints: Optional[set] = None
@@ -317,7 +317,7 @@ class _SpreadSampler(threading.Thread):
 
     def run(self) -> None:
         try:
-            while not self._stop.wait(SAMPLE_PERIOD_S):
+            while not self._stop_event.wait(SAMPLE_PERIOD_S):
                 if not self._active.is_set():
                     continue
                 try:
@@ -338,7 +338,7 @@ class _SpreadSampler(threading.Thread):
             self.error = exc
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         self.join()
 
 
