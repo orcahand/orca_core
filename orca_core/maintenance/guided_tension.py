@@ -303,13 +303,16 @@ class _SpreadSampler(threading.Thread):
         self._stop = threading.Event()
         self._active = threading.Event()
         self._active.set()
+        self._joints: Optional[set] = None
         self.error: Optional[BaseException] = None
 
     def pause(self) -> None:
         """Stop recording: posing the hand for the next stage is not range."""
         self._active.clear()
 
-    def resume(self) -> None:
+    def resume(self, joints: Optional[Sequence[str]] = None) -> None:
+        """Record ``joints`` (every target when None); the others keep their last values."""
+        self._joints = None if joints is None else set(joints)
         self._active.set()
 
     def run(self) -> None:
@@ -323,6 +326,8 @@ class _SpreadSampler(threading.Thread):
                     logger.warning("%s; skipping this sample", exc)
                     continue
                 for spread, idx in zip(self._spreads, self._idx):
+                    if self._joints is not None and spread.joint not in self._joints:
+                        continue
                     offset = math.degrees(pos[idx] - self._centre[idx])
                     spread.offset_deg = offset
                     spread.plus_deg = max(spread.plus_deg, offset)
@@ -422,8 +427,11 @@ def run_guided_tension(
 
     - ``pose``: torque off; pose the hand as ``stage["pose"]`` says. → ``Continue``
       (``Back`` to the previous stage's pose)
-    - ``range_check``: motors hold that pose at ``hold_current``; drive the
-      stage's joints through their range while ``spread`` events stream.
+    - ``range_check``: the stage's motors hold that pose at ``hold_current``
+      and every other finger is frozen at ``tension_current``; drive the
+      stage's joints through their range while ``spread`` events stream
+      (only the stage's joints are sampled). The prompt carries the stage's
+      ``hold_current`` per joint and the ``freeze_current``.
       → ``Next``, or ``Score`` on the round's last stage (``Back`` to re-pose)
     - ``score``: carries the round's score. → ``Finish`` at 100 %, else
       ``Tension`` / ``Finish anyway`` (``Back`` to the last stage)
@@ -559,18 +567,23 @@ def run_guided_tension(
                             continue
 
                         hold_ma = joint_currents(config, hold_current, absent)
-                        centre = _hold_here(hand, motor_ids, hold_ma)
+                        # Only the stage's joints yield at the hold current; the other
+                        # fingers are frozen at the tension current so a stray push
+                        # cannot move them, and they are not sampled meanwhile.
+                        freeze_ma = _resolve(tension_current)
+                        held = {j: (ma if j in stage.joints else freeze_ma) for j, ma in hold_ma.items()}
+                        centre = _hold_here(hand, motor_ids, held)
                         if sampler is None:
                             sampler = _SpreadSampler(hand, spreads, centre, pass_fraction,
                                                      round_no, progress_callback, excluded)
                             sampler.start()
-                        else:
-                            sampler.resume()
+                        sampler.resume(stage.joints)
                         _emit(progress_callback, "step", step="range", **info)
                         last = next_pending(passed, i + 1) == len(stages)
                         answer = _ask(prompt_callback, should_stop, "range_check",
                                       [CHECK_SCORE if last else NEXT, BACK] + nav,
-                                      hold_current=hold_ma, pass_fraction=thresholds, **info)
+                                      hold_current={j: held[j] for j in hold_ma if j in stage.joints},
+                                      freeze_current=freeze_ma, pass_fraction=thresholds, **info)
                         if answer in (GOTO_SCORE, GOTO_TENSION):
                             jump = answer
                             break

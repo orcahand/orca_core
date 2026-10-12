@@ -206,3 +206,45 @@ def test_a_finger_that_overruns_its_baseline_is_given_up_without_a_pwm_retry(con
     given_up = [e for e in events if e["event"] == "hardstop_not_found"]
     assert given_up and given_up[0]["limit_deg"] == pytest.approx(720.0), "a tendon joint keeps the two-turn cap"
     assert not [e for e in events if e["event"] == "overrun_retry"]
+
+
+def test_the_other_fingers_are_frozen_and_not_sampled_during_a_stage(connected_mock_hand):
+    """During a stage only its joints yield at the hold current and only they
+    are recorded; every other finger holds at the tension current and its
+    spread does not change however it is moved."""
+    from orca_core.constants import HARDWARE_VERSION_V21
+
+    hand = connected_mock_hand
+    hand.config = hand.config.with_hardware_version(HARDWARE_VERSION_V21)
+    client = hand.motor_client
+    motor_of = hand.config.joint_to_motor_map
+    seen = {}
+    spread_seen = threading.Event()
+
+    def progress(event):
+        if event["event"] == "spread":
+            spread_seen.set()
+            seen["motors"] = {m["joint"]: m for m in event["motors"]}
+
+    def prompt(p):
+        if p["action"] == "range_check" and p["stage"]["key"] == "thumb_index":
+            seen["prompt"] = p
+            seen["currents"] = dict(client._cur)
+            # Shove a ring motor: it is not this stage's, so its spread must not move.
+            client._pos[motor_of["ring_mcp"]] += 1.0
+            spread_seen.clear(); assert spread_seen.wait(5)
+            spread_seen.clear(); assert spread_seen.wait(5)
+            return "goto:score"
+        if p["action"] == "score":
+            return FINISH_ANYWAY
+        return p["options"][0]
+
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=False,
+                       hold_current=100, tension_current=400)
+
+    p = seen["prompt"]
+    assert set(p["hold_current"]) == set(p["stage"]["joints"])
+    assert p["freeze_current"] == 400
+    assert seen["currents"][motor_of["index_mcp"]] == pytest.approx(100)
+    assert seen["currents"][motor_of["ring_mcp"]] == pytest.approx(400)
+    assert seen["motors"]["ring_mcp"]["spread_deg"] == 0.0

@@ -58,7 +58,8 @@ def _prompt(prompt: dict) -> str:
     elif action == "range_check":
         lo, hi = min(prompt['hold_current'].values()), max(prompt['hold_current'].values())
         held = f"{lo:.0f} mA" if lo == hi else f"{lo:.0f}-{hi:.0f} mA"
-        print(f"Motors hold this pose at {held}. Drive {', '.join(prompt['stage']['joints'])} "
+        print(f"The {prompt['stage']['title'].lower()} motors hold this pose at {held}; the other fingers are "
+              f"frozen at {prompt['freeze_current']:.0f} mA. Drive {', '.join(prompt['stage']['joints'])} "
               f"through their full range, then press Enter.")
         _live.set()
     elif action == "tension":
