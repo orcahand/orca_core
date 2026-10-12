@@ -66,6 +66,13 @@ DRIVE_STEP_TIMEOUT_S = 30.0
 # no hardstop ahead of it: the tendon is slack or broken. The step gives up
 # on that joint long before the wall-clock backstop.
 MAX_DRIVE_TURNS = 2.0
+# A multi-turn wrist with a travel baseline is given up at this many times
+# the baseline instead: on a belt the sweep can run past the stop, and half
+# again its travel means it has.
+OVERRUN_BASELINE_SCALE = 1.5
+# A multi-turn wrist that overran is driven again with its PWM output scaled
+# by this much per attempt: a belt that skipped at full output holds at less.
+WRIST_PWM_RETRY_SCALE = 0.75
 
 # Fraction of its ``joint_motor_travel`` baseline below which a joint is
 # treated as not having moved at all rather than as short-travelled. Raising

@@ -217,11 +217,18 @@ def print_calibration_progress(event: dict) -> None:
             f"during its {event.get('direction') or ''} sweep "
             f"({event['moved_deg']:.1f} deg); check the tendon and the joint."
         )
+    elif name == "overrun_retry":
+        print(
+            f"  WARNING: motor {event['motor']} ({event['joint']}) turned "
+            f"{event['travel_deg']:.0f} deg past its {event['limit_deg']:.0f} deg "
+            f"limit without a hardstop; driving again at "
+            f"{100 * event['pwm_fraction']:.0f}% output (attempt {event['attempt']})."
+        )
     elif name == "hardstop_not_found":
         print(
             f"  ERROR: motor {event['motor']} ({event['joint']}) turned "
             f"{event['travel_deg']:.0f} deg without meeting a hardstop "
-            f"(limit {event.get('max_turns', 2):g} turns); giving up on this direction, "
+            f"(limit {event.get('limit_deg', 720):.0f} deg); giving up on this direction, "
             f"limit not recorded. The tendon is slack or broken: tension it "
             f"and calibrate again."
         )

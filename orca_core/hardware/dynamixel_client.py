@@ -62,6 +62,8 @@ ADDR_FEEDFORWARD_2ND_GAIN = 88
 ADDR_FEEDFORWARD_1ST_GAIN = 90
 ADDR_GAIN_BLOCK = ADDR_POSITION_D_GAIN
 LEN_GAIN_BLOCK = 12
+ADDR_PWM_LIMIT = 36
+LEN_PWM_LIMIT = 2
 ADDR_GOAL_PWM = 100
 ADDR_GOAL_CURRENT = 102
 ADDR_PROFILE_ACCELERATION = 108
@@ -259,6 +261,7 @@ class DynamixelClient(MotorClient):
     default_calibration_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
+    supports_pwm_cap = True
 
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.
@@ -310,6 +313,8 @@ class DynamixelClient(MotorClient):
         # Motors that answered that ping; None until connect. Every read and
         # write is scoped to them, so a motor missing from the bus costs nothing.
         self._responding: Optional[List[int]] = None
+        # PWM Limit per motor, read on the first PWM cap.
+        self._pwm_limits: dict[int, int] = {}
 
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
@@ -697,6 +702,29 @@ class DynamixelClient(MotorClient):
         if self._model_numbers.get(motor_id) in self.MODELS_WITHOUT_CURRENT_CONTROL:
             return None
         return self.max_current_ma
+
+    def write_pwm_fraction(self, motor_ids: Sequence[int], fraction: float) -> None:
+        """Goal PWM = ``fraction`` x each motor's PWM Limit; caps the output in
+        every position mode, including the multi-turn one Goal Current ignores."""
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError(f"PWM fraction must be in (0, 1], got {fraction!r}")
+        motor_ids = self._present(motor_ids)
+        if not motor_ids:
+            return
+        with self._bus_lock:
+            values = []
+            for motor_id in motor_ids:
+                limit = self._pwm_limits.get(motor_id)
+                if limit is None:
+                    raw, comm_result, _ = self.packet_handler.read2ByteTxRx(
+                        self.port_handler, motor_id, ADDR_PWM_LIMIT)
+                    if comm_result != self.dxl.COMM_SUCCESS:
+                        self._flush_input_buffer()
+                        raise OSError(f"[Motor ID: {motor_id}] could not read its PWM limit")
+                    limit = self._pwm_limits[motor_id] = int(raw)
+                values.append(max(1, int(round(limit * fraction))))
+            self._remember_ram(motor_ids, values, ADDR_GOAL_PWM, LEN_GOAL_PWM)
+            self.sync_write(motor_ids, values, ADDR_GOAL_PWM, LEN_GOAL_PWM)
 
     def responding_motor_ids(self) -> List[int]:
         """Configured motors that answered the ping at connect (all of them before it)."""

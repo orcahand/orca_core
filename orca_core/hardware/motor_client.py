@@ -204,6 +204,9 @@ class MotorClient(ABC):
     """
 
     supports_multi_turn: ClassVar[bool] = True
+    # Whether write_pwm_fraction() can scale a motor's output in position
+    # modes (Dynamixel Goal PWM). Families without it keep full output.
+    supports_pwm_cap: ClassVar[bool] = False
     """Whether this family can travel beyond one turn (multi-turn position mode)."""
 
     supported_modes: ClassVar[frozenset[str]] = frozenset(CONTROL_MODES)
@@ -597,6 +600,11 @@ class MotorClient(ABC):
                 5: current-based position control mode
         """
         ...
+
+    def write_pwm_fraction(self, motor_ids: "Sequence[int]", fraction: float) -> None:
+        """Scale the output of ``motor_ids`` to ``fraction`` of their PWM limit
+        (1.0 = the limit). Only on clients with ``supports_pwm_cap``."""
+        raise ValueError(f"{type(self).__name__} cannot cap PWM output")
 
     def responding_motor_ids(self) -> "list[int]":
         """Configured motors that answered at connect. A family whose client

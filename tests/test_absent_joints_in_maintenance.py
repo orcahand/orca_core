@@ -159,3 +159,50 @@ def test_a_motor_that_never_meets_a_hardstop_is_given_up_after_two_turns(connect
     assert not [e for e in events if e["event"] == "drive_step_timeout"]
     assert hand.config.joint_to_motor_map["index_mcp"] not in result.motor_limits_dict or \
         "index_mcp" not in result.motor_travel_measured_dict
+
+
+def test_a_wrist_that_overruns_is_driven_again_at_lower_output(connected_mock_hand):
+    """The belt skips at full output, holds at 75 %: the wrist sweep backs its
+    PWM off once and finds the stop instead of giving up."""
+    from orca_core.constants import HARDWARE_VERSION_V21, WRIST_PWM_RETRY_SCALE
+
+    hand = connected_mock_hand
+    hand.config = hand.config.with_hardware_version(HARDWARE_VERSION_V21)
+    client = hand.motor_client
+    wrist = hand.config.joint_to_motor_map["wrist"]
+    # Nothing stops the mock at full output; the first PWM cut brings the stops back.
+    client._max_motor_pos, client._min_pos = 1e9, -1e9
+    original = client.write_pwm_fraction
+
+    def capped(motor_ids, fraction):
+        original(motor_ids, fraction)
+        if fraction < 1.0:
+            client._max_motor_pos, client._min_pos = 3.0, -3.0
+
+    client.write_pwm_fraction = capped
+    events = []
+    result = calibration_routine.run_calibration(
+        hand, joints=["wrist"], force_wrist=True, progress_callback=events.append, persist=False)
+
+    retries = [e for e in events if e["event"] == "overrun_retry"]
+    assert retries and retries[0]["joint"] == "wrist" and retries[0]["pwm_fraction"] == WRIST_PWM_RETRY_SCALE
+    expected = hand.config.expected_motor_travel_deg("wrist")
+    assert retries[0]["limit_deg"] == pytest.approx(1.5 * expected)
+    assert not [e for e in events if e["event"] == "hardstop_not_found"]
+    assert wrist in result.motor_limits_dict and None not in result.motor_limits_dict[wrist]
+    assert client.pwm_fraction[wrist] == 1.0, "full output restored after the step"
+
+
+def test_a_finger_that_overruns_its_baseline_is_given_up_without_a_pwm_retry(connected_mock_hand):
+    from orca_core.constants import HARDWARE_VERSION_V21
+
+    hand = connected_mock_hand
+    hand.config = hand.config.with_hardware_version(HARDWARE_VERSION_V21)
+    client = hand.motor_client
+    client._max_motor_pos, client._min_pos = 1e9, -1e9
+    events = []
+    calibration_routine.run_calibration(
+        hand, joints=["index_mcp"], progress_callback=events.append, persist=False)
+    given_up = [e for e in events if e["event"] == "hardstop_not_found"]
+    assert given_up and given_up[0]["limit_deg"] == pytest.approx(720.0), "a tendon joint keeps the two-turn cap"
+    assert not [e for e in events if e["event"] == "overrun_retry"]

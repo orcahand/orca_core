@@ -20,7 +20,7 @@ SAMPLE = dict(
     deviation=-0.75, bounds_deg=(90.0, 150.0), within_margin=False, current=450.0,
     attempt=1, attempts=1, reason="degenerate", boosted_joints={}, motor_travel_deg={},
     rom=[-10.0, 90.0], span_deg=100.0, deviation_deg=-2.5, flex_count=100,
-    extend_count=5000, stage=1, stages=2,
+    extend_count=5000, stage=1, stages=2, limit_deg=180.0, pwm_fraction=0.75,
 )
 
 # Progress markers with no information of their own; a GUI uses them to

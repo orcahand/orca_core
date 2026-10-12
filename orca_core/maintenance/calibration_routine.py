@@ -53,6 +53,8 @@ from ..constants import (
     CURRENT_BASED_POSITION,
     DRIVE_STEP_TIMEOUT_S,
     MAX_DRIVE_TURNS,
+    OVERRUN_BASELINE_SCALE,
+    WRIST_PWM_RETRY_SCALE,
     EXTEND,
     FLEX,
     JOINT_ENCODER_CALIBRATION,
@@ -541,9 +543,20 @@ def _drive_step(
         start_positions = None
 
     deadline = time.monotonic() + DRIVE_STEP_TIMEOUT_S
-    # Motors given up on mid-step: no hardstop within MAX_DRIVE_TURNS.
+    # Motors given up on mid-step: no hardstop within their overrun limit.
     abandoned: set = set()
-    max_drive_rad = MAX_DRIVE_TURNS * 2 * math.pi
+    # Multi-turn wrist retries at a lower output: attempts so far per motor.
+    pwm_retries: Dict[int, int] = {}
+    client = hand.motor_client
+
+    def overrun_rad(motor_id: int) -> float:
+        # A multi-turn wrist on a belt can run on past its stop, so its baseline
+        # bounds the sweep; a tendon joint stalls, so only a free spin trips it.
+        expected = hand.config.expected_motor_travel_deg(
+            hand.config.motor_to_joint_dict[motor_id])
+        if expected and _skips_torque_release(hand, motor_id):
+            return math.radians(OVERRUN_BASELINE_SCALE * expected)
+        return MAX_DRIVE_TURNS * 2 * math.pi
     while (not all(reached or m in abandoned for m, reached in motor_reached_limit.items())
            and not should_stop()):
         if time.monotonic() > deadline:
@@ -587,9 +600,38 @@ def _drive_step(
             for motor_id in list(desired_increment):
                 idx = hand.config.motor_id_to_idx_dict[motor_id]
                 travelled = abs(float(curr_pos[idx] - start_positions[idx]))
-                if travelled <= max_drive_rad:
+                limit_rad = overrun_rad(motor_id)
+                if travelled <= limit_rad:
                     continue
                 joint = hand.config.motor_to_joint_dict[motor_id]
+                attempts = pwm_retries.get(motor_id, 0)
+                if (_skips_torque_release(hand, motor_id)
+                        and getattr(client, "supports_pwm_cap", False)
+                        and attempts < hand.config.calibration_travel_retries):
+                    # A belt that skipped at this output may hold at less: back
+                    # the wrist's PWM off and keep driving with a fresh budget.
+                    pwm_retries[motor_id] = attempts + 1
+                    fraction = WRIST_PWM_RETRY_SCALE ** (attempts + 1)
+                    client.write_pwm_fraction([motor_id], fraction)
+                    start_positions[idx] = curr_pos[idx]
+                    position_buffers[motor_id].clear()
+                    _emit(
+                        progress_callback,
+                        "overrun_retry",
+                        motor=motor_id,
+                        joint=joint,
+                        travel_deg=math.degrees(travelled),
+                        limit_deg=math.degrees(limit_rad),
+                        attempt=attempts + 1,
+                        pwm_fraction=fraction,
+                    )
+                    logger.warning(
+                        "motor %d (%s) turned %.0f deg past %.0f deg without a "
+                        "hardstop; driving again at %.0f%% PWM output (attempt %d/%d)",
+                        motor_id, joint, math.degrees(travelled), math.degrees(limit_rad),
+                        100 * fraction, attempts + 1, hand.config.calibration_travel_retries,
+                    )
+                    continue
                 abandoned.add(motor_id)
                 desired_increment.pop(motor_id)
                 _emit(
@@ -598,6 +640,7 @@ def _drive_step(
                     motor=motor_id,
                     joint=joint,
                     travel_deg=math.degrees(travelled),
+                    limit_deg=math.degrees(limit_rad),
                     max_turns=MAX_DRIVE_TURNS,
                 )
                 logger.error(
@@ -640,6 +683,12 @@ def _drive_step(
                         hand.config.motor_to_joint_dict[motor_id],
                         avg_limit,
                     )
+
+    for motor_id in pwm_retries:
+        try:
+            client.write_pwm_fraction([motor_id], 1.0)
+        except Exception as e:
+            logger.warning("could not restore full PWM output on motor %d: %s", motor_id, e)
 
     if should_stop():
         return None
