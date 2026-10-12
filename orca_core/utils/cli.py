@@ -221,8 +221,9 @@ def print_calibration_progress(event: dict) -> None:
         print(
             f"  WARNING: motor {event['motor']} ({event['joint']}) turned "
             f"{event['travel_deg']:.0f} deg past its {event['limit_deg']:.0f} deg "
-            f"limit without a hardstop; driving again at "
-            f"{100 * event['pwm_fraction']:.0f}% output (attempt {event['attempt']})."
+            f"limit without meeting a stop: the belt is poorly set (slipping). "
+            f"Driving again at {100 * event['pwm_fraction']:.0f}% output "
+            f"(attempt {event['attempt']})."
         )
     elif name == "hardstop_not_found":
         print(

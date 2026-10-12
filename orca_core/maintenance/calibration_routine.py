@@ -626,8 +626,9 @@ def _drive_step(
                         pwm_fraction=fraction,
                     )
                     logger.warning(
-                        "motor %d (%s) turned %.0f deg past %.0f deg without a "
-                        "hardstop; driving again at %.0f%% PWM output (attempt %d/%d)",
+                        "motor %d (%s) turned %.0f deg past %.0f deg without meeting a "
+                        "stop: the belt is poorly set (slipping). Driving again at %.0f%% "
+                        "PWM output (attempt %d/%d)",
                         motor_id, joint, math.degrees(travelled), math.degrees(limit_rad),
                         100 * fraction, attempts + 1, hand.config.calibration_travel_retries,
                     )
