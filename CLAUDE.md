@@ -288,7 +288,9 @@ All hand-specific settings are in `config.yaml`:
   at runtime (the console's picker, `write_hardware_version()`) goes into the hand's
   `local_config.yaml` beside config.yaml, never into the packaged config; `from_config_path()`
   applies that file's whitelisted keys (`LOCAL_CONFIG_KEYS`) on top of the yaml and logs a
-  value it displaces. A caller
+  value it displaces. Scripts share this through `utils/cli.py`: `--hardware-version N` pins
+  for the run and writes the sidecar, and `connect_hand()` asks interactively when the version is
+  still unknown after connecting. A caller
   that loads by path hands the board's value to `load_hand(detected_hardware_version=)`, which
   ranks as detection. Consumers read `joint_to_motor_map` / `joint_inversion_dict` as before.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)

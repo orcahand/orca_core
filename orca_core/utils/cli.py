@@ -11,6 +11,7 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 from orca_core import BaseHand, load_hand
+from orca_core.hand_config import format_hardware_version, write_hardware_version
 
 
 def add_hand_arguments(
@@ -38,6 +39,16 @@ def add_hand_arguments(
         "--model-name",
         default=None,
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
+    )
+    parser.add_argument(
+        "--hardware-version",
+        dest="hardware_version",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Pin the hand's hardware version (2 = v2.0, 21 = v2.1) for a hand whose "
+             "controller board cannot report it; written to its local_config.yaml, "
+             "as the console's picker does. Without it an interactive run asks.",
     )
     if feedback_flag:
         parser.add_argument(
@@ -89,14 +100,58 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
         "engage_feedback": getattr(args, "engage_feedback", True),
     }
     options.update(overrides)
-    return create_hand(args.config_path, **options)
+    hand = create_hand(args.config_path, **options)
+    version = getattr(args, "hardware_version", None)
+    if version is not None:
+        pin_hardware_version(hand, version)
+    return hand
 
 
-def connect_hand(hand, *, interactive: bool = True) -> None:
+def pin_hardware_version(hand, version: int) -> str:
+    """Put ``version`` in force for this run and keep it in the hand's
+    ``local_config.yaml``, so the next run (script or console) starts with it.
+    Returns the path written."""
+    path = write_hardware_version(hand.config.config_path, int(version))
+    hand.config = hand.config.with_hardware_version(int(version))
+    print(f"Hardware version pinned to {format_hardware_version(int(version))} in {path}")
+    return path
+
+
+def prompt_hardware_version(hand, ask=input) -> "int | None":
+    """Ask which revision a hand of unknown version is, and pin the answer.
+
+    Reached only when neither a controller board nor a pin said: a plain
+    adapter. Enter keeps the version unknown for this run (v2.0 behaviour:
+    base map, no travel features).
+    """
+    print(
+        "Hardware version unknown: no controller board answered and none is pinned.\n"
+        "A v2.1 hand needs it for its motor map and travel baseline."
+    )
+    while True:
+        try:
+            answer = ask("Enter 2 (v2.0), 21 (v2.1), or press Enter to continue as v2.0: ").strip()
+        except EOFError:
+            answer = ""
+        if answer == "":
+            print("Continuing with the hardware version unknown (v2.0 behaviour).")
+            return None
+        if answer.isdigit():
+            pin_hardware_version(hand, int(answer))
+            return int(answer)
+        print("Please enter a whole number (2 or 21) or press Enter.")
+
+
+def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
+    """Connect, then settle the hardware version: a hand whose version is still
+    unknown after connecting (no board, no pin) is asked for it when the run is
+    interactive. Non-interactive runs keep it unknown."""
     success, message = hand.connect(interactive=interactive)
     print(f"connect() -> success={success}, message={message}")
     if not success:
         raise RuntimeError(message)
+    if interactive and getattr(hand.config, "hardware_version", None) is None:
+        prompt_hardware_version(hand, ask)
 
 
 def print_calibration_progress(event: dict) -> None:
