@@ -7,6 +7,7 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
@@ -131,7 +132,7 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
     while True:
         try:
             answer = ask("Enter 2 (v2.0), 21 (v2.1), or press Enter to continue as v2.0: ").strip()
-        except EOFError:
+        except (EOFError, OSError):
             answer = ""
         if answer == "":
             print("Continuing with the hardware version unknown (v2.0 behaviour).")
@@ -150,7 +151,10 @@ def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
     print(f"connect() -> success={success}, message={message}")
     if not success:
         raise RuntimeError(message)
-    if interactive and getattr(hand.config, "hardware_version", None) is None:
+    # Only a terminal can answer: a piped or captured stdin keeps the version
+    # unknown rather than blocking (or failing) the run.
+    can_ask = ask is not input or sys.stdin.isatty()
+    if interactive and can_ask and getattr(hand.config, "hardware_version", None) is None:
         prompt_hardware_version(hand, ask)
 
 

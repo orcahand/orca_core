@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from orca_core import OrcaHandTouch, frames, load_hand
+from orca_core.utils.cli import connect_hand
 
 MOCK_MODEL = "orcahand-touch-right"
 MOCK_POSE = {"wrist": -10.0, "index_mcp": 30.0, "index_pip": 20.0, "thumb_cmc": -15.0}
@@ -72,12 +73,16 @@ def main():
 
     if not args.mock and needs_joints:
         # Kinematic frames need live joint angles, so open the motor bus too.
-        ok, msg = hand.connect()
+        try:
+            connect_hand(hand)
+        except RuntimeError as e:
+            print(e)
+            sys.exit(1)
     else:
         ok, msg = hand.connect_sensors_only()
-    print(msg)
-    if not ok:
-        sys.exit(1)
+        print(msg)
+        if not ok:
+            sys.exit(1)
 
     feed = _make_mock_feeder(hand) if args.mock else None
     joint_pos = MOCK_POSE if (args.mock and needs_joints) else None

@@ -92,3 +92,14 @@ def test_a_bad_answer_is_asked_again(tmp_path):
         assert hand.config.hardware_version == HARDWARE_VERSION_V21
     finally:
         hand.disconnect()
+
+
+def test_without_a_terminal_the_default_prompt_is_skipped(tmp_path, monkeypatch):
+    """Piped or captured stdin cannot answer, so the run continues as unknown."""
+    hand = _mock_hand(tmp_path)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    try:
+        cli.connect_hand(hand)
+        assert hand.config.hardware_version is None
+    finally:
+        hand.disconnect()

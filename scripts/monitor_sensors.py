@@ -53,7 +53,7 @@ from orca_core.hardware.sensing.serial_discovery import (
     probe_orca_info,
 )
 from orca_core.hardware.tactile_client import NoSensorsAvailableError, TactileClient
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args
 
 REFRESH_MS = 100
 MOTOR_RECONNECT_S = 3.0
@@ -375,9 +375,10 @@ class MotorBus(threading.Thread):
         return f"{cfg.motor_type} @ {cfg.baudrate} baud on {cfg.port}"
 
     def connect(self) -> bool:
-        ok, msg = self._hand.connect(interactive=False)
-        if not ok:
-            self._set(port=None, motors={}, message=msg)
+        try:
+            connect_hand(self._hand, interactive=False)
+        except RuntimeError as e:
+            self._set(port=None, motors={}, message=str(e))
             return False
         self._misses = 0
         self._set(port=self._hand.config.port, message=self._bus_label())
