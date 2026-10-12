@@ -62,6 +62,11 @@ MIN_MOTOR_TRAVEL_RAD = 0.05  # ~2.9 deg of motor shaft
 # spins freely, never stabilises, and would otherwise drive until stopped.
 DRIVE_STEP_TIMEOUT_S = 30.0
 
+# A motor that has turned this far in one direction without stabilising has
+# no hardstop ahead of it: the tendon is slack or broken. The step gives up
+# on that joint long before the wall-clock backstop.
+MAX_DRIVE_TURNS = 2.0
+
 # Fraction of its ``joint_motor_travel`` baseline below which a joint is
 # treated as not having moved at all rather than as short-travelled. Raising
 # the current cannot help a joint that never left its starting point, so the

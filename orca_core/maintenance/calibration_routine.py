@@ -52,6 +52,7 @@ from ..constants import (
     CALIBRATED,
     CURRENT_BASED_POSITION,
     DRIVE_STEP_TIMEOUT_S,
+    MAX_DRIVE_TURNS,
     EXTEND,
     FLEX,
     JOINT_ENCODER_CALIBRATION,
@@ -540,12 +541,16 @@ def _drive_step(
         start_positions = None
 
     deadline = time.monotonic() + DRIVE_STEP_TIMEOUT_S
-    while not all(motor_reached_limit.values()) and not should_stop():
+    # Motors given up on mid-step: no hardstop within MAX_DRIVE_TURNS.
+    abandoned: set = set()
+    max_drive_rad = MAX_DRIVE_TURNS * 2 * math.pi
+    while (not all(reached or m in abandoned for m, reached in motor_reached_limit.items())
+           and not should_stop()):
         if time.monotonic() > deadline:
             # A motor that never stabilises (a disconnected tendon spins
             # freely) would otherwise drive until someone stops it.
             for motor_id, reached in motor_reached_limit.items():
-                if reached:
+                if reached or motor_id in abandoned:
                     continue
                 _emit(
                     progress_callback,
@@ -564,7 +569,7 @@ def _drive_step(
         desired_increment = {
             motor_id: directions[motor_id] * hand.config.calibration_step_size
             for motor_id, reached_limit in motor_reached_limit.items()
-            if not reached_limit
+            if not reached_limit and motor_id not in abandoned
         }
 
         hand._set_motor_pos(desired_increment, rel_to_current=True)
@@ -577,6 +582,30 @@ def _drive_step(
         # stability buffers would fake a hardstop detection. Skip and retry.
         if not read_ok:
             continue
+
+        if start_positions is not None:
+            for motor_id in list(desired_increment):
+                idx = hand.config.motor_id_to_idx_dict[motor_id]
+                travelled = abs(float(curr_pos[idx] - start_positions[idx]))
+                if travelled <= max_drive_rad:
+                    continue
+                joint = hand.config.motor_to_joint_dict[motor_id]
+                abandoned.add(motor_id)
+                desired_increment.pop(motor_id)
+                _emit(
+                    progress_callback,
+                    "hardstop_not_found",
+                    motor=motor_id,
+                    joint=joint,
+                    travel_deg=math.degrees(travelled),
+                    max_turns=MAX_DRIVE_TURNS,
+                )
+                logger.error(
+                    "motor %d (%s) turned %.0f deg without meeting a hardstop; "
+                    "giving up on this direction, limit not recorded. The "
+                    "tendon is slack or broken: tension it and calibrate again.",
+                    motor_id, joint, math.degrees(travelled),
+                )
 
         for motor_id in desired_increment.keys():
             idx = hand.config.motor_id_to_idx_dict[motor_id]

@@ -137,3 +137,25 @@ def test_calibration_skips_absent_joints_and_says_so(partial_hand):
     assert skipped and skipped[0]["joints"] == ["ring_mcp"]
     assert "did not answer" in skipped[0]["reason"]
     assert set(result.motor_travel_measured_dict) == {"index_mcp"}, "only the present joint was driven"
+
+
+def test_a_motor_that_never_meets_a_hardstop_is_given_up_after_two_turns(connected_mock_hand):
+    """A slack or broken tendon lets the motor spin: the step stops it after
+    MAX_DRIVE_TURNS and reports the joint, instead of driving until the
+    wall-clock backstop."""
+    import math
+
+    from orca_core.constants import MAX_DRIVE_TURNS
+
+    hand = connected_mock_hand
+    client = hand.motor_client
+    client._max_motor_pos, client._min_pos = 1e9, -1e9   # nothing stops this mock
+    events = []
+    result = calibration_routine.run_calibration(
+        hand, joints=["index_mcp"], progress_callback=events.append, persist=False)
+    given_up = [e for e in events if e["event"] == "hardstop_not_found"]
+    assert given_up and all(e["joint"] == "index_mcp" for e in given_up)
+    assert all(e["travel_deg"] >= math.degrees(MAX_DRIVE_TURNS * 2 * math.pi) for e in given_up)
+    assert not [e for e in events if e["event"] == "drive_step_timeout"]
+    assert hand.config.joint_to_motor_map["index_mcp"] not in result.motor_limits_dict or \
+        "index_mcp" not in result.motor_travel_measured_dict

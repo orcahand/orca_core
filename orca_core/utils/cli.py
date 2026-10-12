@@ -217,6 +217,14 @@ def print_calibration_progress(event: dict) -> None:
             f"during its {event.get('direction') or ''} sweep "
             f"({event['moved_deg']:.1f} deg); check the tendon and the joint."
         )
+    elif name == "hardstop_not_found":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) turned "
+            f"{event['travel_deg']:.0f} deg without meeting a hardstop "
+            f"(limit {event.get('max_turns', 2):g} turns); giving up on this direction, "
+            f"limit not recorded. The tendon is slack or broken: tension it "
+            f"and calibrate again."
+        )
     elif name == "drive_step_timeout":
         print(
             f"  ERROR: motor {event['motor']} ({event['joint']}) never settled "
