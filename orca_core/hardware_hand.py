@@ -241,6 +241,19 @@ class OrcaHand(BaseHand):
         return self.calibration.wrist_calibrated
 
     @property
+    def absent_motor_ids(self) -> list[int]:
+        """Configured motors that did not answer when the bus was opened."""
+        client = self._motor_client
+        return list(client.absent_motor_ids()) if client is not None else []
+
+    @property
+    def absent_joints(self) -> list[str]:
+        """Joints whose motor did not answer, in the hand's joint order."""
+        absent = set(self.absent_motor_ids)
+        return [j for j in self.config.joint_ids
+                if self.config.joint_to_motor_map.get(j) in absent]
+
+    @property
     def motor_client(self) -> MotorClient | None:
         """The connected motor client, or ``None`` while disconnected.
 
@@ -310,6 +323,11 @@ class OrcaHand(BaseHand):
         self._unlimitable_motors_warned = False
         with self._motor_lock:
             self._motor_client.connect()
+        absent = self.absent_joints
+        if absent:
+            logger.warning(
+                "no motor answered for %s (motor IDs %s); maintenance routines "
+                "leave these joints out", absent, self.absent_motor_ids)
 
     def _try_port(
         self, port: str, base_config: "OrcaHandConfig"

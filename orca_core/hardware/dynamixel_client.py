@@ -307,6 +307,9 @@ class DynamixelClient(MotorClient):
 
         # Model number per motor, learned by pinging at connect.
         self._model_numbers: dict[int, int] = {}
+        # Motors that answered that ping; None until connect. Every read and
+        # write is scoped to them, so a motor missing from the bus costs nothing.
+        self._responding: Optional[List[int]] = None
 
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
@@ -382,13 +385,16 @@ class DynamixelClient(MotorClient):
                     except Exception:
                         pass  # Not critical if it fails
 
-                # Probed before any reboot below, so a motor still coming
-                # back up cannot be mistaken for firmware without support.
+                # Ping first: what answers is what every reader and write is
+                # scoped to from here on. Probed before any reboot below, so a
+                # motor still coming back up cannot be mistaken for firmware
+                # without support.
+                self._read_model_numbers()
+                self._adopt_responding()
                 self._probe_fast_sync_read()
 
                 # Clear any pre-existing hardware errors.
-                self.check_overload_and_reboot(self.motor_ids)
-                self._read_model_numbers()
+                self.check_overload_and_reboot(self.responding_motor_ids())
 
                 # Torque is left as-is: connecting must never make the hand
                 # stiffen or move. Callers opt in via enable_torque()/init_joints().
@@ -536,7 +542,7 @@ class DynamixelClient(MotorClient):
             A list of motor IDs that could not be set.
         """
         with self._bus_lock:
-            remaining_ids = list(motor_ids)
+            remaining_ids = self._present(motor_ids)
             while remaining_ids:
                 remaining_ids = self.write_byte(
                     remaining_ids,
@@ -565,6 +571,7 @@ class DynamixelClient(MotorClient):
         5: current-based position control mode
         """
         with self._bus_lock:
+            motor_ids = self._present(motor_ids)
             # EEPROM data can only be written when torque is disabled; motors
             # that never acked the disable are skipped, not written blind.
             failed_ids = self.set_torque_enabled(motor_ids, False)
@@ -691,6 +698,30 @@ class DynamixelClient(MotorClient):
             return None
         return self.max_current_ma
 
+    def responding_motor_ids(self) -> List[int]:
+        """Configured motors that answered the ping at connect (all of them before it)."""
+        if self._responding is None:
+            return list(self.motor_ids)
+        return list(self._responding)
+
+    def _present(self, motor_ids: Sequence[int]) -> List[int]:
+        """``motor_ids`` without the motors that never answered."""
+        if self._responding is None:
+            return list(motor_ids)
+        present = set(self._responding)
+        return [m for m in motor_ids if m in present]
+
+    def _adopt_responding(self) -> None:
+        self._responding = [m for m in self.motor_ids if m in self._model_numbers]
+        absent = [m for m in self.motor_ids if m not in self._model_numbers]
+        if absent:
+            logging.warning(
+                'Motors %s did not answer at connect; they are left out of every '
+                'read and write until the next connect.', absent)
+        for reader in (self._pos_vel_cur_reader, self._temp_reader,
+                       self._moving_status_reader):
+            reader.set_active(self._responding)
+
     def _read_model_numbers(self) -> None:
         """Ping every motor for its model number; a silent motor stays unknown."""
         with self._bus_lock:
@@ -725,7 +756,7 @@ class DynamixelClient(MotorClient):
         self.check_connected()
         errored_ids = []
         with self._bus_lock:
-            for motor_id in motor_ids:
+            for motor_id in self._present(motor_ids):
                 comm_result, dxl_error = self.packet_handler.write1ByteTxRx(
                     self.port_handler, motor_id, address, value)
                 success = self.handle_packet_result(
@@ -756,7 +787,10 @@ class DynamixelClient(MotorClient):
             sync_writer = self._sync_writers[key]
             times.append(time.monotonic())
             errored_ids = []
+            present = set(self._present(motor_ids))
             for motor_id, desired_pos in zip(motor_ids, values):
+                if motor_id not in present:
+                    continue
                 value = signed_to_unsigned(int(desired_pos), size=size)
                 value = value.to_bytes(size, byteorder='little')
                 success = sync_writer.addParam(motor_id, value)
@@ -1090,6 +1124,8 @@ class DynamixelClient(MotorClient):
         Returns:
             The raw error byte, or None if the read failed (no/garbled reply).
         """
+        if not self._present([motor_id]):
+            return None
         with self._bus_lock:
             value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
                 self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
@@ -1109,9 +1145,11 @@ class DynamixelClient(MotorClient):
         whole sweep, and a failed transaction falls back to reading each motor
         individually so a single bad reply cannot blind the caller.
         """
-        motor_ids = [int(mid) for mid in motor_ids]
+        requested = [int(mid) for mid in motor_ids]
+        motor_ids = self._present(requested)
+        absent = {mid: None for mid in requested if mid not in motor_ids}
         if not motor_ids:
-            return {}
+            return absent
         with self._bus_lock:
             reader = self.dxl.GroupSyncRead(
                 self.port_handler, self.packet_handler,
@@ -1119,11 +1157,11 @@ class DynamixelClient(MotorClient):
             try:
                 for mid in motor_ids:
                     if not reader.addParam(mid):
-                        return super().read_hardware_errors(motor_ids)
+                        return {**absent, **super().read_hardware_errors(motor_ids)}
                 comm_result = reader.txRxPacket()
                 if comm_result != self.dxl.COMM_SUCCESS:
                     self._flush_input_buffer()
-                    return super().read_hardware_errors(motor_ids)
+                    return {**absent, **super().read_hardware_errors(motor_ids)}
                 out: "dict[int, Optional[int]]" = {}
                 for mid in motor_ids:
                     if reader.isAvailable(mid, ADDR_HARDWARE_ERROR_STATUS,
@@ -1133,7 +1171,7 @@ class DynamixelClient(MotorClient):
                             LEN_HARDWARE_ERROR_STATUS)
                     else:
                         out[mid] = None
-                return out
+                return {**absent, **out}
             finally:
                 reader.clearParam()
 
@@ -1145,7 +1183,7 @@ class DynamixelClient(MotorClient):
         OVERLOAD_BIT = 0x20
         rebooted = []
         with self._bus_lock:
-            for mid in motor_ids:
+            for mid in self._present(motor_ids):
                 error_status = self.read_hardware_error(mid)
                 if error_status is None:
                     error_status = self.read_hardware_error(mid)
@@ -1454,16 +1492,26 @@ class DynamixelReader:
         self._fast_sync_read = False
         self._initialize_data()
 
-        self.operation = _AlertCaptureSyncRead(client.port_handler,
-                                               client.packet_handler,
-                                               client.dxl, address, size)
+        self.set_active(motor_ids)
 
-        for motor_id in motor_ids:
+    def set_active(self, motor_ids: Sequence[int]) -> None:
+        """Read only ``motor_ids`` from now on; the others keep their cached
+        values and no longer count against a fresh read."""
+        keep = set(motor_ids)
+        self._active = [(i, m) for i, m in enumerate(self.motor_ids) if m in keep]
+        self.operation = _AlertCaptureSyncRead(self.client.port_handler,
+                                               self.client.packet_handler,
+                                               self.client.dxl, self.address, self.size)
+        for _, motor_id in self._active:
             success = self.operation.addParam(motor_id)
             if not success:
                 raise OSError(
                     '[Motor ID: {}] Could not add parameter to sync read.'
                     .format(motor_id))
+
+    @property
+    def active_motor_ids(self) -> List[int]:
+        return [m for _, m in self._active]
 
     def probe_fast_sync_read(self) -> bool:
         """Try one fast sync read and adopt it if every motor answered.
@@ -1478,7 +1526,7 @@ class DynamixelReader:
                 self.client._flush_input_buffer()
                 return False
             if any(not self.operation.isAvailable(m, self.address, self.size)
-                   for m in self.motor_ids):
+                   for _, m in self._active):
                 return False
             self._fast_sync_read = True
             return True
@@ -1513,8 +1561,8 @@ class DynamixelReader:
                 self._last_full_fallback = now
                 logging.warning(
                     'Sync read failed; falling back to per-motor reads for %d motor(s)',
-                    len(self.motor_ids))
-                still_failed = self._run_bounded_fallback(list(self.motor_ids))
+                    len(self._active))
+                still_failed = self._run_bounded_fallback(self.active_motor_ids)
                 self.last_read_ok = not still_failed
                 return self._get_data()
 
@@ -1527,7 +1575,7 @@ class DynamixelReader:
                     self.client._note_hardware_alert(motor_id, error)
 
             errored_ids = []
-            for i, motor_id in enumerate(self.motor_ids):
+            for i, motor_id in self._active:
                 available = self.operation.isAvailable(motor_id, self.address,
                                                        self.size)
                 if not available:

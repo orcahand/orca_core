@@ -84,6 +84,9 @@ STATUS_PARTIAL = "partial"
 STATUS_LOW = "low"
 STATUS_UNSCORED = "unscored"
 
+# Why a joint is left out of a run and its score sheet.
+EXCLUDED_NO_MOTOR = "motor did not answer at connect"
+
 
 @dataclass
 class MotorSpread:
@@ -184,8 +187,11 @@ DEFAULT_RANGE_STAGES: Tuple[RangeStage, ...] = (
 )
 
 
-def tension_targets(config: "OrcaHandConfig", *, any_hardware: bool = False) -> List[MotorSpread]:
-    """One empty spread per non-wrist joint, in the hand's joint order."""
+def tension_targets(config: "OrcaHandConfig", *, any_hardware: bool = False,
+                    absent_joints: Sequence[str] = ()) -> List[MotorSpread]:
+    """One empty spread per non-wrist joint, in the hand's joint order,
+    leaving out ``absent_joints`` (no motor answered for them)."""
+    skip = set(absent_joints)
     return [
         MotorSpread(
             joint,
@@ -193,7 +199,15 @@ def tension_targets(config: "OrcaHandConfig", *, any_hardware: bool = False) -> 
             config.expected_motor_travel_deg(joint, any_hardware=any_hardware),
         )
         for joint in config.joint_ids
-        if joint != WRIST and joint in config.joint_to_motor_map
+        if joint != WRIST and joint in config.joint_to_motor_map and joint not in skip
+    ]
+
+
+def excluded_joints(hand: "OrcaHand") -> List[dict]:
+    """The score sheet's exclusion list: each absent non-wrist joint with its reason."""
+    return [
+        {"joint": joint, "motor": hand.config.joint_to_motor_map[joint], "reason": EXCLUDED_NO_MOTOR}
+        for joint in hand.absent_joints if joint != WRIST
     ]
 
 
@@ -201,8 +215,10 @@ def pass_threshold(pass_fraction: PassFraction, joint: str) -> float:
     return float(pass_fraction(joint) if callable(pass_fraction) else pass_fraction)
 
 
-def score(spreads: List[MotorSpread], pass_fraction: PassFraction = PASS_FRACTION) -> dict:
-    """Passed / scored counts over the joints that have a baseline."""
+def score(spreads: List[MotorSpread], pass_fraction: PassFraction = PASS_FRACTION,
+          excluded: Sequence[dict] = ()) -> dict:
+    """Passed / scored counts over the joints that have a baseline. ``excluded``
+    names the joints the run left out, each with its reason."""
     motors = [s.to_dict(pass_threshold(pass_fraction, s.joint)) for s in spreads]
     scored = [m for m in motors if m["fraction"] is not None]
     passed = sum(m["status"] == STATUS_PASS for m in scored)
@@ -211,6 +227,7 @@ def score(spreads: List[MotorSpread], pass_fraction: PassFraction = PASS_FRACTIO
         "scored": len(scored),
         "fraction": passed / len(scored) if scored else 0.0,
         "motors": motors,
+        "excluded": list(excluded),
     }
 
 
@@ -272,9 +289,11 @@ class _SpreadSampler(threading.Thread):
     until stopped; extremes accumulate across stages, so the spread is the
     full sweep a motor made over the whole range check."""
 
-    def __init__(self, hand, spreads, centre, pass_fraction, round_no, progress_callback):
+    def __init__(self, hand, spreads, centre, pass_fraction, round_no, progress_callback,
+                 excluded=()):
         super().__init__(daemon=True, name="guided-tension-sampler")
         self._hand = hand
+        self._excluded = list(excluded)
         self._spreads = spreads
         self._idx = [hand.config.motor_id_to_idx_dict[s.motor_id] for s in spreads]
         self._centre = centre
@@ -309,7 +328,7 @@ class _SpreadSampler(threading.Thread):
                     spread.plus_deg = max(spread.plus_deg, offset)
                     spread.minus_deg = min(spread.minus_deg, offset)
                 _emit(self._progress_callback, "spread", round=self._round,
-                      **score(self._spreads, self._pass_fraction))
+                      **score(self._spreads, self._pass_fraction, self._excluded))
         except BaseException as exc:
             self.error = exc
 
@@ -318,10 +337,11 @@ class _SpreadSampler(threading.Thread):
         self.join()
 
 
-def joint_currents(config: "OrcaHandConfig", current: HoldCurrent) -> Dict[str, float]:
-    """Holding current per non-wrist joint, in mA."""
+def joint_currents(config: "OrcaHandConfig", current: HoldCurrent,
+                   absent_joints: Sequence[str] = ()) -> Dict[str, float]:
+    """Holding current per present non-wrist joint, in mA."""
     return {s.joint: float(current(s.joint) if callable(current) else current)
-            for s in tension_targets(config)}
+            for s in tension_targets(config, absent_joints=absent_joints)}
 
 
 def per_motor_currents(config: "OrcaHandConfig", by_joint: Dict[str, float]) -> List[float]:
@@ -444,6 +464,11 @@ def run_guided_tension(
     persisting). On any exit torque is disabled and the configured control
     mode and current limit are restored.
 
+    Joints whose motor did not answer at connect (``hand.absent_joints``) are
+    left out: not held, not sampled, not counted. Every score (``spread``,
+    ``score`` events and the ``score`` prompt) lists them under ``excluded``
+    with the reason, and stage prompts carry ``absent_joints``.
+
     Raises:
         ValueError: If no non-wrist joint has a motor-travel baseline: always
             the case on hardware other than v2.1 unless ``any_hardware`` is
@@ -456,7 +481,15 @@ def run_guided_tension(
         persist = getattr(hand, "_persist_calibration", True)
 
     config = hand.config
-    template = tension_targets(config, any_hardware=any_hardware)
+    absent = [j for j in hand.absent_joints if j != WRIST]
+    excluded = excluded_joints(hand)
+    template = tension_targets(config, any_hardware=any_hardware, absent_joints=absent)
+    if absent:
+        logger.warning("guided tension leaves out %s: %s", absent, EXCLUDED_NO_MOTOR)
+    # A stage with no motor to drive is not a stage; one with some keeps its present joints.
+    stages = [st for st in stages if any(j not in absent for j in st.joints)]
+    if not stages:
+        raise ValueError("no finger has a motor answering; nothing to tension")
     if not any(s.expected_deg for s in template):
         if not (config.uses_motor_travel or any_hardware):
             raise ValueError(
@@ -492,7 +525,7 @@ def run_guided_tension(
     round_no = 0
     completed = False
     start: Optional[int] = None
-    result: dict = score(template, pass_fraction)
+    result: dict = score(template, pass_fraction, excluded)
     try:
         hand.disable_torque()
         hand.set_control_mode(CURRENT_BASED_POSITION, motor_ids)
@@ -509,7 +542,7 @@ def run_guided_tension(
                     while i < len(stages):
                         stage = stages[i]
                         info = dict(stage=stage.to_dict(), stage_index=i, stage_count=len(stages),
-                                    round=round_no)
+                                    round=round_no, absent_joints=list(absent))
                         nav = goto_options(keys, i) + [GOTO_SCORE, GOTO_TENSION]
                         back = previous_pending(passed, i)
                         hand.disable_torque(motor_ids)
@@ -525,11 +558,11 @@ def run_guided_tension(
                             i = back if answer == BACK else stage_of[answer]
                             continue
 
-                        hold_ma = joint_currents(config, hold_current)
+                        hold_ma = joint_currents(config, hold_current, absent)
                         centre = _hold_here(hand, motor_ids, hold_ma)
                         if sampler is None:
                             sampler = _SpreadSampler(hand, spreads, centre, pass_fraction,
-                                                     round_no, progress_callback)
+                                                     round_no, progress_callback, excluded)
                             sampler.start()
                         else:
                             sampler.resume()
@@ -548,7 +581,7 @@ def run_guided_tension(
                         if sampler.error is not None:
                             raise sampler.error
 
-                    result = score(spreads, pass_fraction)
+                    result = score(spreads, pass_fraction, excluded)
                     for m in result["motors"]:
                         if m["fraction"] is not None:
                             best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
@@ -615,5 +648,6 @@ def run_guided_tension(
             "rounds": round_no,
             "pass_fraction": {m["joint"]: m["pass_fraction"] for m in result["motors"]},
             "spreads": {m["joint"]: m["fraction"] for m in result["motors"]},
+            "excluded": result["excluded"],
         })
     return GuidedTensionResult(completed, round_no, result["motors"])

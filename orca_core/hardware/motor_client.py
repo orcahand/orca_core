@@ -598,6 +598,16 @@ class MotorClient(ABC):
         """
         ...
 
+    def responding_motor_ids(self) -> "list[int]":
+        """Configured motors that answered at connect. A family whose client
+        cannot tell reports every configured motor."""
+        return list(self.motor_ids)
+
+    def absent_motor_ids(self) -> "list[int]":
+        """Configured motors that did not answer at connect, in config order."""
+        answered = set(self.responding_motor_ids())
+        return [m for m in self.motor_ids if m not in answered]
+
     @abstractmethod
     def read_position_velocity_current(self) -> MotorRead:
         """Read the current position, velocity, and current for all motors.

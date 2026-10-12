@@ -908,6 +908,16 @@ def _drive_calibration(
             {STEP: len(calibration_sequence) + 1, JOINTS: {WRIST: EXTEND}}
         )
 
+    absent = set(hand.absent_joints)
+    if absent:
+        requested = list(joints) if joints is not None else [
+            j for step in calibration_sequence for j in step[JOINTS]]
+        skipped = sorted(absent & set(requested))
+        if skipped:
+            logger.warning("no motor answered for %s; calibration leaves them out", skipped)
+            _emit(progress_callback, "joints_skipped", joints=skipped,
+                  reason="motor did not answer at connect")
+        joints = [j for j in requested if j not in absent]
     if joints is not None:
         joints_set = set(joints)
         filtered = []

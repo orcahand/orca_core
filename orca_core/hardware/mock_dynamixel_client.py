@@ -179,6 +179,9 @@ class MockDynamixelClient(MotorClient):
         
         # States for simulation.
         self._connected = False
+        # Motors a test declares unplugged: they never answer, like a real
+        # client's silent motors, and drop out of responding_motor_ids().
+        self.silent_motor_ids: set = set()
         self._torque_enabled = {mid: False for mid in self.motor_ids}
         self._operating_mode = {mid: 3 for mid in self.motor_ids}
         self._pos = {mid: 0.0 for mid in self.motor_ids}
@@ -329,10 +332,13 @@ class MockDynamixelClient(MotorClient):
         self.check_connected()
         return True
 
+    def responding_motor_ids(self) -> list:
+        return [m for m in self.motor_ids if m not in self.silent_motor_ids]
+
     def read_hardware_error(self, motor_id: int) -> "int | None":
         """A configured motor answers fault-free; any other ID is silent."""
         self.check_connected()
-        return 0 if motor_id in self.motor_ids else None
+        return 0 if motor_id in self.responding_motor_ids() else None
 
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the simulated temperatures."""

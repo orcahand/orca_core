@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import Callable, List, Optional, TYPE_CHECKING, Sequence
 
 import numpy as np
 
@@ -63,9 +63,11 @@ def _read_motor_pos_or_none(hand: "OrcaHand") -> Optional[np.ndarray]:
         return None
 
 
-def finger_motor_ids(config) -> List[int]:
+def finger_motor_ids(config, absent: Sequence[int] = ()) -> List[int]:
+    """Every finger motor, minus ``absent`` (the ones that did not answer at connect)."""
+    skip = set(absent)
     return [m for joint, m in config.joint_to_motor_map.items()
-            if WRIST not in joint.lower() and m in config.motor_ids]
+            if WRIST not in joint.lower() and m in config.motor_ids and m not in skip]
 
 
 def pull_tendons(
@@ -145,7 +147,7 @@ def run_tension(
     try:
         if move_motors:
             _emit(progress_callback, "phase", phase="winding")
-            motors_to_move = finger_motor_ids(hand.config)
+            motors_to_move = finger_motor_ids(hand.config, hand.absent_motor_ids)
             hand.set_max_current(hand.config.calibration_current)
 
             increment_per_step = 0.1
@@ -211,7 +213,7 @@ def run_tension(
             time.sleep(0.05)
         hand.set_max_current(max_cur)
         hand.enable_torque()
-        fingers = finger_motor_ids(hand.config)
+        fingers = finger_motor_ids(hand.config, hand.absent_motor_ids)
         goals = None
         pulled = 0.0
         if offset_deg:

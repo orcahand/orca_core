@@ -228,6 +228,10 @@ def print_calibration_progress(event: dict) -> None:
             f"of motor travel ({event.get('reason', 'rejected')}); limits not "
             f"recorded, previous calibration kept."
         )
+    elif name == "joints_skipped":
+        print(
+            f"  Skipping {', '.join(event['joints'])}: {event['reason']}."
+        )
     elif name == "travel_retry_skipped":
         print(
             f"  ERROR: {event['joint']} travelled {event['travel_deg']:.1f} deg "
