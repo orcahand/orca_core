@@ -103,3 +103,42 @@ def test_without_a_terminal_the_default_prompt_is_skipped(tmp_path, monkeypatch)
         assert hand.config.hardware_version is None
     finally:
         hand.disconnect()
+
+
+def test_the_board_decides_before_anyone_is_asked(tmp_path, monkeypatch):
+    """A config path skips core's detection; connect_hand asks the board behind
+    the motor port instead of the operator, and writes nothing."""
+    from types import SimpleNamespace
+
+    hand = _mock_hand(tmp_path)
+    monkeypatch.setattr(cli, "board_info_for_port", lambda port: SimpleNamespace(hw_version=21))
+    try:
+        cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+        assert hand.config.hardware_version == HARDWARE_VERSION_V21
+    finally:
+        hand.disconnect()
+    assert not (tmp_path / "local_config.yaml").exists()
+
+
+def test_a_pin_beats_the_board_and_the_clash_is_logged(tmp_path, monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    hand = _mock_hand(tmp_path, hardware_version=2)
+    monkeypatch.setattr(cli, "board_info_for_port", lambda port: SimpleNamespace(hw_version=21))
+    try:
+        with caplog.at_level("WARNING"):
+            cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+        assert hand.config.hardware_version == 2
+        assert "pins hardware_version=2" in caplog.text and "board's 21" in caplog.text
+    finally:
+        hand.disconnect()
+
+
+def test_no_board_still_falls_through_to_the_prompt(tmp_path, monkeypatch):
+    hand = _mock_hand(tmp_path)
+    monkeypatch.setattr(cli, "board_info_for_port", lambda port: None)
+    try:
+        cli.connect_hand(hand, ask=lambda prompt: "21")
+        assert hand.config.hardware_version == HARDWARE_VERSION_V21
+    finally:
+        hand.disconnect()

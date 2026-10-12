@@ -7,12 +7,16 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import logging
 import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 from orca_core import BaseHand, load_hand
 from orca_core.hand_config import format_hardware_version, write_hardware_version
+from orca_core.hardware.sensing.serial_discovery import board_info_for_port
+
+logger = logging.getLogger(__name__)
 
 
 def add_hand_arguments(
@@ -143,19 +147,43 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
         print("Please enter a whole number (2 or 21) or press Enter.")
 
 
+def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
+    """Decide the connected hand's hardware version the way the console does.
+
+    A pin (config.yaml or the hand's local_config.yaml) wins and a disagreeing
+    board is logged. Otherwise the controller board behind the motor port
+    decides, however the hand was loaded (a config path skips core's
+    detection, so the board is asked here). Only with no board at all is the
+    operator asked, and only when a terminal can answer.
+    """
+    pinned = getattr(hand.config, "hardware_version", None)
+    board = board_info_for_port(getattr(hand.config, "port", "") or "")
+    reported = board.hw_version if board is not None else None
+    if pinned is not None:
+        if reported is not None and reported != pinned:
+            logger.warning(
+                "the config pins hardware_version=%r (config.yaml or local_config.yaml), "
+                "so the board's %r is not used. Lift the pin to take the board's value.",
+                pinned, reported)
+        return
+    if reported is not None:
+        hand.config = hand.config.with_hardware_version(reported)
+        print(f"Controller board reports hardware version {format_hardware_version(reported)}.")
+        return
+    # Only a terminal can answer: a piped or captured stdin keeps the version
+    # unknown rather than blocking (or failing) the run.
+    can_ask = ask is not input or sys.stdin.isatty()
+    if interactive and can_ask:
+        prompt_hardware_version(hand, ask)
+
+
 def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
-    """Connect, then settle the hardware version: a hand whose version is still
-    unknown after connecting (no board, no pin) is asked for it when the run is
-    interactive. Non-interactive runs keep it unknown."""
+    """Connect, then settle the hardware version (see :func:`settle_hardware_version`)."""
     success, message = hand.connect(interactive=interactive)
     print(f"connect() -> success={success}, message={message}")
     if not success:
         raise RuntimeError(message)
-    # Only a terminal can answer: a piped or captured stdin keeps the version
-    # unknown rather than blocking (or failing) the run.
-    can_ask = ask is not input or sys.stdin.isatty()
-    if interactive and can_ask and getattr(hand.config, "hardware_version", None) is None:
-        prompt_hardware_version(hand, ask)
+    settle_hardware_version(hand, interactive=interactive, ask=ask)
 
 
 def print_calibration_progress(event: dict) -> None:
