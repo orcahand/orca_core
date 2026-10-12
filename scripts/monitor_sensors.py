@@ -171,7 +171,7 @@ class ConnectionManager(threading.Thread):
         super().__init__(name="SensorConnectionManager", daemon=True)
         self._fixed_port, self._fixed_baud = port, baud
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._desired_mode = mode
         self._force_reconnect = False
         self._session: SensorSession | None = None
@@ -194,19 +194,19 @@ class ConnectionManager(threading.Thread):
             self._force_reconnect = True
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     # ----- Thread body -----------------------------------------------------
 
     def run(self) -> None:
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 if self._session is None:
                     self._try_connect()
-                    self._stop.wait(RECONNECT_DELAY_S)
+                    self._stop_event.wait(RECONNECT_DELAY_S)
                     continue
                 self._service_session()
-                self._stop.wait(0.05)
+                self._stop_event.wait(0.05)
         finally:
             self._drop_session("closed")
 
@@ -348,7 +348,7 @@ class MotorBus(threading.Thread):
         super().__init__(name="MotorBus", daemon=True)
         self._hand = hand
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         cfg = hand.config
         self._snap = MotorSnapshot(
             joint_map={abs(m): j for j, m in cfg.joint_to_motor_map.items()},
@@ -363,7 +363,7 @@ class MotorBus(threading.Thread):
             return MotorSnapshot(**vars(self._snap))
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def _set(self, **fields) -> None:
         with self._lock:
@@ -432,11 +432,11 @@ class MotorBus(threading.Thread):
 
     def run(self) -> None:
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 if not self._connected:
                     self._connected = self.connect()
                     if not self._connected:
-                        self._stop.wait(MOTOR_RECONNECT_S)
+                        self._stop_event.wait(MOTOR_RECONNECT_S)
                         continue
                 try:
                     self.poll_once()
@@ -445,7 +445,7 @@ class MotorBus(threading.Thread):
                     self.disconnect()
                     self._connected = False
                     continue
-                self._stop.wait(MOTOR_POLL_S)
+                self._stop_event.wait(MOTOR_POLL_S)
         finally:
             if self._connected:
                 self.disconnect()
