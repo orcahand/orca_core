@@ -10,6 +10,7 @@ from orca_core.hardware.joint_encoder_client import (
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
 from orca_core.utils.cli import (
     add_hand_arguments,
+    connect_hand,
     create_hand_from_args,
     print_calibration_progress,
     shutdown_hand,
@@ -125,11 +126,10 @@ def main():
 
     joints = _resolve_joints(parser, args, hand.config.joint_ids)
 
-    status = hand.connect()
-    print(status)
-
-    if not status[0]:
-        print("Failed to connect to the hand.")
+    try:
+        connect_hand(hand)
+    except RuntimeError as e:
+        print(f"Failed to connect to the hand: {e}")
         sys.exit(1)
     print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
 

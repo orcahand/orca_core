@@ -39,7 +39,7 @@ from orca_core import JointGains, OrcaHandJointFeedback
 from orca_core import JointFeedbackConnectError
 from orca_core.hardware.joint_encoder_client import EncodersNotAvailableError
 from orca_core.joint_position import OrcaJointPositions
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args
 
 REFRESH_MS = 100
 
@@ -842,10 +842,10 @@ def _run_motor_space(args: argparse.Namespace) -> int:
     # Detected like every other mode, but with the feedback loop disengaged: the
     # loop would fight the raw motor writes this mode makes.
     hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
-    success, msg = hand.connect()
-    print(msg)
-    if not success:
-        print("Failed to connect to the hand.")
+    try:
+        connect_hand(hand)
+    except RuntimeError as e:
+        print(f"Failed to connect to the hand: {e}")
         return 1
 
     try:
@@ -901,13 +901,12 @@ def main() -> int:
         hand.config = dataclasses.replace(hand.config, **overrides)
 
     try:
-        success, msg = hand.connect()
+        connect_hand(hand)
     except (JointFeedbackConnectError, EncodersNotAvailableError) as exc:
         print(f"FAIL: {exc}")
         return 1
-    print(msg)
-    if not success:
-        print("Failed to connect to the hand.")
+    except RuntimeError as e:
+        print(f"Failed to connect to the hand: {e}")
         return 1
 
     try:

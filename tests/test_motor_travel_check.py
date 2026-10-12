@@ -8,6 +8,7 @@ the calibration routine answers a short measurement with.
 
 import math
 import os
+import re
 import shutil
 
 import pytest
@@ -30,7 +31,15 @@ MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right
 
 @pytest.fixture
 def model_dir(tmp_path):
+    """A v2.1 copy of the packaged model with no packaged baseline or group
+    currents, so each test's ``joint_motor_travel`` and currents are the only ones in force."""
     shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
+    path = tmp_path / "config.yaml"
+    doc = read_yaml(str(path))
+    doc.pop("joint_motor_travel_v21")
+    doc.pop("calibration_current_v21")
+    doc["hardware_version"] = 21
+    path.write_text(yaml.dump(doc, sort_keys=False))
     return tmp_path
 
 
@@ -266,6 +275,22 @@ def test_a_joint_without_a_baseline_is_measured_but_not_checked(model_dir):
 
     assert _events(calls, "travel_baseline_missing")
     assert not _events(calls, "travel_checked")
+    assert result.motor_travel_measured_dict["index_mcp"] > 0
+
+
+def test_an_older_hand_is_calibrated_in_one_plain_pass(model_dir):
+    """v2.0 has no travel check: a baseline it would miss changes nothing."""
+    achieved = _baseline_from_a_clean_run(model_dir, "index_mcp")
+    path = _write_config(model_dir, hardware_version=2,
+                         joint_motor_travel={"index_mcp": achieved * 2})
+
+    hand = _mock_hand(path)
+    try:
+        result, calls = _run(hand, joints=["index_mcp"])
+    finally:
+        hand.disconnect()
+
+    assert not [event for event in calls if event["event"].startswith("travel_")]
     assert result.motor_travel_measured_dict["index_mcp"] > 0
 
 
@@ -543,7 +568,8 @@ def test_write_joint_motor_travel_refuses_a_packaged_model_config():
 
 def test_write_joint_motor_travel_keeps_comments_and_other_lines(tmp_path):
     path = tmp_path / "config.yaml"
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), path)
+    packaged = open(os.path.join(MODEL_DIR, "config.yaml")).read()
+    path.write_text(re.sub(r"\n*^joint_motor_travel:\n(?:[ \t]+\S[^\n]*\n)*", "\n", packaged, flags=re.M))
     before = path.read_text()
     comment_lines = [l for l in before.splitlines() if l.lstrip().startswith("#")]
     assert comment_lines, "the packaged config carries comments to protect"

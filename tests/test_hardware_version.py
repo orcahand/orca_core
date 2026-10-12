@@ -15,7 +15,7 @@ import yaml
 
 from orca_core import hand_factory, load_hand
 from orca_core.constants import HARDWARE_VERSION_V21
-from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
+from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig, write_hardware_version
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 V2_MODELS = os.path.join(REPO_ROOT, "orca_core", "models", "v2")
@@ -69,6 +69,100 @@ def test_no_right_model_carries_a_v21_map(path):
     assert config.joint_to_motor_map_v21 == {}
     resolved = config.with_hardware_version(HARDWARE_VERSION_V21)
     assert resolved.joint_inversion_dict == config.joint_inversion_dict
+
+
+def test_every_model_ships_the_same_baseline_and_only_for_v21():
+    """v2.0 hands have no travel baseline at all; every v2.1 variant shares one."""
+    baselines = []
+    for path in LEFT + RIGHT:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        assert "joint_motor_travel" not in raw, path
+        baselines.append(raw["joint_motor_travel_v21"])
+    assert all(b == baselines[0] for b in baselines)
+
+
+# --- the travel features follow the version ------------------------------
+
+
+@pytest.mark.parametrize("path", [LEFT[0], RIGHT[0]], ids=["left", "right"])
+@pytest.mark.parametrize("version", [None, 2])
+def test_an_older_or_unknown_hand_has_no_travel_baseline(path, version):
+    config = OrcaHandConfig.from_config_path(config_path=path).with_hardware_version(version)
+    assert not config.uses_motor_travel
+    assert config.expected_motor_travel_deg("index_mcp") is None
+    assert config.expected_motor_travel_deg("index_mcp", any_hardware=True) > 0
+
+
+@pytest.mark.parametrize("path", [LEFT[0], RIGHT[0]], ids=["left", "right"])
+def test_a_v21_hand_uses_the_packaged_baseline(path):
+    config = OrcaHandConfig.from_config_path(config_path=path).with_hardware_version(
+        HARDWARE_VERSION_V21)
+    assert config.uses_motor_travel
+    assert config.expected_motor_travel_deg("index_mcp") == pytest.approx(139.39)
+
+
+def test_a_hands_own_measurement_wins_over_the_packaged_baseline(tmp_path):
+    path = _config_with(tmp_path, RIGHT[0], hardware_version=21,
+                        joint_motor_travel={"index_mcp": 120.0})
+    config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.expected_motor_travel_deg("index_mcp") == pytest.approx(120.0)
+    assert config.expected_motor_travel_deg("index_pip") == pytest.approx(131.04)
+
+
+def test_a_pin_is_in_force_without_load_hand(tmp_path):
+    """A hand built straight from the path still gets the pinned revision's map."""
+    path = _config_with(tmp_path, LEFT[0], hardware_version=21)
+    config = OrcaHandConfig.from_config_path(config_path=path)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
+
+
+@pytest.mark.parametrize("has_line", [True, False], ids=["with auto line", "without the key"])
+def test_a_written_pin_lives_beside_the_config_and_leaves_it_untouched(tmp_path, has_line):
+    """The pin goes into local_config.yaml: config.yaml is never rewritten, so a
+    packaged model stays exactly as shipped and a dev checkout stays clean."""
+    original = open(RIGHT[0], encoding="utf-8").read()
+    if not has_line:
+        original = original.replace("hardware_version: auto\n", "")
+    path = tmp_path / "config.yaml"
+    path.write_text(original, encoding="utf-8")
+
+    written = write_hardware_version(str(path), 21)
+    assert written == str(tmp_path / "local_config.yaml")
+    assert path.read_text(encoding="utf-8") == original
+    assert yaml.safe_load(open(written)) == {"hardware_version": 21}
+    assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version == 21
+
+    write_hardware_version(str(path), None)
+    assert not os.path.exists(written), "an empty local config is removed"
+    assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version is None
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_the_local_config_beats_an_explicit_yaml_value_and_says_so(tmp_path, caplog):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=2)
+    write_hardware_version(path, HARDWARE_VERSION_V21)
+    with caplog.at_level("WARNING"):
+        config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.hardware_version == HARDWARE_VERSION_V21
+    assert "local_config.yaml sets hardware_version=21" in caplog.text
+
+
+def test_the_local_config_ignores_keys_it_does_not_own(tmp_path, caplog):
+    path = _config_with(tmp_path, RIGHT[0])
+    (tmp_path / "local_config.yaml").write_text(
+        yaml.safe_dump({"hardware_version": 21, "max_current": 50}), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.hardware_version == 21
+    assert config.max_current != 50
+    assert "ignoring ['max_current']" in caplog.text
+
+
+def test_the_packaged_configs_carry_no_local_config():
+    for path in LEFT + RIGHT:
+        assert not os.path.exists(os.path.join(os.path.dirname(path), "local_config.yaml")), path
 
 
 # --- selecting the map --------------------------------------------------
@@ -148,8 +242,8 @@ def test_auto_means_not_pinned(tmp_path, spelling):
     assert config.hardware_version is None
 
 
-def test_the_packaged_left_configs_ship_on_auto():
-    for path in LEFT:
+def test_every_packaged_config_ships_on_auto():
+    for path in LEFT + RIGHT:
         assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None, path
 
 
@@ -228,3 +322,24 @@ def test_load_hand_without_a_version_keeps_the_base_map():
     assert hand.config.hardware_version is None
     base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
     assert hand.config.joint_inversion_dict == base.joint_inversion_dict
+
+
+@pytest.mark.parametrize("path", LEFT + RIGHT)
+def test_only_a_v21_dynamixel_hand_calibrates_per_group(path):
+    import dataclasses
+
+    base = OrcaHandConfig.from_config_path(config_path=path)
+
+    def resolved(version, family):
+        config = base.with_hardware_version(version)
+        return dataclasses.replace(config, motor_type=family, calibration_current=300,
+                                   wrist_calibration_current=280)
+
+    v21 = resolved(HARDWARE_VERSION_V21, "dynamixel")
+    assert [v21.calibration_current_for(j) for j in
+            ("index_abd", "thumb_cmc", "index_mcp", "thumb_mcp", "index_pip", "thumb_dip", "wrist")] \
+        == [300, 300, 500, 500, 500, 500, 280]
+    assert v21.retry_current_for_attempt(1, "index_mcp") == 550
+    for config in (resolved(2, "dynamixel"), resolved(None, "dynamixel"),
+                   resolved(HARDWARE_VERSION_V21, "feetech")):
+        assert {config.calibration_current_for(j) for j in config.joint_ids if j != "wrist"} == {300}

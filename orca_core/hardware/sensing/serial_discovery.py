@@ -284,6 +284,28 @@ def port_in_use(port: str) -> bool:
         return False
 
 
+def board_info_for_port(port: str) -> Optional[OrcaBoardInfo]:
+    """The identity of the controller board that presents ``port``, read from
+    the board's *other* CDC. The two CDCs of one board share the USB serial
+    number, so the sibling is found without an identity from ``port`` itself —
+    which is how a caller already holding ``port`` (a connected motor client)
+    still learns the board's side and hardware version. ``None`` for a port
+    that is not a controller board's, or whose sibling does not answer."""
+    import serial.tools.list_ports
+
+    entries = {p.device: p for p in serial.tools.list_ports.comports()}
+    mine = entries.get(port)
+    if mine is None or mine.vid not in KNOWN_VIDS["oh_board"] or not mine.serial_number:
+        return None
+    for device, entry in entries.items():
+        if device == port or entry.serial_number != mine.serial_number:
+            continue
+        info = probe_orca_info(device)
+        if info is not None:
+            return info
+    return None
+
+
 def oh_board_ports() -> "list[str]":
     """Device paths of every CDC presented by a hand's controller board, in
     enumeration order."""

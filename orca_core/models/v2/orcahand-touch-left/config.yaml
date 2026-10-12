@@ -155,6 +155,15 @@ neutral_position:
   pinky_pip: -2
   wrist: -20
 calibration_current: default
+# v2.1 only: calibration current per joint group (mA) for a motor family,
+# replacing calibration_current for those joints. abd: the abductions and
+# thumb_cmc; mcp: the MCPs; pip: the PIPs and thumb_dip. A family not listed
+# keeps calibration_current.
+calibration_current_v21:
+  dynamixel:
+    abd: 300
+    mcp: 500
+    pip: 500
 calibration_step_size: 0.15
 calibration_step_period: 0.0001
 calibration_num_stable: 10
@@ -236,3 +245,25 @@ sensors:
     middle: 2
     ring: 3
     pinky: 4
+
+# Motor travel between each joint's hardstops on v2.1 hardware, in degrees.
+# Only a v2.1 hand uses it: calibration re-drives a joint that falls short
+# of it, and guided tensioning scores slack against it. v2.0 hands have none.
+joint_motor_travel_v21:
+  wrist: 156.18
+  thumb_cmc: 57.57
+  thumb_abd: 56.25
+  thumb_mcp: 116.1
+  thumb_dip: 96.86
+  index_abd: 39.11
+  index_mcp: 139.39
+  index_pip: 131.04
+  middle_abd: 47.9
+  middle_mcp: 132.01
+  middle_pip: 103.36
+  ring_abd: 49.75
+  ring_mcp: 143.09
+  ring_pip: 112.85
+  pinky_abd: 49.13
+  pinky_mcp: 113.91
+  pinky_pip: 115.84

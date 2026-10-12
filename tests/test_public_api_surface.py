@@ -67,6 +67,8 @@ BASE_HAND = frozenset({
 })
 
 ORCA_HAND = BASE_HAND | {
+    "absent_joints",
+    "absent_motor_ids",
     "calibrate",
     "calibrate_joint_encoder_manual",
     "calibrated",

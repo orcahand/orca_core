@@ -351,8 +351,8 @@ def _overridden(field: str, configured, detected) -> bool:
     if configured in (None, "auto") or configured == detected:
         return False
     logger.warning(
-        "config.yaml pins %s=%r, so the detected %r is not used. Set it to "
-        "'auto' (or remove it) to autodetect.",
+        "the config pins %s=%r (config.yaml or local_config.yaml), so the "
+        "detected %r is not used. Set it to 'auto' (or lift the pin) to autodetect.",
         field, configured, detected,
     )
     return True
