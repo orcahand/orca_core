@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import dataclasses
+import logging
 import math
 import os
 import re
@@ -47,7 +48,7 @@ from .hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
-from .utils.utils import get_model_path, read_yaml, write_text_atomic
+from .utils.utils import get_model_path, read_yaml, write_yaml_atomic
 
 
 # What a current limit says in config.yaml to take the motor family's own value.
@@ -217,6 +218,48 @@ def _canonical_joint_to_motor_map(
     return normalized_map, inversion_dict
 
 
+LOCAL_CONFIG_FILE = "local_config.yaml"
+# Keys a hand's local_config.yaml may override. Everything else in it is ignored
+# with a warning: the file is for what belongs to one hand, not for config edits.
+LOCAL_CONFIG_KEYS = (HARDWARE_VERSION,)
+
+
+def local_config_path(config_path: str) -> str:
+    """``local_config.yaml`` beside ``config_path``: a hand's own overrides,
+    kept out of the packaged config so the package stays pristine and git
+    clean. Written by :func:`write_hardware_version`; read at every load."""
+    return os.path.join(os.path.dirname(os.path.abspath(config_path)), LOCAL_CONFIG_FILE)
+
+
+def read_local_config(config_path: str) -> Dict:
+    """The overrides in force for ``config_path``'s hand (whitelisted keys only)."""
+    raw = read_yaml(local_config_path(config_path)) or {}
+    if not isinstance(raw, dict):
+        logging.getLogger(__name__).warning(
+            "%s is not a mapping; ignoring it", local_config_path(config_path))
+        return {}
+    unknown = sorted(set(raw) - set(LOCAL_CONFIG_KEYS))
+    if unknown:
+        logging.getLogger(__name__).warning(
+            "%s: ignoring %s (only %s may be overridden there)",
+            local_config_path(config_path), unknown, ", ".join(LOCAL_CONFIG_KEYS))
+    return {k: raw[k] for k in LOCAL_CONFIG_KEYS if k in raw}
+
+
+def _with_local_overrides(config: Dict, config_path: str) -> Dict:
+    """``config`` with the hand's local overrides on top. A local value that
+    displaces an explicit one in config.yaml is logged: the yaml no longer
+    says what is in force."""
+    local = read_local_config(config_path)
+    for key, value in local.items():
+        current = config.get(key)
+        if current not in (None, "auto") and current != value:
+            logging.getLogger(__name__).warning(
+                "%s sets %s=%r, so config.yaml's %r is not used",
+                local_config_path(config_path), key, value, current)
+    return {**config, **local}
+
+
 def format_hardware_version(version: int | None) -> str:
     """``21`` -> ``"v2.1"``, ``2`` -> ``"v2.0"``; the board stores major*10 + minor,
     and a single digit is a bare major."""
@@ -226,22 +269,28 @@ def format_hardware_version(version: int | None) -> str:
     return f"v{major}.{minor}"
 
 
-def write_hardware_version(config_path: str, version: int | None) -> None:
-    """Pin ``hardware_version`` in ``config_path``, or put it back on ``auto``
-    for ``None``. Only that line changes; comments and order are kept."""
+def write_hardware_version(config_path: str, version: int | None) -> str:
+    """Pin ``hardware_version`` for the hand at ``config_path``, or lift the
+    pin for ``None``. The pin lives in the hand's ``local_config.yaml`` beside
+    the config; config.yaml itself is never touched, so a packaged model stays
+    as shipped. Returns the path written."""
     if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 0):
         raise HandConfigValidationError(
             f"{HARDWARE_VERSION} must be a non-negative integer or None, got {version!r}"
         )
-    line = f"{HARDWARE_VERSION}: {'auto' if version is None else version}"
-    with open(config_path, encoding="utf-8") as f:
-        text = f.read()
-    pattern = re.compile(rf"^{HARDWARE_VERSION}:[^\n]*$", re.M)
-    if pattern.search(text):
-        text = pattern.sub(line, text, count=1)
+    path = local_config_path(config_path)
+    local = read_yaml(path) or {}
+    if not isinstance(local, dict):
+        local = {}
+    if version is None:
+        local.pop(HARDWARE_VERSION, None)
     else:
-        text = text.rstrip("\n") + f"\n\n{line}\n"
-    write_text_atomic(config_path, text)
+        local[HARDWARE_VERSION] = int(version)
+    if local:
+        write_yaml_atomic(path, local)
+    elif os.path.exists(path):
+        os.remove(path)
+    return path
 
 
 def calibration_group(joint: str) -> Optional[str]:
@@ -388,7 +437,7 @@ class BaseHandConfig:
             model_version=model_version,
             model_name=model_name,
         )
-        config = read_yaml(resolved_config_path) or {}
+        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
 
         kwargs = {"config_path": resolved_config_path}
         if "type" in config:
@@ -676,7 +725,7 @@ class OrcaHandConfig(BaseHandConfig):
             resolved_config_path, calibration_path
         )
 
-        config = read_yaml(resolved_config_path) or {}
+        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
         if not config:
             raise HandConfigValidationError(
                 f"config.yaml at {resolved_config_path} is empty. Restore it "

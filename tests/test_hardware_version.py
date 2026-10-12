@@ -118,20 +118,51 @@ def test_a_pin_is_in_force_without_load_hand(tmp_path):
     assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
 
 
-@pytest.mark.parametrize("has_line", [True, False], ids=["replaced", "appended"])
-def test_writing_the_version_keeps_every_other_line(tmp_path, has_line):
+@pytest.mark.parametrize("has_line", [True, False], ids=["with auto line", "without the key"])
+def test_a_written_pin_lives_beside_the_config_and_leaves_it_untouched(tmp_path, has_line):
+    """The pin goes into local_config.yaml: config.yaml is never rewritten, so a
+    packaged model stays exactly as shipped and a dev checkout stays clean."""
     original = open(RIGHT[0], encoding="utf-8").read()
     if not has_line:
         original = original.replace("hardware_version: auto\n", "")
     path = tmp_path / "config.yaml"
     path.write_text(original, encoding="utf-8")
 
-    write_hardware_version(str(path), 21)
+    written = write_hardware_version(str(path), 21)
+    assert written == str(tmp_path / "local_config.yaml")
+    assert path.read_text(encoding="utf-8") == original
+    assert yaml.safe_load(open(written)) == {"hardware_version": 21}
     assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version == 21
+
     write_hardware_version(str(path), None)
+    assert not os.path.exists(written), "an empty local config is removed"
     assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version is None
-    comments = [l for l in original.splitlines() if l.lstrip().startswith("#")]
-    assert all(c in path.read_text(encoding="utf-8") for c in comments)
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_the_local_config_beats_an_explicit_yaml_value_and_says_so(tmp_path, caplog):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=2)
+    write_hardware_version(path, HARDWARE_VERSION_V21)
+    with caplog.at_level("WARNING"):
+        config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.hardware_version == HARDWARE_VERSION_V21
+    assert "local_config.yaml sets hardware_version=21" in caplog.text
+
+
+def test_the_local_config_ignores_keys_it_does_not_own(tmp_path, caplog):
+    path = _config_with(tmp_path, RIGHT[0])
+    (tmp_path / "local_config.yaml").write_text(
+        yaml.safe_dump({"hardware_version": 21, "max_current": 50}), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.hardware_version == 21
+    assert config.max_current != 50
+    assert "ignoring ['max_current']" in caplog.text
+
+
+def test_the_packaged_configs_carry_no_local_config():
+    for path in LEFT + RIGHT:
+        assert not os.path.exists(os.path.join(os.path.dirname(path), "local_config.yaml")), path
 
 
 # --- selecting the map --------------------------------------------------

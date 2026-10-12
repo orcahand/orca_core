@@ -152,3 +152,4 @@ calibration_history.jsonl
 last_tension.yaml
 tension_progress.yaml
 joint_usage.json
+local_config.yaml

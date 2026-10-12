@@ -284,7 +284,11 @@ All hand-specific settings are in `config.yaml`:
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
   config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
   byte, `major*10 + minor`); a pinned integer is for a hand on a plain adapter with no board to
-  ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A caller
+  ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A pin written
+  at runtime (the console's picker, `write_hardware_version()`) goes into the hand's
+  `local_config.yaml` beside config.yaml, never into the packaged config; `from_config_path()`
+  applies that file's whitelisted keys (`LOCAL_CONFIG_KEYS`) on top of the yaml and logs a
+  value it displaces. A caller
   that loads by path hands the board's value to `load_hand(detected_hardware_version=)`, which
   ranks as detection. Consumers read `joint_to_motor_map` / `joint_inversion_dict` as before.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
