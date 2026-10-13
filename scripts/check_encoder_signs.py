@@ -29,7 +29,7 @@ from orca_core.hardware.sensing.constants import (
     joint_encoder_polarity_for_side,
 )
 from orca_core.hardware.sensing.serial_discovery import resolve_sensing_ports
-from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
+from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args
 
 
 REFRESH_S = 0.2
@@ -111,9 +111,10 @@ def main():
         if not joints:
             sys.exit(1)
 
-    ok, msg = hand.connect()
-    if not ok:
-        print(f"Failed to connect to the hand: {msg}")
+    try:
+        connect_hand(hand)
+    except RuntimeError as e:
+        print(f"Failed to connect to the hand: {e}")
         sys.exit(1)
 
     link = client = None

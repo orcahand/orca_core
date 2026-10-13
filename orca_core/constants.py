@@ -9,6 +9,13 @@ FINGER_NAMES: list[FingerName] = ["thumb", "index", "middle", "ring", "pinky"]
 MOTOR_IDS = "motor_ids"
 JOINT_IDS = "joint_ids"
 JOINT_TO_MOTOR_MAP = "joint_to_motor_map"
+# A second map that a config may carry for a later hardware revision of the
+# same model. Same motors, same joints; only the sign (direction) may differ.
+JOINT_TO_MOTOR_MAP_V21 = "joint_to_motor_map_v21"
+HARDWARE_VERSION = "hardware_version"
+# Hardware versions are provisioned on the controller board as one byte,
+# major*10 + minor: 2 is v2.0, 21 is v2.1.
+HARDWARE_VERSION_V21 = 21
 JOINT_ROM_DICT = "joint_roms"
 JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"
@@ -23,6 +30,11 @@ JOINT_TO_MOTOR_RATIOS = "joint_to_motor_ratios"
 JOINT_ENCODER_CALIBRATION = "joint_encoder_calibration"
 JOINT_ROMS_MEASURED = "joint_roms_measured"
 JOINT_MOTOR_TRAVEL = "joint_motor_travel"
+# The packaged baseline, in force only on v2.1 hardware.
+JOINT_MOTOR_TRAVEL_V21 = "joint_motor_travel_v21"
+CALIBRATION_CURRENT_V21 = "calibration_current_v21"
+# Joint groups calibration_current_v21 sets a current for.
+CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
@@ -30,6 +42,13 @@ DEFAULT_MODEL_NAME = "orcahand-right"
 # multiple of ``calibration_current``, when config.yaml pins no explicit
 # ``calibration_retry_current``.
 DEFAULT_RETRY_CURRENT_SCALE = 1.5
+
+# With neither ``calibration_retry_current`` nor ``calibration_max_current``
+# pinned, each re-drive of a joint that stopped short of its full sweep adds
+# this much to the nominal calibration current (mA) — 300 → 350 → 400 → 450
+# on a Dynamixel hand over the default three attempts.
+CALIBRATION_RETRY_STEP_MA = 50
+DEFAULT_CALIBRATION_TRAVEL_RETRIES = 3
 
 # A calibration sweep that ends with its two motor limits this close together
 # did not find two hardstops: the motor never turned. Committing such a pair
@@ -42,6 +61,18 @@ MIN_MOTOR_TRAVEL_RAD = 0.05  # ~2.9 deg of motor shaft
 # Wall-clock backstop for one drive step. A motor whose tendon is disconnected
 # spins freely, never stabilises, and would otherwise drive until stopped.
 DRIVE_STEP_TIMEOUT_S = 30.0
+
+# A motor that has turned this far in one direction without stabilising has
+# no hardstop ahead of it: the tendon is slack or broken. The step gives up
+# on that joint long before the wall-clock backstop.
+MAX_DRIVE_TURNS = 2.0
+# A multi-turn wrist with a travel baseline is given up at this many times
+# the baseline instead: on a belt the sweep can run past the stop, and half
+# again its travel means it has.
+OVERRUN_BASELINE_SCALE = 1.5
+# A multi-turn wrist that overran is driven again with its PWM output scaled
+# by this much per attempt: a belt that skipped at full output holds at less.
+WRIST_PWM_RETRY_SCALE = 0.75
 
 # Fraction of its ``joint_motor_travel`` baseline below which a joint is
 # treated as not having moved at all rather than as short-travelled. Raising

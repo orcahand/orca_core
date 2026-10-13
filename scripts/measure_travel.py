@@ -20,6 +20,7 @@ from orca_core.maintenance.motor_travel import (
     write_joint_motor_travel,
 )
 from orca_core.utils.cli import (
+    connect_hand,
     add_hand_arguments,
     create_hand_from_args,
     print_calibration_progress,
@@ -93,10 +94,10 @@ def main():
     # Deriving from the stored calibration moves nothing, so it must not need
     # the motor bus - it is the mode to reach for when the hand is unplugged.
     if not args.from_calibration:
-        success, message = hand.connect(interactive=False)
-        print(f"connect() -> success={success}, message={message}")
-        if not success:
-            print("Failed to connect to the hand.")
+        try:
+            connect_hand(hand, interactive=False)
+        except RuntimeError as e:
+            print(f"Failed to connect to the hand: {e}")
             sys.exit(1)
 
     try:

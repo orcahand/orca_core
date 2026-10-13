@@ -15,9 +15,9 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from .feetech_client import FeetechClient
+from .feetech_client import DEFAULT_ACC, DEFAULT_SPEED, FeetechClient
 from .feetech_registers import HLS
-from .motor_client import MotorClient, MotorRead
+from .motor_client import MotorClient, MotorRead, ServoGains, ServoProfile
 
 
 def feetech_cleanup_handler():
@@ -51,6 +51,46 @@ class MockFeetechClient(MotorClient):
     supports_multi_turn = FeetechClient.supports_multi_turn
     supported_modes = FeetechClient.supported_modes
     position_range_rad = FeetechClient.position_range_rad
+    servo_gain_max = FeetechClient.servo_gain_max
+    profile_velocity_max_rad_s = FeetechClient.profile_velocity_max_rad_s
+    profile_acceleration_max_rad_s2 = FeetechClient.profile_acceleration_max_rad_s2
+    profile_ceiling_source = FeetechClient.profile_ceiling_source
+    no_load_speed_rad_s = FeetechClient.no_load_speed_rad_s
+    config_registers = FeetechClient.config_registers
+
+    @property
+    def _config_values(self):
+        if not hasattr(self, '_cfgvals'):
+            self._cfgvals = {}
+        return self._cfgvals
+
+    def _config_register(self, key):
+        return FeetechClient._config_register(self, key)
+
+    def read_config_register(self, motor_id, key):
+        self._config_register(key)
+        return self._config_values.setdefault(int(motor_id), {}).get(key)
+
+    def write_config_register(self, motor_id, key, value):
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+        store = self._config_values.setdefault(int(motor_id), {})
+        # Through to_raw and back, so a value the register cannot hold is
+        # reported as what it actually became, exactly as hardware would.
+        store[key] = entry.from_raw(entry.to_raw(int(value)))
+        if key == "id":
+            self._config_values[int(value)] = store
+        # What the register holds, not what was asked for -- the real clients
+        # read back, and a mock that answered otherwise would hide exactly the
+        # mismatch this is here to surface.
+        return store[key]
+
     current_scale_ma = FeetechClient.current_scale_ma
     max_current_ma = FeetechClient.max_current_ma
     default_max_current_ma = FeetechClient.default_max_current_ma
@@ -91,6 +131,18 @@ class MockFeetechClient(MotorClient):
 
         self.port_handler = _MockPortHandler(port)
 
+        # The gains a Feetech servo powers up with, from its EEPROM
+        # counterparts. Read off a real chain: Kp 32, Kd 32, Ki 0.
+        self._servo_gains = {
+            int(mid): ServoGains(kp=32, ki=0, kd=32) for mid in self.motor_ids}
+        # What orca_core writes at mode-set time, in SI units.
+        self._servo_profiles = {
+            int(mid): ServoProfile(
+                velocity_rad_s=DEFAULT_SPEED * HLS.SPEED_SCALE_RAD_S,
+                acceleration_rad_s2=DEFAULT_ACC * HLS.ACC_SCALE_RAD_S2,
+            )
+            for mid in self.motor_ids}
+
         # States for simulation.
         self._connected = False
         self._torque_enabled = {mid: False for mid in self.motor_ids}
@@ -128,6 +180,62 @@ class MockFeetechClient(MotorClient):
 
         self.OPEN_CLIENTS.add(self)
 
+    def read_servo_profile(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(mid): self._servo_profiles.get(int(mid)) for mid in motor_ids}
+
+    def write_servo_profile(self, profiles) -> None:
+        """Merge the named fields, translating 0 the way the hardware does.
+
+        Goal speed 0 stops this family rather than uncapping it, so the
+        client turns a requested 0 into the register maximum; the mock
+        reports back what the hardware would then hold.
+        """
+        self.check_connected()
+        for motor_id, wanted in profiles.items():
+            motor_id = int(motor_id)
+            current = self._servo_profiles.get(motor_id) or ServoProfile()
+            velocity = current.velocity_rad_s
+            if wanted.velocity_rad_s is not None:
+                value = float(wanted.velocity_rad_s)
+                if value < 0:
+                    raise ValueError("velocity must be non-negative")
+                velocity = 0.0 if value == 0.0 else value
+            acceleration = current.acceleration_rad_s2
+            if wanted.acceleration_rad_s2 is not None:
+                value = float(wanted.acceleration_rad_s2)
+                if value < 0:
+                    raise ValueError("acceleration must be non-negative")
+                acceleration = min(
+                    value, HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2)
+            self._servo_profiles[motor_id] = ServoProfile(
+                velocity_rad_s=velocity, acceleration_rad_s2=acceleration)
+
+    def read_servo_gains(self, motor_ids: Sequence[int]):
+        self.check_connected()
+        return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}
+
+    def write_servo_gains(self, gains) -> None:
+        """Merge the named fields; ``None`` leaves one as it was.
+
+        Refuses feedforward for the same reason the hardware client does:
+        this family's position loop is PID only.
+        """
+        self.check_connected()
+        for motor_id, wanted in gains.items():
+            for name in ("ff_1st", "ff_2nd"):
+                if getattr(wanted, name) is not None:
+                    raise ValueError(
+                        f"{type(self).__name__} has no {name}: this family's "
+                        "position loop is PID only")
+            motor_id = int(motor_id)
+            current = self._servo_gains.get(motor_id) or ServoGains()
+            self._servo_gains[motor_id] = ServoGains(
+                kp=current.kp if wanted.kp is None else int(wanted.kp),
+                ki=current.ki if wanted.ki is None else int(wanted.ki),
+                kd=current.kd if wanted.kd is None else int(wanted.kd),
+            )
+
     def disconnect(self) -> None:
         """Disconnects from the simulated Feetech device.
 
@@ -144,6 +252,15 @@ class MockFeetechClient(MotorClient):
             self._connected = False
             self.port_handler.is_open = False
             self.OPEN_CLIENTS.discard(self)
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Equivalent to :meth:`disconnect` here.
+
+        The real clients check the SDK's in-use flag before taking the bus
+        lock and abandon the teardown when it is set; this one has no such
+        shortcut to correct. Carried so the two agree on what a client offers.
+        """
+        self.disconnect()
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],

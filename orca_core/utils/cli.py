@@ -7,10 +7,16 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
+import logging
+import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 from orca_core import BaseHand, load_hand
+from orca_core.hand_config import format_hardware_version, write_hardware_version
+from orca_core.hardware.sensing.serial_discovery import board_info_for_port
+
+logger = logging.getLogger(__name__)
 
 
 def add_hand_arguments(
@@ -39,6 +45,16 @@ def add_hand_arguments(
         "--model-name",
         default=None,
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
+    )
+    parser.add_argument(
+        "--hardware-version",
+        dest="hardware_version",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Pin the hand's hardware version (2 = v2.0, 21 = v2.1) for a hand whose "
+             "controller board cannot report it; written to its local_config.yaml, "
+             "as the console's picker does. Without it an interactive run asks.",
     )
     if feedback_flag:
         parser.add_argument(
@@ -90,14 +106,85 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
         "engage_feedback": getattr(args, "engage_feedback", True),
     }
     options.update(overrides)
-    return create_hand(args.config_path, **options)
+    hand = create_hand(args.config_path, **options)
+    version = getattr(args, "hardware_version", None)
+    if version is not None:
+        pin_hardware_version(hand, version)
+    return hand
 
 
-def connect_hand(hand, *, interactive: bool = True) -> None:
+def pin_hardware_version(hand, version: int) -> str:
+    """Put ``version`` in force for this run and keep it in the hand's
+    ``local_config.yaml``, so the next run (script or console) starts with it.
+    Returns the path written."""
+    path = write_hardware_version(hand.config.config_path, int(version))
+    hand.config = hand.config.with_hardware_version(int(version))
+    print(f"Hardware version pinned to {format_hardware_version(int(version))} in {path}")
+    return path
+
+
+def prompt_hardware_version(hand, ask=input) -> "int | None":
+    """Ask which revision a hand of unknown version is, and pin the answer.
+
+    Reached only when neither a controller board nor a pin said: a plain
+    adapter. Enter keeps the version unknown for this run (v2.0 behaviour:
+    base map, no travel features).
+    """
+    print(
+        "Hardware version unknown: no controller board answered and none is pinned.\n"
+        "A v2.1 hand needs it for its motor map and travel baseline."
+    )
+    while True:
+        try:
+            answer = ask("Enter 2 (v2.0), 21 (v2.1), or press Enter to continue as v2.0: ").strip()
+        except (EOFError, OSError):
+            answer = ""
+        if answer == "":
+            print("Continuing with the hardware version unknown (v2.0 behaviour).")
+            return None
+        if answer.isdigit():
+            pin_hardware_version(hand, int(answer))
+            return int(answer)
+        print("Please enter a whole number (2 or 21) or press Enter.")
+
+
+def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
+    """Decide the connected hand's hardware version the way the console does.
+
+    A pin (config.yaml or the hand's local_config.yaml) wins and a disagreeing
+    board is logged. Otherwise the controller board behind the motor port
+    decides, however the hand was loaded (a config path skips core's
+    detection, so the board is asked here). Only with no board at all is the
+    operator asked, and only when a terminal can answer.
+    """
+    pinned = getattr(hand.config, "hardware_version", None)
+    board = board_info_for_port(getattr(hand.config, "port", "") or "")
+    reported = board.hw_version if board is not None else None
+    if pinned is not None:
+        if reported is not None and reported != pinned:
+            logger.warning(
+                "the config pins hardware_version=%r (config.yaml or local_config.yaml), "
+                "so the board's %r is not used. Lift the pin to take the board's value.",
+                pinned, reported)
+        return
+    if reported is not None:
+        hand.config = hand.config.with_hardware_version(reported)
+        print(f"Controller board reports hardware version {format_hardware_version(reported)}.")
+        return
+    # Only a terminal can answer: a piped or captured stdin keeps the version
+    # unknown rather than blocking (or failing) the run.
+    can_ask = ask is not input or sys.stdin.isatty()
+    if interactive and can_ask:
+        prompt_hardware_version(hand, ask)
+
+
+def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
+    """Connect, then settle the hardware version (see :func:`settle_hardware_version`)."""
     success, message = hand.connect(interactive=interactive)
     print(f"connect() -> success={success}, message={message}")
     if not success:
         raise RuntimeError(message)
+    settle_hardware_version(hand, interactive=interactive, ask=ask)
 
 
 def print_calibration_progress(event: dict) -> None:
@@ -218,6 +305,22 @@ def print_calibration_progress(event: dict) -> None:
             f"during its {event.get('direction') or ''} sweep "
             f"({event['moved_deg']:.1f} deg); check the tendon and the joint."
         )
+    elif name == "overrun_retry":
+        print(
+            f"  WARNING: motor {event['motor']} ({event['joint']}) turned "
+            f"{event['travel_deg']:.0f} deg past its {event['limit_deg']:.0f} deg "
+            f"limit without meeting a stop: the belt is poorly set (slipping). "
+            f"Driving again at {100 * event['pwm_fraction']:.0f}% output "
+            f"(attempt {event['attempt']})."
+        )
+    elif name == "hardstop_not_found":
+        print(
+            f"  ERROR: motor {event['motor']} ({event['joint']}) turned "
+            f"{event['travel_deg']:.0f} deg without meeting a hardstop "
+            f"(limit {event.get('limit_deg', 720):.0f} deg); giving up on this direction, "
+            f"limit not recorded. The tendon is slack or broken: tension it "
+            f"and calibrate again."
+        )
     elif name == "drive_step_timeout":
         print(
             f"  ERROR: motor {event['motor']} ({event['joint']}) never settled "
@@ -228,6 +331,10 @@ def print_calibration_progress(event: dict) -> None:
             f"  ERROR: {event['joint']} swept only {event['travel_deg']:.1f} deg "
             f"of motor travel ({event.get('reason', 'rejected')}); limits not "
             f"recorded, previous calibration kept."
+        )
+    elif name == "joints_skipped":
+        print(
+            f"  Skipping {', '.join(event['joints'])}: {event['reason']}."
         )
     elif name == "travel_retry_skipped":
         print(

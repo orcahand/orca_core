@@ -46,6 +46,7 @@ class FakeBus:
         self.fast_errors = {}         # motor_id -> error byte in the fast reply
         self._fast_frame = ([], 0)    # ids and data size of the pending request
         self.write1_hook = None    # callable(motor_id) -> (comm, err)
+        self.ping_hook = None      # callable(motor_id) -> comm result
         self.read1_hook = None     # callable(motor_id) -> (value, comm, err)
         self.read2_hook = None     # callable(motor_id, address) -> (value, comm, err)
         self.read4_hook = None     # callable(motor_id, address) -> (value, comm, err)
@@ -157,6 +158,8 @@ def make_fake_sdk(bus):
 
         def ping(self, port, motor_id):
             bus.instant('ping')
+            if bus.ping_hook is not None:
+                return 1220, bus.ping_hook(motor_id), 0
             return 1220, COMM_SUCCESS, 0
 
         def readRx(self, port, motor_id, length):
@@ -685,6 +688,48 @@ def test_reboot_puts_the_current_ceiling_back(client, bus, monkeypatch):
     client.reboot_motor(1)
 
     assert writes == [([1], [300], 102)]
+
+
+def test_reboot_restores_only_once_the_motor_answers_again(client, bus, monkeypatch):
+    """A motor is off the bus for a third of a second or more after a reboot
+    and sync writes are not acknowledged, so a write sent early is silently
+    lost and the motor runs uncapped."""
+    _patch_sleep(monkeypatch)
+    client.write_desired_current([1], np.array([300]))
+    answers = iter([COMM_RX_FAIL, COMM_RX_FAIL, COMM_RX_FAIL, COMM_SUCCESS])
+    bus.ping_hook = lambda motor_id: next(answers)
+    writes = []
+    real = client.sync_write
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda i, v, a, s: (writes.append(a), bus.instant('write102'))[0])
+
+    client.reboot_motor(1)
+
+    events = [e for e in bus.log if e in ('reboot', 'ping', 'write102')]
+    assert events == ['reboot', 'ping', 'ping', 'ping', 'ping', 'write102']
+    assert writes == [102]
+
+
+def test_a_motor_that_never_answers_after_reboot_is_reported_not_written(
+        client, bus, monkeypatch, caplog):
+    import orca_core.hardware.dynamixel_client as dxl_mod
+
+    sleeps = _patch_sleep(monkeypatch)
+    now = [0.0]
+    monkeypatch.setattr(dxl_mod.time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(dxl_mod.time, 'sleep', lambda s: now.__setitem__(0, now[0] + s))
+    client.write_desired_current([1], np.array([300]))
+    bus.ping_hook = lambda motor_id: COMM_RX_FAIL
+    writes = []
+    monkeypatch.setattr(client, 'sync_write',
+                        lambda ids, vals, addr, size: writes.append(addr))
+
+    with caplog.at_level(logging.ERROR):
+        client.reboot_motor(1)
+
+    assert writes == []
+    assert 'not restored' in caplog.text
+    assert now[0] >= dxl_mod.MOTOR_REBOOT_TIMEOUT_S
 
 
 def test_reboot_restores_nothing_for_a_motor_with_no_ceiling_set(

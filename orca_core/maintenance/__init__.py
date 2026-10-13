@@ -14,6 +14,7 @@ drives a terminal, a GUI, or a web front-end.
 """
 
 from .calibration_routine import run_calibration
+from .guided_tension import read_last_tension, run_guided_tension
 from .motor_travel import (
     measured_travel_by_joint,
     motor_travel_deg,
@@ -48,9 +49,11 @@ __all__ = [
     "measured_travel_by_joint",
     "motor_travel_deg",
     "plan_motor_chain",
+    "read_last_tension",
     "reset_all_motors",
     "resolve_port",
     "run_calibration",
+    "run_guided_tension",
     "run_jitter",
     "run_tension",
     "scan_configured_motors",

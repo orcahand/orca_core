@@ -22,7 +22,8 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..constants import DYNAMIXEL, DYNAMIXEL_RETURN_DELAY_TIME_US
-from .motor_client import MotorClient, MotorRead
+from .config_registers import ConfigRegister
+from .motor_client import MotionTimeoutError, MotorClient, MotorRead
 
 PROTOCOL_VERSION = 2.0
 
@@ -37,6 +38,19 @@ ADDR_ID = 7
 ADDR_BAUD_RATE = 8
 ADDR_RETURN_DELAY_TIME = 9  # EEPROM, units of 2 us
 ADDR_OPERATING_MODE = 11
+ADDR_DRIVE_MODE = 10
+ADDR_SECONDARY_ID = 12
+# Protocol type (13) is deliberately not in CONFIG_REGISTERS: this client
+# speaks 2.0 only, so switching a motor to 1.0 strands it with no way back
+# from inside the tool.
+ADDR_PROTOCOL_TYPE = 13
+ADDR_TEMPERATURE_LIMIT = 31
+ADDR_ACCELERATION_LIMIT = 40
+ADDR_VELOCITY_LIMIT = 44
+# 40..47 is contiguous, so both ceilings read back in one transaction.
+ADDR_LIMIT_BLOCK = ADDR_ACCELERATION_LIMIT
+LEN_LIMIT_BLOCK = 8
+LEN_LIMIT = 4
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
 # Position-PID and feedforward gains occupy one contiguous block, 80..91,
@@ -48,6 +62,8 @@ ADDR_FEEDFORWARD_2ND_GAIN = 88
 ADDR_FEEDFORWARD_1ST_GAIN = 90
 ADDR_GAIN_BLOCK = ADDR_POSITION_D_GAIN
 LEN_GAIN_BLOCK = 12
+ADDR_PWM_LIMIT = 36
+LEN_PWM_LIMIT = 2
 ADDR_GOAL_PWM = 100
 ADDR_GOAL_CURRENT = 102
 ADDR_PROFILE_ACCELERATION = 108
@@ -94,9 +110,12 @@ DEFAULT_CUR_SCALE = 1.0
 GAIN_MAX = 16383
 PROFILE_MAX = 32767
 
-# A rebooting motor is off the bus while its firmware restarts; writes sent
-# before it answers again are lost.
+# A rebooting motor is off the bus while its firmware restarts (about 340 ms
+# on an XC330); writes sent before it answers again are lost without a trace,
+# so the client pings until it is back before restoring anything.
 MOTOR_REBOOT_SETTLE_S = 0.3
+MOTOR_REBOOT_TIMEOUT_S = 2.0
+MOTOR_REBOOT_POLL_S = 0.02
 
 # Baud rate mapping for Dynamixel motors, see https://emanual.robotis.com/docs/en/dxl/x/xc330-t288/#baud-rate
 BAUD_RATE_MAP = {
@@ -116,6 +135,49 @@ DYNAMIXEL_MODELS = {
     1220: 'XC330-T288-T',
     1080: 'XC430-T240BB-T',
 }
+
+# Operator-editable settings. Addresses and ranges from the XC330-T288-T and
+# XC430-W240-T control tables.
+CONFIG_REGISTERS = (
+    ConfigRegister(
+        key="id", label="ID", address=ADDR_ID, size=1, eeprom=True,
+        minimum=0, maximum=252, reidentifies=True,
+        note="the motor answers at the new id immediately"),
+    ConfigRegister(
+        key="baud_rate", label="Baud rate", address=ADDR_BAUD_RATE, size=1,
+        eeprom=True, reidentifies=True,
+        choices={index: f"{rate:,}".replace(",", " ")
+                 for rate, index in BAUD_RATE_MAP.items()},
+        note="the motor switches rate the moment the write lands"),
+    ConfigRegister(
+        key="return_delay_time", label="Return delay time",
+        address=ADDR_RETURN_DELAY_TIME, size=1, eeprom=True,
+        unit="us", scale=2.0, minimum=0, maximum=508,
+        note="factory 500 us; chain setup programs 20 us. The register counts "
+             "in twos, so an odd value lands on the one below"),
+    ConfigRegister(
+        key="drive_mode", label="Drive mode", address=ADDR_DRIVE_MODE, size=1,
+        eeprom=True, minimum=0, maximum=13,
+        choices={0: "normal", 1: "reverse"},
+        note="bit 0 reverses the direction of travel"),
+    ConfigRegister(
+        key="operating_mode", label="Operating mode",
+        address=ADDR_OPERATING_MODE, size=1, eeprom=True,
+        choices={0: "current", 1: "velocity", 3: "position",
+                 4: "extended position", 5: "current-based position",
+                 16: "PWM"},
+        note="models without a current register accept only 1, 3, 4 and 16"),
+    ConfigRegister(
+        key="secondary_id", label="Shadow ID", address=ADDR_SECONDARY_ID,
+        size=1, eeprom=True, minimum=0, maximum=255,
+        note="a second address the motor also answers to; 255 disables it"),
+    ConfigRegister(
+        key="temperature_limit", label="Temperature limit",
+        address=ADDR_TEMPERATURE_LIMIT, size=1, eeprom=True,
+        unit="degC", minimum=0, maximum=100,
+        note="the shutdown threshold, not a warning level"),
+)
+
 
 def dynamixel_cleanup_handler():
     """Disconnect every open Dynamixel client at interpreter exit."""
@@ -140,6 +202,9 @@ def unsigned_to_signed(value: int, size: int) -> int:
 
 
 from .motor_client import ServoGains, ServoProfile
+
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
 
 class DynamixelClient(MotorClient):
     """Client for communicating with Dynamixel motors.
@@ -170,6 +235,20 @@ class DynamixelClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 57600
     baud_rate_map = BAUD_RATE_MAP
+    servo_gain_max = GAIN_MAX
+    profile_velocity_max_rad_s = PROFILE_MAX * DEFAULT_VEL_SCALE
+    profile_ceiling_source = ("Velocity Limit (register 44) and Acceleration "
+                              "Limit (40), read per motor and enforced by the "
+                              "servo's own trajectory generator")
+    profile_acceleration_max_rad_s2 = PROFILE_MAX * PROFILE_ACC_SCALE
+    # XC330-T288-T performance curve, ~70 rpm unloaded. Only a fallback: the
+    # limit this family really enforces is read per motor from register 44,
+    # and a chain reports values close to this (320 raw, 7.67 rad/s).
+    no_load_speed_rad_s = 70.0 * 2.0 * np.pi / 60.0
+    # A goal write is a step only while the trajectory profile is zero. Once
+    # a velocity or acceleration is set the servo ramps, and a caller that
+    # did not wait would move on mid-travel.
+    waits_for_motion = True
     return_delay_time_us = DYNAMIXEL_RETURN_DELAY_TIME_US
 
     # Goal Current (102) on the XC330-T288-T: 1 mA per unit, bounded by its
@@ -182,6 +261,7 @@ class DynamixelClient(MotorClient):
     default_calibration_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
+    supports_pwm_cap = True
 
     # Clients with an open port; registered on successful connect() so the
     # atexit cleanup only ever touches live connections.
@@ -224,11 +304,17 @@ class DynamixelClient(MotorClient):
         self.port_handler = self.dxl.PortHandler(port)
         self.packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
 
+        self._transport_bauds = _UNPROBED
         # RLock: alert handling re-enters from within a locked read/write path.
         self._bus_lock = threading.RLock()
 
         # Model number per motor, learned by pinging at connect.
         self._model_numbers: dict[int, int] = {}
+        # Motors that answered that ping; None until connect. Every read and
+        # write is scoped to them, so a motor missing from the bus costs nothing.
+        self._responding: Optional[List[int]] = None
+        # PWM Limit per motor, read on the first PWM cap.
+        self._pwm_limits: dict[int, int] = {}
 
         self._pos_vel_cur_reader = DynamixelPosVelCurReader(
             self,
@@ -246,6 +332,9 @@ class DynamixelClient(MotorClient):
         )
         
         self._moving_status_reader = DynamixelReader(self, self.motor_ids, ADDR_MOVING_STATUS, LEN_MOVING_STATUS)
+        # What each motor was last told to reach, in radians, for the
+        # arrival check. The servo does not volunteer its goal.
+        self._goal_positions: "dict[int, float]" = {}
         self._sync_writers = {}
         self._operating_modes = {}
         # RAM registers worth restoring after a reboot, per motor:
@@ -301,13 +390,16 @@ class DynamixelClient(MotorClient):
                     except Exception:
                         pass  # Not critical if it fails
 
-                # Probed before any reboot below, so a motor still coming
-                # back up cannot be mistaken for firmware without support.
+                # Ping first: what answers is what every reader and write is
+                # scoped to from here on. Probed before any reboot below, so a
+                # motor still coming back up cannot be mistaken for firmware
+                # without support.
+                self._read_model_numbers()
+                self._adopt_responding()
                 self._probe_fast_sync_read()
 
                 # Clear any pre-existing hardware errors.
-                self.check_overload_and_reboot(self.motor_ids)
-                self._read_model_numbers()
+                self.check_overload_and_reboot(self.responding_motor_ids())
 
                 # Torque is left as-is: connecting must never make the hand
                 # stiffen or move. Callers opt in via enable_torque()/init_joints().
@@ -391,6 +483,50 @@ class DynamixelClient(MotorClient):
                 self.port_handler.closePort()
                 self.OPEN_CLIENTS.discard(self)
 
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Disconnect, waiting for the bus rather than giving up on it.
+
+        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
+        lock, and returns when it finds it set -- so a sampler legitimately
+        mid-transaction makes the teardown silently not happen, with no retry.
+        The port stays open, the client stays registered, and a reconnect
+        cannot replace the handler. A momentary condition becomes permanent.
+
+        Taking the lock first waits for any in-flight exchange to finish,
+        after which no live transaction can hold the flag, so the check is
+        unnecessary rather than skipped.
+
+        Deliberately a separate method. ``disconnect`` is on every consumer's
+        path and changing its locking is its own change with its own testing;
+        this exists so the behaviour can be proven in the one place that
+        provokes the race -- a reconnect triggered by a bus transaction --
+        before it is merged into the shared path.
+        """
+        if not self.is_connected:
+            return
+        with self._bus_lock:
+            try:
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self.OPEN_CLIENTS.discard(self)
+
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
@@ -411,7 +547,7 @@ class DynamixelClient(MotorClient):
             A list of motor IDs that could not be set.
         """
         with self._bus_lock:
-            remaining_ids = list(motor_ids)
+            remaining_ids = self._present(motor_ids)
             while remaining_ids:
                 remaining_ids = self.write_byte(
                     remaining_ids,
@@ -440,6 +576,7 @@ class DynamixelClient(MotorClient):
         5: current-based position control mode
         """
         with self._bus_lock:
+            motor_ids = self._present(motor_ids)
             # EEPROM data can only be written when torque is disabled; motors
             # that never acked the disable are skipped, not written blind.
             failed_ids = self.set_torque_enabled(motor_ids, False)
@@ -489,11 +626,68 @@ class DynamixelClient(MotorClient):
         """
         assert len(motor_ids) == len(positions)
 
+        # Remembered before the scaling: arrival is checked in radians, and
+        # the servo does not report what it was asked for without a read.
+        for motor_id, goal in zip(motor_ids, positions):
+            self._goal_positions[int(motor_id)] = float(goal)
+
         # Convert to Dynamixel position space.
         positions = positions / self._pos_vel_cur_reader.pos_scale
         times = self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
                         LEN_GOAL_POSITION)
         return times
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
+        """Block until every motor has stopped within tolerance of its goal.
+
+        Two conditions, because either alone lies. The moving flag clears on
+        a servo stalled short of its target, and position alone passes
+        through the goal while still travelling.
+
+        Raises:
+            MotionTimeoutError: naming the motors still unsettled.
+        """
+        self.check_connected()
+        deadline = time.time() + timeout
+        unsettled: "list[int]" = []
+        while True:
+            unsettled = self._unsettled_motors()
+            if not unsettled:
+                return
+            if time.time() >= deadline:
+                break
+            time.sleep(poll_interval)
+        raise MotionTimeoutError(
+            f"motors {sorted(unsettled)} did not settle within {timeout:g}s "
+            f"of their goal (tolerance {self.arrival_tolerance_rad:g} rad)")
+
+    def _unsettled_motors(self) -> "list[int]":
+        """Motors still moving, or stopped too far from where they were sent.
+
+        One bus read each for the moving flags and the positions, so the
+        whole chain is judged from the same instant rather than motor by
+        motor.
+        """
+        try:
+            moving = self._moving_status_reader.read().astype(np.int64)
+            positions = self._pos_vel_cur_reader.read()[0]
+        except Exception:
+            logging.debug("arrival poll failed", exc_info=True)
+            return list(self.motor_ids)
+        unsettled = []
+        for index, motor_id in enumerate(self.motor_ids):
+            if int(moving[index]) & 0x01:
+                unsettled.append(int(motor_id))
+                continue
+            goal = self._goal_positions.get(int(motor_id))
+            if goal is None:
+                # Never commanded through this client: a cleared moving flag
+                # is all we have, and it is enough.
+                continue
+            if abs(float(positions[index]) - goal) > self.arrival_tolerance_rad:
+                unsettled.append(int(motor_id))
+        return unsettled
 
     def write_desired_current(self, motor_ids: Sequence[int], current: np.ndarray):
         plan = self._goal_current_plan(motor_ids, current)
@@ -508,6 +702,53 @@ class DynamixelClient(MotorClient):
         if self._model_numbers.get(motor_id) in self.MODELS_WITHOUT_CURRENT_CONTROL:
             return None
         return self.max_current_ma
+
+    def write_pwm_fraction(self, motor_ids: Sequence[int], fraction: float) -> None:
+        """Goal PWM = ``fraction`` x each motor's PWM Limit; caps the output in
+        every position mode, including the multi-turn one Goal Current ignores."""
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError(f"PWM fraction must be in (0, 1], got {fraction!r}")
+        motor_ids = self._present(motor_ids)
+        if not motor_ids:
+            return
+        with self._bus_lock:
+            values = []
+            for motor_id in motor_ids:
+                limit = self._pwm_limits.get(motor_id)
+                if limit is None:
+                    raw, comm_result, _ = self.packet_handler.read2ByteTxRx(
+                        self.port_handler, motor_id, ADDR_PWM_LIMIT)
+                    if comm_result != self.dxl.COMM_SUCCESS:
+                        self._flush_input_buffer()
+                        raise OSError(f"[Motor ID: {motor_id}] could not read its PWM limit")
+                    limit = self._pwm_limits[motor_id] = int(raw)
+                values.append(max(1, int(round(limit * fraction))))
+            self._remember_ram(motor_ids, values, ADDR_GOAL_PWM, LEN_GOAL_PWM)
+            self.sync_write(motor_ids, values, ADDR_GOAL_PWM, LEN_GOAL_PWM)
+
+    def responding_motor_ids(self) -> List[int]:
+        """Configured motors that answered the ping at connect (all of them before it)."""
+        if self._responding is None:
+            return list(self.motor_ids)
+        return list(self._responding)
+
+    def _present(self, motor_ids: Sequence[int]) -> List[int]:
+        """``motor_ids`` without the motors that never answered."""
+        if self._responding is None:
+            return list(motor_ids)
+        present = set(self._responding)
+        return [m for m in motor_ids if m in present]
+
+    def _adopt_responding(self) -> None:
+        self._responding = [m for m in self.motor_ids if m in self._model_numbers]
+        absent = [m for m in self.motor_ids if m not in self._model_numbers]
+        if absent:
+            logging.warning(
+                'Motors %s did not answer at connect; they are left out of every '
+                'read and write until the next connect.', absent)
+        for reader in (self._pos_vel_cur_reader, self._temp_reader,
+                       self._moving_status_reader):
+            reader.set_active(self._responding)
 
     def _read_model_numbers(self) -> None:
         """Ping every motor for its model number; a silent motor stays unknown."""
@@ -543,7 +784,7 @@ class DynamixelClient(MotorClient):
         self.check_connected()
         errored_ids = []
         with self._bus_lock:
-            for motor_id in motor_ids:
+            for motor_id in self._present(motor_ids):
                 comm_result, dxl_error = self.packet_handler.write1ByteTxRx(
                     self.port_handler, motor_id, address, value)
                 success = self.handle_packet_result(
@@ -574,7 +815,10 @@ class DynamixelClient(MotorClient):
             sync_writer = self._sync_writers[key]
             times.append(time.monotonic())
             errored_ids = []
+            present = set(self._present(motor_ids))
             for motor_id, desired_pos in zip(motor_ids, values):
+                if motor_id not in present:
+                    continue
                 value = signed_to_unsigned(int(desired_pos), size=size)
                 value = value.to_bytes(size, byteorder='little')
                 success = sync_writer.addParam(motor_id, value)
@@ -600,6 +844,7 @@ class DynamixelClient(MotorClient):
         (Goal Current, unlike Operating Mode, which is EEPROM and survives).
         Without this a recovered motor runs uncapped until something calls
         set_max_current again, drawing far more than its configured limit.
+        Returns once the motor answers again, or after ``MOTOR_REBOOT_TIMEOUT_S``.
         Torque is deliberately left off: re-energizing is the caller's call.
         """
         with self._bus_lock:
@@ -623,9 +868,28 @@ class DynamixelClient(MotorClient):
 
     def _restore_ram_after_reboot(self, motor_id: int) -> None:
         """Re-apply the RAM settings a reboot cleared, once the motor answers."""
-        if self._ram_settings.get(int(motor_id)):
-            time.sleep(MOTOR_REBOOT_SETTLE_S)
-            self._replay_ram(motor_id)
+        if not self._ram_settings.get(int(motor_id)):
+            return
+        if not self._await_motor_after_reboot(motor_id):
+            logging.error(
+                '[Motor ID: %d] did not answer within %.1f s of its reboot; its '
+                'RAM settings (current ceiling, servo gains) were not restored.',
+                motor_id, MOTOR_REBOOT_TIMEOUT_S)
+            return
+        self._replay_ram(motor_id)
+
+    def _await_motor_after_reboot(self, motor_id: int) -> bool:
+        """Ping until the rebooted motor answers; False if it never does."""
+        deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
+        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        while True:
+            _, comm_result, _ = self.packet_handler.ping(self.port_handler, motor_id)
+            if comm_result == self.dxl.COMM_SUCCESS:
+                return True
+            if time.monotonic() >= deadline:
+                self._flush_input_buffer()
+                return False
+            time.sleep(MOTOR_REBOOT_POLL_S)
 
     def _replay_ram(self, motor_id: int) -> None:
         for (address, size), value in self._ram_settings.get(int(motor_id), {}).items():
@@ -639,6 +903,65 @@ class DynamixelClient(MotorClient):
         ("ff_1st", ADDR_FEEDFORWARD_1ST_GAIN),
         ("ff_2nd", ADDR_FEEDFORWARD_2ND_GAIN),
     )
+
+    config_registers = CONFIG_REGISTERS
+
+    def _config_register(self, key: str) -> ConfigRegister:
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
+    def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
+        entry = self._config_register(key)
+        reader = {1: self.packet_handler.read1ByteTxRx,
+                  2: self.packet_handler.read2ByteTxRx,
+                  4: self.packet_handler.read4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            value, result, error = reader(
+                self.port_handler, int(motor_id), entry.address)
+        if result != self.dxl.COMM_SUCCESS or error != 0:
+            self._flush_input_buffer()
+            return None
+        return entry.from_raw(int(value))
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "Optional[int]":
+        """Write one register and read it back. Returns what the motor holds.
+
+        EEPROM needs torque off, so torque is dropped for the write. An id or
+        baud change moves the motor, so the read-back follows it to where it
+        now answers rather than asking the old address.
+        """
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+
+        motor_id, raw = int(motor_id), entry.to_raw(value)
+        writer = {1: self.packet_handler.write1ByteTxRx,
+                  2: self.packet_handler.write2ByteTxRx,
+                  4: self.packet_handler.write4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            if entry.eeprom:
+                self.set_torque_enabled([motor_id], False, retries=0)
+            result, error = writer(
+                self.port_handler, motor_id, entry.address, raw)
+            if result != self.dxl.COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                raise RuntimeError(
+                    f"motor {motor_id}: {key} write failed "
+                    f"(result={result}, error={error})")
+        # Where the motor answers now. Baud is the caller's problem: the
+        # motor has already moved and this port has not.
+        after = motor_id if key != "id" else int(value)
+        if key == "baud_rate":
+            return int(value)
+        return self.read_config_register(after, key)
 
     def read_servo_gains(
         self, motor_ids: Sequence[int]
@@ -702,6 +1025,60 @@ class DynamixelClient(MotorClient):
                 if ids:
                     self.sync_write(ids, values, address, LEN_GAIN)
                     self._remember_ram(ids, values, address, LEN_GAIN)
+
+    def read_profile_limits(
+        self, motor_ids: Sequence[int]
+    ) -> "dict[int, ServoProfile]":
+        """Read Velocity Limit and Acceleration Limit for every motor at once.
+
+        These are what the servo's trajectory generator honours, and they are
+        far below what Profile Velocity will store: a chain of these motors
+        reports limits around 320 raw, roughly seven radians a second, against
+        a register that accepts 32767. A write above the limit is accepted and
+        reads back unchanged, so this is the only way to learn the real bound.
+
+        Either limit reading zero means that axis is unbounded, which is
+        reported as the register width. A motor that does not answer falls
+        back to the register width too, so a dropped packet cannot narrow a
+        caller's idea of the range.
+        """
+        motor_ids = [int(mid) for mid in motor_ids]
+        unbounded = ServoProfile(
+            velocity_rad_s=self.no_load_speed_rad_s,
+            acceleration_rad_s2=self.profile_acceleration_max_rad_s2,
+        )
+        out: "dict[int, ServoProfile]" = {mid: unbounded for mid in motor_ids}
+        if not motor_ids:
+            return out
+        vel_scale = self._pos_vel_cur_reader.vel_scale
+        with self._bus_lock:
+            reader = self.dxl.GroupSyncRead(
+                self.port_handler, self.packet_handler,
+                ADDR_LIMIT_BLOCK, LEN_LIMIT_BLOCK)
+            try:
+                for mid in motor_ids:
+                    if not reader.addParam(mid):
+                        return out
+                if reader.txRxPacket() != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    return out
+                for mid in motor_ids:
+                    if not reader.isAvailable(mid, ADDR_LIMIT_BLOCK,
+                                              LEN_LIMIT_BLOCK):
+                        continue
+                    acc = int(reader.getData(mid, ADDR_ACCELERATION_LIMIT,
+                                             LEN_LIMIT))
+                    vel = int(reader.getData(mid, ADDR_VELOCITY_LIMIT,
+                                             LEN_LIMIT))
+                    out[mid] = ServoProfile(
+                        velocity_rad_s=(vel * vel_scale if vel
+                                        else unbounded.velocity_rad_s),
+                        acceleration_rad_s2=(acc * PROFILE_ACC_SCALE if acc
+                                             else unbounded.acceleration_rad_s2),
+                    )
+            finally:
+                reader.clearParam()
+        return out
 
     def read_servo_profile(
         self, motor_ids: Sequence[int]
@@ -775,6 +1152,8 @@ class DynamixelClient(MotorClient):
         Returns:
             The raw error byte, or None if the read failed (no/garbled reply).
         """
+        if not self._present([motor_id]):
+            return None
         with self._bus_lock:
             value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
                 self.port_handler, motor_id, ADDR_HARDWARE_ERROR_STATUS)
@@ -794,9 +1173,11 @@ class DynamixelClient(MotorClient):
         whole sweep, and a failed transaction falls back to reading each motor
         individually so a single bad reply cannot blind the caller.
         """
-        motor_ids = [int(mid) for mid in motor_ids]
+        requested = [int(mid) for mid in motor_ids]
+        motor_ids = self._present(requested)
+        absent = {mid: None for mid in requested if mid not in motor_ids}
         if not motor_ids:
-            return {}
+            return absent
         with self._bus_lock:
             reader = self.dxl.GroupSyncRead(
                 self.port_handler, self.packet_handler,
@@ -804,11 +1185,11 @@ class DynamixelClient(MotorClient):
             try:
                 for mid in motor_ids:
                     if not reader.addParam(mid):
-                        return super().read_hardware_errors(motor_ids)
+                        return {**absent, **super().read_hardware_errors(motor_ids)}
                 comm_result = reader.txRxPacket()
                 if comm_result != self.dxl.COMM_SUCCESS:
                     self._flush_input_buffer()
-                    return super().read_hardware_errors(motor_ids)
+                    return {**absent, **super().read_hardware_errors(motor_ids)}
                 out: "dict[int, Optional[int]]" = {}
                 for mid in motor_ids:
                     if reader.isAvailable(mid, ADDR_HARDWARE_ERROR_STATUS,
@@ -818,7 +1199,7 @@ class DynamixelClient(MotorClient):
                             LEN_HARDWARE_ERROR_STATUS)
                     else:
                         out[mid] = None
-                return out
+                return {**absent, **out}
             finally:
                 reader.clearParam()
 
@@ -830,7 +1211,7 @@ class DynamixelClient(MotorClient):
         OVERLOAD_BIT = 0x20
         rebooted = []
         with self._bus_lock:
-            for mid in motor_ids:
+            for mid in self._present(motor_ids):
                 error_status = self.read_hardware_error(mid)
                 if error_status is None:
                     error_status = self.read_hardware_error(mid)
@@ -1139,16 +1520,26 @@ class DynamixelReader:
         self._fast_sync_read = False
         self._initialize_data()
 
-        self.operation = _AlertCaptureSyncRead(client.port_handler,
-                                               client.packet_handler,
-                                               client.dxl, address, size)
+        self.set_active(motor_ids)
 
-        for motor_id in motor_ids:
+    def set_active(self, motor_ids: Sequence[int]) -> None:
+        """Read only ``motor_ids`` from now on; the others keep their cached
+        values and no longer count against a fresh read."""
+        keep = set(motor_ids)
+        self._active = [(i, m) for i, m in enumerate(self.motor_ids) if m in keep]
+        self.operation = _AlertCaptureSyncRead(self.client.port_handler,
+                                               self.client.packet_handler,
+                                               self.client.dxl, self.address, self.size)
+        for _, motor_id in self._active:
             success = self.operation.addParam(motor_id)
             if not success:
                 raise OSError(
                     '[Motor ID: {}] Could not add parameter to sync read.'
                     .format(motor_id))
+
+    @property
+    def active_motor_ids(self) -> List[int]:
+        return [m for _, m in self._active]
 
     def probe_fast_sync_read(self) -> bool:
         """Try one fast sync read and adopt it if every motor answered.
@@ -1163,7 +1554,7 @@ class DynamixelReader:
                 self.client._flush_input_buffer()
                 return False
             if any(not self.operation.isAvailable(m, self.address, self.size)
-                   for m in self.motor_ids):
+                   for _, m in self._active):
                 return False
             self._fast_sync_read = True
             return True
@@ -1198,8 +1589,8 @@ class DynamixelReader:
                 self._last_full_fallback = now
                 logging.warning(
                     'Sync read failed; falling back to per-motor reads for %d motor(s)',
-                    len(self.motor_ids))
-                still_failed = self._run_bounded_fallback(list(self.motor_ids))
+                    len(self._active))
+                still_failed = self._run_bounded_fallback(self.active_motor_ids)
                 self.last_read_ok = not still_failed
                 return self._get_data()
 
@@ -1212,7 +1603,7 @@ class DynamixelReader:
                     self.client._note_hardware_alert(motor_id, error)
 
             errored_ids = []
-            for i, motor_id in enumerate(self.motor_ids):
+            for i, motor_id in self._active:
                 available = self.operation.isAvailable(motor_id, self.address,
                                                        self.size)
                 if not available:

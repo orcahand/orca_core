@@ -21,7 +21,14 @@ from ..constants import (
     POSITION,
     VELOCITY,
 )
-from .motor_client import MotionTimeoutError, MotorClient, MotorRead
+from .config_registers import ConfigRegister
+from .motor_client import (
+    MotionTimeoutError,
+    MotorClient,
+    MotorRead,
+    ServoGains,
+    ServoProfile,
+)
 from .feetech import (
     PortHandler,
     protocol_packet_handler,
@@ -30,6 +37,9 @@ from .feetech import (
     COMM_SUCCESS,
 )
 from .feetech_registers import HLS
+
+_UNPROBED = object()
+"""Distinguishes 'not asked yet' from a probed answer of None."""
 
 # Map host-facing baud rates to the firmware's register code.
 FEETECH_BAUD_RATE_MAP: dict[int, int] = {
@@ -53,6 +63,22 @@ FEETECH_MODELS: dict[int, str] = {
     6922: 'HLS3915',
     5130: 'HLS3915',
 }
+
+# Model-number → no-load speed in rpm, from each model's datasheet. Kept per
+# model because the spread within one chain is wide enough that a family
+# figure is worse than useless: the wrist turns at under half the speed of a
+# finger joint, so a single number is either not a cap at all on one of them
+# or needlessly slow on the other.
+FEETECH_NO_LOAD_RPM: dict[int, float] = {
+    4106: 45.0,
+    6922: 100.0,
+    5130: 100.0,
+}
+# For a motor that does not say what it is. The slowest catalogued model,
+# because the two errors are not symmetric: too low only makes a default
+# sluggish, where too high stops it binding and is indistinguishable from
+# asking for no cap.
+FEETECH_FALLBACK_NO_LOAD_RPM = 45.0
 
 # SCServo position scale: 0-4095 raw units = 0-360 degrees = 0-2*pi radians
 DEFAULT_POS_SCALE = 2.0 * np.pi / 4096  # 4096 steps for 360°
@@ -81,6 +107,37 @@ CLAMP_WARN_INTERVAL_S = 5.0
 # latch until the condition clears, so an unthrottled log would repeat them at
 # the read rate.
 STATUS_WARN_INTERVAL_S = 5.0
+
+
+# Operator-editable settings. Three of the Dynamixel entries have no HLS
+# counterpart and are absent rather than disabled: return delay time (this
+# family has no such register), drive mode, and protocol type.
+CONFIG_REGISTERS = (
+    ConfigRegister(
+        key="id", label="ID", address=HLS.ID, size=1, eeprom=True,
+        minimum=0, maximum=253, reidentifies=True,
+        note="the motor answers at the new id immediately"),
+    ConfigRegister(
+        key="baud_rate", label="Baud rate", address=HLS.BAUD_RATE, size=1,
+        eeprom=True, reidentifies=True,
+        choices={index: f"{rate:,}".replace(",", " ")
+                 for rate, index in FEETECH_BAUD_RATE_MAP.items()},
+        note="indices run the opposite way to Dynamixel: 0 is the fastest"),
+    ConfigRegister(
+        key="operating_mode", label="Operating mode", address=HLS.MODE,
+        size=1, eeprom=True,
+        choices={0: "position", 1: "speed", 2: "current", 3: "PWM"},
+        note="position here is current-limited by register 44"),
+    ConfigRegister(
+        key="secondary_id", label="Shadow ID", address=HLS.SECONDARY_ID,
+        size=1, eeprom=True, minimum=0, maximum=253,
+        note="a second address the motor also answers to; 253 disables it"),
+    ConfigRegister(
+        key="temperature_limit", label="Temperature limit",
+        address=HLS.MAX_TEMPERATURE, size=1, eeprom=True,
+        unit="degC", minimum=0, maximum=100,
+        note="the shutdown threshold, not a warning level"),
+)
 
 
 def _raw_units_to_rad(raw: float, scale: float) -> float:
@@ -144,6 +201,14 @@ class FeetechClient(MotorClient):
     factory_default_id = 1
     factory_default_baudrate = 1_000_000
     baud_rate_map = FEETECH_BAUD_RATE_MAP
+    servo_gain_max = HLS.GAIN_MAX
+    profile_velocity_max_rad_s = HLS.SPEED_MAX_RAW * HLS.SPEED_SCALE_RAD_S
+    profile_acceleration_max_rad_s2 = HLS.ACC_MAX_RAW * HLS.ACC_SCALE_RAD_S2
+    # The protocol has no limit register, so without a datasheet figure the
+    # reported ceiling would be the register width -- 2512 rad/s, some two
+    # hundred times anything these motors do. This is the family fallback;
+    # read_profile_limits prefers the model each motor reports.
+    no_load_speed_rad_s = FEETECH_FALLBACK_NO_LOAD_RPM * 2.0 * np.pi / 60.0
     # Feetech motors latch their ID at power-up, so the bus must be de-powered
     # before a motor is plugged in.
     requires_unpowered_hotplug = True
@@ -222,6 +287,7 @@ class FeetechClient(MotorClient):
 
         # RLock: mode/EEPROM sequences re-enter via set_torque_enabled.
         self._bus_lock = threading.RLock()
+        self._transport_bauds = _UNPROBED
 
         self._connected = False
 
@@ -236,8 +302,12 @@ class FeetechClient(MotorClient):
         # Per-motor motion parameters. Goal current and speed are registers the
         # motor keeps until overwritten, so they are commanded on their own
         # rather than re-sent with every position.
-        self._default_acc = DEFAULT_ACC
+        self._motor_acc = {mid: DEFAULT_ACC for mid in self.motor_ids}
         self._motor_speed = {mid: DEFAULT_SPEED for mid in self.motor_ids}
+        self._model_numbers: dict[int, int] = {}
+        # What each motor was last told to reach, in radians, so a cleared
+        # moving flag can be checked against where it was actually sent.
+        self._goal_positions: "dict[int, float]" = {}
         # Goal-current limit and its per-motor ceiling, in register units; both
         # start at full scale until connect() reads the motor's protection current.
         self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
@@ -291,6 +361,7 @@ class FeetechClient(MotorClient):
                 # by set_operating_mode, which disables torque first. The one
                 # bus access here is a read of each motor's protection current.
                 self.read_current_limits()
+                self._read_model_numbers()
 
                 self.OPEN_CLIENTS.add(self)
             except Exception:
@@ -300,6 +371,47 @@ class FeetechClient(MotorClient):
                 except Exception:
                     pass
                 raise
+
+    def _read_model_numbers(self) -> None:
+        """Ping every motor for its model number; a silent motor stays unknown.
+
+        Best-effort: this only sharpens the reported speed ceiling, so a motor
+        that will not answer falls back to the family figure rather than
+        failing a connect.
+        """
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                try:
+                    model, result, _ = self.packet_handler.ping(motor_id)
+                except Exception:
+                    continue
+                if result == 0 and model:
+                    self._model_numbers[motor_id] = int(model)
+
+    def read_profile_limits(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile]":
+        """The speed each motor can reach, by the model it reports.
+
+        This family publishes no limit register, so nothing on the bus will
+        refuse a faster request -- the ceiling is a datasheet fact and has to
+        be looked up. Per motor, because one chain mixes models whose no-load
+        speeds differ by more than a factor of two.
+        """
+        acceleration = self.profile_acceleration_max_rad_s2 or 0.0
+        return {
+            int(mid): ServoProfile(
+                velocity_rad_s=self.no_load_speed_rad_s_for(int(mid)),
+                acceleration_rad_s2=acceleration,
+            )
+            for mid in motor_ids
+        }
+
+    def no_load_speed_rad_s_for(self, motor_id: int) -> float:
+        """Datasheet no-load speed for the model this motor reports."""
+        rpm = FEETECH_NO_LOAD_RPM.get(
+            self._model_numbers.get(motor_id, -1), FEETECH_FALLBACK_NO_LOAD_RPM)
+        return rpm * 2.0 * np.pi / 60.0
 
     def _apply_port_options(self) -> None:
         """Advisory-lock the open port and enable low latency mode, best-effort."""
@@ -373,6 +485,52 @@ class FeetechClient(MotorClient):
                 self.port_handler.closePort()
                 self._connected = False
                 # The next connect may find different motors on this port.
+                self._motor_modes.clear()
+                self.OPEN_CLIENTS.discard(self)
+
+    def transport_baud_rates(self) -> "tuple[int, ...] | None":
+        """What the bridge on this port will carry; see :class:`MotorClient`.
+
+        Asked once and remembered: the transport does not change under a live
+        session. The query is in band and safe on either transport -- a board
+        answers it from the bridge, and on a plain adapter the bytes reach the
+        motors unframed (no 0xFF header) and are ignored.
+        """
+        if self._transport_bauds is _UNPROBED:
+            with self._bus_lock:
+                from .sensing.serial_discovery import (
+                    motor_baud_rates_over_link)
+                self._transport_bauds = motor_baud_rates_over_link(
+                    getattr(self.port_handler, "ser", None))
+        return self._transport_bauds
+
+    def disconnect_fixed_lock_order(self) -> None:
+        """Disconnect, waiting for the bus rather than giving up on it.
+
+        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
+        lock, and returns when it finds it set -- so a sampler legitimately
+        mid-transaction makes the teardown silently not happen, with no retry.
+        The port stays open, the client stays registered, and a reconnect
+        cannot replace the handler. A momentary condition becomes permanent.
+
+        Taking the lock first waits for any in-flight exchange to finish,
+        after which no live transaction can hold the flag, so the check is
+        unnecessary rather than skipped.
+
+        Deliberately a separate method. ``disconnect`` is on every consumer's
+        path and changing its locking is its own change with its own testing;
+        this exists so the behaviour can be proven in the one place that
+        provokes the race -- a reconnect triggered by a bus transaction --
+        before it is merged into the shared path.
+        """
+        if not self._connected:
+            return
+        with self._bus_lock:
+            try:
+                self.set_torque_enabled(self.motor_ids, False, retries=0)
+            finally:
+                self.port_handler.closePort()
+                self._connected = False
                 self._motor_modes.clear()
                 self.OPEN_CLIENTS.discard(self)
 
@@ -680,6 +838,211 @@ class FeetechClient(MotorClient):
         self._motor_modes[motor_id] = mode
         return mode
 
+    def read_servo_profile(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoProfile | None]":
+        """The trajectory limits each motor is shaping its moves with.
+
+        Acceleration at 41 and goal speed at 46, both live in position mode,
+        which is why this family already ramps where a bare Dynamixel steps.
+        A goal speed at the register maximum is reported as 0.0, the shared
+        "no cap" value, so one reading means the same thing on every family.
+        """
+        out: "dict[int, ServoProfile | None]" = {}
+        with self._bus_lock:
+            for motor_id in motor_ids:
+                motor_id = int(motor_id)
+                acc, r1, e1 = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.ACC)
+                speed, r2, e2 = self.packet_handler.read2ByteTxRx(
+                    motor_id, HLS.GOAL_SPEED)
+                if r1 != COMM_SUCCESS or e1 != 0 or r2 != COMM_SUCCESS or e2 != 0:
+                    self._flush_input_buffer()
+                    out[motor_id] = None
+                    continue
+                out[motor_id] = ServoProfile(
+                    velocity_rad_s=(
+                        0.0 if int(speed) >= HLS.SPEED_MAX_RAW
+                        else int(speed) * HLS.SPEED_SCALE_RAD_S),
+                    acceleration_rad_s2=int(acc) * HLS.ACC_SCALE_RAD_S2,
+                )
+        return out
+
+    def write_servo_profile(self, profiles: "dict[int, ServoProfile]") -> None:
+        """Set the trajectory limits, per motor. ``None`` fields are untouched.
+
+        Zero means "no cap" in the shared contract, and on this family that
+        needs translating: writing 0 to goal speed does not uncap the motor,
+        it stops it dead. So a requested 0 becomes the register maximum,
+        which the firmware clamps to whatever the hardware can sustain.
+        Acceleration needs no such care — 0 is maximum there already.
+        """
+        plan: "dict[int, tuple[int | None, int | None]]" = {}
+        for motor_id, wanted in profiles.items():
+            acc_raw = speed_raw = None
+            if wanted.acceleration_rad_s2 is not None:
+                value = float(wanted.acceleration_rad_s2)
+                if value < 0:
+                    raise ValueError("acceleration must be non-negative")
+                acc_raw = min(HLS.ACC_MAX_RAW,
+                              int(round(value / HLS.ACC_SCALE_RAD_S2)))
+            if wanted.velocity_rad_s is not None:
+                value = float(wanted.velocity_rad_s)
+                if value < 0:
+                    raise ValueError("velocity must be non-negative")
+                speed_raw = (
+                    HLS.SPEED_MAX_RAW if value == 0.0
+                    else min(HLS.SPEED_MAX_RAW,
+                             max(1, int(round(value / HLS.SPEED_SCALE_RAD_S)))))
+            plan[int(motor_id)] = (acc_raw, speed_raw)
+
+        with self._bus_lock:
+            for motor_id, (acc_raw, speed_raw) in plan.items():
+                if acc_raw is not None:
+                    self._motor_acc[int(motor_id)] = acc_raw
+                    result, error = self.packet_handler.write1ByteTxRx(
+                        motor_id, HLS.ACC, acc_raw)
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"acceleration write to motor {motor_id} failed: "
+                            f"result={result}, error={error}")
+                if speed_raw is not None:
+                    self._motor_speed[motor_id] = speed_raw
+                    result, error = self.packet_handler.write2ByteTxRx(
+                        motor_id, HLS.GOAL_SPEED, speed_raw)
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"goal speed write to motor {motor_id} failed: "
+                            f"result={result}, error={error}")
+
+    config_registers = CONFIG_REGISTERS
+
+    def _config_register(self, key: str) -> ConfigRegister:
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
+    def read_config_register(self, motor_id: int, key: str) -> "Optional[int]":
+        entry = self._config_register(key)
+        reader = {1: self.packet_handler.read1ByteTxRx,
+                  2: self.packet_handler.read2ByteTxRx,
+                  4: self.packet_handler.read4ByteTxRx}[entry.size]
+        with self._bus_lock:
+            value, result, error = reader(int(motor_id), entry.address)
+        if result != COMM_SUCCESS or error != 0:
+            self._flush_input_buffer()
+            return None
+        return entry.from_raw(int(value))
+
+    def write_config_register(self, motor_id: int, key: str,
+                              value: int) -> "Optional[int]":
+        """Write one register and read it back. Returns what the motor holds.
+
+        These are all EEPROM, which this family keeps behind a lock register:
+        torque off, unlock, write, re-lock. An id change moves the motor, so
+        the re-lock and the read-back go to where it now answers.
+        """
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+
+        motor_id, raw = int(motor_id), entry.to_raw(value)
+        writer = {1: self.packet_handler.write1ByteTxRx,
+                  2: self.packet_handler.write2ByteTxRx,
+                  4: self.packet_handler.write4ByteTxRx}[entry.size]
+        after = int(value) if key == "id" else motor_id
+        with self._bus_lock:
+            if entry.eeprom:
+                self.set_torque_enabled([motor_id], False, retries=0)
+                self._unlock_eeprom(motor_id)
+            result, error = writer(motor_id, entry.address, raw)
+            if entry.eeprom:
+                self._lock_eeprom(after)
+            if result != COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                raise RuntimeError(
+                    f"motor {motor_id}: {key} write failed "
+                    f"(result={result}, error={error})")
+        if key == "baud_rate":
+            return int(value)
+        return self.read_config_register(after, key)
+
+    def read_servo_gains(
+        self, motor_ids: "Sequence[int]"
+    ) -> "dict[int, ServoGains | None]":
+        """The position-loop gains each servo is running.
+
+        Kp, Kd and Ki live at 50-52 in SRAM, loaded from their EEPROM
+        counterparts at power-up. This family has no feedforward terms, so
+        those are reported as ``None`` rather than zero: nothing to set is
+        not the same as set to nothing.
+        """
+        out: "dict[int, ServoGains | None]" = {}
+        with self._bus_lock:
+            for motor_id in motor_ids:
+                motor_id = int(motor_id)
+                values = []
+                for offset in range(HLS.GAIN_BLOCK_LEN):
+                    value, result, error = self.packet_handler.read1ByteTxRx(
+                        motor_id, HLS.GAIN_BLOCK + offset)
+                    if result != COMM_SUCCESS or error != 0:
+                        values = []
+                        break
+                    values.append(int(value))
+                if len(values) != HLS.GAIN_BLOCK_LEN:
+                    self._flush_input_buffer()
+                    out[motor_id] = None
+                    continue
+                kp, kd, ki = values
+                out[motor_id] = ServoGains(kp=kp, ki=ki, kd=kd)
+        return out
+
+    def write_servo_gains(self, gains: "dict[int, ServoGains]") -> None:
+        """Set the position-loop gains, per motor.
+
+        SRAM registers, so a power cycle restores whatever EEPROM holds and
+        these are forgotten. Feedforward fields are refused rather than
+        silently dropped: a caller that asked for one is tuning against a
+        term this family does not have.
+        """
+        for motor_id, wanted in gains.items():
+            for name in ("ff_1st", "ff_2nd"):
+                if getattr(wanted, name) is not None:
+                    raise ValueError(
+                        f"{type(self).__name__} has no {name}: this family's "
+                        "position loop is PID only")
+            for name in ("kp", "ki", "kd"):
+                value = getattr(wanted, name)
+                if value is not None and value > HLS.GAIN_MAX:
+                    raise ValueError(
+                        f"{name} must be 0..{HLS.GAIN_MAX}, got {value}")
+
+        with self._bus_lock:
+            for motor_id, wanted in gains.items():
+                motor_id = int(motor_id)
+                for address, value in (
+                    (HLS.KP, wanted.kp),
+                    (HLS.KD, wanted.kd),
+                    (HLS.KI, wanted.ki),
+                ):
+                    if value is None:
+                        continue
+                    result, error = self.packet_handler.write1ByteTxRx(
+                        motor_id, address, int(value))
+                    if result != COMM_SUCCESS or error != 0:
+                        self._flush_input_buffer()
+                        raise RuntimeError(
+                            f"gain write to motor {motor_id} register "
+                            f"{address} failed: result={result}, error={error}")
+
     def read_current_limits(self) -> "dict[int, float | None]":
         """Read each motor's protection current (register 28), its goal-current ceiling, in mA.
 
@@ -718,7 +1081,8 @@ class FeetechClient(MotorClient):
         motion_write = self._sync_write(HLS.GOAL_CURRENT, 4)
         motion_write.clearParam()
         for motor_id in motor_ids:
-            acc_write.addParam(motor_id, [self._default_acc])
+            acc_write.addParam(
+                motor_id, [self._motor_acc.get(motor_id, DEFAULT_ACC)])
             motion_write.addParam(
                 motor_id, self._current_bytes(motor_id) + self._speed_bytes(motor_id))
         for writer, name in ((acc_write, 'acceleration'), (motion_write, 'current/speed')):
@@ -874,6 +1238,7 @@ class FeetechClient(MotorClient):
         """
         self._check_connected()
         deadline = time.monotonic() + timeout
+        stalled: "list[int]" = []
         while time.monotonic() < deadline:
             # Lock per poll (not across the sleeps) so waiting for motion
             # never starves other bus traffic for the whole timeout.
@@ -895,12 +1260,42 @@ class FeetechClient(MotorClient):
                             break
 
             if all_stopped:
-                return
+                short = self._motors_short_of_goal()
+                if not short:
+                    return
+                # Flag clear but not there: stalled against a load. Keep
+                # waiting rather than reporting the chain settled, because a
+                # recorded motion that advances on one stalled motor is a
+                # different motion, not a faster one.
+                stalled = short
             time.sleep(poll_interval)
 
         raise MotionTimeoutError(
             f'Motors did not settle within {timeout:.1f}s'
+            + (f' (still short of goal: {sorted(stalled)})' if stalled else '')
         )
+
+    def _motors_short_of_goal(self) -> "list[int]":
+        """Motors whose moving flag is clear but which never arrived.
+
+        Only consults motors this client has actually commanded; one driven
+        from elsewhere has no goal here to judge it against.
+        """
+        if not self._goal_positions:
+            return []
+        try:
+            positions = self.read_position_velocity_current().position
+        except Exception:
+            logging.debug('arrival position read failed', exc_info=True)
+            return []
+        short = []
+        for index, motor_id in enumerate(self.motor_ids):
+            goal = self._goal_positions.get(int(motor_id))
+            if goal is None:
+                continue
+            if abs(float(positions[index]) - goal) > self.arrival_tolerance_rad:
+                short.append(int(motor_id))
+        return short
 
     def write_desired_pos(
         self,
@@ -946,6 +1341,7 @@ class FeetechClient(MotorClient):
             sync_write = self._sync_write(HLS.GOAL_POSITION, 2)
             sync_write.clearParam()
             for motor_id, pos_rad in zip(motor_ids, positions):
+                self._goal_positions[int(motor_id)] = float(pos_rad)
                 pos_raw = self._clamp_position(
                     self._rad_to_raw(pos_rad, self.pos_scale), motor_id)
                 pos_scs = self.packet_handler.scs_toscs(pos_raw, 15)
@@ -1228,11 +1624,11 @@ class FeetechClient(MotorClient):
         )
 
         with self._bus_lock:
-            acc = acc if acc is not None else self._default_acc
             sync_write = self._sync_write(HLS.ACC, HLS.POSITION_PROFILE_LEN)
             sync_write.clearParam()
 
             for motor_id, pos_rad in zip(motor_ids, positions):
+                self._goal_positions[int(motor_id)] = float(pos_rad)
                 # Servo mode uses raw 0–4095 (single rotation); clamp before sending.
                 pos_raw = self._clamp_position(
                     self._rad_to_raw(pos_rad, self.pos_scale), motor_id)
@@ -1240,19 +1636,23 @@ class FeetechClient(MotorClient):
                     speed if speed is not None
                     else self._motor_speed.get(motor_id, DEFAULT_SPEED)
                 )
+                motor_acc = (
+                    acc if acc is not None
+                    else self._motor_acc.get(motor_id, DEFAULT_ACC)
+                )
                 if motor_id in override:
                     self._current_limit_raw[motor_id] = override[motor_id]
                 motor_current = self._current_limit_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
 
                 logging.debug(
                     'Position profile: motor=%d, pos=%d, speed=%d, acc=%d, current=%d',
-                    motor_id, pos_raw, motor_speed, acc, motor_current
+                    motor_id, pos_raw, motor_speed, motor_acc, motor_current
                 )
 
                 # One block per motor: acceleration, goal position, goal current, goal speed.
                 sync_write.addParam(
                     motor_id,
-                    [acc]
+                    [motor_acc]
                     + self._word_bytes(self.packet_handler.scs_toscs(pos_raw, 15))
                     + self._word_bytes(motor_current)
                     + self._word_bytes(self.packet_handler.scs_toscs(motor_speed, 15)),

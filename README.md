@@ -9,7 +9,7 @@
   <a href="https://deepwiki.com/orcahand/orca_core" target="_blank"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg"/></a>
 </div>
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space.
+Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space. While working directly with core will let you interact with your ORCA Hand on a deep level, the Orca Ui repository (found at: https://github.com/orcahand/orca_ui) can let users get started right away, helping you setup/maintain your hand, tune its performance, and better understand its capabilities. 
 
 ## Documentation
 
@@ -26,6 +26,18 @@ than a reference: the docs above and the code itself are the source of truth.
 ## Get Started
 
 To get started with Orca Core, follow these steps:
+
+**Pre-installation steps**
+
+1. **Git clone the orca_core repository**:
+   ```
+   #use any preferred method, ssh clone shown here
+   git clone git@github.com:orcahand/orca_core.git
+    ```
+
+2. **Install uv (found at: https://docs.astral.sh/uv/getting-started/)**
+
+**Installing the repository**
 
 1. **Sync a local development environment with `uv`**:
 
@@ -53,12 +65,13 @@ To get started with Orca Core, follow these steps:
     ```sh
     pip install .
     ```
+**Post-installation sample usage scripts**
 
-3. **Check the configuration file**:
+1. **Check the configuration file**:
 
     - Review the config file (e.g., `orca_core/models/v2/orcahand-right/config.yaml`) and make sure it matches your hardware setup.
 
-4. **Run the tension and calibration scripts**:
+2. **Run the tension and calibration scripts**:
 
     ```sh
     uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
@@ -67,7 +80,7 @@ To get started with Orca Core, follow these steps:
 
     Replace the path with your specific hand model folder if needed.
 
-5. **Move the hand to the neutral position**:
+3. **Move the hand to the neutral position**:
 
     ```sh
     uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml

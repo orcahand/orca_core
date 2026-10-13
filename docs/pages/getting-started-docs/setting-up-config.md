@@ -90,6 +90,34 @@ If tendon routing is done properly, all joints should have the same sign, except
 
 > **Note:** For abduction joints, flexion refers to movement **away from the thumb** and for the thumb flexion is **towards the fingers**. 
 
+#### Hardware v2.1: a second map for the same model
+
+A later hardware revision can route a tendon the other way without changing which motor drives which joint. Rather than fork the model, the config carries a second map for that revision:
+
+```yaml
+joint_to_motor_map:        # v2.0 boards
+  thumb_mcp: 12
+  thumb_dip: 11
+  ...
+joint_to_motor_map_v21:    # v2.1 boards -- same motors, only the sign may differ
+  thumb_mcp: -12
+  thumb_dip: -11
+  ...
+```
+
+Which map is in force is decided once, when the config is built, from the hand's **hardware version** (2 for v2.0, 21 for v2.1 -- one byte, `major*10 + minor`):
+
+```yaml
+hardware_version: auto     # take what the OH board reports (the packaged default)
+hardware_version: 21       # pin it: a hand on a plain adapter has no board to ask
+```
+
+Precedence is the same as for `port` and `motor_type`: a value you write **wins** over what the board reports, and the clash is logged (`config.yaml pins hardware_version=21, so the detected 2 is not used`) so a stale copied config is never mistaken for a detection bug. `auto` defers to the board; with no board and no pin the base map runs.
+
+`load_hand()` reads the board through detection. A caller that loads by `config_path` skips detection and passes the board's value as `detected_hardware_version=` -- it ranks as detection, so a pin still wins. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual.
+
+Whichever map is chosen goes through the same checks as the base map (every joint defined, every motor in `motor_ids`). The two maps are hand-maintained copies, so keep them in step by hand. Right-hand v2 models carry no `_v21` map: the wiring change was a left-hand change. The version still matters on both sides, because it also decides whether the motor-travel features below apply.
+
 ---
 
 
@@ -147,6 +175,8 @@ calibration_threshold: 0.01
 
 `calibration_current: default` drives the joints to their hardstops at the motor family's own calibration current (300 mA on Dynamixel hands, 900 mA on Feetech hands). A number pins a different value; `wrist_calibration_current` follows it unless set.
 
+On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). The packaged models calibrate a v2.1 Dynamixel hand's abductions at 300 mA and its MCPs and PIPs at 500 mA; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. Re-drives step up from the joint's own group current.
+
 These parameters should generally not be changed unless you have experience tuning the calibration behavior for a specific hardware modification.
 
 ---
@@ -176,14 +206,23 @@ If you want to specify the sequence or calibrate only specific joints you can ad
 ### 8. Motor Travel Baseline
 
 ```yaml
-joint_motor_travel:
-  index_mcp: 122.96
-  index_pip: 102.13
+joint_motor_travel_v21:   # packaged baseline, shared by every v2.1 hand
+  index_mcp: 139.39
+  index_pip: 131.04
   ...
+# joint_motor_travel:     # this hand's own measurement, wins per joint
 calibration_travel_margin: 0.25
-calibration_travel_retries: 1
+calibration_travel_retries: 3
 # calibration_max_current: <mA>   # optional headroom for the re-drive
 ```
+
+**The baseline only applies to v2.1 hardware.** On a v2.0 hand, or one whose
+version is unknown (no board and no `hardware_version` pin), there is no
+baseline: calibration is a single plain pass with no travel check or re-drive,
+and guided tensioning refuses to run (hold the motors and ratchet the spools
+instead). The packaged models ship the baseline as `joint_motor_travel_v21`;
+a `joint_motor_travel` block measured on your own hand takes precedence joint
+by joint, but likewise only on v2.1.
 
 `joint_motor_travel` records how far each joint's motor turns between that
 joint's two hardstops, in degrees. It is keyed by **joint name**, not motor ID:
@@ -212,7 +251,7 @@ baseline.
 - `calibration_retry_current` — current (mA) the last re-drive aims for. Must
   exceed `calibration_current`. Omit it and it defaults to 1.5x
   `calibration_current`. Only reached when `calibration_max_current` allows it.
-- `calibration_travel_retries` — how many re-drives to attempt. Default `1`.
+- `calibration_travel_retries` — how many re-drives to attempt. Default `3`.
   With more than one, the current ramps evenly from `calibration_current` up to
   the target, capped by `calibration_max_current`, so a joint that only needs
   a nudge is not driven at the full retry current on the first try. Set `0` to
@@ -238,7 +277,7 @@ Each calibration run also writes what it actually measured to
 `calibration.yaml` under `motor_travel_measured:`, so successive runs can be
 compared.
 
-A joint omitted from `joint_motor_travel` has its travel measured and logged,
+A joint with no baseline has its travel measured and logged,
 but not checked, and is never re-driven.
 
 ---

@@ -91,6 +91,48 @@ class MockDynamixelClient(MotorClient):
     factory_default_id = DynamixelClient.factory_default_id
     factory_default_baudrate = DynamixelClient.factory_default_baudrate
     baud_rate_map = DynamixelClient.baud_rate_map
+    waits_for_motion = DynamixelClient.waits_for_motion
+    arrival_tolerance_rad = DynamixelClient.arrival_tolerance_rad
+    servo_gain_max = DynamixelClient.servo_gain_max
+    profile_velocity_max_rad_s = DynamixelClient.profile_velocity_max_rad_s
+    profile_acceleration_max_rad_s2 = DynamixelClient.profile_acceleration_max_rad_s2
+    profile_ceiling_source = DynamixelClient.profile_ceiling_source
+    no_load_speed_rad_s = DynamixelClient.no_load_speed_rad_s
+    config_registers = DynamixelClient.config_registers
+
+    @property
+    def _config_values(self):
+        if not hasattr(self, '_cfgvals'):
+            self._cfgvals = {}
+        return self._cfgvals
+
+    def _config_register(self, key):
+        return DynamixelClient._config_register(self, key)
+
+    def read_config_register(self, motor_id, key):
+        self._config_register(key)
+        return self._config_values.setdefault(int(motor_id), {}).get(key)
+
+    def write_config_register(self, motor_id, key, value):
+        entry = self._config_register(key)
+        if entry.minimum is not None and value < entry.minimum:
+            raise ValueError(f"{key}={value} below {entry.minimum}")
+        if entry.maximum is not None and value > entry.maximum:
+            raise ValueError(f"{key}={value} above {entry.maximum}")
+        if entry.choices and value not in entry.choices:
+            raise ValueError(
+                f"{key}={value} is not one of {sorted(entry.choices)}")
+        store = self._config_values.setdefault(int(motor_id), {})
+        # Through to_raw and back, so a value the register cannot hold is
+        # reported as what it actually became, exactly as hardware would.
+        store[key] = entry.from_raw(entry.to_raw(int(value)))
+        if key == "id":
+            self._config_values[int(value)] = store
+        # What the register holds, not what was asked for -- the real clients
+        # read back, and a mock that answered otherwise would hide exactly the
+        # mismatch this is here to surface.
+        return store[key]
+
     requires_unpowered_hotplug = DynamixelClient.requires_unpowered_hotplug
     current_scale_ma = DynamixelClient.current_scale_ma
     max_current_ma = DynamixelClient.max_current_ma
@@ -137,6 +179,11 @@ class MockDynamixelClient(MotorClient):
         
         # States for simulation.
         self._connected = False
+        # Motors a test declares unplugged: they never answer, like a real
+        # client's silent motors, and drop out of responding_motor_ids().
+        self.silent_motor_ids: set = set()
+        # Output fraction per motor, as write_pwm_fraction() left it.
+        self.pwm_fraction = {mid: 1.0 for mid in self.motor_ids}
         self._torque_enabled = {mid: False for mid in self.motor_ids}
         self._operating_mode = {mid: 3 for mid in self.motor_ids}
         self._pos = {mid: 0.0 for mid in self.motor_ids}
@@ -210,6 +257,15 @@ class MockDynamixelClient(MotorClient):
             self._connected = False
             self.OPEN_CLIENTS.discard(self)
 
+    def disconnect_fixed_lock_order(self) -> None:
+        """Equivalent to :meth:`disconnect` here.
+
+        The real clients check the SDK's in-use flag before taking the bus
+        lock and abandon the teardown when it is set; this one has no such
+        shortcut to correct. Carried so the two agree on what a client offers.
+        """
+        self.disconnect()
+
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
                            enabled: bool,
@@ -278,16 +334,38 @@ class MockDynamixelClient(MotorClient):
         self.check_connected()
         return True
 
+    supports_pwm_cap = True
+
+    def write_pwm_fraction(self, motor_ids, fraction: float) -> None:
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError(f"PWM fraction must be in (0, 1], got {fraction!r}")
+        for mid in motor_ids:
+            if mid in self.pwm_fraction and mid not in self.silent_motor_ids:
+                self.pwm_fraction[mid] = float(fraction)
+
+    def responding_motor_ids(self) -> list:
+        return [m for m in self.motor_ids if m not in self.silent_motor_ids]
+
     def read_hardware_error(self, motor_id: int) -> "int | None":
         """A configured motor answers fault-free; any other ID is silent."""
         self.check_connected()
-        return 0 if motor_id in self.motor_ids else None
+        return 0 if motor_id in self.responding_motor_ids() else None
 
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the simulated temperatures."""
         self.check_connected()
         temp_array = np.array([random.uniform(40, 60) for _ in self.motor_ids])
         return temp_array
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
+        """Settled the instant it is asked: a mock write lands immediately.
+
+        It still answers the call rather than inheriting the no-op, so a
+        caller that depends on the wait is exercised against the mock
+        instead of only against hardware.
+        """
+        self.check_connected()
 
     def read_servo_gains(self, motor_ids: Sequence[int]):
         self.check_connected()

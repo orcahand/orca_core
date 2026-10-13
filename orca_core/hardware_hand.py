@@ -30,7 +30,7 @@ from .hardware.motor_client import (
 )
 from .hardware.motor_resolution import trial_probe
 from .maintenance.calibration_routine import persist_calibration, run_calibration
-from .maintenance.tensioning import run_jitter, run_tension
+from .maintenance.tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, run_jitter, run_tension
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
@@ -241,6 +241,19 @@ class OrcaHand(BaseHand):
         return self.calibration.wrist_calibrated
 
     @property
+    def absent_motor_ids(self) -> list[int]:
+        """Configured motors that did not answer when the bus was opened."""
+        client = self._motor_client
+        return list(client.absent_motor_ids()) if client is not None else []
+
+    @property
+    def absent_joints(self) -> list[str]:
+        """Joints whose motor did not answer, in the hand's joint order."""
+        absent = set(self.absent_motor_ids)
+        return [j for j in self.config.joint_ids
+                if self.config.joint_to_motor_map.get(j) in absent]
+
+    @property
     def motor_client(self) -> MotorClient | None:
         """The connected motor client, or ``None`` while disconnected.
 
@@ -310,6 +323,11 @@ class OrcaHand(BaseHand):
         self._unlimitable_motors_warned = False
         with self._motor_lock:
             self._motor_client.connect()
+        absent = self.absent_joints
+        if absent:
+            logger.warning(
+                "no motor answered for %s (motor IDs %s); maintenance routines "
+                "leave these joints out", absent, self.absent_motor_ids)
 
     def _try_port(
         self, port: str, base_config: "OrcaHandConfig"
@@ -734,10 +752,15 @@ class OrcaHand(BaseHand):
             return self._motor_client.read_position_velocity_current()
 
     def wait_for_motion(self, timeout: float = 5.0) -> None:
-        """Block until all motors have settled at their commanded position.
+        """Block until every motor has settled at its commanded position.
 
-        No-op for motor types fast enough that callers don't need to wait
-        (e.g., Dynamixel). Feetech polls a per-motor moving flag.
+        Settled means both that the servo has dropped its moving flag and
+        that it is within tolerance of the goal, because neither alone is
+        enough: the flag clears below a threshold that is still a real speed,
+        and position alone cannot tell arrival from passing through.
+
+        Whole-chain, so a motor that arrives first waits for the rest. A
+        recorded motion is implicitly synchronous.
 
         Args:
             timeout: Max seconds to wait.
@@ -1462,6 +1485,9 @@ class OrcaHand(BaseHand):
         move_motors: bool = True,
         blocking: bool = True,
         progress_callback=None,
+        offset_deg: float = TENSION_OFFSET_DEG,
+        pull_more=None,
+        extra_deg: float = TENSION_EXTRA_DEG,
     ):
         """Hold motors under current to allow manual tendon tensioning.
 
@@ -1480,13 +1506,19 @@ class OrcaHand(BaseHand):
                 ``cleanup_failed``. Called from the tensioning thread; must
                 be fast and non-blocking. Exceptions raised by the callback
                 are swallowed.
+            offset_deg: How far the finger motors slowly turn counterclockwise while
+                holding, loading the bottom spools; 0 holds them still.
+            pull_more: Optional ``callable() -> bool`` polled while holding;
+                each True pulls ``extra_deg`` further.
         """
         if blocking:
             self._task_stop_event.clear()
-            self._tension(move_motors, progress_callback=progress_callback)
+            self._tension(move_motors, progress_callback=progress_callback, offset_deg=offset_deg,
+                          pull_more=pull_more, extra_deg=extra_deg)
         else:
             self._start_task(
-                self._tension, move_motors, progress_callback=progress_callback
+                self._tension, move_motors, progress_callback=progress_callback,
+                offset_deg=offset_deg, pull_more=pull_more, extra_deg=extra_deg,
             )
 
     def jitter(
@@ -1544,12 +1576,17 @@ class OrcaHand(BaseHand):
             should_stop=self._task_stop_event.is_set,
         )
 
-    def _tension(self, move_motors: bool = True, progress_callback=None):
+    def _tension(self, move_motors: bool = True, progress_callback=None,
+                 offset_deg: float = TENSION_OFFSET_DEG, pull_more=None,
+                 extra_deg: float = TENSION_EXTRA_DEG):
         run_tension(
             self,
             move_motors=move_motors,
             progress_callback=progress_callback,
             should_stop=self._task_stop_event.is_set,
+            offset_deg=offset_deg,
+            pull_more=pull_more,
+            extra_deg=extra_deg,
         )
 
     def _run_task(self, task_fn, *args, **kwargs):

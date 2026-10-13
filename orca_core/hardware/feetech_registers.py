@@ -8,6 +8,8 @@ Only the registers the client touches are listed.
 class HLS:
     # EEPROM
     ID = 5
+    SECONDARY_ID = 7
+    MAX_TEMPERATURE = 13
     BAUD_RATE = 6
     PROTECTION_CURRENT = 28   # 6.5 mA/unit, 0..2047; copied into GOAL_CURRENT at power-up
     MODE = 33                 # 0 position under current limit, 1 speed, 2 current, 3 PWM
@@ -19,6 +21,9 @@ class HLS:
     GOAL_CURRENT = 44         # 6.5 mA/unit, -2047..2047; caps the running current in modes 0-2
     GOAL_SPEED = 46           # 0.732 rpm/unit, BIT15 sign
     TORQUE_LIMIT = 48         # 0.1 %/unit, 0..1000; a different register from GOAL_CURRENT, never written
+    KP = 50                   # position loop P, 0..254; loaded from EEPROM 21 at power-up
+    KD = 51                   # position loop D, 0..254; loaded from EEPROM 22
+    KI = 52                   # position loop I, 0..254; loaded from EEPROM 23
     LOCK = 55                 # 0: EEPROM writes persist across power-down, 1: they do not
 
     # SRAM, read-only
@@ -27,6 +32,19 @@ class HLS:
     PRESENT_TEMPERATURE = 63
     MOVING = 66
     PRESENT_CURRENT = 69      # 6.5 mA/unit, BIT15 sign
+
+    GAIN_BLOCK = KP           # KP, KD, KI are contiguous and read/write as one block
+    GAIN_BLOCK_LEN = 3
+    GAIN_MAX = 254
+
+    # Trajectory shaping, both live in the position-profile block.
+    ACC_SCALE_RAD_S2 = 0.15184364492350666   # 8.7 deg/s^2 per unit
+    ACC_MAX_RAW = 254                        # 0 = maximum acceleration
+    SPEED_SCALE_RAD_S = 0.07665191429188092  # 0.732 rpm per unit
+    # Goal Speed 0 means STOP on this family, not "uncapped" as it does on a
+    # Dynamixel. Asking for no cap therefore writes the largest value the
+    # register holds; the firmware clamps to what the hardware can sustain.
+    SPEED_MAX_RAW = 32767
 
     CURRENT_SCALE_MA = 6.5
     GOAL_CURRENT_MAX_RAW = 2047
