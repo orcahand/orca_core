@@ -1108,7 +1108,7 @@ def test_census_reports_what_it_checked(monkeypatch):
     deep = mc._census(plan, [], 3, None, tier=3)
     others = len(plan.client_cls.scannable_baudrates()) - 2
     assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", f"ID 1 @ {others} other baud rate(s)"]
-    assert deep["checked"] == [f"IDs 1-{mc.FULL_ID_RANGE[1]} @ {plan.target_baud}",
+    assert deep["checked"] == [f"IDs 1-{mc.SWEEP_ID_RANGE[1]} @ {plan.target_baud}",
                                f"IDs 1-3 @ {others} other baud rate(s)"]
 
 
@@ -1170,7 +1170,7 @@ def test_survey_bus_lists_every_family_baud_and_id(monkeypatch):
     }
 
     def scan(motor_type, port, baudrate, id_range):
-        assert id_range == mc.FULL_ID_RANGE
+        assert id_range == mc.SWEEP_ID_RANGE
         return [m for m in found_by_family[motor_type] if m["baud_rate"] == baudrate]
 
     monkeypatch.setattr(mc, "scan_motors", scan)
@@ -1334,7 +1334,7 @@ def test_reset_sweeps_every_scannable_rate_and_ends_at_the_default(monkeypatch):
     monkeypatch.setattr(mc, "reset_motor_to_factory",
                         lambda p, mid, baud: seen.append((mid, baud)) or (baud != p.default_baud))
     events = []
-    acted = mc.reset_all_motors(plan, progress_callback=events.append, wide=True)
+    acted = mc.reset_all_motors(plan, progress_callback=events.append)
     assert (17, plan.target_baud) in seen and (5, 2_000_000) in seen
     assert seen[-1] == (1, plan.default_baud), "the default rate is swept last"
     announced = [e["motor"]["id"] for e in events if e["event"] == "motor_updated"]

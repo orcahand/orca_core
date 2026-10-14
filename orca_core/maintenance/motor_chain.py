@@ -47,12 +47,14 @@ ID_CHANGE_SETTLE_S = 0.5
 # While waiting for a motor the bus is surveyed for motors that are not at the
 # factory defaults, in widening tiers: 1 = the chain's IDs at the target baud
 # and the default ID at every baud; 2 = also the chain's IDs at every baud;
-# 3 = also every ID at the target baud. After ESCALATE_AFTER_S of waiting every
-# survey is tier 3. Liveness is reported every HEARTBEAT_INTERVAL_S.
+# 3 = also every ID up to SWEEP_ID_RANGE at the target baud. After
+# ESCALATE_AFTER_S of waiting every survey is tier 3. Liveness is reported every
+# HEARTBEAT_INTERVAL_S. Sweeps stop at ID 40: a motor from any hand carries a
+# lower ID, and each absent ID costs a reply timeout.
 CENSUS_EVERY_POLLS = 5
 CENSUS_TIER_POLLS = {1: 5, 2: 10, 3: 30}
 ESCALATE_AFTER_S = 60.0
-FULL_ID_RANGE = (1, 252)
+SWEEP_ID_RANGE = (1, 40)
 HEARTBEAT_INTERVAL_S = 10.0
 # EEPROM writes are confirmed by pinging the new setting; scans are repeated
 # before a mismatch counts, so one dropped reply does not end a run.
@@ -728,8 +730,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
     checked = [f"IDs 1-{plan.total_motors} @ {plan.target_baud}"]
     if tier >= 3:
         at_target += scan_motors(plan.motor_type, plan.port, plan.target_baud,
-                                 (plan.total_motors + 1, FULL_ID_RANGE[1]))
-        checked[0] = f"IDs 1-{FULL_ID_RANGE[1]} @ {plan.target_baud}"
+                                 (plan.total_motors + 1, SWEEP_ID_RANGE[1]))
+        checked[0] = f"IDs 1-{SWEEP_ID_RANGE[1]} @ {plan.target_baud}"
     present = sorted(m["id"] for m in at_target)
     returned = False
     strays: list[dict] = []
@@ -767,13 +769,11 @@ def _census_tier(polls: int, waited_s: float) -> int:
 
 
 def survey_bus(port: str, progress_callback: Optional[ProgressCallback] = None,
-               id_range: tuple[int, int] = FULL_ID_RANGE) -> list[dict]:
-    """Everything on ``port``: every family, every baud, every ID in ``id_range``.
-
-    A diagnostic for a bus that does not behave; slow (minutes on a bus with
-    many baud rates). Emits ``survey_progress`` per (family, baud) with what
-    answered. Returns dicts with ``motor_type``, ``id``, ``model_name``,
-    ``baud_rate``.
+               id_range: tuple[int, int] = SWEEP_ID_RANGE) -> list[dict]:
+    """Everything on ``port``: every family, every scannable baud, every ID in
+    ``id_range``. A diagnostic for a bus that does not behave. Emits
+    ``survey_progress`` per (family, baud) with what answered. Returns dicts
+    with ``motor_type``, ``id``, ``model_name``, ``baud_rate``.
     """
     found: list[dict] = []
     for motor_type in SUPPORTED_MOTOR_TYPES:
@@ -1058,17 +1058,15 @@ def reset_all_motors(
     progress_callback: Optional[ProgressCallback] = None,
     prompt_callback: Optional[PromptCallback] = None,
     should_stop: Optional[ShouldStop] = None,
-    wide: bool = False,
 ) -> list[dict]:
     """Reset every motor on the bus to factory defaults, whatever ID or baud
     it carries. One pass; the caller loops so motors plugged in later are
     taken too.
 
-    Every rate the client can scan is swept over the chain's IDs, or over
-    every ID when ``wide`` (slow: a first pass, or an occasional one, catches
-    a motor from elsewhere). Motors already at the defaults are counted in
-    the result but not re-announced. The default rate is swept last, so a
-    motor moved there by this pass is seen once.
+    Every rate the client can scan is swept over ``SWEEP_ID_RANGE``. Motors
+    already at the defaults are counted in the result but not re-announced.
+    The default rate is swept last, so a motor moved there by this pass is
+    seen once.
     """
     bauds = [b for b in plan.client_cls.scannable_baudrates() if b != plan.default_baud]
     bauds.append(plan.default_baud)
@@ -1077,7 +1075,7 @@ def reset_all_motors(
         lambda m: reset_motor_to_factory(plan, m["id"], m["baud_rate"]),
         "Connect the motor(s) you want to reset",
         progress_callback, prompt_callback, should_stop,
-        bauds=bauds, id_range=FULL_ID_RANGE if wide else None,
+        bauds=bauds, id_range=SWEEP_ID_RANGE,
     )
 
 

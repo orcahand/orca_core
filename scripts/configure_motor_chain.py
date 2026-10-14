@@ -296,22 +296,16 @@ def _loop_until_interrupt(label: str, once) -> int:
 def _reset_until_interrupt(plan) -> int:
     """Reset every motor on the bus, then keep sweeping for more until Ctrl+C.
 
-    The first pass (and every tenth) sweeps every ID at every rate the driver
-    can set, so a motor from anywhere is caught; the others sweep the chain's
-    IDs, fast enough to notice a motor plugged in a moment ago.
+    Each pass sweeps IDs 1-40 at every rate the driver can set, so a motor
+    from any hand is caught, and a motor plugged in a moment ago is noticed
+    within a few seconds.
     """
     print(f"\n🔍 Resetting every motor on the bus to ID {plan.default_id} @ "
           f"{plan.default_baud:,} bps — connect more at any time; {BOLD}Ctrl+C{RESET} when done.")
     last_line = None
-    passes = 0
     try:
         while True:
-            wide = passes % 10 == 0
-            if wide:
-                print(f"{YELLOW}   Full sweep (every ID, every rate) — takes a little while…{RESET}")
-            acted = reset_all_motors(plan, progress_callback=on_progress,
-                                     prompt_callback=on_prompt, wide=wide)
-            passes += 1
+            acted = reset_all_motors(plan, progress_callback=on_progress, prompt_callback=on_prompt)
             at_default = [m for m in acted
                           if m["id"] == plan.default_id and m["baud_rate"] == plan.default_baud]
             if not acted:
@@ -348,8 +342,8 @@ def main() -> int:
                              "and baud alone (DYNAMIXEL; for hands assembled before chain "
                              "configuration set it).")
     parser.add_argument("--scan", action="store_true",
-                        help="List every motor on the bus (every family, baud and ID) and exit. "
-                             "Slow; a diagnostic for a bus that does not behave.")
+                        help="List every motor on the bus (both families, every rate, IDs 1-40) "
+                             "and exit. A diagnostic for a bus that does not behave.")
     parser.add_argument("--motor-type", choices=SUPPORTED_MOTOR_TYPES,
                         help="Override motor family. Auto-detected from factory defaults when omitted.")
     args = parser.parse_args()
@@ -358,7 +352,7 @@ def main() -> int:
     port = _resolve_port(config.get('port', 'auto'), args.motor_type)
     if args.scan:
         _banner("🔎 BUS SURVEY 🔎")
-        print(f"   Pinging every ID at every baud rate on {port} — this takes a while.")
+        print(f"   Pinging IDs 1-40 at every rate on {port} — about a minute.")
         found = survey_bus(port, progress_callback=on_progress)
         if not found:
             print(f"\n{YELLOW}Nothing answered. Check power and wiring.{RESET}")
