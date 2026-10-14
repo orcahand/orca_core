@@ -37,7 +37,7 @@ from orca_core.maintenance import (
     set_all_return_delays,
     valid_baudrates,
 )
-from orca_core.maintenance.motor_chain import reset_motor_to_factory, survey_bus
+from orca_core.maintenance.motor_chain import OTHER_RATES_AFTER_S, reset_motor_to_factory, survey_bus
 from orca_core.utils import (
     enable_ansi_escapes,
     get_and_choose_port,
@@ -135,9 +135,11 @@ def on_progress(event: dict) -> None:
               f"after programming ID {event['target_id']}.{RESET}")
     elif name == "still_waiting":
         checked = "; ".join(event.get("checked") or ["the factory defaults"])
+        soon = ("" if event.get("other_rates")
+                else f" Other baud rates join after {OTHER_RATES_AFTER_S:.0f}s.")
         print(f"{YELLOW}   … still waiting for a factory-default {event['expected_model']} "
               f"({event['elapsed_s']}s). Nothing at the factory defaults; nothing else this run "
-              f"could take (checked {checked}).{RESET}")
+              f"could take (checked {checked}).{soon}{RESET}")
         if event.get("escalated"):
             print(f"{YELLOW}     Every survey is now the widest. If a motor is connected, it may "
                   f"be at an ID and baud outside what is checked: Ctrl+C and run this script "
@@ -176,6 +178,9 @@ def on_progress(event: dict) -> None:
               f"retrying…{RESET}")
     elif name == "verify_retry":
         print(f"{YELLOW}   Chain check missed {event['missing']}; scanning again…{RESET}")
+    elif name == "bus_error":
+        print(f"{RED}⚠ Bus error while scanning (attempt {event['attempt']}): {event['error']}"
+              f" — trying again.{RESET}")
     elif name == "verify_failed":
         print(f"{RED}⚠ {event['error']}{RESET}")
         print(f"{YELLOW}   Re-reading the chain from the bus…{RESET}")
@@ -296,16 +301,25 @@ def _loop_until_interrupt(label: str, once) -> int:
 def _reset_until_interrupt(plan) -> int:
     """Reset every motor on the bus, then keep sweeping for more until Ctrl+C.
 
-    Each pass sweeps IDs 1-40 at every rate the driver can set, so a motor
-    from any hand is caught, and a motor plugged in a moment ago is noticed
-    within a few seconds.
+    Each pass sweeps IDs 1-40 at the chain's rate and the factory rate; the
+    other rates join once nothing has turned up for a while.
     """
     print(f"\n🔍 Resetting every motor on the bus to ID {plan.default_id} @ "
           f"{plan.default_baud:,} bps — connect more at any time; {BOLD}Ctrl+C{RESET} when done.")
     last_line = None
+    last_found = time.monotonic()
+    widened = False
     try:
         while True:
-            acted = reset_all_motors(plan, progress_callback=on_progress, prompt_callback=on_prompt)
+            all_rates = time.monotonic() - last_found >= OTHER_RATES_AFTER_S
+            if all_rates and not widened:
+                print(f"{YELLOW}   Nothing new for {OTHER_RATES_AFTER_S:.0f}s — also sweeping the "
+                      f"other baud rates from now on.{RESET}")
+            widened = all_rates
+            acted = reset_all_motors(plan, progress_callback=on_progress, prompt_callback=on_prompt,
+                                     all_rates=all_rates)
+            if acted:
+                last_found = time.monotonic()
             at_default = [m for m in acted
                           if m["id"] == plan.default_id and m["baud_rate"] == plan.default_baud]
             if not acted:

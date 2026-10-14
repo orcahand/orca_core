@@ -773,6 +773,7 @@ def test_a_stray_motor_plugged_in_mid_run_is_reset_then_programmed(monkeypatch):
     survey resets it to factory defaults and the step programs it."""
     plan = small_plan()
     bus, client = _wire_real(monkeypatch, plan)
+    _tick_per_scan(monkeypatch, bus, seconds=5.0)   # ID 9 is beyond the chain: the widest tier
     events = []
 
     def operator(e):
@@ -797,6 +798,7 @@ def test_a_stray_at_a_foreign_baud_is_found_and_reset(monkeypatch):
     foreign = 2_000_000
     assert foreign not in (plan.default_baud, plan.target_baud)
     bus, client = _wire_real(monkeypatch, plan)
+    _tick_per_scan(monkeypatch, bus, seconds=5.0)
     events = []
 
     def operator(e):
@@ -1093,11 +1095,25 @@ def test_waiting_reports_liveness(monkeypatch):
 # --- survey tiers and the bus survey -----------------------------------------
 
 
-def test_census_tiers_widen_with_time_and_escalate():
-    assert mc._census_tier(5, 0) == 1
-    assert mc._census_tier(10, 0) == 2
-    assert mc._census_tier(30, 0) == 3
-    assert mc._census_tier(5, mc.ESCALATE_AFTER_S) == 3
+def test_census_tiers_widen_with_time_waited():
+    assert mc._census_tier(0) == 1
+    assert mc._census_tier(mc.OTHER_RATES_AFTER_S - 1) == 1
+    assert mc._census_tier(mc.OTHER_RATES_AFTER_S) == 2
+    assert mc._census_tier(mc.ESCALATE_AFTER_S) == 3
+
+
+def _tick_per_scan(monkeypatch, bus, seconds=1.0):
+    """A clock that advances per scan, so time-based tiers arrive in a test."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(mc.time, "monotonic", lambda: clock["now"])
+    real_scan = bus.scan
+
+    def ticking(*a, **k):
+        clock["now"] += seconds
+        return real_scan(*a, **k)
+
+    monkeypatch.setattr(mc, "scan_motors", ticking)
+    return ticking
 
 
 def test_census_reports_what_it_checked(monkeypatch):
@@ -1105,22 +1121,24 @@ def test_census_reports_what_it_checked(monkeypatch):
     bus = FakeBus(plan=plan)
     bus.install(monkeypatch)
     quick = mc._census(plan, [], 3, None, tier=1)
+    wider = mc._census(plan, [], 3, None, tier=2)
     deep = mc._census(plan, [], 3, None, tier=3)
     others = len(plan.client_cls.scannable_baudrates()) - 2
-    assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", f"ID 1 @ {others} other baud rate(s)"]
+    assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}"], "only the chain's rate at first"
+    assert wider["checked"] == [f"IDs 1-3 @ {plan.target_baud}", f"IDs 1-3 @ {others} other baud rate(s)"]
     assert deep["checked"] == [f"IDs 1-{mc.SWEEP_ID_RANGE[1]} @ {plan.target_baud}",
                                f"IDs 1-3 @ {others} other baud rate(s)"]
 
 
-def test_a_stray_at_a_foreign_baud_beyond_the_default_id_waits_for_tier_two(monkeypatch):
+def test_a_stray_at_a_foreign_baud_is_looked_for_only_after_a_while(monkeypatch):
     plan = small_plan()
     bus, client = _wire_real(monkeypatch, plan)
+    ticking = _tick_per_scan(monkeypatch, bus)
     scans = []
-    real_scan = bus.scan
 
     def counting_scan(motor_type, port, baudrate, id_range):
-        scans.append((baudrate, id_range))
-        return real_scan(motor_type, port, baudrate, id_range)
+        scans.append((mc.time.monotonic(), baudrate))
+        return ticking(motor_type, port, baudrate, id_range)
 
     monkeypatch.setattr(mc, "scan_motors", counting_scan)
     events = []
@@ -1135,8 +1153,8 @@ def test_a_stray_at_a_foreign_baud_beyond_the_default_id_waits_for_tier_two(monk
     assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
     reset = [e for e in events if e["event"] == "stray_motor_reset"]
     assert [e["motor"]["id"] for e in reset] == [2]
-    # tier 1 only pings the default ID at foreign bauds; tier 2 pinged the chain's IDs there
-    assert (2_000_000, (1, 1)) in scans and (2_000_000, (1, 3)) in scans
+    foreign = [t for t, b in scans if b == 2_000_000]
+    assert foreign and min(foreign) >= mc.OTHER_RATES_AFTER_S, "other rates only after the wait"
 
 
 def test_the_heartbeat_names_what_the_survey_checked(monkeypatch):
@@ -1210,7 +1228,8 @@ def test_a_rate_the_bridge_ignores_shows_the_chain_itself_and_is_never_a_stray(m
         events.append(e)
         if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
             bus.motors.append(motor(1, "XC330", plan.default_baud))
-        if e["event"] == "still_waiting" and e["target_id"] == 2 and e["polls"] > 12 \
+        if e["event"] == "still_waiting" and e["target_id"] == 2 \
+                and any(x["event"] == "phantom_baud" for x in events) \
                 and not bus.at(plan.default_id, plan.default_baud):
             bus.motors.append(motor(1, "XC330", plan.default_baud))
         if e["event"] == "awaiting_motor" and e["target_id"] == 1:
@@ -1269,6 +1288,7 @@ def test_only_one_stray_is_reset_per_survey(monkeypatch):
 def test_two_strays_at_a_foreign_baud_are_taken_one_per_survey(monkeypatch):
     plan = small_plan()
     bus, client = _wire_real(monkeypatch, plan)
+    _tick_per_scan(monkeypatch, bus, seconds=5.0)
     events = []
 
     def operator(e):
@@ -1325,7 +1345,7 @@ def test_a_failed_verification_rereads_the_chain_instead_of_ending(monkeypatch):
 # --- reset: every motor on the bus, whatever it carries ------------------------
 
 
-def test_reset_sweeps_every_scannable_rate_and_ends_at_the_default(monkeypatch):
+def test_reset_sweeps_the_chain_and_factory_rates_and_the_rest_on_request(monkeypatch):
     plan = small_plan()
     bus = FakeBus([motor(17, "XC330", plan.target_baud), motor(5, "XC330", 2_000_000),
                    motor(1, "XC330", plan.default_baud)], plan)
@@ -1335,10 +1355,15 @@ def test_reset_sweeps_every_scannable_rate_and_ends_at_the_default(monkeypatch):
                         lambda p, mid, baud: seen.append((mid, baud)) or (baud != p.default_baud))
     events = []
     acted = mc.reset_all_motors(plan, progress_callback=events.append)
-    assert (17, plan.target_baud) in seen and (5, 2_000_000) in seen
-    assert seen[-1] == (1, plan.default_baud), "the default rate is swept last"
+    assert seen == [(17, plan.target_baud), (1, plan.default_baud)], "chain rate, then the factory rate"
+    assert len(acted) == 2
+
+    seen.clear()
+    acted = mc.reset_all_motors(plan, progress_callback=events.append, all_rates=True)
+    assert (5, 2_000_000) in seen and seen[-1] == (1, plan.default_baud)
     announced = [e["motor"]["id"] for e in events if e["event"] == "motor_updated"]
-    assert sorted(announced) == [5, 17], "a motor already at the defaults is not re-announced"
+    assert announced[0] == 17 and sorted(announced[1:]) == [5, 17], \
+        "a motor already at the defaults is not re-announced"
     assert len(acted) == 3
 
 
@@ -1500,7 +1525,8 @@ def test_feetech_rates_the_bridge_ignores_are_recognised_from_the_chain(monkeypa
         events.append(e)
         if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
             bus.motors.append(motor(1, "HLS3915", plan.default_baud))
-        if e["event"] == "still_waiting" and e["target_id"] == 2 and e["polls"] > 12 \
+        if e["event"] == "still_waiting" and e["target_id"] == 2 \
+                and any(x["event"] == "phantom_baud" for x in events) \
                 and not bus.at(1, plan.default_baud):
             bus.motors.append(motor(1, "HLS3915", plan.default_baud))
         if e["event"] == "awaiting_motor" and e["target_id"] == 1:
@@ -1573,3 +1599,33 @@ def test_feetech_family_is_detected_from_its_configured_chain(monkeypatch):
     events = []
     assert mc.detect_motor_type("/dev/fake", events.append, chain_config={"motor_ids": [1, 2, 3]}) == FEETECH
     assert events[-1] == {"event": "motor_type_detected", "motor_type": FEETECH, "configured": True}
+
+
+def test_a_bus_error_while_waiting_is_retried_then_named(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    failures = {"left": 2}
+    real_scan = bus.scan
+
+    def flaky(*a, **k):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise OSError("device reports readiness to read but returned no data")
+        return real_scan(*a, **k)
+
+    monkeypatch.setattr(mc, "scan_motors", flaky)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and not bus.at(1, plan.default_baud):
+            bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    assert [e["attempt"] for e in events if e["event"] == "bus_error"] == [1, 2]
+
+    failures["left"] = 99
+    bus.motors.clear()
+    with pytest.raises(mc.MotorChainError, match="kept failing"):
+        mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0)
+    assert [e["attempt"] for e in events if e["event"] == "bus_error"][-3:] == [1, 2, 3]

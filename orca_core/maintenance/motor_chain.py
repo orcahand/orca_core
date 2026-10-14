@@ -45,17 +45,22 @@ PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
 ID_CHANGE_SETTLE_S = 0.5
 # While waiting for a motor the bus is surveyed for motors that are not at the
-# factory defaults, in widening tiers: 1 = the chain's IDs at the target baud
-# and the default ID at every baud; 2 = also the chain's IDs at every baud;
-# 3 = also every ID up to SWEEP_ID_RANGE at the target baud. After
-# ESCALATE_AFTER_S of waiting every survey is tier 3. Liveness is reported every
-# HEARTBEAT_INTERVAL_S. Sweeps stop at ID 40: a motor from any hand carries a
-# lower ID, and each absent ID costs a reply timeout.
+# factory defaults, in tiers that widen with the time spent waiting: 1 = the
+# chain's IDs at the chain's rate (the default rate is polled anyway); 2, after
+# OTHER_RATES_AFTER_S = also the chain's IDs at every other rate the driver can
+# set; 3, after ESCALATE_AFTER_S = also every ID up to SWEEP_ID_RANGE at the
+# chain's rate. Hands only ever use the factory and chain rates, so the others
+# are a last resort. Liveness is reported every HEARTBEAT_INTERVAL_S. Sweeps
+# stop at ID 40: a motor from any hand carries a lower ID, and each absent ID
+# costs a reply timeout.
 CENSUS_EVERY_POLLS = 5
-CENSUS_TIER_POLLS = {1: 5, 2: 10, 3: 30}
+OTHER_RATES_AFTER_S = 30.0
 ESCALATE_AFTER_S = 60.0
 SWEEP_ID_RANGE = (1, 40)
 HEARTBEAT_INTERVAL_S = 10.0
+# Bus errors (a serial hiccup, a port the OS held) are retried this many times
+# in a row before the run gives up on them.
+BUS_ERROR_ATTEMPTS = 3
 # EEPROM writes are confirmed by pinging the new setting; scans are repeated
 # before a mismatch counts, so one dropped reply does not end a run.
 WRITE_ATTEMPTS = 3
@@ -720,8 +725,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
     re-reads the chain. A motor "at" another baud whose ID also answers at the
     chain's baud is the chain seen through a bridge that ignored that rate; the
     rate is reported (``phantom_baud``) and skipped for the rest of the run.
-    ``tier`` widens the survey (see ``CENSUS_TIER_POLLS``). Returns the IDs seen
-    at the target baud, the configured IDs that did not answer, and what was
+    ``tier`` widens the survey (see the tier constants). Returns the IDs seen at
+    the target baud, the configured IDs that did not answer, and what was
     checked.
     """
     state = {"skip_bauds": set()} if state is None else state
@@ -742,8 +747,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             returned = True
             continue
         strays.append(m)
-    other_bauds = _bauds_to_survey(plan, state)
-    id_range = chain_ids if tier >= 2 else (plan.default_id, plan.default_id)
+    other_bauds = _bauds_to_survey(plan, state) if tier >= 2 else []
+    id_range = chain_ids
     for baud in other_bauds:
         found = scan_motors(plan.motor_type, plan.port, baud, id_range)
         phantoms = [m for m in found if _is_phantom(plan, m, at_target)]
@@ -756,16 +761,15 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
     if strays and not returned:
         _reset_stray(plan, strays[0], progress_callback)
     if other_bauds:
-        span = f"IDs 1-{plan.total_motors}" if tier >= 2 else f"ID {plan.default_id}"
-        checked.append(f"{span} @ {len(other_bauds)} other baud rate(s)")
+        checked.append(f"IDs 1-{plan.total_motors} @ {len(other_bauds)} other baud rate(s)")
     return {"present": present, "returned": returned, "checked": checked,
             "missing": [i for i in configured if i not in present]}
 
 
-def _census_tier(polls: int, waited_s: float) -> int:
+def _census_tier(waited_s: float) -> int:
     if waited_s >= ESCALATE_AFTER_S:
         return 3
-    return max(t for t, every in CENSUS_TIER_POLLS.items() if polls % every == 0)
+    return 2 if waited_s >= OTHER_RATES_AFTER_S else 1
 
 
 def survey_bus(port: str, progress_callback: Optional[ProgressCallback] = None,
@@ -805,9 +809,11 @@ def _wait_for_default_motor(
     Returns ``(motor, baud)``: the factory baud for a fresh motor, the target
     baud for one adopted mid-programming (``half_programmed_motor_adopted``).
     Every ``CENSUS_EVERY_POLLS`` empty polls the bus is surveyed and strays are
-    reset, in widening tiers (``CENSUS_TIER_POLLS``; every survey is the widest
-    after ``ESCALATE_AFTER_S``); ``still_waiting`` reports liveness every
-    ``HEARTBEAT_INTERVAL_S`` with what the last survey checked.
+    reset, in tiers that widen with the time waited (other rates after
+    ``OTHER_RATES_AFTER_S``, every ID after ``ESCALATE_AFTER_S``);
+    ``still_waiting`` reports liveness every ``HEARTBEAT_INTERVAL_S`` with what
+    the last survey checked. A bus error (``bus_error``) is retried
+    ``BUS_ERROR_ATTEMPTS`` times in a row before it ends the run.
     Returns ``None`` whenever the chain must be re-read from the bus before
     carrying on: the port went away and came back (``port_lost``), a motor
     already carrying this slot's ID answered again (``configured_motor_returned``),
@@ -821,6 +827,7 @@ def _wait_for_default_motor(
     wrong_model_reported = False
     missing_before: list[int] = []
     checked: list[str] = []
+    bus_errors = 0
     while True:
         _check_stop(should_stop)
         if not serial_port_exists(plan.port):
@@ -836,6 +843,21 @@ def _wait_for_default_motor(
                         _emit(progress_callback, "half_programmed_motor_adopted",
                               target_id=target_id, motor=motor)
                     return motor, baud
+            wrong_model_reported = False
+            polls += 1
+            if polls % CENSUS_EVERY_POLLS == 0:
+                seen = _census(plan, configured, target_id, progress_callback,
+                               tier=_census_tier(time.monotonic() - started), state=state)
+                checked = seen["checked"]
+                if seen["returned"]:
+                    _emit(progress_callback, "configured_motor_returned", target_id=target_id)
+                    return None
+                if seen["missing"]:
+                    if seen["missing"] == missing_before:
+                        return None
+                    _emit(progress_callback, "configured_motor_missing", missing=seen["missing"])
+                missing_before = seen["missing"]
+            bus_errors = 0
         except MotorChainError as exc:
             if not wrong_model_reported:
                 _emit(progress_callback, "wrong_motor_detected", target_id=target_id,
@@ -843,27 +865,26 @@ def _wait_for_default_motor(
                 wrong_model_reported = True
             time.sleep(poll_interval)
             continue
-        wrong_model_reported = False
-        polls += 1
-        if polls % CENSUS_EVERY_POLLS == 0:
-            seen = _census(plan, configured, target_id, progress_callback,
-                           tier=_census_tier(polls, time.monotonic() - started), state=state)
-            checked = seen["checked"]
-            if seen["returned"]:
-                _emit(progress_callback, "configured_motor_returned", target_id=target_id)
-                return None
-            if seen["missing"]:
-                if seen["missing"] == missing_before:
-                    return None
-                _emit(progress_callback, "configured_motor_missing", missing=seen["missing"])
-            missing_before = seen["missing"]
+        except Exception as exc:
+            # A serial hiccup mid-scan: say so and look again, up to a point.
+            bus_errors += 1
+            _emit(progress_callback, "bus_error", target_id=target_id, attempt=bus_errors,
+                  error=str(exc))
+            if bus_errors >= BUS_ERROR_ATTEMPTS:
+                raise MotorChainError(
+                    f"the bus kept failing while waiting for motor {target_id}: {exc}"
+                ) from exc
+            time.sleep(ID_CHANGE_SETTLE_S)
+            continue
         now = time.monotonic()
         if now - last_beat >= HEARTBEAT_INTERVAL_S:
             last_beat = now
+            waited = now - started
             _emit(progress_callback, "still_waiting", target_id=target_id,
-                  expected_model=expected_model, elapsed_s=round(now - started),
+                  expected_model=expected_model, elapsed_s=round(waited),
                   polls=polls, checked=list(checked),
-                  escalated=now - started >= ESCALATE_AFTER_S)
+                  other_rates=waited >= OTHER_RATES_AFTER_S,
+                  escalated=waited >= ESCALATE_AFTER_S)
         time.sleep(poll_interval)
 
 
@@ -942,9 +963,10 @@ def configure_motor_chain(
     ``unrecognised_motor_model``, ``half_programmed_motor_adopted``,
     ``stray_motor_reset``, ``stray_motor_reset_failed``,
     ``configured_motor_missing``, ``configured_motor_returned``,
-    ``chain_shortened``, ``phantom_baud``, ``port_lost``, ``motor_found``,
-    ``write_retry``, ``duplicate_default_motor``, ``motor_configured``,
-    ``verify_retry``, ``verify_failed``, ``chain_verified``, ``chain_done``. Asks the operator to connect each motor
+    ``chain_shortened``, ``phantom_baud``, ``port_lost``, ``bus_error``,
+    ``motor_found``, ``write_retry``, ``duplicate_default_motor``,
+    ``motor_configured``, ``verify_retry``, ``verify_failed``,
+    ``chain_verified``, ``chain_done``. Asks the operator to connect each motor
     via ``prompt_callback`` (required for Feetech, whose bus must be unpowered
     while plugging).
 
@@ -961,9 +983,21 @@ def configure_motor_chain(
     bus_state = {"skip_bauds": set()}
     first_scan = True
     announced: Optional[int] = None
+    bus_errors = 0
     while True:
         _check_stop(should_stop)
-        scan = _settle_prescan(plan, validated, configured, first_scan, progress_callback)
+        try:
+            scan = _settle_prescan(plan, validated, configured, first_scan, progress_callback)
+        except MotorChainError:
+            raise
+        except Exception as exc:
+            bus_errors += 1
+            _emit(progress_callback, "bus_error", target_id=None, attempt=bus_errors, error=str(exc))
+            if bus_errors >= BUS_ERROR_ATTEMPTS:
+                raise MotorChainError(f"the bus kept failing while reading the chain: {exc}") from exc
+            time.sleep(ID_CHANGE_SETTLE_S)
+            continue
+        bus_errors = 0
         if first_scan:
             _emit(progress_callback, "prescan_done", already_configured=scan.valid_ids,
                   motors=[scan.motors_by_id[i] for i in sorted(scan.valid_ids, reverse=True)])
@@ -1058,17 +1092,20 @@ def reset_all_motors(
     progress_callback: Optional[ProgressCallback] = None,
     prompt_callback: Optional[PromptCallback] = None,
     should_stop: Optional[ShouldStop] = None,
+    all_rates: bool = False,
 ) -> list[dict]:
     """Reset every motor on the bus to factory defaults, whatever ID or baud
     it carries. One pass; the caller loops so motors plugged in later are
     taken too.
 
-    Every rate the client can scan is swept over ``SWEEP_ID_RANGE``. Motors
+    The chain's rate and the factory rate are swept over ``SWEEP_ID_RANGE``,
+    the factory rate last so a motor moved there by this pass is seen once;
+    hands use no other rate, so the rest join only with ``all_rates`` (the
+    caller's last resort when nothing has turned up for a while). Motors
     already at the defaults are counted in the result but not re-announced.
-    The default rate is swept last, so a motor moved there by this pass is
-    seen once.
     """
-    bauds = [b for b in plan.client_cls.scannable_baudrates() if b != plan.default_baud]
+    rates = plan.client_cls.scannable_baudrates() if all_rates else [plan.target_baud]
+    bauds = [b for b in rates if b != plan.default_baud]
     bauds.append(plan.default_baud)
     return _each_motor_on_bus(
         plan,
