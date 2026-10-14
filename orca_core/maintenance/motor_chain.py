@@ -633,16 +633,34 @@ def set_return_delay_only(plan: MotorChainPlan, motor_id: int, baud: int) -> Non
             raise MotorChainError(f"failed to set the return delay of motor {motor_id}")
 
 
-def reset_motor_to_factory(plan: MotorChainPlan, motor_id: int, current_baud: int) -> None:
-    """Revert one configured motor to its factory ID and baud rate."""
+def reset_motor_to_factory(plan: MotorChainPlan, motor_id: int, current_baud: int) -> bool:
+    """Revert the motor(s) answering as ``motor_id`` at ``current_baud`` to the
+    factory ID and baud rate. Returns ``False`` when already there.
+
+    Each write is judged by what the bus says afterwards, not by the
+    acknowledgement: several motors sharing an ID all take a write addressed
+    to it while their replies collide, so a "failed" write may well have
+    landed. A motor that still answers where it was did not take it.
+    """
+    if motor_id == plan.default_id and current_baud == plan.default_baud:
+        return False
     if current_baud != plan.default_baud:
         with _config_session(plan.motor_type, [motor_id], plan.port, current_baud) as client:
-            if not client.change_motor_baudrate(motor_id, plan.default_baud):
-                raise MotorChainError(f"failed to change baud rate for motor {motor_id}")
+            acked = client.change_motor_baudrate(motor_id, plan.default_baud)
         time.sleep(ID_CHANGE_SETTLE_S)
-    with _config_session(plan.motor_type, [motor_id], plan.port, plan.default_baud) as client:
-        if not client.change_motor_id(motor_id, plan.default_id):
-            raise MotorChainError(f"failed to change ID for motor {motor_id}")
+        if _id_answers(plan, motor_id, current_baud):
+            raise MotorChainError(
+                f"motor {motor_id} did not take the baud rate {plan.default_baud}"
+                + ("" if acked else " (and did not acknowledge the write)"))
+    if motor_id != plan.default_id:
+        with _config_session(plan.motor_type, [motor_id], plan.port, plan.default_baud) as client:
+            acked = client.change_motor_id(motor_id, plan.default_id)
+        time.sleep(ID_CHANGE_SETTLE_S)
+        if _id_answers(plan, motor_id, plan.default_baud):
+            raise MotorChainError(
+                f"motor {motor_id} did not take ID {plan.default_id}"
+                + ("" if acked else " (and did not acknowledge the write)"))
+    return True
 
 
 def _reset_stray(plan: MotorChainPlan, motor: dict,
@@ -1003,19 +1021,25 @@ def _each_motor_on_bus(
     progress_callback: Optional[ProgressCallback],
     prompt_callback: Optional[PromptCallback],
     should_stop: Optional[ShouldStop],
+    bauds: Optional[list[int]] = None,
+    id_range: Optional[tuple[int, int]] = None,
 ) -> list[dict]:
     """Apply ``action`` to every motor currently on the bus. One pass, no looping.
 
     Families needing an unpowered bus are power-cycled first, so this pass acts
     on whatever the operator just plugged in. Motors are scanned at the chain's
-    target baud. An action returning ``False`` had nothing to do; such motors
-    still count as acted on but are not re-announced, so a repeated pass stays
-    quiet about motors already in the requested state.
+    target baud over the chain's IDs unless ``bauds`` / ``id_range`` widen it.
+    An action returning ``False`` had nothing to do; such motors still count as
+    acted on but are not re-announced, so a repeated pass stays quiet about
+    motors already in the requested state.
     """
     _await_motor_connection(plan, connect_message, prompt_callback,
                             progress_callback, should_stop)
 
-    motors = scan_motors(plan.motor_type, plan.port, plan.target_baud, (1, plan.total_motors))
+    motors: list[dict] = []
+    for baud in bauds or [plan.target_baud]:
+        _check_stop(should_stop)
+        motors += scan_motors(plan.motor_type, plan.port, baud, id_range or (1, plan.total_motors))
     acted: list[dict] = []
     for motor in motors:
         _check_stop(should_stop)
@@ -1034,13 +1058,26 @@ def reset_all_motors(
     progress_callback: Optional[ProgressCallback] = None,
     prompt_callback: Optional[PromptCallback] = None,
     should_stop: Optional[ShouldStop] = None,
+    wide: bool = False,
 ) -> list[dict]:
-    """Reset every motor currently on the bus to factory defaults. One pass."""
+    """Reset every motor on the bus to factory defaults, whatever ID or baud
+    it carries. One pass; the caller loops so motors plugged in later are
+    taken too.
+
+    Every rate the client can scan is swept over the chain's IDs, or over
+    every ID when ``wide`` (slow: a first pass, or an occasional one, catches
+    a motor from elsewhere). Motors already at the defaults are counted in
+    the result but not re-announced. The default rate is swept last, so a
+    motor moved there by this pass is seen once.
+    """
+    bauds = [b for b in plan.client_cls.scannable_baudrates() if b != plan.default_baud]
+    bauds.append(plan.default_baud)
     return _each_motor_on_bus(
         plan,
         lambda m: reset_motor_to_factory(plan, m["id"], m["baud_rate"]),
         "Connect the motor(s) you want to reset",
         progress_callback, prompt_callback, should_stop,
+        bauds=bauds, id_range=FULL_ID_RANGE if wide else None,
     )
 
 

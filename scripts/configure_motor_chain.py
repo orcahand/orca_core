@@ -187,7 +187,9 @@ def on_progress(event: dict) -> None:
               f"baudrate={event['baudrate']:,}{RESET}")
         play_success_beep()
     elif name == "motor_updated":
-        _print_motor_row(event["motor"])
+        m = event["motor"]
+        print(f"{GREEN}   ↺ ID {m['id']:2d} ({m['model_name']} @ {m['baud_rate']:,} bps) → "
+              f"factory defaults{RESET}")
     elif name == "motor_update_failed":
         print(f"{RED}❌ Motor {event['motor']['id']}: {event['error']}{RESET}")
     elif name == "chain_done":
@@ -291,6 +293,44 @@ def _loop_until_interrupt(label: str, once) -> int:
     return 0
 
 
+def _reset_until_interrupt(plan) -> int:
+    """Reset every motor on the bus, then keep sweeping for more until Ctrl+C.
+
+    The first pass (and every tenth) sweeps every ID at every rate the driver
+    can set, so a motor from anywhere is caught; the others sweep the chain's
+    IDs, fast enough to notice a motor plugged in a moment ago.
+    """
+    print(f"\n🔍 Resetting every motor on the bus to ID {plan.default_id} @ "
+          f"{plan.default_baud:,} bps — connect more at any time; {BOLD}Ctrl+C{RESET} when done.")
+    last_line = None
+    passes = 0
+    try:
+        while True:
+            wide = passes % 10 == 0
+            if wide:
+                print(f"{YELLOW}   Full sweep (every ID, every rate) — takes a little while…{RESET}")
+            acted = reset_all_motors(plan, progress_callback=on_progress,
+                                     prompt_callback=on_prompt, wide=wide)
+            passes += 1
+            at_default = [m for m in acted
+                          if m["id"] == plan.default_id and m["baud_rate"] == plan.default_baud]
+            if not acted:
+                line = f"{YELLOW}   No motors on the bus. Connect one (and check its power).{RESET}"
+            elif len(at_default) == len(acted):
+                line = (f"{GREEN}   {len(at_default)} motor(s) at factory defaults"
+                        f"{' (duplicates answer as one)' if len(at_default) == 1 else ''}."
+                        f" Connect the next, or Ctrl+C.{RESET}")
+            else:
+                line = None   # something was just reset and printed above; show the tally next pass
+            if line and line != last_line:
+                print(line)
+            last_line = line
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f"\n\n{GREEN}Stopped.{RESET}\n")
+    return 0
+
+
 def main() -> int:
     enable_ansi_escapes()
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
@@ -335,11 +375,7 @@ def main() -> int:
 
     if args.reset:
         _banner(f"🔄 ORCAHAND {label.upper()} CHAIN RESET 🔄")
-        return _loop_until_interrupt(
-            f"Resetting motors to defaults (ID={plan.default_id}, baud={plan.default_baud:,})",
-            lambda: reset_all_motors(plan, progress_callback=on_progress,
-                                     prompt_callback=on_prompt),
-        )
+        return _reset_until_interrupt(plan)
 
     if args.baudrate is not None:
         if args.baudrate not in valid_baudrates(motor_type):

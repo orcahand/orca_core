@@ -1320,3 +1320,70 @@ def test_a_failed_verification_rereads_the_chain_instead_of_ending(monkeypatch):
     assert names.index("verify_failed") < names.index("chain_shortened")
     assert names[-1] == "chain_done"
     assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]
+
+
+# --- reset: every motor on the bus, whatever it carries ------------------------
+
+
+def test_reset_sweeps_every_scannable_rate_and_ends_at_the_default(monkeypatch):
+    plan = small_plan()
+    bus = FakeBus([motor(17, "XC330", plan.target_baud), motor(5, "XC330", 2_000_000),
+                   motor(1, "XC330", plan.default_baud)], plan)
+    bus.install(monkeypatch)
+    seen = []
+    monkeypatch.setattr(mc, "reset_motor_to_factory",
+                        lambda p, mid, baud: seen.append((mid, baud)) or (baud != p.default_baud))
+    events = []
+    acted = mc.reset_all_motors(plan, progress_callback=events.append, wide=True)
+    assert (17, plan.target_baud) in seen and (5, 2_000_000) in seen
+    assert seen[-1] == (1, plan.default_baud), "the default rate is swept last"
+    announced = [e["motor"]["id"] for e in events if e["event"] == "motor_updated"]
+    assert sorted(announced) == [5, 17], "a motor already at the defaults is not re-announced"
+    assert len(acted) == 3
+
+
+def test_reset_judges_a_write_by_the_bus_not_the_acknowledgement(monkeypatch):
+    """Two motors sharing ID 17 both take each write while their replies
+    collide; the reset must not call that a failure."""
+    plan = small_plan()
+    client = FakeSessionClient()
+    bus = FakeBus([motor(17, "XC330", plan.target_baud), motor(17, "XC330", plan.target_baud)], plan)
+    _wire_sessions(monkeypatch, client, bus=bus)
+    client.baud_ok = client.id_ok = False          # replies garbled...
+
+    def apply_to_all(name):
+        original = getattr(client, name)
+
+        def write(*args):
+            original(*args)                        # records the call; rejected, so not applied
+            for m in list(bus.motors):             # ...but every motor with that ID took it
+                if m["id"] == args[0] and m["baud_rate"] == client.session_baud:
+                    if name == "change_motor_baudrate":
+                        m["baud_rate"] = args[1]
+                    else:
+                        m["id"] = args[1]
+            return False
+        setattr(client, name, write)
+
+    apply_to_all("change_motor_baudrate")
+    apply_to_all("change_motor_id")
+
+    assert mc.reset_motor_to_factory(plan, 17, plan.target_baud) is True
+    assert bus.motors == [motor(1, "XC330", plan.default_baud)] * 2
+
+
+def test_reset_reports_a_motor_that_stayed_put(monkeypatch):
+    plan = small_plan()
+    client = FakeSessionClient()
+    client.baud_ok = False
+    _wire_sessions(monkeypatch, client, bus=FakeBus([motor(17, "XC330", plan.target_baud)], plan))
+    with pytest.raises(mc.MotorChainError, match="did not take the baud rate"):
+        mc.reset_motor_to_factory(plan, 17, plan.target_baud)
+
+
+def test_reset_of_a_motor_already_at_the_defaults_is_a_quiet_noop(monkeypatch):
+    plan = small_plan()
+    client = FakeSessionClient()
+    _wire_sessions(monkeypatch, client, bus=FakeBus([motor(1, "XC330", plan.default_baud)], plan))
+    assert mc.reset_motor_to_factory(plan, 1, plan.default_baud) is False
+    assert client.calls == []
