@@ -37,6 +37,7 @@ from orca_core.maintenance import (
     set_all_return_delays,
     valid_baudrates,
 )
+from orca_core.maintenance.motor_chain import reset_motor_to_factory
 from orca_core.utils import (
     enable_ansi_escapes,
     get_and_choose_port,
@@ -131,6 +132,33 @@ def on_progress(event: dict) -> None:
     elif name == "duplicate_default_motor":
         print(f"{RED}❌ A factory-default motor still answers (at {event['baudrate']:,} bps) "
               f"after programming ID {event['target_id']}.{RESET}")
+    elif name == "still_waiting":
+        print(f"{YELLOW}   … still waiting for a factory-default {event['expected_model']} "
+              f"({event['elapsed_s']}s). Nothing at the factory defaults; nothing else on the "
+              f"bus that this run could take.{RESET}")
+    elif name == "half_programmed_motor_adopted":
+        print(f"{GREEN}✓ Found a motor left at the default ID but already at the target baud "
+              f"(an interrupted run) — finishing it as ID {event['target_id']}.{RESET}")
+    elif name == "stray_motor_reset":
+        m = event["motor"]
+        print(f"{YELLOW}↺ Motor ID {m['id']} ({m['model_name']} @ {m['baud_rate']:,} bps) is not "
+              f"part of this chain — reset to factory defaults; it will be programmed next.{RESET}")
+    elif name == "stray_motor_reset_failed":
+        m = event["motor"]
+        print(f"{RED}❌ Could not reset motor ID {m['id']} @ {m['baud_rate']:,} bps: "
+              f"{event['error']} — unplug it.{RESET}")
+    elif name == "configured_motor_missing":
+        print(f"{RED}⚠ Configured motor(s) {event['missing']} stopped answering — check their "
+              f"connectors and power.{RESET}")
+    elif name == "port_lost":
+        print(f"{RED}⚠ {event['port']} disappeared — check the USB cable and board power. "
+              f"Waiting for it to come back…{RESET}")
+    elif name == "write_retry":
+        what = "ID" if event["setting"] == "id" else "baud rate"
+        print(f"{YELLOW}   The motor did not take the {what} write (attempt {event['attempt']}); "
+              f"retrying…{RESET}")
+    elif name == "verify_retry":
+        print(f"{YELLOW}   Chain check missed {event['missing']}; scanning again…{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")
@@ -312,15 +340,40 @@ def main() -> int:
     if plan.wrist_id is not None:
         print(f"   • 1 {PURPLE}{plan.wrist_model}{RESET}: {BOLD}ID {plan.wrist_id}{RESET}")
 
-    try:
-        configure_motor_chain(plan, progress_callback=on_progress, prompt_callback=on_prompt)
-    except MotorChainAborted as exc:
-        print(f"{RED}\n🚫 {exc}{RESET}")
-        return 1
-    except MotorChainError as exc:
-        print(f"{RED}\n❌ {exc}{RESET}")
-        return 1
-    return 0
+    while True:
+        try:
+            configure_motor_chain(plan, progress_callback=on_progress, prompt_callback=on_prompt)
+            return 0
+        except MotorChainAborted as exc:
+            print(f"{RED}\n🚫 {exc}{RESET}")
+            if not _offer_reset(plan, exc.invalid_motors):
+                return 1
+        except MotorChainError as exc:
+            print(f"{RED}\n❌ {exc}{RESET}")
+            return 1
+
+
+def _offer_reset(plan, motors: list) -> bool:
+    """Ask whether to reset the motors a run could not place, and do it.
+
+    Returns True when the chain should be configured again.
+    """
+    if not motors:
+        return False
+    ids = [m["id"] for m in motors]
+    answer = input(f"\n   Reset motor(s) {ids} to factory defaults now and continue? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        print(f"{YELLOW}   Left as they are. If a motor before them is loose, fix it and rerun.{RESET}")
+        return False
+    for m in motors:
+        try:
+            reset_motor_to_factory(plan, m["id"], m["baud_rate"])
+            print(f"{GREEN}✓ Reset ID {m['id']} ({m['model_name']}) → "
+                  f"ID {plan.default_id} @ {plan.default_baud:,} bps{RESET}")
+        except MotorChainError as exc:
+            print(f"{RED}❌ Motor {m['id']}: {exc}{RESET}")
+            return False
+    return True
 
 
 if __name__ == '__main__':

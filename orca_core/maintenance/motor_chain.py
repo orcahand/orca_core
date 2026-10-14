@@ -44,6 +44,18 @@ PORT_POLL_INTERVAL_S = 0.3
 PORT_SETTLE_S = 0.5
 MOTOR_POLL_INTERVAL_S = 1.0
 ID_CHANGE_SETTLE_S = 0.5
+# While waiting for a motor: how often the bus is surveyed for motors that are
+# not at the factory defaults (the chain's IDs at the target baud, the default
+# ID at every baud), how often the survey widens to every ID at the target baud
+# and the chain's IDs at every baud, and how often liveness is reported.
+CENSUS_EVERY_POLLS = 5
+DEEP_CENSUS_EVERY_POLLS = 30
+FULL_ID_RANGE = (1, 252)
+HEARTBEAT_INTERVAL_S = 10.0
+# EEPROM writes are confirmed by pinging the new setting; scans are repeated
+# before a mismatch counts, so one dropped reply does not end a run.
+WRITE_ATTEMPTS = 3
+VERIFY_ATTEMPTS = 3
 
 ProgressCallback = Callable[[dict], None]
 PromptCallback = Callable[[dict], None]
@@ -61,9 +73,13 @@ class MotorChainAborted(MotorChainError):
     reset to factory defaults.
     """
 
-    def __init__(self, message: str, invalid_ids: list[int]):
+    def __init__(self, message: str, invalid_ids: list[int],
+                 invalid_motors: Optional[list[dict]] = None):
         super().__init__(message)
         self.invalid_ids = invalid_ids
+        # The offending motors as scanned (id, model_name, baud_rate), so a
+        # front-end can reset them without scanning again.
+        self.invalid_motors = list(invalid_motors or [])
 
 
 @dataclass(frozen=True)
@@ -346,14 +362,18 @@ def find_default_motor(
     plan: MotorChainPlan,
     expected_model: Optional[str],
     progress_callback: Optional[ProgressCallback] = None,
+    baud: Optional[int] = None,
 ) -> Optional[dict]:
-    """Return the factory-default motor on the bus, or ``None`` if absent.
+    """Return the motor at the factory-default ID on the bus, or ``None``.
 
+    Probes at the factory-default baud unless ``baud`` says otherwise (the
+    target baud finds a motor whose programming stopped after the baud write).
     Raises :class:`MotorChainError` when a default motor is present but is a
     known wrong model — continuing would program a wrist motor into a finger
     slot. ``expected_model=None`` skips the check entirely.
     """
-    motors = scan_motors(plan.motor_type, plan.port, plan.default_baud,
+    motors = scan_motors(plan.motor_type, plan.port,
+                         plan.default_baud if baud is None else baud,
                          (plan.default_id, plan.default_id))
     if not motors:
         return None
@@ -374,41 +394,102 @@ def find_default_motor(
     return motor
 
 
+def _default_answers(plan: MotorChainPlan, baud: int) -> bool:
+    return bool(scan_motors(plan.motor_type, plan.port, baud, (plan.default_id, plan.default_id)))
+
+
+def _id_answers(plan: MotorChainPlan, motor_id: int, baud: int) -> bool:
+    return bool(scan_motors(plan.motor_type, plan.port, baud, (motor_id, motor_id)))
+
+
 def configure_default_motor(
     plan: MotorChainPlan,
     target_id: int,
     progress_callback: Optional[ProgressCallback] = None,
+    current_baud: Optional[int] = None,
 ) -> None:
-    """Re-program the factory-default motor: baud rate, return delay, then ID.
+    """Re-program the motor at the factory-default ID: baud rate, return delay, then ID.
+
+    ``current_baud`` is where the motor answers now: the factory default for a
+    fresh motor, the target baud for one whose earlier programming stopped after
+    the baud write (the baud step is then skipped).
 
     Baud-first keeps a failure recoverable: an interruption leaves the motor at
-    (default ID, target baud), which the resume prescan reports as invalid and
-    ``reset_all_motors`` can revert. ID-first would strand it at a combination
-    no scan visits. The return delay (for families that set one) goes just
-    before the ID, so a motor that reaches its target ID always carries it.
-    Afterwards the default ID is probed again: a motor still answering there
-    means a second default motor joined the bus mid-step, so the step is
-    refused rather than risking a duplicate ``target_id``.
+    (default ID, target baud), which the chain's bus survey adopts and finishes.
+    ID-first would strand it at a combination no scan visits. The return delay
+    (for families that set one) goes just before the ID, so a motor that reaches
+    its target ID always carries it.
+
+    Every EEPROM write is confirmed by pinging the new setting and repeated up to
+    ``WRITE_ATTEMPTS`` times (``write_retry``): a write the motor acknowledged but
+    did not take is retried, not mistaken for a second motor. A factory-default
+    motor still answering at the default baud afterwards *is* a second motor that
+    joined mid-step (``duplicate_default_motor``), and the step is refused rather
+    than risking a duplicate ``target_id``.
     """
-    if plan.target_baud != plan.default_baud:
-        with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.default_baud) as client:
-            if not client.change_motor_baudrate(plan.default_id, plan.target_baud):
+    current = plan.default_baud if current_baud is None else current_baud
+    if current != plan.target_baud:
+        for attempt in range(1, WRITE_ATTEMPTS + 1):
+            with _config_session(plan.motor_type, [plan.default_id], plan.port, current) as client:
+                acknowledged = client.change_motor_baudrate(plan.default_id, plan.target_baud)
+            time.sleep(ID_CHANGE_SETTLE_S)
+            if _default_answers(plan, plan.target_baud):
+                break
+            if attempt == WRITE_ATTEMPTS:
                 raise MotorChainError(
-                    f"failed to set the factory-default motor's baud to {plan.target_baud}"
+                    f"the factory-default motor did not take the baud rate "
+                    f"{plan.target_baud} after {WRITE_ATTEMPTS} attempts (it "
+                    f"{'acknowledged' if acknowledged else 'did not acknowledge'} the "
+                    "last write); check its connector and power, then rerun"
                 )
+            _emit(progress_callback, "write_retry", target_id=target_id, setting="baud",
+                  attempt=attempt, acknowledged=bool(acknowledged))
+            if not _default_answers(plan, current):
+                # Not at the old rate either: give it a moment, it may be rebooting.
+                time.sleep(ID_CHANGE_SETTLE_S)
+
+    for attempt in range(1, WRITE_ATTEMPTS + 1):
+        with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
+            delay_us = plan.return_delay_time_us
+            if delay_us is not None and not client.change_return_delay_time(plan.default_id, delay_us):
+                raise MotorChainError(
+                    f"failed to set the factory-default motor's return delay to {delay_us} us"
+                )
+            acknowledged = client.change_motor_id(plan.default_id, target_id)
         time.sleep(ID_CHANGE_SETTLE_S)
-
-    with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
-        delay_us = plan.return_delay_time_us
-        if delay_us is not None and not client.change_return_delay_time(plan.default_id, delay_us):
+        if target_id == plan.default_id:
+            return  # the programmed motor legitimately still holds the default ID
+        _refuse_leftover_default_motor(plan, target_id, progress_callback)
+        target_answers = _id_answers(plan, target_id, plan.target_baud)
+        default_answers = _default_answers(plan, plan.target_baud)
+        if target_answers and not default_answers:
+            return
+        if target_answers and default_answers:
+            _emit(progress_callback, "duplicate_default_motor", target_id=target_id,
+                  baudrate=plan.target_baud)
             raise MotorChainError(
-                f"failed to set the factory-default motor's return delay to {delay_us} us"
+                f"a factory-default motor still answers after programming motor "
+                f"{target_id}: a second motor joined the bus during this step "
+                f"(likely the next one plugged in early). Leave it connected and "
+                f"rerun — the run resumes and configures it as the next motor"
             )
-        if not client.change_motor_id(plan.default_id, target_id):
-            raise MotorChainError(f"failed to change motor ID to {target_id}")
-    time.sleep(ID_CHANGE_SETTLE_S)
-
-    _refuse_leftover_default_motor(plan, target_id, progress_callback)
+        if attempt == WRITE_ATTEMPTS:
+            if default_answers:
+                raise MotorChainError(
+                    f"the motor acknowledged ID {target_id} but kept answering as ID "
+                    f"{plan.default_id} after {WRITE_ATTEMPTS} attempts; it may be "
+                    "write-protected or faulty. Swap it and rerun"
+                )
+            raise MotorChainError(
+                f"the motor stopped answering after the ID write to {target_id} "
+                f"({WRITE_ATTEMPTS} attempts); check its connector and power, then "
+                "rerun — the run resumes from the bus as it is"
+            )
+        _emit(progress_callback, "write_retry", target_id=target_id, setting="id",
+              attempt=attempt, acknowledged=bool(acknowledged),
+              still_default=default_answers)
+        if not default_answers:
+            time.sleep(ID_CHANGE_SETTLE_S)  # silent for the moment; let it come back
 
 
 def _refuse_leftover_default_motor(
@@ -416,26 +497,24 @@ def _refuse_leftover_default_motor(
     target_id: int,
     progress_callback: Optional[ProgressCallback],
 ) -> None:
-    """Fail the step when a factory-default motor still answers after programming.
+    """Fail the step when a factory-default motor answers at the factory baud
+    after the ID write.
 
-    Duplicate motors at the target ID are invisible to ``verify_chain`` (both
-    answer as one), so the leftover default motor is the only observable symptom.
+    The programmed motor was moved to the target baud first, so whatever still
+    answers at the factory baud is a second motor. Duplicates at the target ID
+    are invisible to ``verify_chain`` (both answer as one), so this is the only
+    observable symptom.
     """
-    if target_id == plan.default_id:
-        return  # the programmed motor legitimately still holds the default ID
-    bauds = [plan.default_baud]
-    if plan.target_baud != plan.default_baud:
-        bauds.append(plan.target_baud)
-    for baud in bauds:
-        if scan_motors(plan.motor_type, plan.port, baud, (plan.default_id, plan.default_id)):
-            _emit(progress_callback, "duplicate_default_motor", target_id=target_id,
-                  baudrate=baud)
-            raise MotorChainError(
-                f"a factory-default motor still answers after programming motor "
-                f"{target_id}: a second motor joined the bus during this step "
-                f"(likely the next one plugged in early). Leave it connected and "
-                f"rerun — the run resumes and configures it as the next motor"
-            )
+    if plan.target_baud == plan.default_baud or not _default_answers(plan, plan.default_baud):
+        return
+    _emit(progress_callback, "duplicate_default_motor", target_id=target_id,
+          baudrate=plan.default_baud)
+    raise MotorChainError(
+        f"a factory-default motor still answers after programming motor "
+        f"{target_id}: a second motor joined the bus during this step "
+        f"(likely the next one plugged in early). Leave it connected and "
+        f"rerun — the run resumes and configures it as the next motor"
+    )
 
 
 def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
@@ -470,18 +549,36 @@ def scan_configured_motors(plan: MotorChainPlan) -> ChainScan:
     return ChainScan(valid_ids=valid, invalid_ids=invalid, motors_by_id=motor_by_id)
 
 
-def verify_chain(plan: MotorChainPlan, configured_ids: list[int]) -> None:
-    """Re-scan and confirm exactly ``configured_ids`` answer at the target baud."""
+def verify_chain(
+    plan: MotorChainPlan,
+    configured_ids: list[int],
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
+    """Re-scan and confirm exactly ``configured_ids`` answer at the target baud.
+
+    A mismatch is re-scanned up to ``VERIFY_ATTEMPTS`` times (``verify_retry``)
+    before it counts: one dropped reply must not end a run.
+    """
     if not configured_ids:
         return
-    motors = scan_motors(plan.motor_type, plan.port, plan.target_baud, (1, plan.total_motors))
-    found = sorted(m["id"] for m in motors)
     expected = sorted(configured_ids)
-    if found != expected:
-        raise MotorChainError(
-            f"motor verification failed: expected {expected}, found {found}. "
-            "Likely a duplicate default ID on the bus, or a motor lost power."
-        )
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        motors = scan_motors(plan.motor_type, plan.port, plan.target_baud, (1, plan.total_motors))
+        found = sorted(m["id"] for m in motors)
+        if found == expected:
+            return
+        missing = [i for i in expected if i not in found]
+        extra = [i for i in found if i not in expected]
+        if attempt < VERIFY_ATTEMPTS:
+            _emit(progress_callback, "verify_retry", attempt=attempt, missing=missing, extra=extra)
+            time.sleep(ID_CHANGE_SETTLE_S)
+    raise MotorChainError(
+        f"motor verification failed after {VERIFY_ATTEMPTS} scans: expected {expected}, "
+        f"found {found}." + (f" Not answering: {missing} — check their connectors and power."
+                            if missing else "")
+        + (f" Unexpected: {extra} — a motor not part of this chain is on the bus."
+           if extra else "")
+    )
 
 
 def change_motor_baudrate_only(plan: MotorChainPlan, motor_id: int, current_baud: int,
@@ -518,6 +615,174 @@ def reset_motor_to_factory(plan: MotorChainPlan, motor_id: int, current_baud: in
             raise MotorChainError(f"failed to change ID for motor {motor_id}")
 
 
+def _reset_stray(plan: MotorChainPlan, motor: dict,
+                 progress_callback: Optional[ProgressCallback]) -> bool:
+    """Revert a motor that is on the bus but not part of the chain to the
+    factory defaults, so the next poll finds and programs it. Failures are
+    reported, not raised: the operator can still unplug it."""
+    found = dict(motor)  # as scanned; the bus entry itself changes under the reset
+    try:
+        reset_motor_to_factory(plan, found["id"], found["baud_rate"])
+    except MotorChainError as exc:
+        _emit(progress_callback, "stray_motor_reset_failed", motor=found, error=str(exc))
+        return False
+    time.sleep(ID_CHANGE_SETTLE_S)
+    _emit(progress_callback, "stray_motor_reset", motor=found)
+    return True
+
+
+def _census(plan: MotorChainPlan, configured: list[int],
+            progress_callback: Optional[ProgressCallback], deep: bool = False) -> dict:
+    """Survey the bus for anything that is not the chain so far.
+
+    A motor at the target baud with an ID the chain has not configured, and any
+    motor at another baud, is a stray: reset to factory defaults in place so the
+    poll finds and programs it. The motor at the factory-default ID at the
+    default or target baud is left alone — the poll handles it. A quick survey
+    covers the chain's IDs at the target baud and the default ID at every baud;
+    a ``deep`` one also every other ID at the target baud and the chain's IDs at
+    every baud. Returns the IDs seen at the target baud and the configured IDs
+    that did not answer.
+    """
+    chain_ids = (1, plan.total_motors)
+    at_target = scan_motors(plan.motor_type, plan.port, plan.target_baud, chain_ids)
+    if deep:
+        at_target += scan_motors(plan.motor_type, plan.port, plan.target_baud,
+                                 (plan.total_motors + 1, FULL_ID_RANGE[1]))
+    present = sorted(m["id"] for m in at_target)
+    for m in at_target:
+        if m["id"] != plan.default_id and m["id"] not in configured:
+            _reset_stray(plan, m, progress_callback)
+    for baud in plan.client_cls.supported_baudrates():
+        if baud in (plan.default_baud, plan.target_baud):
+            continue
+        id_range = chain_ids if deep else (plan.default_id, plan.default_id)
+        for m in scan_motors(plan.motor_type, plan.port, baud, id_range):
+            _reset_stray(plan, m, progress_callback)
+    return {"present": present, "missing": [i for i in configured if i not in present]}
+
+
+def _wait_for_default_motor(
+    plan: MotorChainPlan,
+    target_id: int,
+    expected_model: str,
+    configured: list[int],
+    progress_callback: Optional[ProgressCallback],
+    should_stop: Optional[ShouldStop],
+    poll_interval: float,
+) -> Optional[tuple[dict, int]]:
+    """Poll until a motor at the factory-default ID is on the bus.
+
+    Returns ``(motor, baud)``: the factory baud for a fresh motor, the target
+    baud for one adopted mid-programming (``half_programmed_motor_adopted``).
+    Every ``CENSUS_EVERY_POLLS`` empty polls the bus is surveyed and strays are
+    reset (every ``DEEP_CENSUS_EVERY_POLLS`` more widely); ``still_waiting``
+    reports liveness every ``HEARTBEAT_INTERVAL_S``.
+    Returns ``None`` when the port went away and came back (``port_lost``), so
+    the caller re-reads the chain from the bus before carrying on. A wrong
+    model is reported once (``wrong_motor_detected``) and polling continues so
+    the operator can swap it without losing the run.
+    """
+    started = last_beat = time.monotonic()
+    polls = 0
+    wrong_model_reported = False
+    missing_twice: list[int] = []
+    while True:
+        _check_stop(should_stop)
+        if not serial_port_exists(plan.port):
+            _emit(progress_callback, "port_lost", port=plan.port, target_id=target_id)
+            wait_for_port(plan.port, present=True, progress_callback=progress_callback,
+                          should_stop=should_stop)
+            return None
+        try:
+            for baud in dict.fromkeys((plan.default_baud, plan.target_baud)):
+                motor = find_default_motor(plan, expected_model, progress_callback, baud=baud)
+                if motor is not None:
+                    if baud != plan.default_baud:
+                        _emit(progress_callback, "half_programmed_motor_adopted",
+                              target_id=target_id, motor=motor)
+                    return motor, baud
+        except MotorChainError as exc:
+            if not wrong_model_reported:
+                _emit(progress_callback, "wrong_motor_detected", target_id=target_id,
+                      expected_model=expected_model, error=str(exc))
+                wrong_model_reported = True
+            time.sleep(poll_interval)
+            continue
+        wrong_model_reported = False
+        polls += 1
+        if polls % CENSUS_EVERY_POLLS == 0:
+            seen = _census(plan, configured, progress_callback,
+                           deep=polls % DEEP_CENSUS_EVERY_POLLS == 0)
+            if seen["missing"]:
+                _emit(progress_callback, "configured_motor_missing", missing=seen["missing"])
+                if seen["missing"] == missing_twice:
+                    raise MotorChainError(
+                        f"motors {seen['missing']}, configured earlier, no longer answer; "
+                        "check their connectors and power, then rerun — the run "
+                        "resumes from the bus as it is"
+                    )
+            missing_twice = seen["missing"]
+        now = time.monotonic()
+        if now - last_beat >= HEARTBEAT_INTERVAL_S:
+            last_beat = now
+            _emit(progress_callback, "still_waiting", target_id=target_id,
+                  expected_model=expected_model, elapsed_s=round(now - started),
+                  polls=polls)
+        time.sleep(poll_interval)
+
+
+def _settle_prescan(
+    plan: MotorChainPlan,
+    seen_valid: set[int],
+    first_scan: bool,
+    progress_callback: Optional[ProgressCallback],
+) -> ChainScan:
+    """Read the chain off the bus and deal with anything that is not a prefix.
+
+    A motor at the factory-default ID is not invalid: it is fresh, or stopped
+    mid-programming, and the poll adopts it. A motor of the wrong model for its
+    slot, or one at an ID this run never validated, is a stray and is reset. An
+    ID validated earlier in this run that no longer answers is a connector
+    problem (``configured_motor_missing``), raised rather than reset. On the
+    first scan a right-model motor beyond the prefix is ambiguous — a leftover
+    from another hand, or a configured motor behind one that does not answer —
+    so the run aborts and names it rather than guess.
+    """
+    for attempt in range(VERIFY_ATTEMPTS):
+        scan = scan_configured_motors(plan)
+        if not (seen_valid - set(scan.valid_ids)) or attempt == VERIFY_ATTEMPTS - 1:
+            break
+        time.sleep(ID_CHANGE_SETTLE_S)
+    missing = sorted(seen_valid - set(scan.valid_ids))
+    if missing:
+        _emit(progress_callback, "configured_motor_missing", missing=missing)
+        raise MotorChainError(
+            f"motors {missing}, configured earlier, no longer answer; check their "
+            "connectors and power, then rerun — the run resumes from the bus as it is"
+        )
+    ambiguous: list[dict] = []
+    for mid in scan.invalid_ids:
+        m = scan.motors_by_id[mid]
+        if mid == plan.default_id:
+            continue
+        if _model_matches(plan, m, plan.model_for(mid)) and first_scan:
+            ambiguous.append(m)
+            continue
+        _reset_stray(plan, m, progress_callback)
+    if ambiguous:
+        ids = [m["id"] for m in ambiguous]
+        raise MotorChainAborted(
+            f"motors {ids} answer at the target baud but the chain before them is "
+            f"incomplete. Either a motor before them is not answering (check its "
+            f"connector and power) or they are leftovers from another hand: reset "
+            f"them to factory defaults (ID={plan.default_id}, baud={plan.default_baud}) "
+            "and retry",
+            invalid_ids=ids, invalid_motors=ambiguous,
+        )
+    return scan
+
+
 def configure_motor_chain(
     plan: MotorChainPlan,
     progress_callback: Optional[ProgressCallback] = None,
@@ -527,85 +792,77 @@ def configure_motor_chain(
 ) -> list[int]:
     """Program every motor in ``plan``, resuming from whatever is already done.
 
+    The chain is re-read from the bus before every step, so the run follows
+    the bus rather than its own bookkeeping: a motor stranded mid-programming
+    is adopted and finished, a motor on the bus that is not part of the chain
+    is reset to factory defaults and then programmed, and a port that goes away
+    is waited for and the chain re-read when it returns.
+
     Emits ``chain_started``, ``prescan_done``, ``step_started``,
-    ``awaiting_motor``, ``wrong_motor_detected``, ``unrecognised_motor_model``,
-    ``motor_found``, ``duplicate_default_motor``, ``motor_configured``,
-    ``chain_verified``, ``chain_done``. Asks the operator
-    to connect each motor via ``prompt_callback`` (required for Feetech, whose
-    bus must be unpowered while plugging).
+    ``awaiting_motor``, ``still_waiting``, ``wrong_motor_detected``,
+    ``unrecognised_motor_model``, ``half_programmed_motor_adopted``,
+    ``stray_motor_reset``, ``stray_motor_reset_failed``,
+    ``configured_motor_missing``, ``port_lost``, ``motor_found``, ``write_retry``,
+    ``duplicate_default_motor``, ``motor_configured``, ``verify_retry``,
+    ``chain_verified``, ``chain_done``. Asks the operator to connect each motor
+    via ``prompt_callback`` (required for Feetech, whose bus must be unpowered
+    while plugging).
 
     Returns the configured motor IDs. Raises :class:`MotorChainAborted` when
-    the bus already holds mis-programmed motors.
+    the bus holds motors it cannot place without guessing.
     """
     _emit(progress_callback, "chain_started", motor_type=plan.motor_type, port=plan.port,
           total_motors=plan.total_motors, target_baud=plan.target_baud,
           finger_ids=plan.finger_ids, wrist_id=plan.wrist_id)
 
-    scan = scan_configured_motors(plan)
-    if scan.invalid_ids:
-        raise MotorChainAborted(
-            f"motors {scan.invalid_ids} are not part of a valid chain prefix; reset them "
-            f"to factory defaults (ID={plan.default_id}, baud={plan.default_baud}) and retry",
-            invalid_ids=scan.invalid_ids,
-        )
-    _emit(progress_callback, "prescan_done", already_configured=scan.valid_ids,
-          motors=[scan.motors_by_id[i] for i in sorted(scan.valid_ids, reverse=True)])
-
-    configured = list(scan.valid_ids)
-    remaining = [mid for mid in plan.all_target_ids if mid not in scan.valid_ids]
-    if not remaining:
-        _emit(progress_callback, "chain_done", configured_ids=configured)
-        return configured
-
     highest_id = max(plan.all_target_ids)
-    for offset, target_id in enumerate(remaining):
+    seen_valid: set[int] = set()
+    first_scan = True
+    announced: Optional[int] = None
+    while True:
         _check_stop(should_stop)
-        step = len(scan.valid_ids) + offset + 1
+        scan = _settle_prescan(plan, seen_valid, first_scan, progress_callback)
+        if first_scan:
+            _emit(progress_callback, "prescan_done", already_configured=scan.valid_ids,
+                  motors=[scan.motors_by_id[i] for i in sorted(scan.valid_ids, reverse=True)])
+            first_scan = False
+        configured = list(scan.valid_ids)
+        seen_valid.update(configured)
+        remaining = [mid for mid in plan.all_target_ids if mid not in configured]
+        if not remaining:
+            _emit(progress_callback, "chain_done", configured_ids=configured)
+            return configured
+
+        target_id = remaining[0]
         expected_model = plan.model_for(target_id)
         attaches_to = "board" if target_id == highest_id else f"motor {target_id + 1}"
         message = f"Connect a {expected_model} (ID {target_id}) to the {attaches_to}"
-
-        _emit(progress_callback, "step_started", step=step, total=plan.total_motors,
-              target_id=target_id, expected_model=expected_model,
-              attaches_to=attaches_to, message=message)
-
-        _await_motor_connection(plan, message, prompt_callback, progress_callback,
-                                should_stop, target_id=target_id,
-                                expected_model=expected_model)
+        if announced != target_id:
+            announced = target_id
+            _emit(progress_callback, "step_started", step=len(configured) + 1,
+                  total=plan.total_motors, target_id=target_id,
+                  expected_model=expected_model, attaches_to=attaches_to, message=message)
+            _await_motor_connection(plan, message, prompt_callback, progress_callback,
+                                    should_stop, target_id=target_id,
+                                    expected_model=expected_model)
 
         _emit(progress_callback, "awaiting_motor", target_id=target_id,
               expected_model=expected_model)
-        # A wrong-model motor is an operator mistake, not a fatal state: report
-        # it once and keep polling so they can swap it without losing the run.
-        wrong_model_reported = False
-        while True:
-            _check_stop(should_stop)
-            try:
-                motor = find_default_motor(plan, expected_model, progress_callback)
-            except MotorChainError as exc:
-                if not wrong_model_reported:
-                    _emit(progress_callback, "wrong_motor_detected",
-                          target_id=target_id, expected_model=expected_model,
-                          error=str(exc))
-                    wrong_model_reported = True
-                time.sleep(poll_interval)
-                continue
-            if motor is not None:
-                break
-            wrong_model_reported = False
-            time.sleep(poll_interval)
-
+        found = _wait_for_default_motor(plan, target_id, expected_model, configured,
+                                        progress_callback, should_stop, poll_interval)
+        if found is None:
+            continue  # the port came back: re-read the chain before touching anything
+        motor, at_baud = found
         _emit(progress_callback, "motor_found", target_id=target_id, motor=motor)
-        configure_default_motor(plan, target_id, progress_callback=progress_callback)
+        configure_default_motor(plan, target_id, progress_callback=progress_callback,
+                                current_baud=at_baud)
         configured.append(target_id)
+        seen_valid.add(target_id)
         _emit(progress_callback, "motor_configured", target_id=target_id,
               baudrate=plan.target_baud, configured_ids=list(configured))
 
-        verify_chain(plan, configured)
+        verify_chain(plan, configured, progress_callback)
         _emit(progress_callback, "chain_verified", configured_ids=list(configured))
-
-    _emit(progress_callback, "chain_done", configured_ids=configured)
-    return configured
 
 
 def _each_motor_on_bus(
