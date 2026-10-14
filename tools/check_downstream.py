@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -112,15 +113,55 @@ def check_imports(repo: Path) -> list[Unresolved]:
 
 
 def run_tests(repo: Path, uv_args: list) -> bool:
-    """Run *repo*'s suite against this working tree via an ephemeral overlay."""
-    cmd = ["uv", "run"]
+    """Run *repo*'s suite against this working tree.
+
+    A checkout with its own ``.venv`` runs in it, this tree overlaid. A fresh
+    checkout (CI) gets a venv built from the sibling's lock *minus* orca_core,
+    with this tree installed in its place: resolving the sibling's project
+    would otherwise ask the index for an orca_core version this tree may be
+    about to publish.
+    """
     if (repo / ".venv").is_dir():
-        cmd.append("--no-sync")
-    else:
-        cmd += uv_args
-    cmd += ["--with-editable", str(ORCA_CORE_ROOT), "python", "-m", "pytest", "-q"]
-    print(f"  $ {' '.join(cmd)}", flush=True)
-    return subprocess.run(cmd, cwd=repo).returncode == 0
+        cmd = ["uv", "run", "--no-sync", "--with-editable", str(ORCA_CORE_ROOT),
+               "python", "-m", "pytest", "-q"]
+        print(f"  $ {' '.join(cmd)}", flush=True)
+        return subprocess.run(cmd, cwd=repo).returncode == 0
+    return _run_tests_in_fresh_env(repo, uv_args)
+
+
+def _run_tests_in_fresh_env(repo: Path, uv_args: list) -> bool:
+    env = repo / ".downstream-venv"
+    try:
+        return _build_and_test(repo, env, uv_args)
+    finally:
+        shutil.rmtree(env, ignore_errors=True)
+
+
+def _build_and_test(repo: Path, env: Path, uv_args: list) -> bool:
+    python = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+    def run(cmd, **kw):
+        print(f"  $ {' '.join(str(c) for c in cmd)}", flush=True)
+        return subprocess.run(cmd, cwd=repo, **kw)
+
+    if run(["uv", "venv", str(env)]).returncode != 0:
+        return False
+    export = run(["uv", "export", "--frozen", "--no-hashes", "--no-emit-project",
+                  "--all-groups", *uv_args], capture_output=True, text=True)
+    if export.returncode != 0:
+        print(export.stderr, file=sys.stderr)
+        return False
+    requirements = "\n".join(
+        line for line in export.stdout.splitlines()
+        if not line.strip().lower().startswith(("orca-core", "orca_core")))
+    reqs = env / "requirements.txt"
+    reqs.write_text(requirements + "\n")
+    if run(["uv", "pip", "install", "--python", str(python), "-r", str(reqs)]).returncode != 0:
+        return False
+    if run(["uv", "pip", "install", "--python", str(python), "--no-deps",
+            "-e", str(ORCA_CORE_ROOT), "-e", str(repo)]).returncode != 0:
+        return False
+    return run([str(python), "-m", "pytest", "-q"]).returncode == 0
 
 
 def find_symbol(repo: Path, symbol: str) -> list[str]:

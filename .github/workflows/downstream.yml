@@ -2,10 +2,13 @@ name: Downstream Checks on Pull Request
 
 # orca_core ships to PyPI and is consumed by sibling repos whose code our own
 # suite never sees. Each leg checks out one consumer beside this PR's orca_core
-# and runs its suite against it. Advisory for now (continue-on-error): a sibling
-# can be independently broken, and that should not block an unrelated orca_core
-# PR. orca_firmware is private and is covered by tools/check_downstream.py
-# locally instead.
+# and runs its suite against it. A sibling branch named like this PR's branch
+# is preferred over the sibling's main, so a core change and the consumer
+# change it needs are checked against each other (the siblings pair the same
+# way from their side). Advisory for now (continue-on-error): a sibling can be
+# independently broken, and that should not block an unrelated orca_core PR.
+# orca_firmware is private and is covered by tools/check_downstream.py locally
+# instead.
 
 on:
   pull_request:
@@ -29,10 +32,29 @@ jobs:
         with:
           path: orca_core
 
+      # Prefer a sibling branch of the same name, else the PR's base, else main.
+      - name: Pick the ${{ matrix.repo }} branch to pair with
+        id: sibling
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          ref=main
+          for candidate in "$HEAD_REF" "$BASE_REF"; do
+            if [ -n "$candidate" ] && git ls-remote --exit-code --heads \
+                 "https://github.com/orcahand/${{ matrix.repo }}.git" "refs/heads/$candidate" >/dev/null 2>&1; then
+              ref="$candidate"
+              break
+            fi
+          done
+          echo "Pairing with ${{ matrix.repo }}@$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
       - name: Checkout ${{ matrix.repo }}
         uses: actions/checkout@v4
         with:
           repository: orcahand/${{ matrix.repo }}
+          ref: ${{ steps.sibling.outputs.ref }}
           path: ${{ matrix.repo }}
 
       - name: Install uv

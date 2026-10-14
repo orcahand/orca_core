@@ -504,6 +504,14 @@ class MotorClient(ABC):
         """Baud rates this family accepts, highest first."""
         return sorted(cls.baud_rate_map, reverse=True)
 
+    @classmethod
+    def scannable_baudrates(cls) -> list[int]:
+        """The subset of :meth:`supported_baudrates` this client's serial
+        driver can actually open a port at, highest first. A motor can be
+        programmed to a rate its host cannot talk at; scans and bus surveys
+        must leave such rates out rather than fail at them."""
+        return cls.supported_baudrates()
+
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
         """Return True if motors of this family answer on ``port`` at ``baudrate``.
