@@ -818,7 +818,8 @@ def _wait_for_default_motor(
     carrying on: the port went away and came back (``port_lost``), a motor
     already carrying this slot's ID answered again (``configured_motor_returned``),
     or configured motors stopped answering on two surveys in a row
-    (``configured_motor_missing`` on the first). A wrong model is reported once
+    (``configured_motor_missing`` on the first; ``configured_motors_back`` if
+    they answer again on the second). A wrong model is reported once
     (``wrong_motor_detected``) and polling continues so the operator can swap it
     without losing the run.
     """
@@ -856,6 +857,8 @@ def _wait_for_default_motor(
                     if seen["missing"] == missing_before:
                         return None
                     _emit(progress_callback, "configured_motor_missing", missing=seen["missing"])
+                elif missing_before:
+                    _emit(progress_callback, "configured_motors_back", motor_ids=missing_before)
                 missing_before = seen["missing"]
             bus_errors = 0
         except MotorChainError as exc:
@@ -962,8 +965,9 @@ def configure_motor_chain(
     ``awaiting_motor``, ``still_waiting``, ``wrong_motor_detected``,
     ``unrecognised_motor_model``, ``half_programmed_motor_adopted``,
     ``stray_motor_reset``, ``stray_motor_reset_failed``,
-    ``configured_motor_missing``, ``configured_motor_returned``,
-    ``chain_shortened``, ``phantom_baud``, ``port_lost``, ``bus_error``,
+    ``configured_motor_missing``, ``configured_motors_back``,
+    ``configured_motor_returned``, ``chain_shortened``, ``phantom_baud``,
+    ``port_lost``, ``bus_error``,
     ``motor_found``, ``write_retry``, ``duplicate_default_motor``,
     ``motor_configured``, ``verify_retry``, ``verify_failed``,
     ``chain_verified``, ``chain_done``. Asks the operator to connect each motor

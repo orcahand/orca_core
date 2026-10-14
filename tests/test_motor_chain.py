@@ -1629,3 +1629,30 @@ def test_a_bus_error_while_waiting_is_retried_then_named(monkeypatch):
     with pytest.raises(mc.MotorChainError, match="kept failing"):
         mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0)
     assert [e["attempt"] for e in events if e["event"] == "bus_error"][-3:] == [1, 2, 3]
+
+
+def test_a_motor_that_misses_one_survey_and_is_back_on_the_next_is_announced(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    events = []
+    state = {"hidden": None}
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        elif e["event"] == "awaiting_motor" and e["target_id"] == 2 and state["hidden"] is None:
+            state["hidden"] = bus.motors.pop()          # one bad contact...
+        elif e["event"] == "configured_motor_missing":
+            bus.motors.append(state["hidden"])          # ...that is back before the next survey
+        elif e["event"] == "configured_motors_back":
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        elif e["event"] == "awaiting_motor" and e["target_id"] == 1:
+            bus.motors.append(motor(1, "XC430", plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    assert names.count("configured_motor_missing") == 1
+    back = [e for e in events if e["event"] == "configured_motors_back"]
+    assert [e["motor_ids"] for e in back] == [[3]]
+    assert "chain_shortened" not in names

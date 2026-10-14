@@ -161,6 +161,8 @@ def on_progress(event: dict) -> None:
     elif name == "configured_motor_missing":
         print(f"{RED}⚠ Configured motor(s) {event['missing']} stopped answering — check their "
               f"connectors and power.{RESET}")
+    elif name == "configured_motors_back":
+        print(f"{GREEN}✓ Motor(s) {event['motor_ids']} answer again.{RESET}")
     elif name == "chain_shortened":
         behind = (f" Motor(s) {event['stranded']} behind the gap rejoin once it closes."
                   if event["stranded"] else "")
