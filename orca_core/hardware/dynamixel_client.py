@@ -1356,11 +1356,27 @@ class DynamixelClient(MotorClient):
             logging.error(f"Failed to change return delay time: {e}")
             return False
 
+    @classmethod
+    def scannable_baudrates(cls) -> list[int]:
+        """Rates the Dynamixel SDK's port handler can set (it refuses the rest)."""
+        import dynamixel_sdk
+        can_set = getattr(dynamixel_sdk.PortHandler(""), "getCFlagBaud", None)
+        if can_set is None:   # a stand-in port handler without a rate table
+            return cls.supported_baudrates()
+        return [b for b in cls.supported_baudrates() if can_set(b) > 0]
+
     def scan_for_motors(self, port: str, id_range: tuple,
                              baud_rates: Optional[list] = None) -> list:
-        """Scans for Dynamixel motors. Returns list of {'id', 'baud_rate', 'model_name'}."""
+        """Scans for Dynamixel motors at rates the SDK can set.
+        Returns list of {'id', 'baud_rate', 'model_name'}."""
         if baud_rates is None:
-            baud_rates = list(BAUD_RATE_MAP.keys())
+            baud_rates = self.scannable_baudrates()
+        else:
+            scannable = self.scannable_baudrates()
+            skipped = [b for b in baud_rates if b not in scannable]
+            if skipped:
+                logging.debug("Scan skips %s baud: the serial driver cannot set it", skipped)
+            baud_rates = [b for b in baud_rates if b in scannable]
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = self.dxl.PortHandler(port)

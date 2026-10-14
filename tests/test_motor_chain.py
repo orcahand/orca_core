@@ -71,7 +71,10 @@ class FakeBus:
     def install(self, monkeypatch):
         monkeypatch.setattr(mc, "scan_motors", self.scan)
         monkeypatch.setattr(mc, "serial_port_exists", lambda port: self.port_present)
-        monkeypatch.setattr(mc, "_host_can_open", lambda port, baud: baud not in self.unopenable)
+        if self.plan is not None:
+            cls = self.plan.client_cls
+            scannable = [b for b in cls.scannable_baudrates() if b not in self.unopenable]
+            monkeypatch.setattr(cls, "scannable_baudrates", classmethod(lambda c: list(scannable)))
 
 
 # --- family facts come from the client classes ------------------------------
@@ -1103,7 +1106,7 @@ def test_census_reports_what_it_checked(monkeypatch):
     bus.install(monkeypatch)
     quick = mc._census(plan, [], 3, None, tier=1)
     deep = mc._census(plan, [], 3, None, tier=3)
-    others = len(mc.valid_baudrates(DYNAMIXEL)) - 2
+    others = len(plan.client_cls.scannable_baudrates()) - 2
     assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", f"ID 1 @ {others} other baud rate(s)"]
     assert deep["checked"] == [f"IDs 1-{mc.FULL_ID_RANGE[1]} @ {plan.target_baud}",
                                f"IDs 1-3 @ {others} other baud rate(s)"]
@@ -1176,7 +1179,8 @@ def test_survey_bus_lists_every_family_baud_and_id(monkeypatch):
     assert found == [{"motor_type": DYNAMIXEL, **motor(40, "XC330", 3_000_000)},
                      {"motor_type": FEETECH, **motor(7, "HLS3915", 500_000)}]
     progress = [e for e in events if e["event"] == "survey_progress"]
-    assert len(progress) == len(mc.valid_baudrates(DYNAMIXEL)) + len(mc.valid_baudrates(FEETECH))
+    assert len(progress) == (len(mc.motor_client_class(DYNAMIXEL).scannable_baudrates())
+                             + len(mc.motor_client_class(FEETECH).scannable_baudrates()))
 
 
 # --- a bridge that ignores a baud, a host that cannot open one, a bus that changes under us
@@ -1229,18 +1233,25 @@ def test_a_rate_the_bridge_ignores_shows_the_chain_itself_and_is_never_a_stray(m
     assert 115_200 in scanned_bauds
 
 
-def test_a_rate_the_host_cannot_open_is_skipped_quietly(monkeypatch):
+def test_a_rate_the_driver_cannot_set_is_never_scanned(monkeypatch):
     plan = small_plan()
     bus = FakeBus(plan=plan)
-    bus.unopenable.add(10_500_000)
+    bus.unopenable.add(3_000_000)
     bus.install(monkeypatch)
     scanned = []
     real_scan = bus.scan
     monkeypatch.setattr(mc, "scan_motors",
                         lambda mt, port, baud, ids: scanned.append(baud) or real_scan(mt, port, baud, ids))
-    state = {"skip_bauds": set()}
-    mc._census(plan, [], 3, None, tier=1, state=state)
-    assert 10_500_000 not in scanned and 10_500_000 in state["skip_bauds"]
+    mc._census(plan, [], 3, None, tier=2, state={"skip_bauds": set()})
+    assert 3_000_000 not in scanned and 2_000_000 in scanned
+
+
+def test_the_dynamixel_driver_cannot_set_every_motor_rate():
+    """The SDK refuses rates above 4 Mbaud; the chain must not try them."""
+    cls = mc.motor_client_class(DYNAMIXEL)
+    scannable = cls.scannable_baudrates()
+    assert set(scannable) < set(cls.supported_baudrates())
+    assert 10_500_000 not in scannable and 4_500_000 not in scannable and 1_000_000 in scannable
 
 
 def test_only_one_stray_is_reset_per_survey(monkeypatch):

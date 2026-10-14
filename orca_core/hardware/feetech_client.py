@@ -538,6 +538,14 @@ class FeetechClient(MotorClient):
                 self._motor_modes.clear()
                 self.OPEN_CLIENTS.discard(self)
 
+    @classmethod
+    def scannable_baudrates(cls) -> list[int]:
+        """Rates the vendored SDK's port handler can set (it refuses the rest)."""
+        can_set = getattr(PortHandler(""), "getCFlagBaud", None)
+        if can_set is None:   # a stand-in port handler without a rate table
+            return cls.supported_baudrates()
+        return [b for b in cls.supported_baudrates() if can_set(b) > 0]
+
     def scan_for_motors(
         self,
         port: str,
@@ -550,8 +558,11 @@ class FeetechClient(MotorClient):
         every ID in ``id_range``, and returns a list of dicts with keys
         ``id``, ``baud_rate``, ``model_name``. Doesn't change motor state.
         """
+        scannable = self.scannable_baudrates()
         if baud_rates is None:
-            baud_rates = self.supported_baudrates()
+            baud_rates = scannable
+        else:
+            baud_rates = [b for b in baud_rates if b in scannable]
         detected_motors = []
         for baud_rate in baud_rates:
             port_handler = PortHandler(port)

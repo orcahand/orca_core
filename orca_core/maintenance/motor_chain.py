@@ -661,33 +661,15 @@ def _reset_stray(plan: MotorChainPlan, motor: dict,
     return True
 
 
-def _host_can_open(port: str, baud: int) -> bool:
-    """Whether this host's serial driver accepts ``baud`` on ``port`` at all."""
-    try:
-        import serial
-        serial.Serial(port, baudrate=baud, timeout=0).close()
-        return True
-    except Exception:
-        return False
-
-
 def _bauds_to_survey(plan: MotorChainPlan, state: dict) -> list[int]:
-    """The family's other baud rates worth pinging on this bus.
-
-    Drops rates this host cannot open and rates the bus has shown to mirror:
-    a USB bridge that does not honour a rate leaves the bus where it was, so a
-    scan "at" that rate answers with the chain's own motors (``phantom_baud``).
-    Both are remembered for the run in ``state``.
+    """The family's other baud rates worth pinging on this bus: those the
+    client's serial driver can set, minus rates the bus has shown to mirror.
+    A USB bridge that does not honour a rate leaves the bus where it was, so a
+    scan "at" that rate answers with the chain's own motors (``phantom_baud``);
+    such rates are remembered for the run in ``state``.
     """
-    bauds = []
-    for baud in plan.client_cls.supported_baudrates():
-        if baud in (plan.default_baud, plan.target_baud) or baud in state["skip_bauds"]:
-            continue
-        if not _host_can_open(plan.port, baud):
-            state["skip_bauds"].add(baud)
-            continue
-        bauds.append(baud)
-    return bauds
+    return [b for b in plan.client_cls.scannable_baudrates()
+            if b not in (plan.default_baud, plan.target_baud) and b not in state["skip_bauds"]]
 
 
 def _is_phantom(plan: MotorChainPlan, motor: dict, at_target: list[dict]) -> bool:
@@ -777,7 +759,7 @@ def survey_bus(port: str, progress_callback: Optional[ProgressCallback] = None,
     """
     found: list[dict] = []
     for motor_type in SUPPORTED_MOTOR_TYPES:
-        for baud in motor_client_class(motor_type).supported_baudrates():
+        for baud in motor_client_class(motor_type).scannable_baudrates():
             try:
                 motors = scan_motors(motor_type, port, baud, id_range)
             except Exception as exc:
