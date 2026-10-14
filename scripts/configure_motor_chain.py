@@ -98,7 +98,8 @@ def on_progress(event: dict) -> None:
     if name == "probing_motor_type":
         print(f"  Probing {event['motor_type']} (ID {event['motor_id']} @ {event['baudrate']})...")
     elif name == "motor_type_detected":
-        print(f"{GREEN}✓ Detected {event['motor_type']} motors.{RESET}\n")
+        how = " (from the configured chain)" if event.get("configured") else ""
+        print(f"{GREEN}✓ Detected {event['motor_type']} motors{how}.{RESET}\n")
     elif name == "probe_failed":
         print(f"{YELLOW}  probe of {event['motor_type']} failed: {event['error']}{RESET}")
     elif name == "chain_started":
@@ -150,6 +151,14 @@ def on_progress(event: dict) -> None:
     elif name == "configured_motor_missing":
         print(f"{RED}⚠ Configured motor(s) {event['missing']} stopped answering — check their "
               f"connectors and power.{RESET}")
+    elif name == "chain_shortened":
+        behind = (f" Motor(s) {event['stranded']} behind the gap rejoin once it closes."
+                  if event["stranded"] else "")
+        print(f"{YELLOW}↩ Chain is now {sorted(event['configured_ids'], reverse=True)}: "
+              f"motor(s) {event['missing']} dropped off. Reconnect them, or plug a fresh motor "
+              f"into that slot.{behind}{RESET}")
+    elif name == "configured_motor_returned":
+        print(f"{GREEN}✓ Motor {event['target_id']} answers again — carrying on.{RESET}")
     elif name == "port_lost":
         print(f"{RED}⚠ {event['port']} disappeared — check the USB cable and board power. "
               f"Waiting for it to come back…{RESET}")
@@ -205,15 +214,17 @@ def _resolve_motor_type(explicit: str | None, config: dict, port: str) -> str:
     """--motor-type wins, then whichever family answers at its factory defaults,
     then the config's pinned family.
 
-    The bus decides for a fresh chain: a config names the family the model was
-    written for, not the one this hand was built from. Only a resumed run —
-    whose motors have already moved off the factory defaults, so nothing answers
-    the probe — falls back to what the config declares.
+    The bus decides: a config names the family the model was written for, not
+    the one this hand was built from. A fresh chain answers at a family's
+    factory defaults; a resumed one, whose motors have all moved off them,
+    answers as the chain the config describes. Only a silent bus falls back to
+    what the config declares.
     """
     if explicit is not None:
         return explicit
     print(f"\n{BOLD}Auto-detecting motor family on {port}...{RESET}")
-    detected = detect_motor_type(port, progress_callback=on_progress)
+    print("   (factory defaults first, then the chain this config describes)")
+    detected = detect_motor_type(port, progress_callback=on_progress, chain_config=config)
     configured = config.get('motor_type')
     if detected is not None:
         if configured is not None and configured != detected:

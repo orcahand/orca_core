@@ -936,25 +936,125 @@ def test_persistent_verification_failure_names_the_missing_motors(monkeypatch):
     assert [e["event"] for e in events] == ["verify_retry"] * (mc.VERIFY_ATTEMPTS - 1)
 
 
-def test_a_configured_motor_that_stops_answering_is_reported_not_reset(monkeypatch):
-    """A validated motor dropping off the bus is a connector problem: the run
-    says so and stops, rather than resetting whatever still answers."""
+def test_a_configured_motor_that_drops_off_hands_its_slot_back(monkeypatch):
+    """A validated motor dropping off the bus shrinks the chain: the run goes
+    back to that slot and a fresh motor takes it. Nothing is reset."""
     plan = small_plan()
     bus, client = _wire_real(monkeypatch, plan)
     events = []
+    dropped = []
 
     def operator(e):
         events.append(e)
-        if e["event"] == "awaiting_motor" and e["target_id"] == 3:
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
             bus.motors.append(motor(1, "XC330", plan.default_baud))
-        if e["event"] == "awaiting_motor" and e["target_id"] == 2:
-            bus.motors.clear()              # motor 3's connector lets go while we wait
+        elif e["event"] == "awaiting_motor" and e["target_id"] == 2 and not dropped:
+            dropped.append(bus.motors.pop())       # motor 3's connector lets go
+        elif e["event"] == "step_started" and e["target_id"] == 3 and dropped:
+            bus.motors.append(motor(1, "XC330", plan.default_baud))   # a fresh one for slot 3
+        elif e["event"] == "awaiting_motor" and e["target_id"] in (2, 1) and dropped \
+                and not bus.at(plan.default_id, plan.default_baud):
+            bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
 
-    with pytest.raises(mc.MotorChainError, match=r"motors \[3\], configured earlier"):
-        mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0)
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
     names = [e["event"] for e in events]
-    assert names.count("configured_motor_missing") == 2
+    assert names.count("configured_motor_missing") == 1
+    shortened = [e for e in events if e["event"] == "chain_shortened"]
+    assert [(e["missing"], e["configured_ids"]) for e in shortened] == [([3], [])]
+    assert [e["target_id"] for e in events if e["event"] == "step_started"] == [3, 2, 3, 2, 1]
     assert "stray_motor_reset" not in names
+    assert names.count("prescan_done") == 1
+
+
+def test_a_dropped_motor_that_comes_back_is_taken_back_not_reset(monkeypatch):
+    """The orphan still carries its ID: reconnecting it rejoins the chain."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    events = []
+    dropped = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        elif e["event"] == "awaiting_motor" and e["target_id"] == 2 and not dropped:
+            dropped.append(bus.motors.pop())
+        elif e["event"] == "step_started" and e["target_id"] == 3 and dropped:
+            bus.motors.append(dropped[0])          # plugged back in, still ID 3
+        elif e["event"] == "awaiting_motor" and e["target_id"] in (2, 1) and dropped \
+                and not bus.at(plan.default_id, plan.default_baud):
+            bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    assert "configured_motor_returned" in names
+    assert "stray_motor_reset" not in names
+    assert [c for c in client.calls if c[0] == "id"] == [("id", 1, 3), ("id", 1, 2), ("id", 1, 1)]
+
+
+def test_motors_stranded_behind_a_gap_are_kept_and_rejoin(monkeypatch):
+    """Motor 2 was validated, then motor 3 (before it) dropped off. Motor 2 is
+    not a stray: it is never reset, and when a fresh motor takes slot 3 the
+    verification accepts motor 2 answering again."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    events = []
+    state = {"dropped": None}
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] in (3, 2) and state["dropped"] is None \
+                and not bus.at(plan.default_id, plan.default_baud):
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        if e["event"] == "awaiting_motor" and e["target_id"] == 1 and state["dropped"] is None:
+            state["dropped"] = [m for m in bus.motors if m["id"] == 3][0]
+            bus.motors.remove(state["dropped"])    # motor 3 lets go; 2 is behind it
+        elif e["event"] == "step_started" and e["target_id"] == 3 and state["dropped"]:
+            bus.motors.append(motor(1, "XC330", plan.default_baud))   # fresh motor for slot 3
+        elif e["event"] == "awaiting_motor" and e["target_id"] == 1 and state["dropped"] \
+                and not bus.at(plan.default_id, plan.default_baud):
+            bus.motors.append(motor(1, "XC430", plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    shortened = [e for e in events if e["event"] == "chain_shortened"]
+    assert [(e["missing"], e["stranded"]) for e in shortened] == [([3], [2])]
+    assert "stray_motor_reset" not in names
+    assert [c for c in client.calls if c[0] == "id" and c[1:] == (2, 1)] == [], "motor 2 untouched"
+    assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]
+
+
+def test_verify_tolerates_validated_motors_rejoining(monkeypatch):
+    plan = small_plan()
+    FakeBus([motor(3, "XC330", plan.target_baud), motor(2, "XC330", plan.target_baud)], plan)\
+        .install(monkeypatch)
+    mc.verify_chain(plan, [3], tolerated_ids={2})
+    with pytest.raises(mc.MotorChainError, match=r"Unexpected: \[2\]"):
+        monkeypatch.setattr(mc.time, "sleep", lambda _s: None)
+        mc.verify_chain(plan, [3])
+
+
+def test_the_family_of_a_resumed_chain_is_read_off_its_configured_motors(monkeypatch):
+    """Nothing answers at the factory defaults once every motor is programmed;
+    the chain the config describes still identifies the family."""
+    plan = small_plan()
+    FakeBus([motor(3, "XC330", plan.target_baud), motor(2, "XC330", plan.target_baud)], plan)\
+        .install(monkeypatch)
+    events = []
+    cfg = {"motor_ids": [1, 2, 3], "baudrate": plan.target_baud}
+
+    assert mc.detect_motor_type("/dev/fake", events.append) is None
+    assert mc.detect_motor_type("/dev/fake", events.append, chain_config=cfg) == DYNAMIXEL
+    detected = [e for e in events if e["event"] == "motor_type_detected"]
+    assert len(detected) == 1 and detected[0]["configured"] is True
+
+
+def test_family_detection_from_the_chain_sweeps_the_family_rates_when_unpinned(monkeypatch):
+    plan = small_plan()
+    FakeBus([motor(3, "XC330", 3_000_000)], plan).install(monkeypatch)
+    assert mc.detect_motor_type("/dev/fake", chain_config={"motor_ids": [1, 2, 3]}) == DYNAMIXEL
+    assert mc.detect_motor_type("/dev/fake", chain_config={"motor_ids": [1, 2, 3],
+                                                           "baudrate": 1_000_000}) is None
 
 
 def test_waiting_reports_liveness(monkeypatch):
