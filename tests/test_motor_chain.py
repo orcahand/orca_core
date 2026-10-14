@@ -1080,3 +1080,94 @@ def test_waiting_reports_liveness(monkeypatch):
     beats = [e for e in events if e["event"] == "still_waiting"]
     assert len(beats) >= 6
     assert all(b["elapsed_s"] >= mc.HEARTBEAT_INTERVAL_S for b in beats)
+
+
+# --- survey tiers and the bus survey -----------------------------------------
+
+
+def test_census_tiers_widen_with_time_and_escalate():
+    assert mc._census_tier(5, 0) == 1
+    assert mc._census_tier(10, 0) == 2
+    assert mc._census_tier(30, 0) == 3
+    assert mc._census_tier(5, mc.ESCALATE_AFTER_S) == 3
+
+
+def test_census_reports_what_it_checked(monkeypatch):
+    plan = small_plan()
+    bus = FakeBus(plan=plan)
+    bus.install(monkeypatch)
+    quick = mc._census(plan, [], 3, None, tier=1)
+    deep = mc._census(plan, [], 3, None, tier=3)
+    assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", "ID 1 @ every other baud"]
+    assert deep["checked"] == [f"IDs 1-{mc.FULL_ID_RANGE[1]} @ {plan.target_baud}",
+                               "IDs 1-3 @ every other baud"]
+
+
+def test_a_stray_at_a_foreign_baud_beyond_the_default_id_waits_for_tier_two(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    scans = []
+    real_scan = bus.scan
+
+    def counting_scan(motor_type, port, baudrate, id_range):
+        scans.append((baudrate, id_range))
+        return real_scan(motor_type, port, baudrate, id_range)
+
+    monkeypatch.setattr(mc, "scan_motors", counting_scan)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
+            bus.motors.append(motor(2, "XC330", 2_000_000))
+        if e["event"] == "awaiting_motor" and e["target_id"] in (2, 1):
+            bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    reset = [e for e in events if e["event"] == "stray_motor_reset"]
+    assert [e["motor"]["id"] for e in reset] == [2]
+    # tier 1 only pings the default ID at foreign bauds; tier 2 pinged the chain's IDs there
+    assert (2_000_000, (1, 1)) in scans and (2_000_000, (1, 3)) in scans
+
+
+def test_the_heartbeat_names_what_the_survey_checked(monkeypatch):
+    plan = small_plan()
+    bus = _wire(monkeypatch, plan)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(mc.time, "monotonic", lambda: clock["now"])
+    real_scan = bus.scan
+    events = []
+
+    def ticking_scan(*a, **k):
+        clock["now"] += 1.0
+        return real_scan(*a, **k)
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "still_waiting" and e.get("escalated"):
+            bus.plug(e["expected_model"])
+
+    monkeypatch.setattr(mc, "scan_motors", ticking_scan)
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    beats = [e for e in events if e["event"] == "still_waiting"]
+    assert any(b["checked"] for b in beats)
+    assert any(b["escalated"] for b in beats) and not beats[0]["escalated"]
+
+
+def test_survey_bus_lists_every_family_baud_and_id(monkeypatch):
+    found_by_family = {
+        DYNAMIXEL: [motor(40, "XC330", 3_000_000)],
+        FEETECH: [motor(7, "HLS3915", 500_000)],
+    }
+
+    def scan(motor_type, port, baudrate, id_range):
+        assert id_range == mc.FULL_ID_RANGE
+        return [m for m in found_by_family[motor_type] if m["baud_rate"] == baudrate]
+
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    events = []
+    found = mc.survey_bus("/dev/fake", events.append)
+    assert found == [{"motor_type": DYNAMIXEL, **motor(40, "XC330", 3_000_000)},
+                     {"motor_type": FEETECH, **motor(7, "HLS3915", 500_000)}]
+    progress = [e for e in events if e["event"] == "survey_progress"]
+    assert len(progress) == len(mc.valid_baudrates(DYNAMIXEL)) + len(mc.valid_baudrates(FEETECH))

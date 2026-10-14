@@ -1366,7 +1366,7 @@ class DynamixelClient(MotorClient):
             port_handler = self.dxl.PortHandler(port)
             packet_handler = self.dxl.PacketHandler(PROTOCOL_VERSION)
             try:
-                if not port_handler.openPort() or not port_handler.setBaudRate(baud_rate):
+                if not _open_scan_port(port_handler, port, baud_rate):
                     continue
                 for motor_id in range(id_range[0], id_range[1] + 1):
                     model_number, comm_result, _ = packet_handler.ping(port_handler, motor_id)
@@ -1396,6 +1396,30 @@ class DynamixelClient(MotorClient):
     def __del__(self):
         """Automatically disconnect on destruction."""
         self.disconnect()
+
+
+SCAN_PORT_OPEN_ATTEMPTS = 3
+SCAN_PORT_OPEN_RETRY_S = 0.2
+
+
+def _open_scan_port(port_handler, port: str, baud_rate: int) -> bool:
+    """Open a scan's port, retrying a refusal: the OS can still hold a port
+    the previous scan just closed. A port that stays shut is logged, so a
+    scan that saw nothing because it never got the port is not read as an
+    empty bus."""
+    for attempt in range(1, SCAN_PORT_OPEN_ATTEMPTS + 1):
+        try:
+            if port_handler.openPort() and port_handler.setBaudRate(baud_rate):
+                return True
+        except Exception as exc:
+            if attempt == SCAN_PORT_OPEN_ATTEMPTS:
+                logging.warning("Scan could not open %s @ %d baud: %s", port, baud_rate, exc)
+                return False
+        if attempt < SCAN_PORT_OPEN_ATTEMPTS:
+            time.sleep(SCAN_PORT_OPEN_RETRY_S)
+    logging.warning("Scan could not open %s @ %d baud after %d attempts",
+                    port, baud_rate, SCAN_PORT_OPEN_ATTEMPTS)
+    return False
 
 
 class _AlertCaptureSyncRead:

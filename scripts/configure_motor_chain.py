@@ -37,7 +37,7 @@ from orca_core.maintenance import (
     set_all_return_delays,
     valid_baudrates,
 )
-from orca_core.maintenance.motor_chain import reset_motor_to_factory
+from orca_core.maintenance.motor_chain import reset_motor_to_factory, survey_bus
 from orca_core.utils import (
     enable_ansi_escapes,
     get_and_choose_port,
@@ -134,9 +134,17 @@ def on_progress(event: dict) -> None:
         print(f"{RED}❌ A factory-default motor still answers (at {event['baudrate']:,} bps) "
               f"after programming ID {event['target_id']}.{RESET}")
     elif name == "still_waiting":
+        checked = "; ".join(event.get("checked") or ["the factory defaults"])
         print(f"{YELLOW}   … still waiting for a factory-default {event['expected_model']} "
-              f"({event['elapsed_s']}s). Nothing at the factory defaults; nothing else on the "
-              f"bus that this run could take.{RESET}")
+              f"({event['elapsed_s']}s). Nothing at the factory defaults; nothing else this run "
+              f"could take (checked {checked}).{RESET}")
+        if event.get("escalated"):
+            print(f"{YELLOW}     Every survey is now the widest. If a motor is connected, it may "
+                  f"be at an ID and baud outside what is checked: Ctrl+C and run this script "
+                  f"with --scan to list everything on the bus.{RESET}")
+    elif name == "survey_progress":
+        found = ", ".join(f"ID {m['id']} {m['model_name']}" for m in event["motors"]) or "—"
+        print(f"   {event['motor_type']:<10} @ {event['baudrate']:>9,} bps: {found}")
     elif name == "half_programmed_motor_adopted":
         print(f"{GREEN}✓ Found a motor left at the default ID but already at the target baud "
               f"(an interrupted run) — finishing it as ID {event['target_id']}.{RESET}")
@@ -236,9 +244,10 @@ def _resolve_motor_type(explicit: str | None, config: dict, port: str) -> str:
               f"family: {configured}{RESET}")
         return configured
     raise SystemExit(
-        f"\n{RED}❌ No motors responded at either family's factory defaults.{RESET}\n"
-        "   Check power, wiring, and that motors are still at factory defaults\n"
-        "   (re-runs of this script change them). Or pass --motor-type explicitly."
+        f"\n{RED}❌ No motors responded at either family's factory defaults, nor as the "
+        f"chain this config describes.{RESET}\n"
+        "   Check power and wiring. To see what is on the bus at any ID and baud, run\n"
+        "   this script with --scan. Or pass --motor-type explicitly."
     )
 
 
@@ -292,12 +301,24 @@ def main() -> int:
                         help="Set the Return Delay Time on every motor on the bus, leaving IDs "
                              "and baud alone (DYNAMIXEL; for hands assembled before chain "
                              "configuration set it).")
+    parser.add_argument("--scan", action="store_true",
+                        help="List every motor on the bus (every family, baud and ID) and exit. "
+                             "Slow; a diagnostic for a bus that does not behave.")
     parser.add_argument("--motor-type", choices=SUPPORTED_MOTOR_TYPES,
                         help="Override motor family. Auto-detected from factory defaults when omitted.")
     args = parser.parse_args()
 
     config = _load_config(args.config_path)
     port = _resolve_port(config.get('port', 'auto'), args.motor_type)
+    if args.scan:
+        _banner("🔎 BUS SURVEY 🔎")
+        print(f"   Pinging every ID at every baud rate on {port} — this takes a while.")
+        found = survey_bus(port, progress_callback=on_progress)
+        if not found:
+            print(f"\n{YELLOW}Nothing answered. Check power and wiring.{RESET}")
+            return 1
+        print(f"\n{GREEN}{len(found)} motor(s) on the bus.{RESET}")
+        return 0
     motor_type = _resolve_motor_type(args.motor_type, config, port)
     try:
         plan = plan_motor_chain(_config_for_family(config, motor_type), port, motor_type)

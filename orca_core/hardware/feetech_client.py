@@ -169,6 +169,10 @@ class HLSPacketHandler(protocol_packet_handler):
         super().__init__(port_handler, 0)
 
 
+SCAN_PORT_OPEN_ATTEMPTS = 3
+SCAN_PORT_OPEN_RETRY_S = 0.2
+
+
 class FeetechClient(MotorClient):
     """Client for communicating with Feetech SCServo motors.
 
@@ -553,9 +557,19 @@ class FeetechClient(MotorClient):
             port_handler = PortHandler(port)
             port_handler.baudrate = baud_rate
             try:
-                if not port_handler.openPort():
+                opened = False
+                for attempt in range(SCAN_PORT_OPEN_ATTEMPTS):
+                    try:
+                        opened = port_handler.openPort()
+                    except Exception as exc:
+                        logging.debug('open %s @ %d baud raised %s', port, baud_rate, exc)
+                    if opened:
+                        break
+                    time.sleep(SCAN_PORT_OPEN_RETRY_S)   # the OS may still hold the port
+                if not opened:
                     logging.warning(
-                        'Failed to open port %s at %d baud', port, baud_rate
+                        'Scan could not open %s @ %d baud after %d attempts',
+                        port, baud_rate, SCAN_PORT_OPEN_ATTEMPTS
                     )
                     continue
                 packet_handler = HLSPacketHandler(port_handler)
