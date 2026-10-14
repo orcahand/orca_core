@@ -176,6 +176,12 @@ def on_progress(event: dict) -> None:
               f"retrying…{RESET}")
     elif name == "verify_retry":
         print(f"{YELLOW}   Chain check missed {event['missing']}; scanning again…{RESET}")
+    elif name == "verify_failed":
+        print(f"{RED}⚠ {event['error']}{RESET}")
+        print(f"{YELLOW}   Re-reading the chain from the bus…{RESET}")
+    elif name == "phantom_baud":
+        print(f"{YELLOW}   The bus does not switch to {event['baudrate']:,} bps (the chain's own "
+              f"motors {event['motor_ids']} answered there); that rate is skipped from now on.{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")

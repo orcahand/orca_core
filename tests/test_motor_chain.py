@@ -43,6 +43,8 @@ class FakeBus:
         self.plan = plan
         self.to_plug: list[str] = []
         self.port_present = True
+        self.unopenable: set[int] = set()     # rates this host's driver refuses
+        self.mirrored: set[int] = set()       # rates the bridge ignores: the bus stays put
 
     def plug(self, *models: str) -> None:
         self.to_plug.extend(models)
@@ -55,6 +57,8 @@ class FakeBus:
             self.motors.append(motor(self.plan.default_id, self.to_plug.pop(0),
                                      self.plan.default_baud))
         lo, hi = id_range
+        if baudrate in self.mirrored and self.plan is not None:
+            baudrate = self.plan.target_baud
         return [m for m in self.motors if m["baud_rate"] == baudrate and lo <= m["id"] <= hi]
 
     def _default_motor(self):
@@ -67,6 +71,7 @@ class FakeBus:
     def install(self, monkeypatch):
         monkeypatch.setattr(mc, "scan_motors", self.scan)
         monkeypatch.setattr(mc, "serial_port_exists", lambda port: self.port_present)
+        monkeypatch.setattr(mc, "_host_can_open", lambda port, baud: baud not in self.unopenable)
 
 
 # --- family facts come from the client classes ------------------------------
@@ -1098,9 +1103,10 @@ def test_census_reports_what_it_checked(monkeypatch):
     bus.install(monkeypatch)
     quick = mc._census(plan, [], 3, None, tier=1)
     deep = mc._census(plan, [], 3, None, tier=3)
-    assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", "ID 1 @ every other baud"]
+    others = len(mc.valid_baudrates(DYNAMIXEL)) - 2
+    assert quick["checked"] == [f"IDs 1-3 @ {plan.target_baud}", f"ID 1 @ {others} other baud rate(s)"]
     assert deep["checked"] == [f"IDs 1-{mc.FULL_ID_RANGE[1]} @ {plan.target_baud}",
-                               "IDs 1-3 @ every other baud"]
+                               f"IDs 1-3 @ {others} other baud rate(s)"]
 
 
 def test_a_stray_at_a_foreign_baud_beyond_the_default_id_waits_for_tier_two(monkeypatch):
@@ -1171,3 +1177,135 @@ def test_survey_bus_lists_every_family_baud_and_id(monkeypatch):
                      {"motor_type": FEETECH, **motor(7, "HLS3915", 500_000)}]
     progress = [e for e in events if e["event"] == "survey_progress"]
     assert len(progress) == len(mc.valid_baudrates(DYNAMIXEL)) + len(mc.valid_baudrates(FEETECH))
+
+
+# --- a bridge that ignores a baud, a host that cannot open one, a bus that changes under us
+
+
+def test_a_rate_the_bridge_ignores_shows_the_chain_itself_and_is_never_a_stray(monkeypatch):
+    """Through a USB bridge that does not honour 115200 the bus stays at the
+    target rate, so a scan "at 115200" answers with the configured motors.
+    They must not be reset, and the rate is dropped for the rest of the run."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    bus.mirrored.add(115_200)
+    events = []
+    scanned_bauds = []
+    real_scan = bus.scan
+
+    def counting_scan(motor_type, port, baudrate, id_range):
+        scanned_bauds.append(baudrate)
+        if baudrate == 115_200:
+            assert not any(e["event"] == "phantom_baud" for e in events), \
+                "a mirrored rate is skipped once recognised"
+        return real_scan(motor_type, port, baudrate, id_range)
+
+    monkeypatch.setattr(mc, "scan_motors", counting_scan)
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        if e["event"] == "still_waiting" and e["target_id"] == 2 and e["polls"] > 12 \
+                and not bus.at(plan.default_id, plan.default_baud):
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+        if e["event"] == "awaiting_motor" and e["target_id"] == 1:
+            bus.motors.append(motor(1, "XC430", plan.default_baud))
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(mc.time, "monotonic", lambda: clock["now"])
+    orig = counting_scan
+
+    def ticking(*a, **k):
+        clock["now"] += 1.0
+        return orig(*a, **k)
+
+    monkeypatch.setattr(mc, "scan_motors", ticking)
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    assert "stray_motor_reset" not in names
+    phantom = [e for e in events if e["event"] == "phantom_baud"]
+    assert len(phantom) == 1 and phantom[0]["baudrate"] == 115_200 and phantom[0]["motor_ids"] == [3]
+    assert 115_200 in scanned_bauds
+
+
+def test_a_rate_the_host_cannot_open_is_skipped_quietly(monkeypatch):
+    plan = small_plan()
+    bus = FakeBus(plan=plan)
+    bus.unopenable.add(10_500_000)
+    bus.install(monkeypatch)
+    scanned = []
+    real_scan = bus.scan
+    monkeypatch.setattr(mc, "scan_motors",
+                        lambda mt, port, baud, ids: scanned.append(baud) or real_scan(mt, port, baud, ids))
+    state = {"skip_bauds": set()}
+    mc._census(plan, [], 3, None, tier=1, state=state)
+    assert 10_500_000 not in scanned and 10_500_000 in state["skip_bauds"]
+
+
+def test_only_one_stray_is_reset_per_survey(monkeypatch):
+    """Two strays reset together would meet at the default ID."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan,
+                             [motor(1, "XC330", 2_000_000), motor(2, "XC330", 2_000_000)])
+    events = []
+    mc._census(plan, [], 3, events.append, tier=2, state={"skip_bauds": set()})
+    assert [e["motor"]["id"] for e in events if e["event"] == "stray_motor_reset"] == [1]
+    assert len(bus.at(plan.default_id, plan.default_baud)) == 1
+    assert bus.at(2, 2_000_000), "the second stray waits for the next survey"
+
+
+def test_two_strays_at_a_foreign_baud_are_taken_one_per_survey(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 3 and not bus.motors:
+            bus.motors.extend([motor(1, "XC330", 2_000_000), motor(2, "XC330", 2_000_000)])
+        if e["event"] == "awaiting_motor" and e["target_id"] == 1:
+            bus.motors.append(motor(1, "XC430", plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    first, second = (i for i, n in enumerate(names) if n == "stray_motor_reset")
+    assert "motor_configured" in names[first:second]
+
+
+def test_a_stray_carrying_a_configured_id_at_another_baud_is_left_alone(monkeypatch):
+    """Indistinguishable from the chain seen through a bridge that ignored the
+    rate; never reset on a guess."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan,
+                             [motor(3, "XC330", plan.target_baud), motor(3, "XC330", 2_000_000)])
+    events = []
+    mc._census(plan, [3], 2, events.append, tier=2, state={"skip_bauds": set()})
+    names = [e["event"] for e in events]
+    assert "stray_motor_reset" not in names and "phantom_baud" in names
+    assert bus.at(3, 2_000_000)
+
+
+def test_a_failed_verification_rereads_the_chain_instead_of_ending(monkeypatch):
+    """Motor 3 drops off right after it was programmed: verification fails,
+    the chain is re-read and shrinks, and a fresh motor takes slot 3."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan)
+    events = []
+    knocked = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "motor_configured" and e["target_id"] == 3 and not knocked:
+            knocked.append(bus.motors.pop())      # connector lets go before the chain check
+        if e["event"] in ("awaiting_motor", "step_started") \
+                and not bus.at(plan.default_id, plan.default_baud) \
+                and (e["event"] == "awaiting_motor" or knocked):
+            bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
+
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0) == [3, 2, 1]
+    names = [e["event"] for e in events]
+    assert names.count("verify_failed") == 1
+    assert names.index("verify_failed") < names.index("chain_shortened")
+    assert names[-1] == "chain_done"
+    assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]

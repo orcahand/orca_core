@@ -42,6 +42,7 @@ def _client(monkeypatch, refusals):
     client = object.__new__(dc.DynamixelClient)
     client.dxl = SimpleNamespace(PortHandler=_RefusingPortHandler, PacketHandler=_PacketHandler,
                                  COMM_SUCCESS=0)
+    client.port_handler = SimpleNamespace(is_open=False)   # lets the destructor see "not connected"
     monkeypatch.setattr(dc.time, "sleep", lambda _s: None)
     return client
 
