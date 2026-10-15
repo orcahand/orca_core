@@ -569,10 +569,10 @@ def test_write_joint_motor_travel_refuses_a_packaged_model_config():
 def test_write_joint_motor_travel_keeps_comments_and_other_lines(tmp_path):
     path = tmp_path / "config.yaml"
     packaged = open(os.path.join(MODEL_DIR, "config.yaml")).read()
-    path.write_text(re.sub(r"\n*^joint_motor_travel:\n(?:[ \t]+\S[^\n]*\n)*", "\n", packaged, flags=re.M))
+    stripped = re.sub(r"\n*^joint_motor_travel:\n(?:[ \t]+\S[^\n]*\n)*", "\n", packaged, flags=re.M)
+    comment_lines = ["# a top comment", "  # an indented comment"]
+    path.write_text(f"{comment_lines[0]}\n{stripped}{comment_lines[1]}\n")
     before = path.read_text()
-    comment_lines = [l for l in before.splitlines() if l.lstrip().startswith("#")]
-    assert comment_lines, "the packaged config carries comments to protect"
 
     write_joint_motor_travel(str(path), {"index_mcp": 100.0, "wrist": 150.0})
     after = path.read_text()

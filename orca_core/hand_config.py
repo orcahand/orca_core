@@ -17,6 +17,9 @@ from typing import Dict, List, Literal, Optional
 from .constants import (
     CALIBRATION_CURRENT_V21,
     CALIBRATION_GROUPS,
+    DEFAULT_GUIDED_TENSION_CURRENTS,
+    DYNAMIXEL,
+    GUIDED_TENSION_CURRENTS,
     CALIBRATION_RETRY_STEP_MA,
     CONTROL_MODES,
     DEFAULT_CALIBRATION_TRAVEL_RETRIES,
@@ -29,11 +32,14 @@ from .constants import (
     JOINT_ROM_DICT,
     HARDWARE_VERSION,
     HARDWARE_VERSION_V21,
+    HARDWARE_VERSION_V211,
+    JOINT_ROMS_V211,
     JOINT_TO_MOTOR_MAP,
     JOINT_TO_MOTOR_MAP_V21,
     MOTOR_IDS,
     SUPPORTED_MOTOR_TYPES,
     WRIST,
+    normalize_hardware_version,
 )
 from .control.constants import (
     DEFAULT_CORRECTION_MAX_DEG,
@@ -261,12 +267,11 @@ def _with_local_overrides(config: Dict, config_path: str) -> Dict:
 
 
 def format_hardware_version(version: int | None) -> str:
-    """``21`` -> ``"v2.1"``, ``2`` -> ``"v2.0"``; the board stores major*10 + minor,
-    and a single digit is a bare major."""
+    """``211`` -> ``"v2.1.1"``; the older ``21`` and ``2`` read as v2.1.0 and v2.0.0."""
     if version is None:
         return "an unknown version"
-    major, minor = (version, 0) if version < 10 else divmod(version, 10)
-    return f"v{major}.{minor}"
+    version = normalize_hardware_version(version)
+    return f"v{version // 100}.{version // 10 % 10}.{version % 10}"
 
 
 def write_hardware_version(config_path: str, version: int | None) -> str:
@@ -285,7 +290,7 @@ def write_hardware_version(config_path: str, version: int | None) -> str:
     if version is None:
         local.pop(HARDWARE_VERSION, None)
     else:
-        local[HARDWARE_VERSION] = int(version)
+        local[HARDWARE_VERSION] = normalize_hardware_version(int(version))
     if local:
         write_yaml_atomic(path, local)
     elif os.path.exists(path):
@@ -321,6 +326,32 @@ def _parse_group_currents(raw, key: str) -> Dict[str, Dict[str, int]]:
                     f"{key}[{family}][{group}] must be a positive number of mA, got {current!r}"
                 )
         by_family[str(family)] = {str(g): int(c) for g, c in groups.items()}
+    return by_family
+
+
+def _positive_ma(value, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise HandConfigValidationError(f"{where} must be a positive number of mA, got {value!r}")
+    return value
+
+
+def _parse_guided_tension_currents(raw) -> Dict[str, dict]:
+    key = GUIDED_TENSION_CURRENTS
+    if not isinstance(raw, dict) or not set(raw) <= set(SUPPORTED_MOTOR_TYPES):
+        raise HandConfigValidationError(
+            f"{key} must map a motor family ({', '.join(SUPPORTED_MOTOR_TYPES)}) to its currents, got {raw!r}"
+        )
+    by_family = {}
+    for family, entry in raw.items():
+        if not isinstance(entry, dict) or not set(entry) <= {"hold", "tension"}:
+            raise HandConfigValidationError(f"{key}[{family}] may set only hold and tension, got {entry!r}")
+        hold = entry.get("hold") or {}
+        if not isinstance(hold, dict):
+            raise HandConfigValidationError(f"{key}[{family}][hold] must map a group or joint to mA, got {hold!r}")
+        parsed = {"hold": {str(k): _positive_ma(v, f"{key}[{family}][hold][{k}]") for k, v in hold.items()}}
+        if "tension" in entry:
+            parsed["tension"] = _positive_ma(entry["tension"], f"{key}[{family}][tension]")
+        by_family[str(family)] = parsed
     return by_family
 
 
@@ -513,7 +544,7 @@ class OrcaHandConfig(BaseHandConfig):
     motor_ids: List[int] = field(default_factory=list)
     joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
-    # The hand's hardware version (2 = v2.0, 21 = v2.1). It selects which
+    # The hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1). It selects which
     # joint_to_motor_map is in force and gates the v2.1-only features. Pinned in the yaml by a hand whose motor
     # bus has no controller board to report it; otherwise `auto`, and load_hand
     # fills it from the board. A pin beats the board and the clash is logged,
@@ -524,6 +555,8 @@ class OrcaHandConfig(BaseHandConfig):
     # with_hardware_version applies it; the chosen map then passes the same
     # checks the base map does.
     joint_to_motor_map_v21: Dict[str, int] = field(default_factory=dict)
+    # The joint ROMs a v2.1.1 hand overrides; with_hardware_version lays them over joint_roms.
+    joint_roms_v211_dict: Dict[str, List[float]] = field(default_factory=dict)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -531,11 +564,16 @@ class OrcaHandConfig(BaseHandConfig):
     # v2.1 only: per motor family, a calibration current per joint group (see
     # calibration_group) that replaces calibration_current for those joints.
     calibration_current_v21_dict: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # Guided tensioning currents per motor family (see guided_tension_currents_for).
+    guided_tension_currents_dict: Dict[str, dict] = field(default_factory=dict)
     calibration_step_size: float = 0.1  # rad
     calibration_step_period: float = 0.01  # s
     calibration_threshold: float = 0.01  # rad
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
+    # Steps for manual calibration; one operator answer records a whole step.
+    # Empty falls back to calibration_sequence.
+    manual_calibration_sequence: List[dict] = field(default_factory=list)
     # Motor-shaft travel between a joint's two hardstops, in degrees, keyed by
     # joint name. The travel a joint's motor makes is set by that joint's
     # tendon spool diameter, so it belongs to the joint and is resolved to a
@@ -603,6 +641,33 @@ class OrcaHandConfig(BaseHandConfig):
         group = calibration_group(joint) if joint else None
         return self.calibration_group_currents.get(group, self.calibration_current)
 
+    def guided_tension_currents_for(self, family: Optional[str] = None) -> dict:
+        """``{"hold": {group or joint: mA}, "tension": mA}`` for ``family`` (default: this
+        hand's), the config's entries over the package defaults."""
+        family = family or self.motor_type
+        if family not in DEFAULT_GUIDED_TENSION_CURRENTS:
+            family = DYNAMIXEL
+        base = DEFAULT_GUIDED_TENSION_CURRENTS[family]
+        own = self.guided_tension_currents_dict.get(family, {})
+        return {"hold": {**base["hold"], **own.get("hold", {})},
+                "tension": own.get("tension", base["tension"])}
+
+    def tension_hold_current_for(self, joint: str) -> int:
+        """Range-check hold current (mA) for ``joint``: its own entry, else its group's."""
+        hold = self.guided_tension_currents_for()["hold"]
+        return hold.get(joint, hold[calibration_group(joint)])
+
+    @property
+    def tension_hold_joint_currents(self) -> Dict[str, int]:
+        """The hold entries that name a joint; they win over any group or flat current."""
+        hold = self.guided_tension_currents_for()["hold"]
+        return {k: v for k, v in hold.items() if k not in CALIBRATION_GROUPS}
+
+    @property
+    def tension_current(self) -> int:
+        """Guided tensioning's hold (mA) while the spools are ratcheted."""
+        return self.guided_tension_currents_for()["tension"]
+
     def calibration_retry_current_for(self, joint: Optional[str] = None) -> int:
         """Current (mA) a short-travel ``joint`` is re-driven at.
 
@@ -667,7 +732,13 @@ class OrcaHandConfig(BaseHandConfig):
     def uses_motor_travel(self) -> bool:
         """Whether the travel-based features (calibration's short-travel
         re-drive, guided tensioning) apply: v2.1 hardware only."""
-        return self.hardware_version == HARDWARE_VERSION_V21
+        return self.is_v21
+
+    @property
+    def is_v21(self) -> bool:
+        """Whether the hand is any v2.1 hardware (v2.1.0, v2.1.1, ...)."""
+        version = normalize_hardware_version(self.hardware_version)
+        return version is not None and version // 10 == HARDWARE_VERSION_V21 // 10
 
     def expected_motor_travel_deg(self, joint: str, *, any_hardware: bool = False) -> float | None:
         """Baseline motor travel for ``joint``, or ``None`` if there is none.
@@ -775,9 +846,11 @@ class OrcaHandConfig(BaseHandConfig):
             if isinstance(raw_hw, bool) or not isinstance(raw_hw, int) or raw_hw < 0:
                 raise HandConfigValidationError(
                     f"{HARDWARE_VERSION} must be 'auto' or a non-negative integer "
-                    f"(2 for v2.0, 21 for v2.1), got {raw_hw!r}"
+                    f"(210 for v2.1.0, 211 for v2.1.1), got {raw_hw!r}"
                 )
-            kwargs["hardware_version"] = raw_hw
+            kwargs["hardware_version"] = normalize_hardware_version(raw_hw)
+        if JOINT_ROMS_V211 in config:
+            kwargs["joint_roms_v211_dict"] = dict(config[JOINT_ROMS_V211])
         if "calibration_current" in config:
             kwargs["calibration_current"] = _current_setting(
                 config["calibration_current"], "calibration_current"
@@ -796,6 +869,12 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["calibration_num_stable"] = int(config["calibration_num_stable"])
         if "calibration_sequence" in config:
             kwargs["calibration_sequence"] = list(config["calibration_sequence"])
+        if "manual_calibration_sequence" in config:
+            kwargs["manual_calibration_sequence"] = list(config["manual_calibration_sequence"])
+        if GUIDED_TENSION_CURRENTS in config:
+            kwargs["guided_tension_currents_dict"] = _parse_guided_tension_currents(
+                config[GUIDED_TENSION_CURRENTS]
+            )
         if CALIBRATION_CURRENT_V21 in config:
             kwargs["calibration_current_v21_dict"] = _parse_group_currents(
                 config[CALIBRATION_CURRENT_V21], CALIBRATION_CURRENT_V21
@@ -911,7 +990,7 @@ class OrcaHandConfig(BaseHandConfig):
                     f"Motor ID {motor_id} is not in the motor IDs list."
                 )
 
-        for step in self.calibration_sequence:
+        for step in [*self.calibration_sequence, *self.manual_calibration_sequence]:
             joints = step.get("joints")
             if not isinstance(joints, dict):
                 raise HandConfigValidationError(
@@ -953,6 +1032,11 @@ class OrcaHandConfig(BaseHandConfig):
 
     def _validate_travel_check(self) -> None:
         """Validate the dynamic short-travel re-drive settings."""
+        for joint, rom in self.joint_roms_v211_dict.items():
+            if joint not in self.joint_ids:
+                raise HandConfigValidationError(f"{JOINT_ROMS_V211} names joint {joint!r}, which is not in joint_ids.")
+            if len(rom) != 2 or rom[1] - rom[0] <= 0:
+                raise HandConfigValidationError(f"{JOINT_ROMS_V211}[{joint}] {rom} is not a valid ROM.")
         for key, travel_by_joint in ((JOINT_MOTOR_TRAVEL, self.joint_motor_travel_dict),
                                      (JOINT_MOTOR_TRAVEL_V21, self.joint_motor_travel_v21_dict)):
             for joint, travel in travel_by_joint.items():
@@ -964,6 +1048,14 @@ class OrcaHandConfig(BaseHandConfig):
                     raise HandConfigValidationError(
                         f"{key}[{joint}] must be a positive number of degrees, "
                         f"got {travel!r}"
+                    )
+
+        for family, entry in self.guided_tension_currents_dict.items():
+            for name in entry.get("hold", {}):
+                if name not in CALIBRATION_GROUPS and name not in self.joint_ids:
+                    raise HandConfigValidationError(
+                        f"{GUIDED_TENSION_CURRENTS}[{family}][hold] names {name!r}, which is "
+                        f"neither a group ({', '.join(CALIBRATION_GROUPS)}) nor in joint_ids."
                     )
 
         margin = self.calibration_travel_margin
@@ -1051,24 +1143,23 @@ class OrcaHandConfig(BaseHandConfig):
         ``joint_to_motor_map`` and ``joint_inversion_dict`` are rebuilt from it,
         exactly as they are built from the base map at load; every consumer
         then reads it with no idea a revision exists. A model without a map
-        for the revision keeps the base one. ``hardware_version`` is recorded
+        for the revision keeps the base one. A v2.1.1 hand also takes the
+        ROMs in ``joint_roms_v211``. ``hardware_version`` is recorded
         either way, the same way a detected ``motor_type`` is.
 
         ``None`` means the version is not known, and returns self untouched.
         """
         if hardware_version is None:
             return self
-        if hardware_version == HARDWARE_VERSION_V21 and self.joint_to_motor_map_v21:
-            joint_to_motor_map, joint_inversion_dict = _canonical_joint_to_motor_map(
-                self.joint_to_motor_map_v21
+        hardware_version = normalize_hardware_version(hardware_version)
+        changes = {"hardware_version": hardware_version}
+        if hardware_version // 10 == HARDWARE_VERSION_V21 // 10 and self.joint_to_motor_map_v21:
+            changes["joint_to_motor_map"], changes["joint_inversion_dict"] = (
+                _canonical_joint_to_motor_map(self.joint_to_motor_map_v21)
             )
-            return dataclasses.replace(
-                self,
-                hardware_version=hardware_version,
-                joint_to_motor_map=joint_to_motor_map,
-                joint_inversion_dict=joint_inversion_dict,
-            )
-        return dataclasses.replace(self, hardware_version=hardware_version)
+        if hardware_version == HARDWARE_VERSION_V211 and self.joint_roms_v211_dict:
+            changes["joint_roms_dict"] = {**self.joint_roms_dict, **self.joint_roms_v211_dict}
+        return dataclasses.replace(self, **changes)
 
 
 @dataclass(frozen=True)

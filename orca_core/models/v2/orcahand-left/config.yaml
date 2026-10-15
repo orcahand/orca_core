@@ -1,8 +1,13 @@
-# motor_type and baudrate are auto-detected at connect; set them here to pin a driver
+hardware_version: auto
+
 port: auto
+
 max_current: default
+
 type: left
+
 control_mode: current_based_position
+
 motor_ids:
 - 1
 - 2
@@ -21,6 +26,7 @@ motor_ids:
 - 15
 - 16
 - 17
+
 joint_ids:
 - wrist
 - thumb_cmc
@@ -39,6 +45,7 @@ joint_ids:
 - pinky_abd
 - pinky_mcp
 - pinky_pip
+
 joint_to_motor_map:
   thumb_cmc: -10
   thumb_abd: -13
@@ -57,10 +64,7 @@ joint_to_motor_map:
   pinky_mcp: -15
   pinky_pip: 16
   wrist: -1
-# v2.1 hardware: the thumb MCP and DIP tendons run the other way, so
-# those two motors turn the opposite direction for the same joint motion.
-# Same motors, same joints -- only the sign differs. Selected by the
-# hardware version the board reports (21); v2.0 boards keep the map above.
+
 joint_to_motor_map_v21:
   thumb_cmc: -10
   thumb_abd: -13
@@ -79,11 +83,7 @@ joint_to_motor_map_v21:
   pinky_mcp: -15
   pinky_pip: 16
   wrist: -1
-# Which of the two maps above is in force. `auto` takes the version the OH
-# board reports (2 or 21). A left hand on a plain adapter has no board to ask:
-# pin it here instead -- `hardware_version: 21` for the v2.1 build. A pin
-# beats the board and the clash is logged.
-hardware_version: auto
+
 joint_roms:
   wrist:
   - -65
@@ -136,6 +136,7 @@ joint_roms:
   pinky_pip:
   - -15
   - 107
+
 neutral_position:
   thumb_cmc: 0
   thumb_abd: 50
@@ -154,20 +155,37 @@ neutral_position:
   pinky_mcp: -4
   pinky_pip: -2
   wrist: -20
+
 calibration_current: default
-# v2.1 only: calibration current per joint group (mA) for a motor family,
-# replacing calibration_current for those joints. abd: the abductions and
-# thumb_cmc; mcp: the MCPs; pip: the PIPs and thumb_dip. A family not listed
-# keeps calibration_current.
+
 calibration_current_v21:
   dynamixel:
     abd: 300
     mcp: 500
     pip: 500
+
+guided_tension_currents:
+  dynamixel:
+    hold:
+      abd: 200
+      mcp: 140
+      pip: 100
+    tension: 400
+  feetech:
+    hold:
+      abd: 380
+      mcp: 320
+      pip: 280
+    tension: 580
+
 calibration_step_size: 0.15
+
 calibration_step_period: 0.0001
+
 calibration_num_stable: 10
+
 calibration_threshold: 0.01
+
 calibration_sequence:
 - step: 1
   joints:
@@ -236,9 +254,80 @@ calibration_sequence:
   joints:
     wrist: extend
 
-# Motor travel between each joint's hardstops on v2.1 hardware, in degrees.
-# Only a v2.1 hand uses it: calibration re-drives a joint that falls short
-# of it, and guided tensioning scores slack against it. v2.0 hands have none.
+manual_calibration_sequence:
+- step: 1
+  joints:
+    thumb_cmc: flex
+- step: 2
+  joints:
+    thumb_cmc: extend
+- step: 3
+  joints:
+    thumb_abd: flex
+- step: 4
+  joints:
+    thumb_abd: extend
+- step: 5
+  joints:
+    thumb_mcp: flex
+- step: 6
+  joints:
+    thumb_mcp: extend
+- step: 7
+  joints:
+    thumb_dip: flex
+- step: 8
+  joints:
+    thumb_dip: extend
+- step: 9
+  joints:
+    index_abd: flex
+    middle_abd: flex
+    ring_abd: flex
+    pinky_abd: flex
+- step: 10
+  joints:
+    index_abd: extend
+    middle_abd: extend
+    ring_abd: extend
+    pinky_abd: extend
+- step: 11
+  joints:
+    index_mcp: flex
+    middle_mcp: flex
+    ring_mcp: flex
+    pinky_mcp: flex
+- step: 12
+  joints:
+    index_mcp: extend
+- step: 13
+  joints:
+    middle_mcp: extend
+- step: 14
+  joints:
+    ring_mcp: extend
+- step: 15
+  joints:
+    pinky_mcp: extend
+- step: 16
+  joints:
+    index_pip: flex
+    middle_pip: flex
+    ring_pip: flex
+    pinky_pip: flex
+- step: 17
+  joints:
+    index_pip: extend
+    middle_pip: extend
+    ring_pip: extend
+    pinky_pip: extend
+- step: 18
+  joints:
+    wrist: flex
+- step: 19
+  joints:
+    wrist: extend
+
 joint_motor_travel_v21:
   wrist: 156.18
   thumb_cmc: 57.57

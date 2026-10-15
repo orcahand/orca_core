@@ -14,8 +14,19 @@ JOINT_TO_MOTOR_MAP = "joint_to_motor_map"
 JOINT_TO_MOTOR_MAP_V21 = "joint_to_motor_map_v21"
 HARDWARE_VERSION = "hardware_version"
 # Hardware versions are provisioned on the controller board as one byte,
-# major*10 + minor: 2 is v2.0, 21 is v2.1.
-HARDWARE_VERSION_V21 = 21
+# major*100 + minor*10 + patch: 210 is v2.1.0, 211 is v2.1.1. Boards provisioned
+# earlier report 2 (v2.0) or 21 (v2.1); normalize_hardware_version reads those.
+HARDWARE_VERSION_V21 = 210
+HARDWARE_VERSION_V211 = 211
+# Joint ROMs a v2.1.1 hand uses instead of joint_roms; only the joints that differ.
+JOINT_ROMS_V211 = "joint_roms_v211"
+
+
+def normalize_hardware_version(version: int | None) -> int | None:
+    """The three-digit form of a hardware version: 2 -> 200, 21 -> 210, 211 stays."""
+    if version is None:
+        return None
+    return version * 100 if version < 10 else version * 10 if version < 100 else version
 JOINT_ROM_DICT = "joint_roms"
 JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"
@@ -35,6 +46,12 @@ JOINT_MOTOR_TRAVEL_V21 = "joint_motor_travel_v21"
 CALIBRATION_CURRENT_V21 = "calibration_current_v21"
 # Joint groups calibration_current_v21 sets a current for.
 CALIBRATION_GROUPS = ("abd", "mcp", "pip")
+GUIDED_TENSION_CURRENTS = "guided_tension_currents"
+# Used for a motor family a config's guided_tension_currents does not list.
+DEFAULT_GUIDED_TENSION_CURRENTS = {
+    "dynamixel": {"hold": {"abd": 200, "mcp": 140, "pip": 100}, "tension": 400},
+    "feetech": {"hold": {"abd": 380, "mcp": 320, "pip": 280}, "tension": 580},
+}
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 

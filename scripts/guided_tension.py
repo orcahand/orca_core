@@ -10,9 +10,7 @@ import threading
 
 from orca_core.maintenance.guided_tension import (
     GOTO,
-    HOLD_CURRENT_MA,
     PASS_FRACTION,
-    TENSION_CURRENT_MA,
     read_last_tension,
     run_guided_tension,
 )
@@ -83,9 +81,11 @@ def _prompt(prompt: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_hand_arguments(parser, feedback_flag=False)
-    parser.add_argument("--hold-current", type=float, default=HOLD_CURRENT_MA, help=f"Range-check hold current, mA (default {HOLD_CURRENT_MA}).")
-    parser.add_argument("--tension-current", type=float, default=TENSION_CURRENT_MA,
-                        help=f"Tensioning hold current, mA (default {TENSION_CURRENT_MA}).")
+    parser.add_argument("--hold-current", type=float,
+                        help="One range-check hold current for every joint, mA (default: the config's "
+                             "guided_tension_currents per group; joints it names keep theirs).")
+    parser.add_argument("--tension-current", type=float,
+                        help="Tensioning hold current, mA (default: the config's guided_tension_currents).")
     parser.add_argument("--tension-offset", type=float, default=TENSION_OFFSET_DEG,
                         help=f"Degrees the finger motors turn counterclockwise while tensioning (default {TENSION_OFFSET_DEG:g}).")
     parser.add_argument("--pass-fraction", type=float, default=PASS_FRACTION,

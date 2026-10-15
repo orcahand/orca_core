@@ -57,8 +57,6 @@ Current = Union[float, Callable[[], float]]
 HoldCurrent = Union[float, Callable[[str], float]]  # one value, or one per joint name
 PassFraction = Union[float, Callable[[str], float]]  # one value, or one per joint name
 
-HOLD_CURRENT_MA = 100
-TENSION_CURRENT_MA = 400
 PASS_FRACTION = 0.85
 PARTIAL_FRACTION = 0.3
 SAMPLE_PERIOD_S = 0.05
@@ -342,10 +340,14 @@ class _SpreadSampler(threading.Thread):
         self.join()
 
 
-def joint_currents(config: "OrcaHandConfig", current: HoldCurrent,
+def joint_currents(config: "OrcaHandConfig", current: Optional[HoldCurrent] = None,
                    absent_joints: Sequence[str] = ()) -> Dict[str, float]:
-    """Holding current per present non-wrist joint, in mA."""
-    return {s.joint: float(current(s.joint) if callable(current) else current)
+    """Holding current per present non-wrist joint, in mA. ``None`` takes the config's
+    hold currents; a joint the config names keeps its own current either way."""
+    if current is None:
+        current = config.tension_hold_current_for
+    fixed = config.tension_hold_joint_currents
+    return {s.joint: float(fixed.get(s.joint) or (current(s.joint) if callable(current) else current))
             for s in tension_targets(config, absent_joints=absent_joints)}
 
 
@@ -407,8 +409,8 @@ def run_guided_tension(
     prompt_callback: PromptCallback,
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
-    hold_current: HoldCurrent = HOLD_CURRENT_MA,
-    tension_current: Current = TENSION_CURRENT_MA,
+    hold_current: Optional[HoldCurrent] = None,
+    tension_current: Optional[Current] = None,
     tension_offset_deg: Current = TENSION_OFFSET_DEG,
     tension_extra_deg: Current = TENSION_EXTRA_DEG,
     pass_fraction: PassFraction = PASS_FRACTION,
@@ -453,6 +455,8 @@ def run_guided_tension(
     counterclockwise under that current, loading the bottom spools (0 holds still);
     each pull emits ``pulled`` with ``total_deg``.
 
+    ``hold_current`` and ``tension_current`` default to the config's
+    ``guided_tension_currents``; a joint named there keeps its own hold current.
     ``hold_current`` may be a callable of the joint name, and ``tension_current``,
     ``tension_offset_deg`` and ``tension_extra_deg`` callables of nothing; each
     is read when its step starts, so a front-end
@@ -510,6 +514,9 @@ def run_guided_tension(
         )
     motor_ids = [s.motor_id for s in template]
     control_mode = config.control_mode
+
+    def _tension_ma() -> float:
+        return _resolve(config.tension_current if tension_current is None else tension_current)
 
     def _restore() -> None:
         hand.disable_torque()
@@ -570,7 +577,7 @@ def run_guided_tension(
                         # Only the stage's joints yield at the hold current; the other
                         # fingers are frozen at the tension current so a stray push
                         # cannot move them, and they are not sampled meanwhile.
-                        freeze_ma = _resolve(tension_current)
+                        freeze_ma = _tension_ma()
                         held = {j: (ma if j in stage.joints else freeze_ma) for j, ma in hold_ma.items()}
                         centre = _hold_here(hand, motor_ids, held)
                         if sampler is None:
@@ -628,7 +635,7 @@ def run_guided_tension(
             if answer != TENSION:
                 break
 
-            tension_ma = _resolve(tension_current)
+            tension_ma = _tension_ma()
             pulled = _resolve(tension_offset_deg)
             hand.set_max_current(tension_ma)
             _emit(progress_callback, "step", step="tension", round=round_no)

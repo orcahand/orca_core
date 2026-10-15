@@ -1,6 +1,7 @@
 """Guided tensioning: spreads are scored against the travel baseline, the wrist
 is left alone, and every exit leaves the motors limp."""
 
+import dataclasses
 import math
 import threading
 
@@ -9,6 +10,7 @@ import pytest
 from orca_core.maintenance.guided_tension import (
     FINISH,
     FINISH_ANYWAY,
+    joint_currents,
     read_last_tension,
     run_guided_tension,
     tension_targets,
@@ -234,3 +236,14 @@ def test_jumping_to_tension_with_no_pull_still_holds(connected_mock_hand):
                        tension_offset_deg=0)
     assert held == [True]
     assert not any(hand.motor_client._torque_enabled.values())
+
+
+def test_hold_currents_come_from_the_config_and_a_named_joint_keeps_its_own(connected_mock_hand):
+    config = dataclasses.replace(connected_mock_hand.config, guided_tension_currents_dict={
+        "dynamixel": {"hold": {"mcp": 150, "thumb_mcp": 84}, "tension": 420}})
+    from_config = joint_currents(config)
+    flat = joint_currents(config, 100)
+    grouped = joint_currents(config, lambda j: 140 if j.endswith("_mcp") else 200)
+    assert from_config["thumb_mcp"] == flat["thumb_mcp"] == grouped["thumb_mcp"] == 84
+    assert (from_config["index_mcp"], flat["index_mcp"], grouped["index_mcp"]) == (150, 100, 140)
+    assert from_config["index_pip"] == 100 and config.tension_current == 420

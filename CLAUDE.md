@@ -279,11 +279,17 @@ All hand-specific settings are in `config.yaml`:
   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
   The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
+- `guided_tension_currents:` - guided tensioning currents per motor family (CLI and console):
+  `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
+  `--hold-current`), and `tension`. Read through `config.tension_hold_current_for(joint)` and
+  `config.tension_current`; a family left out falls back to `DEFAULT_GUIDED_TENSION_CURRENTS`.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
-  config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
-  byte, `major*10 + minor`); a pinned integer is for a hand on a plain adapter with no board to
+  config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=210`; one
+  byte, `major*100 + minor*10 + patch`, so 210 = v2.1.0 and 211 = v2.1.1; boards provisioned earlier report
+  `21`/`2`, which `normalize_hardware_version()` reads as 210/200). Every v2.1.x counts as v2.1
+  (`config.is_v21`); a v2.1.1 hand also lays `joint_roms_v211:` over `joint_roms`; a pinned integer is for a hand on a plain adapter with no board to
   ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A pin written
   at runtime (the console's picker, `write_hardware_version()`) goes into the hand's
   `local_config.yaml` beside config.yaml, never into the packaged config; `from_config_path()`

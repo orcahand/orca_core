@@ -831,43 +831,49 @@ def _capture_step_manually(
         return None
 
     directions: Dict[int, int] = {}
+    motors = {joint: hand.config.joint_to_motor_map[joint] for joint in step_joints}
+    first = next(iter(step_joints))
 
     for joint, direction in step_joints.items():
-        motor_id = hand.config.joint_to_motor_map[joint]
-        sign = 1 if direction == FLEX else -1
-        if hand.config.joint_inversion_dict.get(joint, False):
-            sign = -sign
-
         _emit(
             progress_callback,
             "manual_capture_started",
             joint=joint,
-            motor=motor_id,
+            motor=motors[joint],
             direction=direction,
         )
 
-        answer = _manual_prompt(
-            prompt_callback,
-            joint=joint,
-            motor=motor_id,
-            direction=direction,
-        )
-        if answer == MANUAL_ABORT or should_stop():
-            return None
-        if answer == MANUAL_SKIP:
+    # One answer covers the whole step: the operator holds every joint in it on
+    # its stop at once (e.g. all finger abductions swept to one side).
+    answer = _manual_prompt(
+        prompt_callback,
+        joint=first,
+        motor=motors[first],
+        direction=step_joints[first],
+        joints=dict(step_joints),
+        motors=dict(motors),
+    )
+    if answer == MANUAL_ABORT or should_stop():
+        return None
+    if answer == MANUAL_SKIP:
+        for joint, direction in step_joints.items():
             _emit(
                 progress_callback,
                 "manual_capture_skipped",
                 joint=joint,
-                motor=motor_id,
+                motor=motors[joint],
                 direction=direction,
             )
             logger.info("manual calibration: %s %s skipped", joint, direction)
-            continue
+        return directions
 
-        position = float(
-            read_motor_pos_checked(hand)[hand.config.motor_id_to_idx_dict[motor_id]]
-        )
+    positions = read_motor_pos_checked(hand)
+    for joint, direction in step_joints.items():
+        motor_id = motors[joint]
+        sign = 1 if direction == FLEX else -1
+        if hand.config.joint_inversion_dict.get(joint, False):
+            sign = -sign
+        position = float(positions[hand.config.motor_id_to_idx_dict[motor_id]])
         bound = 1 if sign == 1 else 0
         state.pending_limits[motor_id][bound] = position
         directions[motor_id] = sign
@@ -885,16 +891,16 @@ def _capture_step_manually(
             motor_id, joint, position,
         )
 
-        # The operator is still holding this joint on its stop; the anchor has
-        # to be sampled now, not after they let go of it.
-        if encoder_pass is not None:
-            _run_joint_encoder_pass_for_step(
-                hand,
-                step_joints={joint: direction},
-                directions={motor_id: sign},
-                encoder_pass=encoder_pass,
-                progress_callback=progress_callback,
-            )
+    # The operator is still holding the joints on their stops; the anchors have
+    # to be sampled now, not after they let go.
+    if encoder_pass is not None and directions:
+        _run_joint_encoder_pass_for_step(
+            hand,
+            step_joints=dict(step_joints),
+            directions=directions,
+            encoder_pass=encoder_pass,
+            progress_callback=progress_callback,
+        )
 
     return directions
 
@@ -930,14 +936,18 @@ def _drive_calibration(
       steps — unless the encoder pass is active and the wrist still lacks an
       encoder anchor, in which case the wrist steps run to capture it.
     - If missing from the sequence, wrist flex/extend steps are appended.
-    - If force_wrist=True, always include wrist in calibration steps.
+    - If force_wrist=True, or in a manual run, always include wrist in calibration steps.
     - `wrist_calibrated` turns true only once both wrist limits are captured;
       a persisted flag without stored wrist limits is treated as uncalibrated.
     """
-    wrist_in_sequence = any(
-        "wrist" in step[JOINTS] for step in hand.config.calibration_sequence
+    # Manual capture has its own sequence: its steps are what one answer records.
+    source_sequence = (
+        hand.config.manual_calibration_sequence
+        if manual and hand.config.manual_calibration_sequence
+        else hand.config.calibration_sequence
     )
-    calibration_sequence = list(hand.config.calibration_sequence)
+    wrist_in_sequence = any(WRIST in step[JOINTS] for step in source_sequence)
+    calibration_sequence = list(source_sequence)
 
     encoder_pass_active = (
         getattr(hand.config, "joint_feedback_enabled", False)
@@ -969,7 +979,8 @@ def _drive_calibration(
             "running wrist steps to capture it"
         )
 
-    if wrist_calibrated and not force_wrist and not wrist_anchor_needed:
+    # A manual run always asks for the wrist: the operator chose to set every stop by hand.
+    if wrist_calibrated and not force_wrist and not wrist_anchor_needed and not manual:
         if wrist_in_sequence:
             _emit(progress_callback, "wrist_skipped")
             logger.warning(

@@ -40,12 +40,12 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from .constants import normalize_hardware_version
 from .hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
     _resolve_config_path,
 )
-from .constants import HARDWARE_VERSION_V21
 from .hardware.sensing.constants import (
     DEFAULT_ENCODER_BAUDRATE,
     JOINT_ENCODER_POLARITY_BY_SIDE,
@@ -336,12 +336,14 @@ def _resolve_hardware_version(config, detection, detected: int | None) -> int | 
     """
     if detected is None and detection is not None and detection.identity is not None:
         detected = detection.identity.hw_version
-    if config.hardware_version is not None:
+    detected = normalize_hardware_version(detected)
+    pinned = normalize_hardware_version(config.hardware_version)
+    if pinned is not None:
         # Only a *disagreeing* board is worth a warning. No board at all is
         # the normal case for a pinned config -- that is what the pin is for.
         if detected is not None:
-            _overridden("hardware_version", config.hardware_version, detected)
-        return config.hardware_version
+            _overridden("hardware_version", pinned, detected)
+        return pinned
     return detected
 
 
@@ -516,7 +518,7 @@ def load_hand(
     config = config.with_hardware_version(
         _resolve_hardware_version(config, detection, detected_hardware_version)
     )
-    if config.hardware_version == HARDWARE_VERSION_V21 and config.joint_to_motor_map_v21:
+    if config.is_v21 and config.joint_to_motor_map_v21:
         logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
 
     feedback = engage_feedback and config.joint_feedback_enabled

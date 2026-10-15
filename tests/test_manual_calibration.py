@@ -166,3 +166,25 @@ def test_a_real_sweep_reports_no_motionless_step(hand):
     run_calibration(hand, joints=["index_mcp"], persist=False,
                     progress_callback=events.append)
     assert not _events(events, "sweep_no_motion")
+
+
+def test_one_answer_records_every_joint_of_a_manual_step(hand):
+    sequence = [{"step": 1, "joints": {"index_mcp": "flex", "middle_mcp": "flex"}},
+                {"step": 2, "joints": {"index_mcp": "extend"}},
+                {"step": 3, "joints": {"middle_mcp": "extend"}}]
+    object.__setattr__(hand.config, "manual_calibration_sequence", sequence)
+    asked, events = [], []
+    run_calibration(hand, joints=["index_mcp", "middle_mcp"], manual=True, persist=False,
+                    prompt_callback=lambda r: asked.append(dict(r["joints"])) or "record",
+                    progress_callback=events.append)
+    assert asked == [s["joints"] for s in sequence]
+    assert sorted(e["joint"] for e in _events(events, "limit_recorded")) == \
+        ["index_mcp", "index_mcp", "middle_mcp", "middle_mcp"]
+
+
+def test_a_manual_run_asks_for_the_wrist_even_when_it_is_calibrated(hand):
+    object.__setattr__(hand.calibration, "wrist_calibrated", True)
+    asked = []
+    run_calibration(hand, joints=["wrist"], manual=True, persist=False,
+                    prompt_callback=lambda r: asked.append(r["joint"]) or "skip")
+    assert asked == ["wrist", "wrist"]

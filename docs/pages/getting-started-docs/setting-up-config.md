@@ -105,7 +105,7 @@ joint_to_motor_map_v21:    # v2.1 boards -- same motors, only the sign may diffe
   ...
 ```
 
-Which map is in force is decided once, when the config is built, from the hand's **hardware version** (2 for v2.0, 21 for v2.1 -- one byte, `major*10 + minor`):
+Which map is in force is decided once, when the config is built, from the hand's **hardware version** (200 for v2.0.0, 210 for v2.1.0, 211 for v2.1.1 -- one byte, `major*100 + minor*10 + patch`; boards provisioned earlier report 2 or 21, read as 200 and 210. A v2.1.1 hand is a v2.1 hand that also takes the ROMs listed in `joint_roms_v211`):
 
 ```yaml
 hardware_version: auto     # take what the OH board reports (the packaged default)
@@ -176,6 +176,8 @@ calibration_threshold: 0.01
 `calibration_current: default` drives the joints to their hardstops at the motor family's own calibration current (300 mA on Dynamixel hands, 900 mA on Feetech hands). A number pins a different value; `wrist_calibration_current` follows it unless set.
 
 On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). The packaged models calibrate a v2.1 Dynamixel hand's abductions at 300 mA and its MCPs and PIPs at 500 mA; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. Re-drives step up from the joint's own group current.
+
+`guided_tension_currents` sets guided tensioning's currents per motor family, used by both `scripts/guided_tension.py` and the console: `hold` is the current each joint group (`abd`, `mcp`, `pip`) yields at while you move it through its range, and `tension` is the hold while you ratchet the spools. A joint named under `hold` keeps its own current over its group's and over `--hold-current`; the touch hands hold `thumb_mcp` at 100 mA. A family a config leaves out uses the package defaults (Dynamixel 200/140/100 mA, tension 400 mA; Feetech 380/320/280 mA, tension 580 mA).
 
 These parameters should generally not be changed unless you have experience tuning the calibration behavior for a specific hardware modification.
 
