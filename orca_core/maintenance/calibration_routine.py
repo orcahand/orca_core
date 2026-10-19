@@ -15,8 +15,9 @@ and persists partial progress to ``calibration.yaml`` after every step.
 Once a joint has both of its limits, the travel between them is checked
 against that joint's ``joint_motor_travel`` baseline in ``config.yaml``. A
 joint that falls short of it stalled before its hardstop - an over-tensioned
-tendon does this - and is re-driven at a higher current before its limits are
-committed. See :func:`_resolve_short_travel`.
+tendon does this - and is re-driven before its limits are committed, which
+also recovers a joint something blocked mid-drive. See
+:func:`_resolve_short_travel`.
 
 Like the other maintenance routines this is interaction-free: progress is
 reported through ``progress_callback({"event": ..., ...})`` and cooperative
@@ -1408,7 +1409,7 @@ def _drive_calibration(
 
     if boosted_joints:
         logger.warning(
-            "%d joint(s) needed a higher-current re-drive to reach their motor "
+            "%d joint(s) needed a re-drive to reach their motor "
             "travel baseline: %s. That is a symptom of over-tensioned tendons; "
             "re-run tensioning if it persists.",
             len(boosted_joints),
@@ -1446,9 +1447,9 @@ def _redrive_joint(
 ) -> bool:
     """Re-drive one joint onto both hardstops at ``current`` and re-take its limits.
 
-    The elevated current is scoped to this re-drive: the nominal calibration
-    current is restored before returning, however the drive ended. Returns
-    ``False`` if ``should_stop`` fired, leaving the joint's limits incomplete.
+    The per-motor drive currents are restored before returning, however the
+    drive ended. Returns ``False`` if ``should_stop`` fired, leaving the
+    joint's limits incomplete.
     """
     state.pending_limits[motor_id] = [None, None]
 
@@ -1497,9 +1498,10 @@ def _resolve_short_travel(
     joint's two limits come out closer together than the spool geometry allows
     and every angle derived from them is wrong. When the travel falls below
     ``joint_motor_travel[joint]`` by more than ``calibration_travel_margin``,
-    the joint is re-driven at a higher current — ramped over
-    ``calibration_travel_retries`` attempts — and the best travel achieved is
-    kept. Travel *above* the baseline is reported but not re-driven: more
+    the joint is re-driven — up to ``calibration_travel_retries`` attempts —
+    and the best travel achieved is kept. The drive is already at the motor's
+    own current ceiling, so a re-drive repeats it rather than pushing harder;
+    it earns its keep on a joint that was blocked or caught mid-drive. Travel *above* the baseline is reported but not re-driven: more
     current cannot shorten a span, and the cause is a slipped tendon or a stale
     baseline rather than tension.
 
@@ -1617,7 +1619,7 @@ def _resolve_short_travel(
         logger.error(
             "joint %s (motor %d) travelled %.2f deg of its %.2f deg baseline "
             "(under the %.0f%% floor): it did not move at all, so no "
-            "higher-current re-drive was attempted. Check that the motor "
+            "re-drive was attempted. Check that the motor "
             "accepts torque, that the tendon is connected, and that nothing "
             "is blocking the joint.",
             joint, motor_id, measured, expected, 100 * MIN_TRAVEL_FRACTION,
@@ -1636,33 +1638,12 @@ def _resolve_short_travel(
         )
         logger.error(
             "joint %s (motor %d) is calibrated over a shortened range: %s, so "
-            "no higher-current re-drive was attempted.",
+            "no re-drive was attempted.",
             joint, motor_id,
             "this is a hand-held calibration and nothing is driven"
             if manual else "calibration_travel_retries is 0",
         )
         return True
-
-    # The re-drive is capped at calibration_max_current, or at the nominal
-    # current when no ceiling is set. With no headroom it repeats the pass that
-    # already stalled, so say so here rather than leaving the operator to
-    # wonder why the boost changed nothing.
-    nominal = config.calibration_current_for(joint)
-    ceiling = (
-        config.calibration_max_current
-        if config.calibration_max_current is not None
-        else nominal
-    )
-    if not config.retry_steps_by_default and config.calibration_retry_current_for(joint) > ceiling:
-        logger.warning(
-            "the re-drive for %s is capped at calibration_max_current (%d mA): "
-            "it would otherwise use %d mA, so it repeats the pass that already "
-            "stalled. Raise calibration_max_current or lower "
-            "calibration_current (%d mA) to give it headroom.",
-            joint, ceiling,
-            config.calibration_retry_current_for(joint),
-            nominal,
-        )
 
     best_limits = list(state.pending_limits[motor_id])
     best_travel = measured
@@ -1698,10 +1679,9 @@ def _resolve_short_travel(
             expected_deg=expected,
         )
         logger.warning(
-            "joint %s (motor %d) re-drive %d/%d at %.0f mA (the current the "
-            "first pass used; the config nominal is %.0f mA)",
+            "joint %s (motor %d) re-drive %d/%d at %.0f mA",
             joint, motor_id, attempt, config.calibration_travel_retries,
-            current, nominal,
+            current,
         )
 
         if not _redrive_joint(
@@ -1745,8 +1725,8 @@ def _resolve_short_travel(
             )
             logger.warning(
                 "joint %s (motor %d) reached %.2f deg of its %.2f deg baseline "
-                "on re-drive %d at %.0f mA (was %.2f deg at the same current); "
-                "calibrated from the re-driven limits",
+                "on re-drive %d at %.0f mA (was %.2f deg); calibrated from the "
+                "re-driven limits",
                 joint, motor_id, retried, expected, attempt, current, measured,
             )
             return True
