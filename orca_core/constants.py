@@ -36,6 +36,7 @@ CALIBRATION_CURRENT_V21 = "calibration_current_v21"
 # Joint groups calibration_current_v21 sets a current for.
 CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
+DRIVE_CURRENT_MEASURED = "drive_current_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
 # Current the calibration routine retries a short-travel joint at, as a

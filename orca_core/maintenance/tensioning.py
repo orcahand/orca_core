@@ -40,6 +40,12 @@ ShouldStop = Callable[[], bool]
 # "pull more" adds TENSION_EXTRA_DEG. The pull is ramped at PULL_SPEED_DEG_S.
 TENSION_OFFSET_DEG = 15.0
 TENSION_EXTRA_DEG = 15.0
+# A pull ends when the motors stop moving, not when they reach the commanded
+# offset: a taut tendon stalls short and would never arrive. Settled means no
+# motor moved more than SETTLE_THRESHOLD_RAD for SETTLE_HOLD_S.
+SETTLE_THRESHOLD_RAD = 0.01
+SETTLE_HOLD_S = 0.5
+SETTLE_TIMEOUT_S = 5.0
 PULL_SPEED_DEG_S = 10.0
 PULL_STEP_S = 0.05
 
@@ -68,6 +74,80 @@ def finger_motor_ids(config, absent: Sequence[int] = ()) -> List[int]:
     skip = set(absent)
     return [m for joint, m in config.joint_to_motor_map.items()
             if WRIST not in joint.lower() and m in config.motor_ids and m not in skip]
+
+
+def uncapped_currents(hand: "OrcaHand") -> List[float]:
+    """Each motor's own goal-current ceiling, in motor order.
+
+    The hold is a position loop: at its goal a motor draws nothing, so the
+    ceiling only binds while something pushes the hand off that goal. Capping
+    it at ``max_current`` instead caps how hard the hand can refuse to be
+    ratcheted, which on a family that spends a few hundred mA before producing
+    any torque leaves very little to refuse with.
+    """
+    ceilings = hand.motor_client.read_current_limits()
+    capped = float(hand.config.max_current)
+    fingers = set(finger_motor_ids(hand.config))
+    # Only the motors a ratchet is applied to. The wrist is never tensioned by
+    # hand, and its ceiling is far higher than a finger's, so it stays capped.
+    return [float(ceilings.get(m) or capped) if m in fingers else capped
+            for m in hand.config.motor_ids]
+
+
+def settle_at_rest(
+    hand: "OrcaHand",
+    motor_ids: List[int],
+    *,
+    should_stop: Optional[ShouldStop] = None,
+) -> np.ndarray:
+    """Wait for ``motor_ids`` to stop moving, then command exactly where they are.
+
+    Re-baselining the goal onto the position actually reached is what makes an
+    uncapped hold safe. A motor left commanded somewhere it cannot get to holds
+    a standing error, and with the ceiling raised it will sit at that ceiling
+    indefinitely rather than for the moment it takes to ratchet.
+    """
+    deadline = time.time() + SETTLE_TIMEOUT_S
+    idx = [hand.config.motor_id_to_idx_dict[m] for m in motor_ids]
+    prev = _read_motor_pos_or_none(hand)
+    still_since = None
+    while time.time() < deadline:
+        if should_stop is not None and should_stop():
+            break
+        time.sleep(0.05)
+        now = _read_motor_pos_or_none(hand)
+        if now is None or prev is None:
+            prev = now if now is not None else prev
+            continue
+        if np.max(np.abs(now[idx] - prev[idx])) < SETTLE_THRESHOLD_RAD:
+            if still_since is None:
+                still_since = time.time()
+            elif time.time() - still_since >= SETTLE_HOLD_S:
+                break
+        else:
+            still_since = None
+        prev = now
+    else:
+        logger.warning("motors still moving after %.1fs; holding them where they are now",
+                       SETTLE_TIMEOUT_S)
+    return hold_here(hand, motor_ids)
+
+
+def hold_here(hand: "OrcaHand", motor_ids: List[int]) -> np.ndarray:
+    """Command ``motor_ids`` to the position they are already in.
+
+    Without this, ``enable_torque`` servos each motor to whatever its goal
+    register happened to hold, which is stale from whatever last commanded it:
+    a motor whose stale goal is elsewhere drives toward it instead of holding.
+    """
+    pos = read_motor_pos_checked(hand)
+    goals = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
+    hand.write_motor_pos(motor_ids, goals)
+    # Holding takes torque: a caller that jumps straight here can arrive with
+    # it off, and writing a goal to a limp motor holds nothing.
+    hand.enable_torque(motor_ids)
+    hand.write_motor_pos(motor_ids, goals)
+    return goals
 
 
 def pull_tendons(
@@ -110,6 +190,7 @@ def run_tension(
     offset_deg: float = TENSION_OFFSET_DEG,
     pull_more: Optional[Callable[[], bool]] = None,
     extra_deg: float = TENSION_EXTRA_DEG,
+    uncapped: bool = True,
 ) -> None:
     """Hold motors under current so tendons can be tensioned by hand.
 
@@ -211,20 +292,40 @@ def run_tension(
                 time.sleep(1.0 / steps)
             hand.disable_torque()
             time.sleep(0.05)
-        hand.set_max_current(max_cur)
-        hand.enable_torque()
         fingers = finger_motor_ids(hand.config, hand.absent_motor_ids)
-        goals = None
+
+        def pull_then_hold(offset: float, start: Optional[np.ndarray]) -> np.ndarray:
+            """Pull ``offset`` at the capped current, let it settle, then hold there.
+
+            The pull runs capped so a tendon that stalls short limits what the
+            motor can draw while it pushes. Only once the goal has been
+            re-baselined onto the position actually reached, leaving no standing
+            error, is the ceiling raised for the ratcheting that follows.
+            """
+            hand.set_max_current(max_cur)
+            if offset:
+                pull_tendons(hand, fingers, offset, start=start, should_stop=should_stop)
+            reached = settle_at_rest(hand, fingers, should_stop=should_stop)
+            if uncapped:
+                hand.set_max_current(uncapped_currents(hand))
+            return reached
+
+        hand.set_max_current(max_cur)
+        hold_here(hand, fingers)
+        hand.enable_torque()
         pulled = 0.0
+        goals = pull_then_hold(offset_deg, None)
         if offset_deg:
-            goals = pull_tendons(hand, fingers, offset_deg, should_stop=should_stop)
             pulled = offset_deg
             _emit(progress_callback, "pulled", total_deg=pulled)
         logger.info("holding motors for manual tendon tensioning")
         _emit(progress_callback, "phase", phase="holding")
         while not should_stop():
             if pull_more is not None and pull_more():
-                goals = pull_tendons(hand, fingers, extra_deg, start=goals, should_stop=should_stop)
+                # From where the motors actually are, not from an accumulated
+                # command: a stalled motor gains nothing more, which is the
+                # point, because that is the error an uncapped hold would cook on.
+                goals = pull_then_hold(extra_deg, goals)
                 pulled += extra_deg
                 _emit(progress_callback, "pulled", total_deg=pulled)
             time.sleep(0.1)

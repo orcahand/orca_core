@@ -398,9 +398,18 @@ def test_calibration_sets_currents_once_as_a_per_motor_list(connected_hand, monk
     wrist_index = hand.config.motor_ids.index(hand.config.joint_to_motor_map["wrist"])
     lists = [c for c in calls if isinstance(c, list)]
     assert len(lists) == 1, "one per-motor list before the steps, nothing per step"
+    # Finger tendons are driven at each motor's own ceiling: a cap below what
+    # the joint needs stalls it short of its stop. The wrist drives a belt and
+    # keeps its configured current.
+    ceilings = hand.motor_client.read_current_limits()
     fingers = lists[0][:wrist_index] + lists[0][wrist_index + 1:]
+    finger_ids = [m for i, m in enumerate(hand.config.motor_ids) if i != wrist_index]
     assert lists[0][wrist_index] == hand.config.wrist_calibration_current
-    assert set(fingers) == {float(hand.config.calibration_current)}
+    assert fingers == [float(ceilings[m]) for m in finger_ids]
+    assert set(fingers) != {float(hand.config.calibration_current)}
     scalars = [c for c in calls if not isinstance(c, list)]
-    assert scalars and set(scalars) == {hand.config.max_current}, \
-        "the only hand-wide write is the restore to max_current"
+    assert scalars[-1] == hand.config.max_current, \
+        "the run ends by restoring the hand-wide ceiling"
+    # Every other scalar is a step arming one joint at its own drive current.
+    allowed = set(lists[0]) | {float(hand.config.max_current)}
+    assert set(float(c) for c in scalars[:-1]) <= allowed

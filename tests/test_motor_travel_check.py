@@ -294,8 +294,13 @@ def test_an_older_hand_is_calibrated_in_one_plain_pass(model_dir):
     assert result.motor_travel_measured_dict["index_mcp"] > 0
 
 
-def test_short_travel_re_drives_at_a_higher_current(model_dir):
-    """A baseline the nominal pass cannot meet triggers the boosted re-drive."""
+def test_short_travel_re_drives_at_the_motors_ceiling(model_dir):
+    """A baseline the first pass cannot meet triggers a re-drive.
+
+    The first pass already drives at the motor's own current ceiling, so the
+    retry ladder has nothing higher to escalate to: every attempt repeats at
+    that ceiling rather than stepping up from the calibration current.
+    """
     achieved = _baseline_from_a_clean_run(model_dir, "index_mcp")
     path = _write_config(
         model_dir,
@@ -322,18 +327,19 @@ def test_short_travel_re_drives_at_a_higher_current(model_dir):
 
     hand.set_max_current = _record
     try:
+        ceiling = float(hand.motor_client.read_current_limits()[
+            hand.config.joint_to_motor_map["index_mcp"]])
         _, calls = _run(hand, joints=["index_mcp"])
     finally:
         hand.disconnect()
 
+    assert ceiling > 280.0, "the pinned ladder must sit below the ceiling to test this"
+
     started = _events(calls, "travel_retry_started")
     assert [event["attempt"] for event in started] == [1, 2]
-    assert [event["current"] for event in started] == [240.0, 280.0]
-    # The boost is scoped to the re-drive: once the last one is over, the
-    # nominal calibration current is restored before the run's final cleanup.
-    assert {240.0, 280.0} <= set(currents)
-    after_last_boost = currents[len(currents) - currents[::-1].index(280.0):]
-    assert after_last_boost[0] == 200
+    # Not 240 then 280: neither pinned step beats the ceiling the first pass used.
+    assert [event["current"] for event in started] == [ceiling, ceiling]
+    assert 240.0 not in set(currents) and 280.0 not in set(currents)
     assert currents[-1] == 300  # run cleanup restores max_current
 
     exhausted = _events(calls, "travel_retry_exhausted")
@@ -614,3 +620,106 @@ def test_packaged_path_check_treats_another_drive_as_outside_the_package(monkeyp
 
     monkeypatch.setattr(os.path, "commonpath", other_drive)
     assert utils.is_packaged_model_path("/somewhere/else/config.yaml") is False
+
+
+def test_calibration_records_the_mean_current_per_direction(model_dir):
+    """Each driven joint gets a flex and an extend average, persisted for
+    later inspection. Nothing reads them back to make a decision."""
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp", "index_pip"], persist=True)
+        measured = hand.calibration.drive_current_measured_dict
+    finally:
+        hand.disconnect()
+
+    assert set(measured) == {"index_mcp", "index_pip"}
+    for joint, per_direction in measured.items():
+        assert set(per_direction) == {"flex", "extend"}, joint
+        assert all(value > 0 for value in per_direction.values()), joint
+
+    # Persisted under its own key, and read back by from_calibration_path.
+    doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+    assert doc["drive_current_measured"]["index_mcp"].keys() == {"extend", "flex"}
+
+    reloaded = MockOrcaHand(config_path=path)
+    reloaded.connect()
+    try:
+        assert reloaded.calibration.drive_current_measured_dict == measured
+    finally:
+        reloaded.disconnect()
+
+
+def test_a_joint_that_is_never_driven_gets_no_current_entry(model_dir):
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp"], persist=False)
+        measured = hand.calibration.drive_current_measured_dict
+    finally:
+        hand.disconnect()
+
+    assert set(measured) == {"index_mcp"}
+
+
+def test_calibrating_a_subset_keeps_the_other_joints_currents(model_dir):
+    """A later partial run must not erase what an earlier run measured, the
+    way the travel baselines are kept."""
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp", "index_pip"], persist=True)
+        first = dict(hand.calibration.drive_current_measured_dict)
+        hand.calibrate(joints=["index_mcp"], persist=True)
+        second = hand.calibration.drive_current_measured_dict
+    finally:
+        hand.disconnect()
+
+    assert set(first) == {"index_mcp", "index_pip"}
+    assert set(second) == {"index_mcp", "index_pip"}, "index_pip was dropped"
+    assert second["index_pip"] == first["index_pip"]
+
+
+@pytest.mark.parametrize("now, before, expected", [
+    (1200.0, 1000.0, (200.0, 0.2)),
+    (800.0, 1000.0, (-200.0, -0.2)),
+    (1000.0, 1000.0, (0.0, 0.0)),
+    (1200.0, None, None),      # nothing recorded last time
+    (None, 1000.0, None),      # not driven this time
+    (1200.0, 0.0, None),       # a fraction of zero says nothing
+])
+def test_drive_current_change_is_absolute_and_fractional(now, before, expected):
+    change = calibration_routine.drive_current_change(now, before)
+    if expected is None:
+        assert change is None
+    else:
+        assert change == pytest.approx(expected)
+
+
+def test_the_table_shows_the_change_against_the_previous_run(model_dir, caplog):
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp"], persist=True)
+        stored = hand.calibration.drive_current_measured_dict["index_mcp"]["flex"]
+        # Halve the stored figure, so the next run has a change to report.
+        doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+        doc["drive_current_measured"]["index_mcp"]["flex"] = stored / 2
+        (model_dir / "calibration.yaml").write_text(yaml.dump(doc, sort_keys=False))
+
+        reloaded = MockOrcaHand(config_path=path)
+        reloaded.connect()
+        with caplog.at_level("INFO", logger="orca_core.maintenance.calibration_routine"):
+            reloaded.calibrate(joints=["index_mcp"], persist=False)
+        reloaded.disconnect()
+    finally:
+        hand.disconnect()
+
+    table = [r.message for r in caplog.records if "driving onto the hardstops" in r.message]
+    assert table, "no drive-current table was logged"
+    # Doubling the stored figure reads as +100%.
+    assert re.search(r"index_mcp\s+\d+\s+\+\d+\s+\+100%", table[-1]), table[-1]

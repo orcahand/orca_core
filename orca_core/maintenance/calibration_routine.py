@@ -15,8 +15,9 @@ and persists partial progress to ``calibration.yaml`` after every step.
 Once a joint has both of its limits, the travel between them is checked
 against that joint's ``joint_motor_travel`` baseline in ``config.yaml``. A
 joint that falls short of it stalled before its hardstop - an over-tensioned
-tendon does this - and is re-driven at a higher current before its limits are
-committed. See :func:`_resolve_short_travel`.
+tendon does this - and is re-driven before its limits are committed, which
+also recovers a joint something blocked mid-drive. See
+:func:`_resolve_short_travel`.
 
 Like the other maintenance routines this is interaction-free: progress is
 reported through ``progress_callback({"event": ..., ...})`` and cooperative
@@ -51,6 +52,7 @@ from ..calibration import (
 from ..constants import (
     CALIBRATED,
     CURRENT_BASED_POSITION,
+    DRIVE_CURRENT_MEASURED,
     DRIVE_STEP_TIMEOUT_S,
     MAX_DRIVE_TURNS,
     OVERRUN_BASELINE_SCALE,
@@ -128,11 +130,35 @@ def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) 
         logger.exception("calibration progress callback failed")
 
 
+def _drive_currents(hand: "OrcaHand") -> "dict[int, float]":
+    """What each motor is driven onto its hardstops with, by motor ID.
+
+    Finger tendons are driven at the motor's own current ceiling: a cap below
+    what the joint needs stalls it short of its stop, and the stall reads as a
+    hardstop, so the joint calibrates over a fraction of its range. The wrist
+    keeps its configured current — it drives a belt, not a tendon.
+    """
+    try:
+        ceilings = hand.motor_client.read_current_limits()
+    except Exception as e:
+        logger.warning("could not read the motors' current ceilings (%s); "
+                       "driving at the configured currents instead", e)
+        ceilings = {}
+    fallback = float(hand.config.max_current)
+    currents = {}
+    for motor_id in hand.config.motor_ids:
+        joint = hand.config.motor_to_joint_dict.get(motor_id)
+        if joint == WRIST:
+            currents[motor_id] = float(hand.config.wrist_calibration_current)
+        else:
+            currents[motor_id] = float(ceilings.get(motor_id) or fallback)
+    return currents
+
+
 def _calibration_currents(hand: "OrcaHand") -> "list[float]":
-    """Per-motor calibration currents: each motor at its joint's calibration current."""
-    joint_of = {m: j for j, m in hand.config.joint_to_motor_map.items()}
-    return [float(hand.config.calibration_current_for(joint_of.get(motor_id)))
-            for motor_id in hand.config.motor_ids]
+    """The drive currents in ``motor_ids`` order, for a hand-wide write."""
+    currents = _drive_currents(hand)
+    return [currents[motor_id] for motor_id in hand.config.motor_ids]
 
 
 def run_calibration(
@@ -239,6 +265,7 @@ def _build_calibration_result(
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] | None = None,
     joint_roms_measured_dict: Dict[str, list] | None = None,
     motor_travel_measured_dict: Dict[str, float] | None = None,
+    drive_current_measured_dict: Dict[str, Dict[str, float]] | None = None,
 ) -> CalibrationResult:
     calibrated = all(
         limits[0] is not None and limits[1] is not None
@@ -261,6 +288,10 @@ def _build_calibration_result(
             for joint, rom in (joint_roms_measured_dict or {}).items()
         },
         motor_travel_measured_dict=dict(motor_travel_measured_dict or {}),
+        drive_current_measured_dict={
+            joint: dict(per_direction)
+            for joint, per_direction in (drive_current_measured_dict or {}).items()
+        },
     )
 
 
@@ -285,6 +316,11 @@ def persist_calibration(
         joint: round(float(travel), 2)
         for joint, travel in result.motor_travel_measured_dict.items()
         if travel is not None
+    }
+    doc[DRIVE_CURRENT_MEASURED] = {
+        joint: {direction: round(float(current), 1)
+                for direction, current in sorted(per_direction.items())}
+        for joint, per_direction in sorted(result.drive_current_measured_dict.items())
     }
     if include_encoder:
         doc[JOINT_ENCODER_CALIBRATION] = joint_encoder_calibration_to_yaml(
@@ -327,6 +363,10 @@ class _DriveState:
     pending_limits: Dict[int, list]
     motors_with_initial_offset: set = field(default_factory=set)
     motors_with_final_offset: set = field(default_factory=set)
+    # joint -> direction -> mean mA drawn driving onto that stop. Seeded from
+    # the stored calibration so a run that drives a subset of the joints keeps
+    # the rest, and a re-drive overwrites with the newer figure.
+    drive_currents: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -341,9 +381,82 @@ class _EncoderPass:
 
 
 def _nominal_step_current(hand: "OrcaHand") -> Callable[[str], float]:
-    """The current each joint is normally driven onto its hardstop with."""
+    """The current each joint is driven onto its hardstop with.
 
-    return hand.config.calibration_current_for
+    The ceilings are read once and closed over: a step must not re-read the
+    bus per joint.
+    """
+    currents = _drive_currents(hand)
+    joint_to_motor = hand.config.joint_to_motor_map
+    fallback = float(hand.config.max_current)
+
+    def current_for(joint: str) -> float:
+        motor_id = joint_to_motor.get(joint)
+        return currents.get(motor_id, fallback)
+
+    return current_for
+
+
+def drive_current_change(
+    now: float | None, before: float | None
+) -> "tuple[float, float] | None":
+    """``(delta_ma, fraction)`` between this run's figure and the last one.
+
+    ``None`` when either run has no figure, or the earlier one was zero and a
+    fraction would be meaningless.
+    """
+    if now is None or before is None or before == 0:
+        return None
+    return now - before, (now - before) / before
+
+
+def _drive_current_cell(
+    now: float | None, before: float | None
+) -> str:
+    """One joint-direction's figure with its change, as a fixed-width cell."""
+    if now is None:
+        return f"{'--':>7}{'':>13}"
+    change = drive_current_change(now, before)
+    if change is None:
+        return f"{now:>7.0f}{'':>13}"
+    delta, fraction = change
+    return f"{now:>7.0f}{delta:>+7.0f}{100 * fraction:>+6.0f}%"
+
+
+def _log_drive_current_table(
+    hand: "OrcaHand",
+    measured: Dict[str, Dict[str, float]],
+    previous: Dict[str, Dict[str, float]] | None = None,
+) -> None:
+    """Log the mean current each joint drew onto its stops, with the change
+    against the previous run, grouped by finger.
+
+    Informational: a joint well above its siblings, or one that has climbed
+    since the last run, is the signature of an over-tensioned tendon.
+    """
+    previous = previous or {}
+    by_finger: Dict[str, list] = {}
+    for joint in hand.config.joint_ids:
+        if joint not in measured:
+            continue
+        finger = joint.split("_", 1)[0]
+        by_finger.setdefault(finger, []).append(joint)
+
+    lines = ["mean current drawn driving onto the hardstops, "
+             "and the change since the previous run (mA):",
+             f"  {'joint':<14}{'flex':>7}{'Δ':>7}{'Δ%':>6}"
+             f"{'extend':>10}{'Δ':>7}{'Δ%':>6}"]
+    for joints in by_finger.values():
+        for joint in joints:
+            per_direction = measured[joint]
+            was = previous.get(joint, {})
+            lines.append(
+                f"  {joint:<14}"
+                + _drive_current_cell(per_direction.get(FLEX), was.get(FLEX))
+                + "   "
+                + _drive_current_cell(per_direction.get(EXTEND), was.get(EXTEND))
+            )
+    logger.info("\n".join(lines))
 
 
 def _motor_temperature(hand: "OrcaHand", motor_id: int) -> float | None:
@@ -454,6 +567,9 @@ def _drive_step(
 
     pending_limits = state.pending_limits
     directions: Dict[int, int] = {}
+    step_direction: Dict[int, str] = {}
+    # motor ID -> [summed mA, samples], averaged once the drive ends.
+    current_sums: Dict[int, list] = {}
     motor_reached_limit: Dict[int, bool] = {}
     position_buffers: Dict[int, deque] = {}
 
@@ -534,6 +650,8 @@ def _drive_step(
             state.motors_with_initial_offset.add(motor_id)
 
         directions[motor_id] = sign
+        step_direction[motor_id] = direction
+        current_sums[motor_id] = [0.0, 0]
         position_buffers[motor_id] = deque(maxlen=hand.config.calibration_num_stable)
         motor_reached_limit[motor_id] = False
 
@@ -588,8 +706,9 @@ def _drive_step(
         hand._set_motor_pos(desired_increment, rel_to_current=True)
         time.sleep(hand.config.calibration_step_period)
         with hand._motor_lock:
-            curr_pos = hand.motor_client.read_position_velocity_current().position
+            motor_read = hand.motor_client.read_position_velocity_current()
             read_ok = hand.motor_client.last_read_ok
+        curr_pos = motor_read.position
 
         # A failed bulk read returns the stale cache; feeding it into the
         # stability buffers would fake a hardstop detection. Skip and retry.
@@ -653,6 +772,9 @@ def _drive_step(
 
         for motor_id in desired_increment.keys():
             idx = hand.config.motor_id_to_idx_dict[motor_id]
+            total = current_sums[motor_id]
+            total[0] += abs(float(motor_read.current[idx]))
+            total[1] += 1
             position_buffers[motor_id].append(curr_pos[idx])
 
             if len(
@@ -684,6 +806,12 @@ def _drive_step(
                         hand.config.motor_to_joint_dict[motor_id],
                         avg_limit,
                     )
+
+    for motor_id, (summed, samples) in current_sums.items():
+        if samples:
+            joint = hand.config.motor_to_joint_dict[motor_id]
+            state.drive_currents.setdefault(joint, {})[
+                step_direction[motor_id]] = summed / samples
 
     for motor_id in pwm_retries:
         try:
@@ -1051,7 +1179,11 @@ def _drive_calibration(
             motor_id = hand.config.joint_to_motor_map[joint]
             hand._clear_wrap_offset(motor_id)
 
-    drive_state = _DriveState(pending_limits=pending_limits)
+    drive_state = _DriveState(
+        pending_limits=pending_limits,
+        drive_currents={joint: dict(per_direction) for joint, per_direction
+                        in hand.calibration.drive_current_measured_dict.items()},
+    )
     encoder_pass = (
         _EncoderPass(
             client=joint_encoder_client,
@@ -1067,6 +1199,10 @@ def _drive_calibration(
     motor_travel_measured: Dict[str, float] = dict(
         hand.calibration.motor_travel_measured_dict
     )
+    previous_drive_currents: Dict[str, Dict[str, float]] = {
+        joint: dict(per_direction) for joint, per_direction
+        in hand.calibration.drive_current_measured_dict.items()
+    }
     boosted_joints: Dict[str, float] = {}
 
     calibrated_joints: dict = {}
@@ -1179,6 +1315,7 @@ def _drive_calibration(
                     joint, motor_id, motor_travel_deg(candidate) or 0.0,
                 )
                 motor_travel_measured.pop(joint, None)
+                drive_state.drive_currents.pop(joint, None)
                 continue
 
             motor_limits[motor_id] = candidate
@@ -1240,6 +1377,12 @@ def _drive_calibration(
         )
     pending_anchors.clear()
 
+    drive_current_measured = {
+        joint: dict(per_direction)
+        for joint, per_direction in drive_state.drive_currents.items()
+        if joint in hand.config.joint_ids
+    }
+
     final_result = _build_calibration_result(
         motor_limits=motor_limits,
         joint_to_motor_ratios=joint_to_motor_ratios,
@@ -1247,6 +1390,7 @@ def _drive_calibration(
         joint_encoder_calibration_dict=joint_encoder_calibration,
         joint_roms_measured_dict=joint_roms_measured,
         motor_travel_measured_dict=motor_travel_measured,
+        drive_current_measured_dict=drive_current_measured,
     )
     hand.calibration = final_result
     if persist:
@@ -1265,7 +1409,7 @@ def _drive_calibration(
 
     if boosted_joints:
         logger.warning(
-            "%d joint(s) needed a higher-current re-drive to reach their motor "
+            "%d joint(s) needed a re-drive to reach their motor "
             "travel baseline: %s. That is a symptom of over-tensioned tendons; "
             "re-run tensioning if it persists.",
             len(boosted_joints),
@@ -1275,11 +1419,17 @@ def _drive_calibration(
             ),
         )
 
+    if drive_current_measured:
+        _log_drive_current_table(hand, drive_current_measured,
+                                 previous_drive_currents)
+
     _emit(
         progress_callback,
         "calibration_done",
         boosted_joints=dict(boosted_joints),
         motor_travel_deg=dict(motor_travel_measured),
+        drive_current_ma=dict(drive_current_measured),
+        drive_current_previous_ma=dict(previous_drive_currents),
     )
     return final_result
 
@@ -1297,9 +1447,9 @@ def _redrive_joint(
 ) -> bool:
     """Re-drive one joint onto both hardstops at ``current`` and re-take its limits.
 
-    The elevated current is scoped to this re-drive: the nominal calibration
-    current is restored before returning, however the drive ended. Returns
-    ``False`` if ``should_stop`` fired, leaving the joint's limits incomplete.
+    The per-motor drive currents are restored before returning, however the
+    drive ended. Returns ``False`` if ``should_stop`` fired, leaving the
+    joint's limits incomplete.
     """
     state.pending_limits[motor_id] = [None, None]
 
@@ -1348,9 +1498,10 @@ def _resolve_short_travel(
     joint's two limits come out closer together than the spool geometry allows
     and every angle derived from them is wrong. When the travel falls below
     ``joint_motor_travel[joint]`` by more than ``calibration_travel_margin``,
-    the joint is re-driven at a higher current — ramped over
-    ``calibration_travel_retries`` attempts — and the best travel achieved is
-    kept. Travel *above* the baseline is reported but not re-driven: more
+    the joint is re-driven — up to ``calibration_travel_retries`` attempts —
+    and the best travel achieved is kept. The drive is already at the motor's
+    own current ceiling, so a re-drive repeats it rather than pushing harder;
+    it earns its keep on a joint that was blocked or caught mid-drive. Travel *above* the baseline is reported but not re-driven: more
     current cannot shorten a span, and the cause is a slipped tendon or a stale
     baseline rather than tension.
 
@@ -1468,7 +1619,7 @@ def _resolve_short_travel(
         logger.error(
             "joint %s (motor %d) travelled %.2f deg of its %.2f deg baseline "
             "(under the %.0f%% floor): it did not move at all, so no "
-            "higher-current re-drive was attempted. Check that the motor "
+            "re-drive was attempted. Check that the motor "
             "accepts torque, that the tendon is connected, and that nothing "
             "is blocking the joint.",
             joint, motor_id, measured, expected, 100 * MIN_TRAVEL_FRACTION,
@@ -1487,39 +1638,35 @@ def _resolve_short_travel(
         )
         logger.error(
             "joint %s (motor %d) is calibrated over a shortened range: %s, so "
-            "no higher-current re-drive was attempted.",
+            "no re-drive was attempted.",
             joint, motor_id,
             "this is a hand-held calibration and nothing is driven"
             if manual else "calibration_travel_retries is 0",
         )
         return True
 
-    # The re-drive is capped at calibration_max_current, or at the nominal
-    # current when no ceiling is set. With no headroom it repeats the pass that
-    # already stalled, so say so here rather than leaving the operator to
-    # wonder why the boost changed nothing.
-    nominal = config.calibration_current_for(joint)
-    ceiling = (
-        config.calibration_max_current
-        if config.calibration_max_current is not None
-        else nominal
-    )
-    if not config.retry_steps_by_default and config.calibration_retry_current_for(joint) > ceiling:
-        logger.warning(
-            "the re-drive for %s is capped at calibration_max_current (%d mA): "
-            "it would otherwise use %d mA, so it repeats the pass that already "
-            "stalled. Raise calibration_max_current or lower "
-            "calibration_current (%d mA) to give it headroom.",
-            joint, ceiling,
-            config.calibration_retry_current_for(joint),
-            nominal,
-        )
-
     best_limits = list(state.pending_limits[motor_id])
     best_travel = measured
 
+    # The first pass already drove at the motor's own ceiling, so the retry
+    # ladder has nothing higher to escalate to: a re-drive repeats the drive
+    # at the same current, and must never drop below the first pass.
+    uncapped = _drive_currents(hand).get(motor_id)
+    if uncapped is not None and config.retry_current_for_attempt(
+            config.calibration_travel_retries, joint) <= uncapped:
+        logger.info(
+            "joint %s (motor %d) is re-driven at its %.0f mA ceiling: the "
+            "calibration drive is already uncapped, so the retry current ramp "
+            "has no higher current to reach for.",
+            joint, motor_id, uncapped,
+        )
+
+    top_current = max(config.retry_current_for_attempt(
+        config.calibration_travel_retries, joint), uncapped or 0.0)
+
     for attempt in range(1, config.calibration_travel_retries + 1):
-        current = config.retry_current_for_attempt(attempt, joint)
+        current = max(config.retry_current_for_attempt(attempt, joint),
+                      uncapped or 0.0)
         _emit(
             progress_callback,
             "travel_retry_started",
@@ -1532,9 +1679,9 @@ def _resolve_short_travel(
             expected_deg=expected,
         )
         logger.warning(
-            "joint %s (motor %d) re-drive %d/%d at %.0f mA (nominal %.0f mA)",
+            "joint %s (motor %d) re-drive %d/%d at %.0f mA",
             joint, motor_id, attempt, config.calibration_travel_retries,
-            current, nominal,
+            current,
         )
 
         if not _redrive_joint(
@@ -1578,10 +1725,9 @@ def _resolve_short_travel(
             )
             logger.warning(
                 "joint %s (motor %d) reached %.2f deg of its %.2f deg baseline "
-                "at %.0f mA (was %.2f deg at %.0f mA); calibrated from the "
+                "on re-drive %d at %.0f mA (was %.2f deg); calibrated from the "
                 "re-driven limits",
-                joint, motor_id, retried, expected, current,
-                measured, nominal,
+                joint, motor_id, retried, expected, attempt, current, measured,
             )
             return True
 
@@ -1595,9 +1741,7 @@ def _resolve_short_travel(
     state.pending_limits[motor_id] = list(best_limits)
     motor_travel_measured[joint] = best_travel
     if best_travel > measured:
-        boosted_joints[joint] = config.retry_current_for_attempt(
-            config.calibration_travel_retries, joint
-        )
+        boosted_joints[joint] = top_current
     _emit(
         progress_callback,
         "travel_retry_exhausted",
@@ -1615,7 +1759,7 @@ def _resolve_short_travel(
         "the joint_motor_travel baseline.",
         joint, motor_id, expected, best_travel,
         config.calibration_travel_retries,
-        config.retry_current_for_attempt(config.calibration_travel_retries, joint),
+        top_current,
     )
     return True
 

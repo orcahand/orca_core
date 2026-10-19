@@ -4,6 +4,9 @@ import threading
 
 import pytest
 
+from orca_core.constants import WRIST
+from orca_core.maintenance.tensioning import finger_motor_ids, uncapped_currents
+
 
 def _holding(hand, move_motors=True):
     """Start a background tension and wait until it parks in the hold phase.
@@ -224,3 +227,47 @@ def test_the_hold_pulls_counterclockwise_and_more_on_request(connected_mock_hand
     assert hand.stop_task(timeout=10.0)
     assert totals == [15.0, 30.0]
     assert all(goals[m] == pytest.approx(start[m] + math.radians(30.0)) for m in fingers)
+
+
+def test_the_hold_commands_the_present_position_so_nothing_sits_on_a_stale_goal(
+        connected_mock_hand):
+    """enable_torque servos to whatever the goal register holds. Left stale, a
+    motor drives toward somewhere else instead of holding, and under an
+    uncapped ceiling it would sit there drawing it."""
+    hand = connected_mock_hand
+    fingers = finger_motor_ids(hand.config, hand.absent_motor_ids)
+    idx = hand.config.motor_id_to_idx_dict
+    commanded = []
+    original = hand.write_motor_pos
+
+    def spy(motor_ids, positions, *args, **kwargs):
+        commanded.append((list(motor_ids), list(positions)))
+        return original(motor_ids, positions, *args, **kwargs)
+
+    hand.write_motor_pos = spy
+    present = hand.get_motor_pos()
+    _holding(hand, move_motors=False)
+    try:
+        for motor_ids, positions in commanded:
+            if set(motor_ids) != set(fingers):
+                continue
+            for motor_id, goal in zip(motor_ids, positions):
+                assert goal == pytest.approx(present[idx[motor_id]], abs=1e-2)
+            break
+        else:
+            raise AssertionError("the hold never commanded the finger motors")
+    finally:
+        hand.stop_task(timeout=10.0)
+        hand.write_motor_pos = original
+
+
+def test_the_uncapped_hold_leaves_the_wrist_capped(connected_mock_hand):
+    """The wrist is never ratcheted by hand and its ceiling is far higher than
+    a finger's, so it keeps max_current."""
+    hand = connected_mock_hand
+    currents = uncapped_currents(hand)
+    by_motor = dict(zip(hand.config.motor_ids, currents))
+    wrist_motor = hand.config.joint_to_motor_map[WRIST]
+    assert by_motor[wrist_motor] == pytest.approx(float(hand.config.max_current))
+    for motor_id in finger_motor_ids(hand.config):
+        assert by_motor[motor_id] >= float(hand.config.max_current)
