@@ -94,7 +94,7 @@ class TactileSensorConfiguration:
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
     module_indices: dict[str, int] = field(default_factory=dict)  # {finger: module_idx}
     finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
-    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions}
+    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions + axes}
 
     @property
     def active_sensors(self) -> list[str]:
@@ -344,12 +344,11 @@ class TactileClient:
         return self._tactile_config
 
     def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
-        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+        """Return static per-taxel geometry ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry in the sensor frame (meters), read
-        once at connect. Row ``i`` of ``geometry[finger].positions`` aligns
-        with taxel ``i`` in the force stream. Empty until the configuration is
-        read.
+        Positions (meters) and per-taxel force axes are fixed sensor geometry in
+        the sensor frame, read once at connect. Row ``i`` aligns with taxel ``i``
+        in the force stream. Empty until the configuration is read.
         """
         if self._tactile_config is None:
             return {}

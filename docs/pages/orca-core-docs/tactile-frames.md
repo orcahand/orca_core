@@ -8,7 +8,7 @@ a user-defined world frame.
 
 | Frame | Description |
 |---|---|
-| `sensor` | A tactile sensor's own frame. Origin on the sensor mounting plane at the connector end; X across the sensor width, Y along the sensor toward the fingertip, Z outward through the sensing surface. Taxel positions and forces are natively measured here. |
+| `sensor` | A tactile sensor's own frame. Origin on the sensor mounting plane at the connector end; X across the sensor width, Y along the sensor toward the fingertip, Z outward through the sensing surface. Taxel positions are natively expressed here; per-taxel forces are rotated into it from each taxel's own axes (see below). |
 | `fingertip` | The distal link frame of the finger (located at the distal revolute joint). The sensor sits at a fixed, factory-known mount pose in this frame. |
 | `palm` | The palm (carpals) link; moves with the wrist. |
 | `base` | The static root of the hand (the forearm structure it is mounted by). |
@@ -34,6 +34,32 @@ index.forces      # (n, 3) taxel forces in Newtons, palm frame
 Row `i` of `positions` and `forces` describe the same taxel. Positions get the
 full rigid transform; forces are free vectors and are only rotated, so their
 magnitudes are preserved in every frame.
+
+## Taxel axes
+
+Each taxel measures force in its own local axes: `z` along its outward surface
+normal (the pressure, always ≥ 0) and `x`, `y` tangent to the surface (signed
+shear). On the curved fingertip those axes point a different way for every
+taxel; on the sides of the pad a taxel's `z` is nearly horizontal in the sensor
+frame. So the raw values from `get_tactile_taxels()` are **not** sensor-frame
+vectors.
+
+`get_taxel_data()` handles this: it rotates every taxel's force out of its
+local axes into the sensor frame before applying the frame stack above. To do
+it yourself, use the per-taxel orientations in the geometry:
+
+```python
+geom = hand.get_taxel_geometry()["index"]
+geom.orientations   # (n, 3, 3) local-to-sensor rotations; columns = local x, y, z
+geom.normals        # (n, 3) outward surface normals (local z axes)
+
+local = hand.get_tactile_taxels().as_array("index")   # (n, 3), taxel axes
+forces = geom.rotate_forces(local)                    # (n, 3), sensor frame
+```
+
+A press straight into taxel `i` therefore shows up as `fz * geom.normals[i]`.
+The axes ship with the sensor models' positions in
+`orca_core/hardware/sensing/models/*/config.yaml`.
 
 Frames beyond `fingertip` require joint angles for the forward kinematics. By
 default the hand's current joint positions are used; pass `joint_pos` (degrees,
