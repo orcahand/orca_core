@@ -42,7 +42,13 @@ from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
 from ..utils.utils import read_yaml, write_yaml_atomic
 from .motor_reads import read_motor_pos_checked
-from .tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, pull_tendons
+from .tensioning import (
+    TENSION_EXTRA_DEG,
+    TENSION_OFFSET_DEG,
+    pull_tendons,
+    settle_at_rest,
+    uncapped_currents,
+)
 
 if TYPE_CHECKING:
     from ..hand_config import OrcaHandConfig
@@ -58,7 +64,10 @@ HoldCurrent = Union[float, Callable[[str], float]]  # one value, or one per join
 PassFraction = Union[float, Callable[[str], float]]  # one value, or one per joint name
 
 HOLD_CURRENT_MA = 100
-TENSION_CURRENT_MA = 400
+# The pull's current limit when a caller names none: the connected family's own
+# max_current, so it is not a figure that happens to suit one motor family. The
+# ratcheting hold that follows is not capped by this at all.
+TENSION_CURRENT_MA = None
 PASS_FRACTION = 0.85
 PARTIAL_FRACTION = 0.3
 SAMPLE_PERIOD_S = 0.05
@@ -391,6 +400,12 @@ def _resolve(current: Current) -> float:
     return float(current() if callable(current) else current)
 
 
+def _pull_current(tension_current: "Optional[Current]", config: "OrcaHandConfig") -> float:
+    """The pull's and freeze's current limit: what a caller named, else the
+    connected family's own ``max_current``."""
+    return float(config.max_current) if tension_current is None else _resolve(tension_current)
+
+
 def _ask(prompt_callback: PromptCallback, should_stop: ShouldStop, action: str,
          options: List[str], **payload) -> str:
     answer = prompt_callback({"action": action, "options": options, **payload})
@@ -408,7 +423,7 @@ def run_guided_tension(
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
     hold_current: HoldCurrent = HOLD_CURRENT_MA,
-    tension_current: Current = TENSION_CURRENT_MA,
+    tension_current: Optional[Current] = TENSION_CURRENT_MA,
     tension_offset_deg: Current = TENSION_OFFSET_DEG,
     tension_extra_deg: Current = TENSION_EXTRA_DEG,
     pass_fraction: PassFraction = PASS_FRACTION,
@@ -570,7 +585,7 @@ def run_guided_tension(
                         # Only the stage's joints yield at the hold current; the other
                         # fingers are frozen at the tension current so a stray push
                         # cannot move them, and they are not sampled meanwhile.
-                        freeze_ma = _resolve(tension_current)
+                        freeze_ma = _pull_current(tension_current, config)
                         held = {j: (ma if j in stage.joints else freeze_ma) for j, ma in hold_ma.items()}
                         centre = _hold_here(hand, motor_ids, held)
                         if sampler is None:
@@ -628,21 +643,39 @@ def run_guided_tension(
             if answer != TENSION:
                 break
 
-            tension_ma = _resolve(tension_current)
+            pull_ma = _pull_current(tension_current, config)
             pulled = _resolve(tension_offset_deg)
-            hand.set_max_current(tension_ma)
             _emit(progress_callback, "step", step="tension", round=round_no)
-            # Also with no pull: a jump here can arrive with torque off, and the motors must hold.
-            goals = pull_tendons(hand, motor_ids, pulled, should_stop=should_stop)
+
+            def pull_then_hold(offset, start):
+                """Pull at ``pull_ma``, settle, hold the reached pose, then uncap.
+
+                The ratcheting hold runs at each motor's own ceiling: at its goal
+                a motor draws nothing, so the ceiling only binds while the
+                operator pushes, and that is the whole budget it has to refuse
+                being turned with. The goal is re-baselined onto the position
+                actually reached first, because a standing error under an
+                uncapped ceiling sits there drawing it indefinitely.
+                """
+                hand.set_max_current(pull_ma)
+                if offset:
+                    pull_tendons(hand, motor_ids, offset, start=start, should_stop=should_stop)
+                # Also with no pull: a jump here can arrive with torque off,
+                # and the motors must hold.
+                reached = settle_at_rest(hand, motor_ids, should_stop=should_stop)
+                hand.set_max_current(uncapped_currents(hand))
+                return reached
+
+            goals = pull_then_hold(pulled, None)
             while True:
                 _emit(progress_callback, "pulled", total_deg=pulled)
                 answer = _ask(prompt_callback, should_stop, "tension",
                               [DONE, PULL_MORE] + goto_options(keys), round=round_no,
-                              tension_current=tension_ma, pulled_deg=pulled)
+                              pull_current=pull_ma, pulled_deg=pulled)
                 if answer != PULL_MORE:
                     break
                 extra = _resolve(tension_extra_deg)
-                goals = pull_tendons(hand, motor_ids, extra, start=goals, should_stop=should_stop)
+                goals = pull_then_hold(extra, goals)
                 pulled += extra
             start = stage_of.get(answer)
     except BaseException:
