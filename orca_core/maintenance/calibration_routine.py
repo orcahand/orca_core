@@ -1698,7 +1698,8 @@ def _resolve_short_travel(
             expected_deg=expected,
         )
         logger.warning(
-            "joint %s (motor %d) re-drive %d/%d at %.0f mA (nominal %.0f mA)",
+            "joint %s (motor %d) re-drive %d/%d at %.0f mA (the current the "
+            "first pass used; the config nominal is %.0f mA)",
             joint, motor_id, attempt, config.calibration_travel_retries,
             current, nominal,
         )
@@ -1744,10 +1745,9 @@ def _resolve_short_travel(
             )
             logger.warning(
                 "joint %s (motor %d) reached %.2f deg of its %.2f deg baseline "
-                "at %.0f mA (was %.2f deg at %.0f mA); calibrated from the "
-                "re-driven limits",
-                joint, motor_id, retried, expected, current,
-                measured, nominal,
+                "on re-drive %d at %.0f mA (was %.2f deg at the same current); "
+                "calibrated from the re-driven limits",
+                joint, motor_id, retried, expected, attempt, current, measured,
             )
             return True
 
