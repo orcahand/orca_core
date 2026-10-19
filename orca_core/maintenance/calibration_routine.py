@@ -362,9 +362,10 @@ class _DriveState:
     pending_limits: Dict[int, list]
     motors_with_initial_offset: set = field(default_factory=set)
     motors_with_final_offset: set = field(default_factory=set)
-    # motor ID -> direction -> mean mA drawn driving onto that stop. A
-    # re-drive overwrites its entry, so the figure is the last drive's.
-    drive_currents: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    # joint -> direction -> mean mA drawn driving onto that stop. Seeded from
+    # the stored calibration so a run that drives a subset of the joints keeps
+    # the rest, and a re-drive overwrites with the newer figure.
+    drive_currents: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -395,14 +396,44 @@ def _nominal_step_current(hand: "OrcaHand") -> Callable[[str], float]:
     return current_for
 
 
-def _log_drive_current_table(
-    hand: "OrcaHand", measured: Dict[str, Dict[str, float]]
-) -> None:
-    """Log the mean current each joint drew onto its stops, grouped by finger.
+def drive_current_change(
+    now: float | None, before: float | None
+) -> "tuple[float, float] | None":
+    """``(delta_ma, fraction)`` between this run's figure and the last one.
 
-    Informational: a joint well above its siblings is the signature of an
-    over-tensioned tendon.
+    ``None`` when either run has no figure, or the earlier one was zero and a
+    fraction would be meaningless.
     """
+    if now is None or before is None or before == 0:
+        return None
+    return now - before, (now - before) / before
+
+
+def _drive_current_cell(
+    now: float | None, before: float | None
+) -> str:
+    """One joint-direction's figure with its change, as a fixed-width cell."""
+    if now is None:
+        return f"{'--':>7}{'':>13}"
+    change = drive_current_change(now, before)
+    if change is None:
+        return f"{now:>7.0f}{'':>13}"
+    delta, fraction = change
+    return f"{now:>7.0f}{delta:>+7.0f}{100 * fraction:>+6.0f}%"
+
+
+def _log_drive_current_table(
+    hand: "OrcaHand",
+    measured: Dict[str, Dict[str, float]],
+    previous: Dict[str, Dict[str, float]] | None = None,
+) -> None:
+    """Log the mean current each joint drew onto its stops, with the change
+    against the previous run, grouped by finger.
+
+    Informational: a joint well above its siblings, or one that has climbed
+    since the last run, is the signature of an over-tensioned tendon.
+    """
+    previous = previous or {}
     by_finger: Dict[str, list] = {}
     for joint in hand.config.joint_ids:
         if joint not in measured:
@@ -410,17 +441,19 @@ def _log_drive_current_table(
         finger = joint.split("_", 1)[0]
         by_finger.setdefault(finger, []).append(joint)
 
-    lines = ["mean current drawn driving onto the hardstops (mA):",
-             f"  {'joint':<14}{'flex':>8}{'extend':>9}"]
-    for finger, joints in by_finger.items():
+    lines = ["mean current drawn driving onto the hardstops, "
+             "and the change since the previous run (mA):",
+             f"  {'joint':<14}{'flex':>7}{'Δ':>7}{'Δ%':>6}"
+             f"{'extend':>10}{'Δ':>7}{'Δ%':>6}"]
+    for joints in by_finger.values():
         for joint in joints:
             per_direction = measured[joint]
-            flex = per_direction.get(FLEX)
-            extend = per_direction.get(EXTEND)
+            was = previous.get(joint, {})
             lines.append(
                 f"  {joint:<14}"
-                f"{'--' if flex is None else format(flex, '.0f'):>8}"
-                f"{'--' if extend is None else format(extend, '.0f'):>9}"
+                + _drive_current_cell(per_direction.get(FLEX), was.get(FLEX))
+                + "   "
+                + _drive_current_cell(per_direction.get(EXTEND), was.get(EXTEND))
             )
     logger.info("\n".join(lines))
 
@@ -775,7 +808,8 @@ def _drive_step(
 
     for motor_id, (summed, samples) in current_sums.items():
         if samples:
-            state.drive_currents.setdefault(motor_id, {})[
+            joint = hand.config.motor_to_joint_dict[motor_id]
+            state.drive_currents.setdefault(joint, {})[
                 step_direction[motor_id]] = summed / samples
 
     for motor_id in pwm_retries:
@@ -1144,7 +1178,11 @@ def _drive_calibration(
             motor_id = hand.config.joint_to_motor_map[joint]
             hand._clear_wrap_offset(motor_id)
 
-    drive_state = _DriveState(pending_limits=pending_limits)
+    drive_state = _DriveState(
+        pending_limits=pending_limits,
+        drive_currents={joint: dict(per_direction) for joint, per_direction
+                        in hand.calibration.drive_current_measured_dict.items()},
+    )
     encoder_pass = (
         _EncoderPass(
             client=joint_encoder_client,
@@ -1160,6 +1198,10 @@ def _drive_calibration(
     motor_travel_measured: Dict[str, float] = dict(
         hand.calibration.motor_travel_measured_dict
     )
+    previous_drive_currents: Dict[str, Dict[str, float]] = {
+        joint: dict(per_direction) for joint, per_direction
+        in hand.calibration.drive_current_measured_dict.items()
+    }
     boosted_joints: Dict[str, float] = {}
 
     calibrated_joints: dict = {}
@@ -1272,6 +1314,7 @@ def _drive_calibration(
                     joint, motor_id, motor_travel_deg(candidate) or 0.0,
                 )
                 motor_travel_measured.pop(joint, None)
+                drive_state.drive_currents.pop(joint, None)
                 continue
 
             motor_limits[motor_id] = candidate
@@ -1334,9 +1377,9 @@ def _drive_calibration(
     pending_anchors.clear()
 
     drive_current_measured = {
-        hand.config.motor_to_joint_dict[motor_id]: dict(per_direction)
-        for motor_id, per_direction in drive_state.drive_currents.items()
-        if motor_id in hand.config.motor_to_joint_dict
+        joint: dict(per_direction)
+        for joint, per_direction in drive_state.drive_currents.items()
+        if joint in hand.config.joint_ids
     }
 
     final_result = _build_calibration_result(
@@ -1376,7 +1419,8 @@ def _drive_calibration(
         )
 
     if drive_current_measured:
-        _log_drive_current_table(hand, drive_current_measured)
+        _log_drive_current_table(hand, drive_current_measured,
+                                 previous_drive_currents)
 
     _emit(
         progress_callback,
@@ -1384,6 +1428,7 @@ def _drive_calibration(
         boosted_joints=dict(boosted_joints),
         motor_travel_deg=dict(motor_travel_measured),
         drive_current_ma=dict(drive_current_measured),
+        drive_current_previous_ma=dict(previous_drive_currents),
     )
     return final_result
 

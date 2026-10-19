@@ -662,3 +662,64 @@ def test_a_joint_that_is_never_driven_gets_no_current_entry(model_dir):
         hand.disconnect()
 
     assert set(measured) == {"index_mcp"}
+
+
+def test_calibrating_a_subset_keeps_the_other_joints_currents(model_dir):
+    """A later partial run must not erase what an earlier run measured, the
+    way the travel baselines are kept."""
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp", "index_pip"], persist=True)
+        first = dict(hand.calibration.drive_current_measured_dict)
+        hand.calibrate(joints=["index_mcp"], persist=True)
+        second = hand.calibration.drive_current_measured_dict
+    finally:
+        hand.disconnect()
+
+    assert set(first) == {"index_mcp", "index_pip"}
+    assert set(second) == {"index_mcp", "index_pip"}, "index_pip was dropped"
+    assert second["index_pip"] == first["index_pip"]
+
+
+@pytest.mark.parametrize("now, before, expected", [
+    (1200.0, 1000.0, (200.0, 0.2)),
+    (800.0, 1000.0, (-200.0, -0.2)),
+    (1000.0, 1000.0, (0.0, 0.0)),
+    (1200.0, None, None),      # nothing recorded last time
+    (None, 1000.0, None),      # not driven this time
+    (1200.0, 0.0, None),       # a fraction of zero says nothing
+])
+def test_drive_current_change_is_absolute_and_fractional(now, before, expected):
+    change = calibration_routine.drive_current_change(now, before)
+    if expected is None:
+        assert change is None
+    else:
+        assert change == pytest.approx(expected)
+
+
+def test_the_table_shows_the_change_against_the_previous_run(model_dir, caplog):
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp"], persist=True)
+        stored = hand.calibration.drive_current_measured_dict["index_mcp"]["flex"]
+        # Halve the stored figure, so the next run has a change to report.
+        doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+        doc["drive_current_measured"]["index_mcp"]["flex"] = stored / 2
+        (model_dir / "calibration.yaml").write_text(yaml.dump(doc, sort_keys=False))
+
+        reloaded = MockOrcaHand(config_path=path)
+        reloaded.connect()
+        with caplog.at_level("INFO", logger="orca_core.maintenance.calibration_routine"):
+            reloaded.calibrate(joints=["index_mcp"], persist=False)
+        reloaded.disconnect()
+    finally:
+        hand.disconnect()
+
+    table = [r.message for r in caplog.records if "driving onto the hardstops" in r.message]
+    assert table, "no drive-current table was logged"
+    # Doubling the stored figure reads as +100%.
+    assert re.search(r"index_mcp\s+\d+\s+\+\d+\s+\+100%", table[-1]), table[-1]
