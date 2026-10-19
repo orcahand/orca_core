@@ -57,6 +57,12 @@ class CalibrationResult:
             tendon spool. Compared against the ``joint_motor_travel`` baseline
             in ``config.yaml`` to catch a joint that stalled short of its
             hardstop; see :mod:`orca_core.maintenance.motor_travel`.
+        drive_current_measured_dict: Maps joint name → ``{"flex": mA,
+            "extend": mA}``, the mean current each joint drew while being
+            driven onto that direction's hardstop. Recorded for information
+            only — nothing reads it back to make a decision. A joint drawing
+            far more than its neighbours is the signature of an over-tensioned
+            tendon. Absent for joints that were skipped or never pressed a stop.
         calibrated: ``True`` when all joints have been fully calibrated.
         wrist_calibrated: ``True`` when the wrist joint has been calibrated.
     """
@@ -68,6 +74,7 @@ class CalibrationResult:
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] = field(default_factory=dict)
     joint_roms_measured_dict: Dict[str, List[float]] = field(default_factory=dict)
     motor_travel_measured_dict: Dict[str, float] = field(default_factory=dict)
+    drive_current_measured_dict: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, motor_ids: List[int]) -> "CalibrationResult":
@@ -80,6 +87,7 @@ class CalibrationResult:
             joint_encoder_calibration_dict={},
             joint_roms_measured_dict={},
             motor_travel_measured_dict={},
+            drive_current_measured_dict={},
         )
 
     @classmethod
@@ -138,6 +146,27 @@ class CalibrationResult:
                     f"entry for {joint}: {travel!r}\033[0m"
                 )
 
+        current_raw = calibration.get("drive_current_measured", {}) or {}
+        drive_current_measured_dict = {}
+        for joint, per_direction in current_raw.items():
+            if not isinstance(per_direction, dict):
+                print(
+                    f"\033[93mWarning: dropping malformed drive_current_measured "
+                    f"entry for {joint}: {per_direction!r}\033[0m"
+                )
+                continue
+            parsed = {}
+            for direction, value in per_direction.items():
+                try:
+                    parsed[str(direction)] = float(value)
+                except (TypeError, ValueError):
+                    print(
+                        f"\033[93mWarning: dropping malformed drive_current_measured "
+                        f"value for {joint} {direction}: {value!r}\033[0m"
+                    )
+            if parsed:
+                drive_current_measured_dict[joint] = parsed
+
         return cls(
             motor_limits_dict=motor_limits_dict,
             joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
@@ -146,6 +175,7 @@ class CalibrationResult:
             joint_encoder_calibration_dict=joint_encoder_calibration_dict,
             joint_roms_measured_dict=joint_roms_measured_dict,
             motor_travel_measured_dict=motor_travel_measured_dict,
+            drive_current_measured_dict=drive_current_measured_dict,
         )
 
 
