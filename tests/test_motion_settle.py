@@ -5,6 +5,8 @@ next leg because it arrived first, while others are still travelling, is
 not a faster version of the same move but a different one.
 """
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -13,6 +15,7 @@ from orca_core.hardware.motor_factory import (
     mock_motor_client_class,
     motor_client_class,
 )
+from tests.test_dynamixel_client_locking import FakeBus, make_fake_sdk
 
 
 def test_every_shipped_family_actually_waits():
@@ -38,55 +41,78 @@ def test_a_tolerance_is_declared_and_is_coarser_than_one_encoder_count():
     assert MotorClient.arrival_tolerance_rad < 0.1
 
 
-class _Reader:
-    def __init__(self, values):
-        self.values = values
-
-    def read(self):
-        return self.values
+# The servo's control table as a sync read sees it: Moving (122) is 1 while the
+# motor travels, Moving Status (123) bit 0 is In-Position (set once it has
+# arrived), and Present Position (132) counts 4096 per turn.
+ADDR_MOVING = 122
+ADDR_MOVING_STATUS = 123
+ADDR_PRESENT_POSITION = 132
+IN_POSITION = 0x01
+COUNTS_PER_RAD = 4096 / (2 * np.pi)
 
 
 class TestDynamixelArrival:
     """The flag alone lies in one direction and position alone in the other,
     so both are required."""
 
-    def _client(self, moving, positions, goals):
-        cls = motor_client_class("dynamixel")
-        client = cls.__new__(cls)
-        client.motor_ids = [1, 2]
-        client._moving_reader = _Reader(np.array(moving))
-        client._pos_vel_cur_reader = _Reader(
-            (np.array(positions), np.zeros(2), np.zeros(2)))
-        client._goal_positions = dict(goals)
-        return client
+    @pytest.fixture
+    def bus(self, monkeypatch, virtual_clock):
+        import orca_core.hardware.dynamixel_client as dxl_mod
 
-    def test_a_motor_still_moving_is_unsettled(self):
-        client = self._client([1, 0], [0.0, 0.0], {1: 0.0, 2: 0.0})
+        bus = FakeBus()
+        monkeypatch.setitem(sys.modules, "dynamixel_sdk", make_fake_sdk(bus))
+        monkeypatch.setattr(dxl_mod, "time", virtual_clock)
+        return bus
+
+    @pytest.fixture
+    def make_client(self, bus):
+        clients = []
+
+        def make(moving, positions, goals):
+            tol = motor_client_class("dynamixel").arrival_tolerance_rad
+            for motor_id, travelling, position in zip((1, 2), moving, positions):
+                goal = goals.get(motor_id)
+                arrived = not travelling and (goal is None or abs(position - goal) <= tol)
+                bus.control_table[(motor_id, ADDR_MOVING)] = int(travelling)
+                bus.control_table[(motor_id, ADDR_MOVING_STATUS)] = IN_POSITION if arrived else 0
+                bus.control_table[(motor_id, ADDR_PRESENT_POSITION)] = round(position * COUNTS_PER_RAD)
+            client = motor_client_class("dynamixel")([1, 2], port="/dev/fake", baudrate=57600)
+            client.port_handler.is_open = True
+            client._goal_positions = dict(goals)
+            clients.append(client)
+            return client
+
+        yield make
+        for client in clients:
+            client.port_handler.is_open = False
+
+    def test_a_motor_still_moving_is_unsettled(self, make_client):
+        client = make_client([1, 0], [0.0, 0.0], {1: 0.0, 2: 0.0})
         assert client._unsettled_motors() == [1]
 
-    def test_a_motor_stopped_short_of_its_goal_is_unsettled(self):
+    def test_a_motor_stopped_short_of_its_goal_is_unsettled(self, make_client):
         """A servo stalled against a load clears its moving flag while short
         of the target. Advancing on that is the desynchronisation."""
-        client = self._client([0, 0], [0.0, 0.0], {1: 0.0, 2: 1.0})
+        client = make_client([0, 0], [0.0, 0.0], {1: 0.0, 2: 1.0})
         assert client._unsettled_motors() == [2]
 
-    def test_everything_stopped_and_in_tolerance_is_settled(self):
-        client = self._client([0, 0], [0.0, 1.0], {1: 0.0, 2: 1.0})
+    def test_everything_stopped_and_in_tolerance_is_settled(self, make_client):
+        client = make_client([0, 0], [0.0, 1.0], {1: 0.0, 2: 1.0})
         assert client._unsettled_motors() == []
 
-    def test_within_tolerance_counts_as_arrived(self):
+    def test_within_tolerance_counts_as_arrived(self, make_client):
         tol = motor_client_class("dynamixel").arrival_tolerance_rad
-        client = self._client([0, 0], [tol * 0.9, 0.0], {1: 0.0, 2: 0.0})
+        client = make_client([0, 0], [tol * 0.9, 0.0], {1: 0.0, 2: 0.0})
         assert client._unsettled_motors() == []
 
-    def test_a_motor_never_commanded_here_is_judged_on_its_flag_alone(self):
+    def test_a_motor_never_commanded_here_is_judged_on_its_flag_alone(self, make_client):
         """Nothing to compare against is not the same as being wrong."""
-        client = self._client([0, 0], [5.0, 5.0], {})
+        client = make_client([0, 0], [5.0, 5.0], {})
         assert client._unsettled_motors() == []
 
-    def test_a_failed_poll_is_not_read_as_arrival(self):
+    def test_a_failed_poll_is_not_read_as_arrival(self, make_client):
         """Losing the bus mid-move must not look like the chain settled."""
-        client = self._client([0, 0], [0.0, 0.0], {1: 0.0})
+        client = make_client([0, 0], [0.0, 0.0], {1: 0.0})
 
         def boom():
             raise OSError("bus")
@@ -94,9 +120,12 @@ class TestDynamixelArrival:
         client._moving_reader.read = boom
         assert client._unsettled_motors() == [1, 2]
 
-    def test_the_timeout_names_what_never_settled(self):
-        client = self._client([1, 0], [0.0, 0.0], {1: 0.0, 2: 0.0})
-        client.check_connected = lambda: None
+    def test_the_wait_returns_once_the_chain_has_arrived(self, make_client):
+        client = make_client([0, 0], [0.0, 1.0], {1: 0.0, 2: 1.0})
+        client.wait_for_motion_complete(timeout=0.05, poll_interval=0.01)
+
+    def test_the_timeout_names_what_never_settled(self, make_client):
+        client = make_client([1, 0], [0.0, 0.0], {1: 0.0, 2: 0.0})
         with pytest.raises(MotionTimeoutError) as caught:
             client.wait_for_motion_complete(timeout=0.05, poll_interval=0.01)
         assert "1" in str(caught.value)

@@ -388,11 +388,27 @@ def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 
 
+def _distinct_ceilings(hand):
+    """Give every motor its own current ceiling, so a value written to the wrong motor shows."""
+    ceilings = {motor_id: 700.0 + motor_id for motor_id in hand.config.motor_ids}
+    hand.motor_client.current_ceilings_ma = ceilings
+    return ceilings
+
+
+def _drive_currents_in_motor_order(hand, ceilings):
+    """The wrist at its configured current and every finger at its own ceiling."""
+    wrist_motor = hand.config.joint_to_motor_map["wrist"]
+    return [
+        float(hand.config.wrist_calibration_current) if motor_id == wrist_motor else ceilings[motor_id]
+        for motor_id in hand.config.motor_ids
+    ]
+
+
 def test_a_step_mixing_the_wrist_and_a_finger_keeps_each_motors_own_current(connected_hand, monkeypatch):
     hand = connected_hand
+    ceilings = _distinct_ceilings(hand)
     hand.config = dataclasses.replace(
         hand.config,
-        calibration_current=250,
         wrist_calibration_current=500,
         max_current=600,
         calibration_sequence=[{"step": 1, "joints": {"index_mcp": "flex", "wrist": "flex"}}],
@@ -406,13 +422,7 @@ def test_a_step_mixing_the_wrist_and_a_finger_keeps_each_motors_own_current(conn
 
     # Finger tendons are driven at each motor's own ceiling; the wrist drives a
     # belt and keeps its configured current.
-    ceilings = hand.motor_client.read_current_limits()
-    wrist_motor = hand.config.joint_to_motor_map["wrist"]
-    expected = [
-        500.0 if motor_id == wrist_motor else float(ceilings[motor_id])
-        for motor_id in hand.config.motor_ids
-    ]
-    assert float(ceilings[hand.config.joint_to_motor_map["index_mcp"]]) not in (250.0, 500.0)
+    expected = _drive_currents_in_motor_order(hand, ceilings)
     assert calls == [expected, expected, 600]
 
 
@@ -421,9 +431,8 @@ def test_a_redrive_restores_each_motors_nominal_current_however_it_ends(
     connected_hand, monkeypatch, drive_ends
 ):
     hand = connected_hand
-    hand.config = dataclasses.replace(
-        hand.config, calibration_current=250, wrist_calibration_current=500
-    )
+    ceilings = _distinct_ceilings(hand)
+    hand.config = dataclasses.replace(hand.config, wrist_calibration_current=500)
     writes = []
     monkeypatch.setattr(hand, "set_max_current", writes.append)
 
@@ -435,7 +444,7 @@ def test_a_redrive_restores_each_motors_nominal_current_however_it_ends(
     monkeypatch.setattr(calibration_routine, "_drive_step", drive)
     state = calibration_routine._DriveState(pending_limits={})
     run = lambda: calibration_routine._redrive_joint(  # noqa: E731
-        hand, "index_mcp", 3, current=450.0, state=state,
+        hand, "index_mcp", hand.config.joint_to_motor_map["index_mcp"], current=450.0, state=state,
         encoder_pass=None, progress_callback=None, should_stop=lambda: False,
     )
 
@@ -445,7 +454,24 @@ def test_a_redrive_restores_each_motors_nominal_current_however_it_ends(
     else:
         assert run() is False
 
-    assert writes == [[500.0] + [910.0] * 16]
+    assert writes == [_drive_currents_in_motor_order(hand, ceilings)]
+
+
+@pytest.mark.parametrize(
+    "ratio, calibrated", [(0.0, False), (None, False), (1.0, True)], ids=["zero", "none", "usable"]
+)
+def test_a_ratio_the_run_leaves_alone_still_decides_whether_it_is_calibrated(
+    connected_hand, ratio, calibrated
+):
+    hand = connected_hand
+    untouched = hand.config.joint_to_motor_map["ring_pip"]
+    ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
+    ratios[untouched] = ratio
+    hand.calibration = dataclasses.replace(hand.calibration, joint_to_motor_ratios_dict=ratios)
+
+    result = calibration_routine.run_calibration(hand, joints=["index_mcp"], persist=False)
+
+    assert result.calibrated is calibrated
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +488,7 @@ def test_a_reported_event_is_also_logged(connected_hand, caplog):
         )
 
     assert [r.getMessage() for r in caplog.records] == [
-        "motor 3 (index_mcp) reached the limit at 0.5000 rad"
+        f"motor {motor_id} (index_mcp) reached the limit at 0.5000 rad"
     ]
 
 

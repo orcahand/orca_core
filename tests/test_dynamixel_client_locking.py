@@ -40,6 +40,7 @@ class FakeBus:
         self.log = []
         self.writes1 = []  # (motor_id, address, value) of every 1-byte write
         self.sync_writes = []  # (address, {motor_id: value}) of every sync write
+        self.control_table = {}  # (motor_id, address) -> raw value a sync read returns
         self.op_delay = 0.0
         # Failure injection.
         self.sync_tx_results = []  # queue of comm results for sync-read txPacket
@@ -220,7 +221,7 @@ def make_fake_sdk(bus):
             return True
 
         def getData(self, motor_id, address, size):
-            return 0
+            return bus.control_table.get((motor_id, address), 0)
 
     class GroupSyncWrite:
         def __init__(self, port, packet_handler, address, size):
