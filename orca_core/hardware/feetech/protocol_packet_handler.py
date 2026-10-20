@@ -548,6 +548,25 @@ class protocol_packet_handler(object):
 
         return result, error
 
+    def reBoot(self, scs_id):
+        """Restart one servo (instruction 0x08).
+
+        The servo sends no status packet for this instruction, so only the
+        transmit result is returned. It takes roughly 800 ms to come back.
+        """
+        txpacket = [0] * 6
+
+        if scs_id > BROADCAST_ID:
+            return COMM_NOT_AVAILABLE
+
+        txpacket[PKT_ID] = scs_id
+        txpacket[PKT_LENGTH] = 2
+        txpacket[PKT_INSTRUCTION] = INST_REBOOT
+
+        result = self.txPacket(txpacket)
+        self.portHandler.is_using = False
+        return result
+
     def reSet(self, scs_id):
         error = 0
 

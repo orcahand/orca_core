@@ -325,3 +325,41 @@ def test_dynamixel_return_delay_is_written_in_two_us_units(delay_us, register):
 def test_dynamixel_rejects_an_unencodable_return_delay(delay_us):
     stub = types.SimpleNamespace(write_byte=lambda *a: pytest.fail("wrote an invalid delay"))
     assert DynamixelClient.change_return_delay_time(stub, 5, delay_us) is False
+
+
+def test_reboot_is_declared_uniformly_across_family():
+    """Clearing a latched fault in band is the same call on every client.
+
+    A caller offering recovery has to know whether the family can do it at
+    all before promising the operator anything, so the capability is declared
+    rather than discovered by catching an exception.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert cls.supports_reboot is True, cls.__name__
+        assert callable(getattr(cls, "reboot_motor", None)), cls.__name__
+
+    # A family without the instruction says so instead of silently no-opping:
+    # a caller that believed a fault was cleared would drive a dead motor.
+    assert MotorClient.supports_reboot is False
+    with pytest.raises(NotImplementedError, match="power-cycled"):
+        MotorClient.reboot_motor(types.SimpleNamespace(), 1)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: MockDynamixelClient([1, 2], port="mock", baudrate=1000000),
+    lambda: MockFeetechClient([1, 2], port="mock", baudrate=1000000),
+])
+def test_a_reboot_clears_that_motors_latch_and_leaves_the_others(make):
+    client = make()
+    client.connect()
+    try:
+        client.latched_errors = {1: 0x20, 2: 0x04}
+
+        client.reboot_motor(1)
+
+        assert client.read_hardware_error(1) == 0
+        assert client.read_hardware_error(2) == 0x04, "rebooted the wrong motor"
+        assert client.reboot_count[1] == 1
+    finally:
+        client.disconnect()
