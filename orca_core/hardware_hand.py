@@ -818,6 +818,12 @@ class OrcaHand(BaseHand):
             # temperature do not change under us.
             self._stop_masks = client.read_stop_mask()
             self._temperature_limits = client.read_temperature_limits()
+        elif config is not None:
+            # Thresholds are an operator setting, so a later call may change
+            # them. The per-motor counts deliberately survive the change: a
+            # motor that has already been rebooted five times has, whatever
+            # the budget is now set to.
+            self._fault_policy.config = config
 
         try:
             errors = client.read_hardware_errors(self.config.motor_ids)
