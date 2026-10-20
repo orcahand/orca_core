@@ -56,11 +56,6 @@ class MockHandSerialLink(HandSerialLink):
     def response_provider(self) -> ResponseProvider | None:
         return self._response_provider
 
-    def serial_writes(self) -> list[bytes]:
-        """Snapshot of every payload passed to ``_serial_write``."""
-        with self._injected_cv:
-            return list(self._serial_writes)
-
     def last_serial_write(self) -> bytes | None:
         with self._injected_cv:
             return self._serial_writes[-1] if self._serial_writes else None

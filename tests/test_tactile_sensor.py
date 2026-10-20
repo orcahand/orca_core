@@ -22,7 +22,10 @@ from orca_core.hardware.sensing.tactile_mock import (
     feed_resultant_frame,
     feed_taxels_frame,
 )
-from orca_core.hardware.sensing.tactile_protocol import compute_distal_module_index
+from orca_core.hardware.sensing.tactile_protocol import (
+    build_auto_frame,
+    compute_distal_module_index,
+)
 from orca_core.hardware.tactile_client import (
     TactileClient,
     TactileSensorConfiguration,
@@ -620,3 +623,20 @@ def test_capture_counts_frames_that_share_a_coarse_timestamp(tactile_mock_factor
     client.capture_taxel_offsets(num_samples=3, timeout_s=0.05)
     assert client._taxel_offsets == {"thumb": [[4.0, 4.0, 4.0]]}
     client.stop_stream()
+
+
+# ---------------------------------------------------------------------------
+# Frames that cannot carry data
+# ---------------------------------------------------------------------------
+
+
+def test_empty_frame_with_no_active_sensors_is_rejected(tactile_mock_factory):
+    _link, client, _state = tactile_mock_factory([])
+    client.start_stream(resultant=True, taxels=False, min_sensors=0)
+
+    client._on_tactile_frame(build_auto_frame(b""))
+    stats = client.get_stats()
+    client.stop_stream()
+
+    assert (stats.frames_ok, stats.frames_bad_payload_size) == (0, 1)
+    assert not client._first_frame_event.is_set()

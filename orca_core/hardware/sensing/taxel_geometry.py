@@ -15,7 +15,7 @@ YAMLs under ``models/`` and are loaded once here.
 Three facts make this geometry trivial to use alongside the force stream:
 
 * **Index alignment.** Row ``i`` of the geometry is intended to correspond to
-  taxel ``i`` in the decoded force stream (see ``decode_taxels_auto``), so
+  taxel ``i`` in the decoded force stream (see ``decode_auto_payload``), so
   positions ``(n, 3)`` and a frame's forces ``(n, 3)`` line up by row with no
   bookkeeping.
 * **Sensor frame.** Positions are in the *sensor* frame: origin on the mounting

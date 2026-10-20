@@ -15,7 +15,12 @@ import yaml
 
 from orca_core import hand_factory, load_hand
 from orca_core.constants import HARDWARE_VERSION_V21
-from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig, write_hardware_version
+from orca_core.hand_config import (
+    HandConfigValidationError,
+    OrcaHandConfig,
+    OrcaHandTouchConfig,
+    write_hardware_version,
+)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 V2_MODELS = os.path.join(REPO_ROOT, "orca_core", "models", "v2")
@@ -115,6 +120,14 @@ def test_a_pin_is_in_force_without_load_hand(tmp_path):
     path = _config_with(tmp_path, LEFT[0], hardware_version=21)
     config = OrcaHandConfig.from_config_path(config_path=path)
     base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
+
+
+def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
+    source = os.path.join(V2_MODELS, "orcahand-touch-left", "config.yaml")
+    path = _config_with(tmp_path, source, hardware_version=21)
+    config = OrcaHandTouchConfig.from_config_path(config_path=path)
+    base = OrcaHandTouchConfig.from_config_path(config_path=source)
     assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
 
 

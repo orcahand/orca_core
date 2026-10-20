@@ -15,7 +15,8 @@ orca_core/
 │   ├── motor_travel.py              # per-joint motor-travel baselines (config.yaml joint_motor_travel)
 │   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
 │   ├── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
-│   └── fingertip_numbering.py       # number tactile fingertips through the connector board
+│   ├── fingertip_numbering.py       # number tactile fingertips through the connector board
+│   └── progress.py                  # ProgressCallback/ShouldStop types and progress_emitter()
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
@@ -28,6 +29,7 @@ orca_core/
 │   ├── dynamixel_client.py           # Dynamixel motor control (bus-locked, thread-safe)
 │   ├── feetech_client.py             # Feetech motor control
 │   ├── feetech/                      # Vendored Feetech servo SDK (used by feetech_client)
+│   ├── mock_motor_client.py          # Shared base for the in-memory motor clients
 │   ├── mock_dynamixel_client.py      # In-memory motor client for tests/dev
 │   ├── hand_serial_link.py           # Framed serial link to the connector board (encoders/tactile)
 │   ├── mock_hand_serial_link.py      # In-memory stand-in for HandSerialLink
@@ -207,7 +209,7 @@ block it on an event rather than sleeping and hoping.
 ### Downstream consumers
 
 `orca_core` is published on PyPI and imported by sibling repos checked out beside it
-(`orca_ui`, `orca_teleop`, `orca_firmware`, `orca_stress_tests`, `orca_ros`). Their code is
+(`orca_ui`, `orca_teleop`, `orca_firmware`, `orca_stress_tests`, `orca_ros`, `orca-console`). Their code is
 invisible to this test suite.
 
 **Never conclude a public symbol is unused from this repo alone.** A green suite here — and

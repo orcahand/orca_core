@@ -17,32 +17,17 @@ import types
 import numpy as np
 import pytest
 
-import orca_core.hardware.mock_dynamixel_client as mock_dynamixel_client_module
-import orca_core.hardware.mock_feetech_client as mock_feetech_client_module
+import orca_core.hardware.mock_motor_client as mock_motor_client_module
 from orca_core.hardware.dynamixel_client import DynamixelClient
 from orca_core.hardware.feetech_client import FeetechClient
-from orca_core.hardware.mock_dynamixel_client import (
-    MockDynamixelClient,
-    dynamixel_cleanup_handler as mock_cleanup_handler,
-)
-from orca_core.hardware.mock_feetech_client import (
-    MockFeetechClient,
-    feetech_cleanup_handler as mock_feetech_cleanup_handler,
-)
+from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+from orca_core.hardware.mock_feetech_client import MockFeetechClient
 from orca_core.hardware.motor_client import MotorClient, ServoGains
 
-# (mock class, its module, its atexit cleanup handler) for every family.
-MOCK_FAMILIES = [
-    pytest.param(
-        (MockDynamixelClient, mock_dynamixel_client_module, mock_cleanup_handler),
-        id="dynamixel",
-    ),
-    pytest.param(
-        (MockFeetechClient, mock_feetech_client_module, mock_feetech_cleanup_handler),
-        id="feetech",
-    ),
+MOCK_CLASSES = [
+    pytest.param(MockDynamixelClient, id="dynamixel"),
+    pytest.param(MockFeetechClient, id="feetech"),
 ]
-MOCK_CLASSES = [pytest.param(p.values[0][0], id=p.id) for p in MOCK_FAMILIES]
 
 
 @pytest.fixture(params=MOCK_CLASSES)
@@ -69,9 +54,7 @@ def connected_mock(request):
         pytest.param(lambda c: c.set_operating_mode([1], 3), id="set_operating_mode"),
         pytest.param(lambda c: c.write_desired_pos([1], np.zeros(1)), id="write_desired_pos"),
         pytest.param(lambda c: c.write_desired_current([1], np.zeros(1)), id="write_desired_current"),
-        pytest.param(lambda c: c.write_profile_velocity([1], np.zeros(1)), id="write_profile_velocity"),
         pytest.param(lambda c: c.read_temperature(), id="read_temperature"),
-        pytest.param(lambda c: c.read_status_is_done_moving(), id="read_status_is_done_moving"),
     ],
 )
 def test_mock_bus_methods_raise_when_disconnected(disconnected_mock, call):
@@ -124,25 +107,12 @@ def test_mock_writes_skip_unknown_ids(connected_mock):
 # ----- OPEN_CLIENTS registry lifecycle --------------------------------------
 
 
-class _RankOrderedSet(set):
-    """Set whose iteration yields clients in ``_cleanup_rank`` order, so the
-    cleanup-handler test deterministically hits the failing client first."""
-
-    def __iter__(self):
-        return iter(
-            sorted(set.__iter__(self), key=lambda c: getattr(c, "_cleanup_rank", 1))
-        )
-
-
-@pytest.fixture(params=MOCK_FAMILIES)
+@pytest.fixture(params=MOCK_CLASSES)
 def mock_family(request, monkeypatch):
-    """A mock class with an isolated registry, plus its module and handler."""
-    cls, module, cleanup_handler = request.param
-    registry = _RankOrderedSet()
-    monkeypatch.setattr(cls, "OPEN_CLIENTS", registry)
-    return types.SimpleNamespace(
-        cls=cls, module=module, cleanup=cleanup_handler, registry=registry
-    )
+    """A mock class, with the shared exit-cleanup registry swapped for an empty one."""
+    registry = set()
+    monkeypatch.setattr(MotorClient, "OPEN_CLIENTS", registry)
+    return types.SimpleNamespace(cls=request.param, registry=registry)
 
 
 def test_mock_construction_does_not_register(mock_family):
@@ -168,7 +138,7 @@ def test_mock_failed_connect_leaves_registry_empty(mock_family, monkeypatch):
     # Registration must be the last step of connect(): a failure anywhere
     # earlier (here, the first thing connect does) leaves the registry empty.
     monkeypatch.setattr(
-        mock_family.module, "logging", types.SimpleNamespace(info=boom)
+        mock_motor_client_module, "logging", types.SimpleNamespace(info=boom)
     )
     with pytest.raises(OSError):
         client.connect()
@@ -191,24 +161,11 @@ def test_mock_disconnect_deregisters_even_when_torque_off_raises(
     assert mock_family.registry == set()
 
 
-def test_mock_cleanup_handler_survives_a_failing_client(mock_family):
-    bad = mock_family.cls([1], port="bad")
-    good = mock_family.cls([1], port="good")
-    bad.connect()
-    good.connect()
-    bad._cleanup_rank, good._cleanup_rank = 0, 1
-
-    def boom():
-        raise OSError("port died")
-
-    bad.disconnect = boom
-    try:
-        mock_family.cleanup()
-    finally:
-        del bad.disconnect  # restore the real method for __del__
-
-    assert not good.is_connected, "good client must still be disconnected"
-    assert good not in mock_family.registry
+def test_wait_for_motion_complete_signature_is_uniform_across_family():
+    for cls in (MotorClient, DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        params = inspect.signature(cls.wait_for_motion_complete).parameters
+        assert list(params)[1:] == ["timeout", "poll_interval"], cls.__name__
 
 
 def test_set_torque_enabled_signature_is_uniform_across_family():

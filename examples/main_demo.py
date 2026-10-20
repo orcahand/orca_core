@@ -1,5 +1,6 @@
 import argparse
 
+from orca_core.demo_poses import load_demo_poses
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 
 from demo_runner import run_demo
@@ -7,9 +8,13 @@ from demo_runner import run_demo
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run a simple open-close-pinch demo using the current hand config."
+        description="Run a packaged demo sequence (default: open-close-pinch)."
     )
     add_hand_arguments(parser)
+    parser.add_argument(
+        "--demo", choices=sorted(load_demo_poses()), default="main",
+        help="Packaged demo to play; 'abduction' fans the fingers out and in.",
+    )
     parser.add_argument("--cycles", type=int, default=3)
     parser.add_argument("--num-steps", type=int, default=8)
     parser.add_argument("--step-size", type=float, default=0.02)
@@ -20,10 +25,11 @@ def main() -> int:
         connect_hand(hand)
         hand.init_joints()
 
-        print("Cycling through open_hand -> power_grasp -> pinch -> neutral")
+        sequence = load_demo_poses()[args.demo].sequence
+        print(f"Cycling through {' -> '.join(sequence)} -> neutral")
         run_demo(
             hand,
-            "main",
+            args.demo,
             cycles=args.cycles,
             num_steps=args.num_steps,
             step_size=args.step_size,

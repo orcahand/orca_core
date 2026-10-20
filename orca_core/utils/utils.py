@@ -316,7 +316,7 @@ def auto_detect_port(motor_type: "str | None" = None) -> str:
         otherwise ``None``.
     """
     import serial.tools.list_ports
-    from ..constants import KNOWN_VIDS, SUPPORTED_MOTOR_TYPES
+    from ..constants import KNOWN_VIDS, motor_family_vids
 
     # The hand's controller board presents two CDC interfaces with one VID/PID;
     # find the motor one via ORCA_ID?, falling back to VID for classic adapters.
@@ -331,11 +331,7 @@ def auto_detect_port(motor_type: "str | None" = None) -> str:
         return orca_motor_port
 
     if motor_type is None:
-        known_vids = [
-            vid
-            for family in SUPPORTED_MOTOR_TYPES
-            for vid in KNOWN_VIDS.get(family, [])
-        ]
+        known_vids = motor_family_vids()
     else:
         known_vids = KNOWN_VIDS.get(motor_type, [])
     ports = serial.tools.list_ports.comports()
@@ -415,8 +411,13 @@ def enable_ansi_escapes() -> None:
             kernel32.SetConsoleMode(handle, mode.value | enable_virtual_terminal_processing)
 
 
-def _choose_port_plain() -> "str | None":
-    """Numbered-list port picker for terminals without ``curses``."""
+def get_and_choose_port() -> str:
+    """Prompt on the terminal for one of the detected serial ports, by number.
+
+    Returns:
+        Device string of the selected port (e.g. ``"/dev/ttyUSB0"``), or
+        ``None`` if the user cancels or no ports are found.
+    """
     import serial.tools.list_ports
 
     ports = list(serial.tools.list_ports.comports())
@@ -437,88 +438,3 @@ def _choose_port_plain() -> "str | None":
         if answer.isdigit() and 1 <= int(answer) <= len(ports):
             return ports[int(answer) - 1].device
         print(f"Enter a number between 1 and {len(ports)}, or q.")
-
-
-def get_and_choose_port() -> str:
-    """Present an interactive terminal menu for USB port selection.
-
-    Uses ``curses`` to render an arrow-key-navigable list of all detected
-    serial ports. The user selects a port with Enter or quits with ``q`` /
-    Escape. Falls back to a numbered prompt where ``curses`` is unavailable
-    (Windows).
-
-    Returns:
-        Device string of the selected port (e.g. ``"/dev/ttyUSB0"``), or
-        ``None`` if the user cancels or no ports are found.
-    """
-    try:
-        import curses
-    except ImportError:  # python.org Windows builds ship without curses
-        return _choose_port_plain()
-    import serial.tools.list_ports
-
-    def draw_menu(stdscr, ports, selected_idx):
-        stdscr.clear()
-        height, width = stdscr.getmaxyx()
-        
-        title = "Choose a device (use arrow keys, Enter to select, q to quit)"
-        stdscr.addstr(0, (width - len(title)) // 2, title, curses.A_BOLD)
-        
-        for i, port in enumerate(ports):
-            y_pos = i * 3 + 2
-            if y_pos >= height - 1:
-                break
-            marker = "(x)" if i == selected_idx else "( )"
-
-            if i == selected_idx:
-                stdscr.attron(curses.A_REVERSE)
-                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
-                stdscr.attroff(curses.A_REVERSE)
-            else:
-                stdscr.addstr(y_pos, 0, f"{i+1:2d}. {marker} {port.device}")
-
-            if y_pos + 1 < height - 1:
-                stdscr.addstr(y_pos + 1, 4, f"{port.description or 'No description'}")
-            if y_pos + 2 < height - 1:
-                stdscr.addstr(y_pos + 2, 4, f"{port.manufacturer or 'Unknown manufacturer'}")
-        
-        if len(ports) + 5 < height:
-            stdscr.addstr(height - 2, 0, "Use ↑↓ arrows to navigate, Enter to select, q to quit")
-        
-        stdscr.refresh()
-    
-    def main_menu(stdscr):
-        curses.curs_set(0)
-        stdscr.keypad(True)
-        
-        ports = list(serial.tools.list_ports.comports())
-        
-        if not ports:
-            stdscr.clear()
-            stdscr.addstr(0, 0, "No USB devices found!")
-            stdscr.refresh()
-            stdscr.getch()
-            return None
-        
-        selected_idx = 0
-        
-        while True:
-            draw_menu(stdscr, ports, selected_idx)
-            
-            key = stdscr.getch()
-            
-            if key == curses.KEY_UP and selected_idx > 0:
-                selected_idx -= 1
-            elif key == curses.KEY_DOWN and selected_idx < len(ports) - 1:
-                selected_idx += 1
-            elif key == curses.KEY_ENTER or key in [10, 13]:
-                return ports[selected_idx].device
-            elif key == ord('q') or key == ord('Q'):
-                return None
-            elif key == 27:
-                return None
-    
-    try:
-        return curses.wrapper(main_menu)
-    except KeyboardInterrupt:
-        return None

@@ -30,7 +30,6 @@ HAND_CLI_MODULES = [
     "scripts/manual_control.py",
     "scripts/monitor_sensors.py",
     "examples/main_demo.py",
-    "examples/main_demo_abduction.py",
     "examples/record_angles.py",
     "examples/record_continuous.py",
     "examples/replay_angles.py",
@@ -662,3 +661,86 @@ class TestMonitorSensorsMotorBus:
             assert set(bus.snapshot().motors) == set(hand.config.motor_ids)
         finally:
             bus.disconnect()
+
+
+@pytest.mark.parametrize("argv, demo", [([], "main"), (["--demo", "abduction"], "abduction")])
+def test_main_demo_plays_the_demo_the_flag_names(monkeypatch, argv, demo):
+    module = _load("examples/main_demo.py")
+    played = []
+    _patch_hand(monkeypatch, module, SimpleNamespace(init_joints=lambda: None))
+    monkeypatch.setattr(module, "run_demo", lambda hand, name, **k: played.append(name))
+    monkeypatch.setattr(sys, "argv", ["main_demo.py", "--mock", *argv])
+
+    assert module.main() == 0
+    assert played == [demo]
+
+
+class TestJointSelectionFlags:
+    """--fingers / --joints in calibrate.py and manual_control.py share one resolver."""
+
+    JOINT_IDS = ["thumb_cmc", "thumb_mcp", "index_mcp", "wrist"]
+
+    def test_calibrate_reports_an_unknown_finger_through_the_parser(self, capsys):
+        module = _load("scripts/calibrate.py")
+        parser = argparse.ArgumentParser()
+        args = SimpleNamespace(fingers=["ring"], joints=None)
+
+        with pytest.raises(SystemExit) as exc:
+            module._resolve_joints(parser, args, self.JOINT_IDS)
+
+        assert exc.value.code == 2
+        assert "Unknown finger(s) ['ring']" in capsys.readouterr().err
+
+    def test_calibrate_expands_fingers(self):
+        module = _load("scripts/calibrate.py")
+        args = SimpleNamespace(fingers=["index", "thumb"], joints=None)
+
+        assert module._resolve_joints(argparse.ArgumentParser(), args, self.JOINT_IDS) == [
+            "index_mcp", "thumb_cmc", "thumb_mcp",
+        ]
+
+    def test_manual_control_keeps_only_encoder_backed_joints(self):
+        module = _load("scripts/manual_control.py")
+        hand = SimpleNamespace(
+            config=SimpleNamespace(joint_ids=self.JOINT_IDS),
+            encoder_backed_joints=["thumb_mcp", "index_mcp"],
+        )
+        args = SimpleNamespace(fingers=["thumb", "wrist"], joints=None)
+
+        assert module._resolve_joint_set(args, hand) == ["thumb_mcp"]
+
+    def test_manual_control_exits_when_nothing_encoder_backed_is_requested(self):
+        module = _load("scripts/manual_control.py")
+        hand = SimpleNamespace(
+            config=SimpleNamespace(joint_ids=self.JOINT_IDS),
+            encoder_backed_joints=["thumb_mcp"],
+        )
+        args = SimpleNamespace(fingers=None, joints=["wrist"])
+
+        with pytest.raises(SystemExit, match="No encoder-backed joints intersect"):
+            module._resolve_joint_set(args, hand)
+
+
+def test_check_sensors_press_verdict_reports_wiring_first_then_weak_fingers_by_label():
+    module = _load("scripts/check_sensors.py")
+
+    assert module.press_verdict({"thumb": 2.0}, [], "response", "all good") == (
+        True, "all good",
+    )
+    assert module.press_verdict(
+        {"thumb": 0.2, "index": 4.0}, [], "taxel response", "ok",
+    ) == (False, "no/weak taxel response on: ['thumb']")
+    assert module.press_verdict({"thumb": 0.2}, ["index"], "response", "ok") == (
+        False, "wiring mismatch suspected on: ['index'] (see suggestions above)",
+    )
+
+
+@pytest.mark.parametrize("rel_path", ["scripts/setup.py", "scripts/stress_test.py"])
+def test_open_and_close_poses_are_the_packaged_ones_not_a_copy(rel_path):
+    from orca_core.demo_poses import load_demo_poses
+
+    poses = load_demo_poses()["main"].pose_fractions
+    module = _load(rel_path)
+
+    assert module.OPEN_FRACTIONS is poses["open_hand"]
+    assert module.CLOSE_FRACTIONS is poses["power_grasp"]

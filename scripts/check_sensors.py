@@ -34,6 +34,7 @@ import threading
 import time
 
 from orca_core import OrcaHandTouch, load_hand
+from orca_core.constants import FINGER_NAMES
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import (
     EncodersNotAvailableError,
@@ -59,8 +60,6 @@ from orca_core.utils import enable_ansi_escapes
 
 # Thresholds and taxel layouts are intentionally script-local — they only
 # drive pass/fail decisions and the ASCII renderer here, not the runtime API.
-
-FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 
 PRESS_THRESHOLD_N = 1.0
 ZERO_TOLERANCE_N = 0.5
@@ -266,18 +265,46 @@ def tactile_link_stats(hand):
     return health.stats if health is not None else None
 
 
+def press_each_finger(hand, hint, live_press):
+    """Prompt for a press on each finger and run ``live_press(finger, stop_event)``.
+
+    Returns ({finger: peak on that finger while pressed}, fingers with a suspected wiring mismatch).
+    """
+    wiring = hand.config.finger_to_sensor_id
+    peaks_per_press = {}
+    warnings = []
+    for f in FINGER_NAMES:
+        print(f"\n  >>> Press {f.upper()} now ({hint}). Press Enter when done.")
+        all_peaks = live_press(f, _enter_event())
+        peaks_per_press[f] = all_peaks[f]
+        mismatch = detect_wiring_mismatch(f, all_peaks, wiring, threshold_n=PRESS_THRESHOLD_N)
+        if mismatch:
+            print(format_wiring_mismatch(mismatch))
+            warnings.append(f)
+    return peaks_per_press, warnings
+
+
+def press_verdict(peaks_per_press, warnings, response_label, ok_message):
+    weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
+    if warnings:
+        return False, f"wiring mismatch suspected on: {warnings} (see suggestions above)"
+    if weak:
+        return False, f"no/weak {response_label} on: {weak}"
+    return True, ok_message
+
+
 def phase_enumerate(hand):
     banner("tactile: connect & enumerate")
     cfg = hand.get_tactile_configuration()
     print(f"  {cfg}")
     print("  Per-finger status (canonical order):")
-    for f in FINGERS:
+    for f in FINGER_NAMES:
         connected = cfg.connected.get(f, False)
         n_taxels = cfg.num_taxels.get(f, 0)
         slot = hand.config.finger_to_sensor_id.get(f)
         print(f"    {f:7s}  connected={connected!s:5s}  taxels={n_taxels:3d}  slot={slot}")
 
-    missing = [f for f in FINGERS if not cfg.connected.get(f, False)]
+    missing = [f for f in FINGER_NAMES if not cfg.connected.get(f, False)]
     if missing:
         return False, f"missing sensors: {missing} (need all 5)"
     return True, "all 5 sensors connected"
@@ -294,7 +321,7 @@ def prep_zero_baseline(hand):
         pause("ensure NOTHING is touching any sensor")
         offsets = hand.zero_tactile_sensors(num_samples=200)
         max_baseline = 0.0
-        for f in FINGERS:
+        for f in FINGER_NAMES:
             if f in offsets and offsets[f]:
                 max_baseline = max(max_baseline, max(abs(t[2]) for t in offsets[f]))
         print(f"  Zero captured (max raw baseline |fz| was {max_baseline:.2f} N at hottest taxel)")
@@ -325,26 +352,13 @@ def phase_resultant_press(hand):
         if bad_lrc or s1.frames_bad_payload or s1.frames_bad_payload_size:
             return False, "non-zero error counters during idle stream"
 
-        wiring = hand.config.finger_to_sensor_id
-        peaks_per_press = {}
-        warnings = []
-        for f in FINGERS:
-            print(f"\n  >>> Press {f.upper()} now (vary pressure). Press Enter when done.")
-            stop = _enter_event()
-            all_peaks = live_press_resultant(hand, f, FINGERS, stop_event=stop)
-            peaks_per_press[f] = all_peaks[f]
-            mismatch = detect_wiring_mismatch(f, all_peaks, wiring,
-                                              threshold_n=PRESS_THRESHOLD_N)
-            if mismatch:
-                print(format_wiring_mismatch(mismatch))
-                warnings.append(f)
-
-        weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
-        if warnings:
-            return False, f"wiring mismatch suspected on: {warnings} (see suggestions above)"
-        if weak:
-            return False, f"no/weak response on: {weak}"
-        return True, f"~{rate:.0f} fps clean, all fingers responded"
+        peaks_per_press, warnings = press_each_finger(
+            hand, "vary pressure",
+            lambda f, stop: live_press_resultant(hand, f, FINGER_NAMES, stop_event=stop),
+        )
+        return press_verdict(
+            peaks_per_press, warnings, "response", f"~{rate:.0f} fps clean, all fingers responded",
+        )
     finally:
         hand.stop_tactile_stream()
 
@@ -355,7 +369,7 @@ def phase_taxels_press(hand):
     try:
         wait_for_frame(hand.get_tactile_taxels)
         reading = hand.get_tactile_taxels()
-        for finger in FINGERS:
+        for finger in FINGER_NAMES:
             if finger not in reading:
                 return False, f"{finger} missing from taxel frame"
             num_expected_taxels = hand.get_tactile_configuration().num_taxels[finger]
@@ -366,27 +380,16 @@ def phase_taxels_press(hand):
                 return False, f"{finger} has malformed taxel vectors"
         print(f"  Taxel array shapes verified for all 5 fingers")
 
-        wiring = hand.config.finger_to_sensor_id
-        peaks_per_press = {}
-        warnings = []
-        for finger in FINGERS:
-            print(f"\n  >>> Press {finger.upper()} now (move around to light up taxels). Press Enter when done.")
-            num_expected_taxels = hand.get_tactile_configuration().num_taxels[finger]
-            stop = _enter_event()
-            all_peaks = live_press_taxels(hand, finger, FINGER_TO_ROLE[finger], num_expected_taxels, FINGERS, stop_event=stop)
-            peaks_per_press[finger] = all_peaks[finger]
-            mismatch = detect_wiring_mismatch(finger, all_peaks, wiring,
-                                              threshold_n=PRESS_THRESHOLD_N)
-            if mismatch:
-                print(format_wiring_mismatch(mismatch))
-                warnings.append(finger)
-
-        weak = [f for f, p in peaks_per_press.items() if p < PRESS_THRESHOLD_N]
-        if warnings:
-            return False, f"wiring mismatch suspected on: {warnings} (see suggestions above)"
-        if weak:
-            return False, f"no/weak taxel response on: {weak}"
-        return True, "all fingers show per-taxel response"
+        peaks_per_press, warnings = press_each_finger(
+            hand, "move around to light up taxels",
+            lambda f, stop: live_press_taxels(
+                hand, f, FINGER_TO_ROLE[f],
+                hand.get_tactile_configuration().num_taxels[f], FINGER_NAMES, stop_event=stop,
+            ),
+        )
+        return press_verdict(
+            peaks_per_press, warnings, "taxel response", "all fingers show per-taxel response",
+        )
     finally:
         hand.stop_tactile_stream()
 
@@ -421,7 +424,7 @@ def phase_zeroing(hand):
         wait_for_frame(hand.get_tactile_taxels)
         offsets = hand.zero_tactile_sensors(num_samples=200)
         print("  Captured offsets per finger (avg |fz| per taxel):")
-        for f in FINGERS:
+        for f in FINGER_NAMES:
             if f in offsets and offsets[f]:
                 fz_vals = [abs(t[2]) for t in offsets[f]]
                 avg = sum(fz_vals) / len(fz_vals)
@@ -431,7 +434,7 @@ def phase_zeroing(hand):
         forces = hand.get_tactile_forces()
         if forces is None:
             return False, "no forces frame after zeroing"
-        max_resting = max(abs(forces[f][2]) for f in FINGERS)
+        max_resting = max(abs(forces[f][2]) for f in FINGER_NAMES)
         print(f"  Max resting |fz| after zero: {max_resting:.3f} N")
         if max_resting > ZERO_TOLERANCE_N:
             return False, f"resting fz not near zero (max={max_resting:.3f})"

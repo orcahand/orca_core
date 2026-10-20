@@ -112,10 +112,6 @@ FeetechClient(
     motor_ids: Sequence[int],
     port: str = '/dev/ttyUSB0',
     baudrate: int = 1000000,
-    lazy_connect: bool = False,
-    pos_scale: Optional[float] = None,
-    vel_scale: Optional[float] = None,
-    cur_scale: Optional[float] = None,
 )
 ```
 
@@ -124,10 +120,6 @@ FeetechClient(
 | `motor_ids` | Sequence[int] | required | List of motor IDs to control |
 | `port` | str | `/dev/ttyUSB0` | Serial port path |
 | `baudrate` | int | 1000000 | Communication baud rate |
-| `lazy_connect` | bool | False | Auto-connect on first operation |
-| `pos_scale` | float | 2π/4095 | Position conversion (rad/unit) |
-| `vel_scale` | float | 0.732×2π/60 | Velocity conversion (rad/s per unit) |
-| `cur_scale` | float | 6.5 | Current conversion (mA/unit) |
 
 ### Connection Methods
 
@@ -375,10 +367,6 @@ DynamixelClient(
     motor_ids: Sequence[int],
     port: str = '/dev/ttyUSB0',
     baudrate: int = 1000000,
-    lazy_connect: bool = False,
-    pos_scale: Optional[float] = None,
-    vel_scale: Optional[float] = None,
-    cur_scale: Optional[float] = None,
 )
 ```
 
@@ -387,10 +375,6 @@ DynamixelClient(
 | `motor_ids` | Sequence[int] | required | List of motor IDs to control |
 | `port` | str | `/dev/ttyUSB0` | Serial port path |
 | `baudrate` | int | 1000000 | Communication baud rate |
-| `lazy_connect` | bool | False | Auto-connect on first operation |
-| `pos_scale` | float | 2π/4096 | Position conversion (rad/unit) |
-| `vel_scale` | float | 0.229×2π/60 | Velocity conversion |
-| `cur_scale` | float | 1.0 | Current conversion (mA/unit) |
 
 ### Additional Methods
 
@@ -408,29 +392,6 @@ sync_write(
 ```
 
 Write values to multiple motors simultaneously using sync write.
-
----
-
-#### write_profile_velocity()
-
-```python
-write_profile_velocity(
-    motor_ids: Sequence[int],
-    profile_velocity: np.ndarray
-) -> None
-```
-
-Set the profile velocity for position moves.
-
----
-
-#### read_status_is_done_moving()
-
-```python
-read_status_is_done_moving() -> bool
-```
-
-Check if motors have finished moving to their target positions.
 
 ---
 
@@ -565,7 +526,7 @@ if __name__ == "__main__":
 |-------|-------|----------|
 | Timeout on read | Motor not responding | Check power, ID, baud rate |
 | Checksum error | Electrical interference | Shorten cables, add shielding |
-| Wrong data values | Scale factor mismatch | Verify pos_scale, vel_scale |
+| Wrong data values | Wrong motor family | Run `scripts/detect.py` to check the detected family |
 
 ### Motor Behavior
 
