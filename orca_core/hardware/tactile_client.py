@@ -86,9 +86,9 @@ class TactileStreamStats:
 class TactileSensorConfiguration:
     """Snapshot of connected sensors and their properties.
 
-    Captured at stream start. Sensors are enumerated at power-on and
-    mid-stream changes are not reported, so this snapshot is treated as
-    immutable for the duration of a stream.
+    Captured at stream start and treated as immutable for the stream. The
+    connector board can drop and re-add fingertips mid-stream; frames then no
+    longer match this snapshot and are dropped until the stream restarts.
     """
     connected: dict[str, bool] = field(default_factory=dict)  # {finger: is_connected}
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
