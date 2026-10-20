@@ -858,6 +858,36 @@ class FeetechClient(MotorClient):
                 return None
             return error
 
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Clamp this motor's goal current to zero (register 44).
+
+        The cached ceiling is left alone, so release_motor() restores what
+        the caller configured rather than the zero written here.
+        """
+        self._check_connected()
+        with self._bus_lock:
+            result, _ = self.packet_handler.write2ByteTxRx(
+                int(motor_id), HLS.GOAL_CURRENT, 0)
+        if result != COMM_SUCCESS:
+            logging.error("Motor %d: could not clamp its goal current to zero",
+                          motor_id)
+            return False
+        return True
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Restore this motor's configured goal current."""
+        self._check_connected()
+        raw = self._current_limit_raw.get(int(motor_id),
+                                         HLS.GOAL_CURRENT_MAX_RAW)
+        with self._bus_lock:
+            result, _ = self.packet_handler.write2ByteTxRx(
+                int(motor_id), HLS.GOAL_CURRENT, int(raw))
+        if result != COMM_SUCCESS:
+            logging.error("Motor %d: goal current not restored; it will not "
+                          "move until something writes it again", motor_id)
+            return False
+        return True
+
     def read_temperature_limits(self) -> "dict[int, Optional[float]]":
         """Each motor's Max Temperature register (address 13), in degC."""
         self._check_connected()

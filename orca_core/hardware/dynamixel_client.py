@@ -1115,6 +1115,35 @@ class DynamixelClient(MotorClient):
                 return None
             return value
 
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Clamp this motor's Goal Current to zero (address 102).
+
+        Written straight to the register rather than through
+        write_desired_current, so neither the remembered RAM nor the
+        configured ceiling records the zero: a reboot or a release has to put
+        the real ceiling back, not this.
+        """
+        motor_id = int(motor_id)
+        if self._current_ceiling_ma(motor_id) is None:
+            # No current register on this model; the caller falls back.
+            return False
+        with self._bus_lock:
+            self.sync_write([motor_id], [0], ADDR_GOAL_CURRENT,
+                            LEN_GOAL_CURRENT)
+        return True
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Restore this motor's configured Goal Current."""
+        motor_id = int(motor_id)
+        remembered = self._ram_settings.get(motor_id, {}).get(
+            (ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT))
+        if remembered is None:
+            return False
+        with self._bus_lock:
+            self.sync_write([motor_id], [int(remembered)], ADDR_GOAL_CURRENT,
+                            LEN_GOAL_CURRENT)
+        return True
+
     def read_temperature_limits(self) -> "dict[int, Optional[float]]":
         """Each motor's Temperature Limit register (address 31), in degC."""
         limits: "dict[int, Optional[float]]" = {}

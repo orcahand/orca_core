@@ -123,6 +123,12 @@ NOTIFY = "notify"
 DISABLE_TORQUE = "disable_torque"
 ENABLE_TORQUE = "enable_torque"
 REBOOT = "reboot"
+# Clamp the motor's goal current to zero so it cannot drive, and put the
+# ceiling back. Preferred over a torque disable for holding a motor off: one
+# family re-energizes itself a degree below its limit and would undo a
+# disable within the second.
+HOLD_OFF = "hold_off"
+RELEASE = "release"
 
 
 @dataclass(frozen=True)
@@ -231,10 +237,10 @@ class MotorFaultPolicy:
             # reports torque on - a cleared mask bit, or a read that raced
             # the stop - take it off ourselves rather than leave a hot motor
             # driving.
-            if obs.torque_enabled:
-                actions.append(FaultAction(
-                    DISABLE_TORQUE, obs.motor_id,
-                    "still energized after an overheat stop"))
+            actions.append(FaultAction(
+                HOLD_OFF, obs.motor_id,
+                "clamped to zero current until it has cooled "
+                f"{self.config.thermal_clear_margin_c:.0f} degC below its limit"))
             return actions
 
         if EXCESS_LOAD in stopped:
@@ -289,9 +295,9 @@ class MotorFaultPolicy:
             # off until the margin is met; that is the point of the margin.
             if obs.torque_enabled:
                 return [FaultAction(
-                    DISABLE_TORQUE, obs.motor_id,
+                    HOLD_OFF, obs.motor_id,
                     f"re-energized at {temperature:.0f} degC while cooling; "
-                    "holding it off until it is "
+                    "held off until it is "
                     f"{self.config.thermal_clear_margin_c:.0f} degC below its limit")]
             return []
 
@@ -317,10 +323,14 @@ class MotorFaultPolicy:
         record.last_reboot_monotonic = monotonic
         record.last_raw = 0
         self._close_open_events(record, monotonic)
-        actions = [FaultAction(
-            REBOOT, obs.motor_id,
-            f"cooled to {temperature:.0f} degC, {limit - temperature:.0f} degC "
-            "below its limit; clearing the thermal latch")]
+        actions = [
+            FaultAction(RELEASE, obs.motor_id,
+                        "cooled enough to be given its current ceiling back"),
+            FaultAction(
+                REBOOT, obs.motor_id,
+                f"cooled to {temperature:.0f} degC, {limit - temperature:.0f} "
+                "degC below its limit; clearing the thermal latch"),
+        ]
         if record.torque_was_on:
             actions.append(FaultAction(ENABLE_TORQUE, obs.motor_id,
                                        "torque was on before it overheated"))

@@ -7,6 +7,8 @@ from orca_core.hardware.mock_feetech_client import MockFeetechClient
 from orca_core.hardware.motor_faults import (
     DISABLE_TORQUE,
     ENABLE_TORQUE,
+    HOLD_OFF,
+    RELEASE,
     EXCESS_LOAD,
     FaultPolicyConfig,
     LOG,
@@ -202,7 +204,7 @@ class TestThermal:
         try:
             policy = MotorFaultPolicy(client)
             rounds = self._cool_to(policy, [81.0, 75.0, 69.0])
-            assert _kinds(rounds[2])[0] == REBOOT
+            assert _kinds(rounds[2])[:2] == [RELEASE, REBOOT]
             assert policy.record(1).cooling is False
             assert policy.record(1).thermal_recoveries == 1
         finally:
@@ -220,14 +222,14 @@ class TestThermal:
         finally:
             client.disconnect()
 
-    def test_a_still_energized_hot_motor_is_de_energized(self):
+    def test_a_hot_motor_is_clamped_to_zero_current(self):
         client = _client(MockDynamixelClient)
         try:
             policy = MotorFaultPolicy(client)
             actions = policy.observe(
                 [_obs(0x04, DXL_MASK, temperature_c=81.0, torque_enabled=True)],
                 now=0.0)
-            assert DISABLE_TORQUE in _kinds(actions)
+            assert HOLD_OFF in _kinds(actions)
         finally:
             client.disconnect()
 
@@ -344,14 +346,14 @@ class TestCoolingHoldsTheMotorOff:
             actions = policy.observe([_obs(0x04, FEETECH_MASK,
                                            temperature_c=79.0,
                                            torque_enabled=True)], now=10.0)
-            assert _kinds(actions) == [DISABLE_TORQUE]
+            assert _kinds(actions) == [HOLD_OFF]
             assert policy.record(1).cooling is True
 
             # Still held off well above the margin.
             actions = policy.observe([_obs(0x04, FEETECH_MASK,
                                            temperature_c=74.0,
                                            torque_enabled=True)], now=20.0)
-            assert _kinds(actions) == [DISABLE_TORQUE]
+            assert _kinds(actions) == [HOLD_OFF]
 
             # Margin met: cleared and brought back.
             actions = policy.observe([_obs(0x04, FEETECH_MASK,

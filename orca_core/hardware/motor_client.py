@@ -569,6 +569,26 @@ class MotorClient(ABC):
         return (cls.canonical_faults(value & mask),
                 cls.canonical_faults(value & ~mask))
 
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Make one motor unable to produce torque, and keep it that way.
+
+        Written as a goal current of zero rather than a torque disable,
+        because a family whose thermal protection re-energizes the motor a
+        degree below its limit will undo a torque disable within the second.
+        A zero ceiling is a single write that survives, and the motor stays
+        on the bus and readable.
+
+        The configured ceiling is remembered, not overwritten, so
+        :meth:`release_motor` can put it back. Returns ``False`` where the
+        motor has no current register, leaving the caller to fall back to a
+        torque disable it will have to keep re-asserting.
+        """
+        return False
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Give one motor its configured current ceiling back."""
+        return False
+
     def read_temperature_limits(self) -> "dict[int, float | None]":
         """Per motor, the temperature at which it shuts itself down, in degC.
 
