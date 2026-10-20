@@ -272,7 +272,11 @@ class OrcaHandTouch(OrcaHand):
 
     def get_tactile_taxels(self) -> TaxelReading | None:
         """Return the latest per-taxel ``TaxelReading``, or ``None`` if no
-        sensor is connected or no frame has arrived yet."""
+        sensor is connected or no frame has arrived yet.
+
+        Each taxel's force is in that taxel's own local axes (fz along its
+        surface normal); :meth:`get_taxel_data` rotates them into a common frame.
+        """
         if self._tactile_client is None:
             return None
         return self._tactile_client.get_latest_taxels()
@@ -327,15 +331,16 @@ class OrcaHandTouch(OrcaHand):
         return _link_health(self._tactile_link)
 
     def get_taxel_geometry(self) -> Dict[str, TaxelGeometry]:
-        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+        """Return static per-taxel geometry ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry in the sensor frame (meters) and
-        row ``i`` aligns with taxel ``i`` from :meth:`get_tactile_taxels`, so
-        the two join by index::
+        Positions (meters) and per-taxel force axes are fixed sensor geometry in
+        the sensor frame, and row ``i`` aligns with taxel ``i`` from
+        :meth:`get_tactile_taxels`, so the two join by index::
 
-            geom = hand.get_taxel_geometry()["index"].positions   # (n, 3)
-            forces = hand.get_tactile_taxels().as_array("index")  # (n, 3)
-            combined = np.hstack([geom, forces])                  # (n, 6)
+            geom = hand.get_taxel_geometry()["index"]
+            local = hand.get_tactile_taxels().as_array("index")  # (n, 3), taxel axes
+            forces = geom.rotate_forces(local)                    # (n, 3), sensor frame
+            combined = np.hstack([geom.positions, forces])        # (n, 6)
 
         Empty if the tactile sensor is not connected/configured.
         """
@@ -416,8 +421,10 @@ class OrcaHandTouch(OrcaHand):
 
         Positions (meters) come from the static sensor geometry and forces
         (Newtons) from the latest tactile stream frame; row ``i`` of both
-        describes the same taxel. Positions get the full rigid transform into
-        ``frame``; forces, being free vectors, are only rotated. See
+        describes the same taxel. Each force is first rotated out of its
+        taxel's local axes into the sensor frame. Positions then get the full
+        rigid transform into ``frame``; forces, being free vectors, are only
+        rotated. See
         :meth:`get_sensor_transforms` for the available frames and how joint
         angles are sourced. Returns ``None`` if no stream frame has arrived
         yet; fingers whose geometry does not match the streamed taxel count
@@ -444,6 +451,7 @@ class OrcaHandTouch(OrcaHand):
             forces = reading.as_array(finger)
             if len(positions) != len(forces):
                 continue
+            forces = geometry[finger].rotate_forces(forces)
             if is_sensor_frame:
                 transformed_positions, transformed_forces = positions, forces
             else:

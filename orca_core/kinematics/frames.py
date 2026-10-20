@@ -9,8 +9,9 @@
 
 The frame stack, innermost first:
 
-* ``sensor`` — a tactile sensor's own frame; taxel positions and forces are
-  natively expressed here. One per finger.
+* ``sensor`` — a tactile sensor's own frame; taxel positions are natively
+  expressed here, and per-taxel forces once rotated out of each taxel's local
+  axes (``TaxelGeometry.rotate_forces``). One per finger.
 * ``fingertip`` — the distal link frame (at the distal revolute joint). The
   sensor sits at a fixed mount pose in this frame. One per finger.
 * ``palm`` — the carpals link; moves with the wrist.

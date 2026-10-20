@@ -52,6 +52,23 @@ class TestGetTaxelData:
             np.testing.assert_allclose(taxel_data.positions, geometry[finger].positions)
             assert taxel_data.num_taxels == len(reading.as_array(finger))
 
+    def test_sensor_frame_force_leaves_the_taxel_axes(self, hand):
+        # Index taxel 0 axes: x (0.82544404, -0.47312300, -0.30789085), y (-0.17462733,
+        # 0.30465369, -0.93631803), z (0.53679367, 0.82664428, 0.16885436); 0.5x - 0.3y + 1.2z.
+        force = hand.get_taxel_data(frame=frames.SENSOR)["index"].forces[0]
+        np.testing.assert_allclose(force, [1.10926262, 0.66401553, 0.32957522], atol=1e-6)
+
+    def test_fingertip_forces_rotate_sensor_forces(self, hand):
+        sensor = hand.get_taxel_data(frame=frames.SENSOR)
+        fingertip = hand.get_taxel_data(frame=frames.FINGERTIP)
+        mounts = hand.kinematics.sensor_mounts
+        for finger in FINGER_NAMES:
+            np.testing.assert_allclose(
+                fingertip[finger].forces,
+                mounts[finger].apply_to_vectors(sensor[finger].forces),
+                atol=1e-12,
+            )
+
     def test_fingertip_frame_applies_mount(self, hand):
         sensor = hand.get_taxel_data(frame=frames.SENSOR)
         fingertip = hand.get_taxel_data(frame=frames.FINGERTIP)

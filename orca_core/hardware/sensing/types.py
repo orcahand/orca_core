@@ -17,7 +17,9 @@ ForceVector = list[float]
 is unsigned (normal). Mutable so callers can apply zeroing offsets in place."""
 
 FingerTaxels = list[ForceVector]
-"""Per-taxel forces on one finger: ``[[fx, fy, fz], ...]``."""
+"""Per-taxel forces on one finger: ``[[fx, fy, fz], ...]``, each in its own
+taxel's local axes (fz along the taxel's outward surface normal, fx/fy tangent
+to the surface). ``TaxelGeometry.rotate_forces`` maps them into the sensor frame."""
 
 ResultantForces = dict[FingerName, ForceVector]
 """``{finger: [fx, fy, fz]}`` resultant force per finger."""
@@ -57,7 +59,8 @@ class TaxelReading:
     """Per-taxel forces from a single auto-stream frame.
 
     Supports dict-style access: ``reading["thumb"]`` returns
-    ``[[fx, fy, fz], ...]`` for every taxel on that finger.
+    ``[[fx, fy, fz], ...]`` for every taxel on that finger, each in that
+    taxel's local axes (see ``FingerTaxels``).
     ``timestamp`` is the ``time.monotonic()`` frame receive time.
     """
 
@@ -119,7 +122,8 @@ class TaxelData:
     """Per-taxel positions and forces for one finger, expressed in a common frame.
 
     Row ``i`` of ``positions`` (meters) and ``forces`` (Newtons) describe the
-    same taxel. ``frame`` names the coordinate frame both are expressed in
+    same taxel. Forces are rotated out of each taxel's local axes, so all rows
+    share one set of axes. ``frame`` names the coordinate frame both are expressed in
     (see ``orca_core.kinematics.frames``). ``timestamp`` is the
     ``time.monotonic()`` receive time of the source tactile frame.
     """
