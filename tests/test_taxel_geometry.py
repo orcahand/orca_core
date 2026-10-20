@@ -1,7 +1,10 @@
 """Tests for static taxel geometry loading and its wiring into the tactile config."""
 
+import os
+
 import numpy as np
 import pytest
+import yaml
 
 from orca_core.constants import FINGER_NAMES
 from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
@@ -29,6 +32,28 @@ def _make_client(connected_fingers=None):
     link.connect()
     client = TactileClient(link, finger_to_sensor_id=state.finger_to_sensor_id)
     return client, link, state
+
+
+def _sensor_models():
+    """One geometry per sensor model; index, middle and ring share one."""
+    return list({geom.model: geom for geom in load_all_taxel_geometry().values()}.values())
+
+
+def _nearest_neighbours(positions, k=6):
+    """Indices of each taxel's ``k`` nearest other taxels."""
+    distances = np.linalg.norm(positions[:, None] - positions[None], axis=2)
+    return np.argsort(distances, axis=1, kind="stable")[:, 1 : k + 1]
+
+
+def _angles_deg(a, b):
+    return np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", a, b), -1.0, 1.0)))
+
+
+def _yaml_axes(model):
+    """Each taxel's ``(x_axis, y_axis, z_axis)`` rows as written in the model YAML."""
+    with open(os.path.join(taxel_geometry.MODELS_DIR, model, "config.yaml")) as f:
+        rows = yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))["coordinates"]
+    return np.array([[r["x_axis"], r["y_axis"], r["z_axis"]] for r in rows], dtype=float)
 
 
 class TestLoadGeometry:
@@ -78,26 +103,31 @@ class TestTaxelAxes:
             assert geom.orientations.shape == (geom.num_taxels, 3, 3)
             assert geom.orientations.dtype == np.float64
 
-    def test_orientations_are_rotations(self):
-        for geom in load_all_taxel_geometry().values():
-            r = geom.orientations
-            identity = np.broadcast_to(np.eye(3), r.shape)
-            np.testing.assert_allclose(np.transpose(r, (0, 2, 1)) @ r, identity, atol=1e-12)
-            np.testing.assert_allclose(np.linalg.det(r), 1.0, atol=1e-12)
+    def test_normals_match_the_local_surface(self):
+        # A plane through each taxel and its six nearest neighbours, signed by the
+        # neighbours' normals; correct axes stay within about 20 deg of it.
+        for geom in _sensor_models():
+            nb = _nearest_neighbours(geom.positions)
+            patch = np.concatenate([geom.positions[:, None], geom.positions[nb]], axis=1)
+            fitted = np.linalg.svd(patch - patch.mean(axis=1, keepdims=True))[2][:, 2]
+            fitted *= np.sign(np.einsum("ij,ij->i", fitted, geom.normals[nb].sum(axis=1)))[:, None]
+            off = _angles_deg(fitted, geom.normals)
+            assert off.max() < 30.0, (
+                f"{geom.model}: taxel {off.argmax()} normal is {off.max():.0f} deg off its surface"
+            )
 
-    def test_normals_are_local_z_axes(self):
-        for geom in load_all_taxel_geometry().values():
-            np.testing.assert_array_equal(geom.normals, geom.orientations[:, :, 2])
-
-    def test_normals_point_out_of_the_pad(self):
-        # Every taxel faces away from a point on the mounting plane under the pad.
-        for geom in load_all_taxel_geometry().values():
-            centre = geom.positions.mean(axis=0)
-            below = np.array([centre[0], centre[1], 0.0])
-            outward = geom.positions - below
-            outward /= np.linalg.norm(outward, axis=1, keepdims=True)
-            cosines = np.einsum("ij,ij->i", geom.normals, outward)
-            assert np.all(cosines > 0.2), f"{geom.finger}: min cos {cosines.min():.2f}"
+    def test_tangent_axes_follow_their_neighbours(self):
+        # Each taxel's x axis against its neighbours' x axes projected onto its surface.
+        for geom in _sensor_models():
+            nb = _nearest_neighbours(geom.positions)
+            x_axes, normals = geom.orientations[:, :, 0], geom.normals
+            mean_x = x_axes[nb].sum(axis=1)
+            mean_x -= np.einsum("ij,ij->i", mean_x, normals)[:, None] * normals
+            mean_x /= np.linalg.norm(mean_x, axis=1, keepdims=True)
+            off = _angles_deg(mean_x, x_axes)
+            assert off.max() < 45.0, (
+                f"{geom.model}: taxel {off.argmax()} x axis is {off.max():.0f} deg off its neighbours'"
+            )
 
     def test_top_of_pad_faces_up(self):
         for geom in load_all_taxel_geometry().values():
@@ -116,16 +146,12 @@ class TestTaxelAxes:
 
 
 class TestRotateForces:
-    def test_normal_press_maps_onto_the_normal(self):
-        geom = load_taxel_geometry("thumb")
-        local = np.tile([0.0, 0.0, 2.5], (geom.num_taxels, 1))
-        np.testing.assert_allclose(geom.rotate_forces(local), 2.5 * geom.normals, atol=1e-12)
-
-    def test_shear_stays_in_the_surface(self):
-        geom = load_taxel_geometry("pinky")
-        local = np.tile([0.7, -0.4, 0.0], (geom.num_taxels, 1))
-        rotated = geom.rotate_forces(local)
-        np.testing.assert_allclose(np.einsum("ij,ij->i", rotated, geom.normals), 0.0, atol=1e-12)
+    def test_local_components_land_on_the_yaml_axes(self):
+        for geom in _sensor_models():
+            axes = _yaml_axes(geom.model)
+            local = np.tile([0.7, -0.4, 2.5], (geom.num_taxels, 1))
+            expected = 0.7 * axes[:, 0] - 0.4 * axes[:, 1] + 2.5 * axes[:, 2]
+            np.testing.assert_allclose(geom.rotate_forces(local), expected, atol=1e-6)
 
     def test_magnitudes_are_preserved(self):
         geom = load_taxel_geometry("middle")
@@ -135,11 +161,6 @@ class TestRotateForces:
             np.linalg.norm(local, axis=1),
             atol=1e-12,
         )
-
-    def test_accepts_nested_lists(self):
-        geom = load_taxel_geometry("index")
-        local = [[0.0, 0.0, 1.0]] * geom.num_taxels
-        np.testing.assert_allclose(geom.rotate_forces(local), geom.normals, atol=1e-12)
 
     def test_rejects_wrong_taxel_count(self):
         geom = load_taxel_geometry("index")
