@@ -17,6 +17,12 @@ from orca_core.hardware.mock_hand_serial_link import MockHandSerialLink
 from orca_core.hardware.sensing.constants import (
     ADDR_AUTO_DATA_TYPE,
     ADDR_AUTO_ENABLE,
+    ADDR_EXT_ID,
+    ADDR_NUMBERING_COMMAND,
+    ADDR_NUMBERING_IDENTITY,
+    ADDR_NUMBERING_RAW_REPLY,
+    ADDR_NUMBERING_STATUS,
+    ADDR_SLOT_IDENTITY_START,
     ADDR_CONNECTED_SENSORS_LENGTH,
     ADDR_CONNECTED_SENSORS_START,
     ADDR_NUM_TAXELS_LENGTH,
@@ -25,14 +31,27 @@ from orca_core.hardware.sensing.constants import (
     BYTES_PER_RESULTANT,
     DEFAULT_FINGER_TO_SENSOR_ID,
     DEFAULT_TAXEL_COUNTS,
+    EXT_CAP_FINGERTIP_NUMBERING,
+    EXT_CAP_NUMBERING_SET_AT,
+    EXT_CAP_SLOT_IDENTITY,
+    EXT_ID_MAGIC,
+    FINGER_SENSOR_PART,
     FUNC_CODE_READ,
     FUNC_CODE_WRITE,
+    NUMBERING_MAX_MODULE,
+    NUMBERING_OP_SCAN,
+    NUMBERING_OP_SET,
+    NUMBERING_OP_SET_AT,
+    NUMBERING_SET_KEY,
+    NUMBERING_STATUS_LENGTH,
     PROTOCOL_HEADER_AUTO,
     PROTOCOL_HEADER_RESPONSE,
     PROTOCOL_RESERVED,
     RESULTANT_BLOCK_SIZE,
     SLOT_CONNECTED_BIT_POSITIONS,
     SLOT_DISTAL_TAXEL_REGISTER_OFFSETS,
+    SLOT_IDENTITY_LENGTH,
+    SLOT_IDENTITY_STRIDE,
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
 from orca_core.hardware.sensing.types import ResultantForces, TaxelForces
@@ -62,6 +81,9 @@ class TactileMockState:
     write_log: list[tuple[int, bytes]] = field(default_factory=list)
     """Every register write the mock ACKed, as (address, data) — lets tests
     assert on device-bound side effects like the stream re-arm."""
+    numbering: FingertipBusMock = field(default_factory=lambda: FingertipBusMock())
+    """The connector board's fingertip-numbering registers and the fingertips
+    on its bus; tests renumber through it and then call ``power_cycle``."""
 
     @property
     def active_sensors(self) -> list[str]:
@@ -69,6 +91,156 @@ class TactileMockState:
         active = [f for f in FINGER_NAMES if f in self.connected_fingers]
         active.sort(key=lambda f: self.finger_to_sensor_id[f])
         return active
+
+
+@dataclass
+class FingertipBusMock:
+    """Fingertips on the bus by module number, plus the board's numbering state.
+
+    ``modules`` lists the module number of each physically connected fingertip
+    (repeats model two tips sharing a number). ``None`` mirrors the mock's
+    connected fingers. A renumbering is staged until ``power_cycle``;
+    ``write_reply=False`` models a fingertip that takes it without answering,
+    ``set_at=False`` firmware that renumbers only a lone fingertip.
+    """
+    supported: bool = True
+    set_at: bool = True
+    modules: list[int] | None = None
+    parts: dict[int, str] = field(default_factory=dict)
+    write_status: int = 0
+    write_reply: bool = True
+    pending: dict[int, int] = field(default_factory=dict)
+    status: bytearray = field(default_factory=lambda: bytearray(NUMBERING_STATUS_LENGTH))
+    identity: bytes = b""
+    raw_reply: bytes = b""
+
+
+def _bus_modules(state: TactileMockState) -> list[int]:
+    if state.numbering.modules is not None:
+        return list(state.numbering.modules)
+    return sorted(state.finger_to_sensor_id[f] for f in state.connected_fingers)
+
+
+def _part_for_module(state: TactileMockState, module: int) -> str:
+    if module in state.numbering.parts:
+        return state.numbering.parts[module]
+    finger = next((f for f, s in state.finger_to_sensor_id.items() if s == module), None)
+    return FINGER_SENSOR_PART.get(finger, "")
+
+
+def _sensor_name(part: str) -> bytes:
+    return f"{part} V1.0.0".encode() if part else b""
+
+
+def power_cycle(state: TactileMockState) -> None:
+    """Apply staged renumberings and rebuild the connected fingers from the bus."""
+    bus = state.numbering
+    modules = _bus_modules(state)
+    parts = {m: _part_for_module(state, m) for m in modules}
+    renumbered = [bus.pending.get(m, m) for m in modules]
+    bus.parts = {bus.pending.get(m, m): parts[m] for m in modules}
+    bus.modules = renumbered
+    bus.pending = {}
+    slot_to_finger = {s: f for f, s in state.finger_to_sensor_id.items()}
+    unique = [m for m in renumbered if renumbered.count(m) == 1 and m in slot_to_finger]
+    state.connected_fingers = [slot_to_finger[m] for m in sorted(unique)]
+
+
+def _run_numbering_command(state: TactileMockState, data: bytes) -> int:
+    bus = state.numbering
+    if not bus.supported:
+        return 0
+    op = data[0] if data else 0
+    keyed = op in (NUMBERING_OP_SET, NUMBERING_OP_SET_AT)
+    sizes = {NUMBERING_OP_SCAN: 4, NUMBERING_OP_SET: 4, NUMBERING_OP_SET_AT: 5 if bus.set_at else 0}
+    if len(data) != sizes.get(op):
+        return 1
+    if keyed and (bytes(data[1:3]) != NUMBERING_SET_KEY or max(data[3:]) > NUMBERING_MAX_MODULE):
+        return 1
+    arg = data[3]
+
+    modules = _bus_modules(state)
+    addresses = sorted({m + 1 for m in modules if modules.count(m) == 1})
+    garbled = sorted({m + 1 for m in modules if modules.count(m) > 1})
+    status = bytearray(NUMBERING_STATUS_LENGTH)
+    status[0] = 2
+    status[2] = (bus.status[2] + 1) & 0xFF
+    status[3] = len(addresses)
+    status[4] = addresses[0] if addresses else 0
+    status[5] = arg + 1 if keyed else 0
+    status[7] = sum(1 << (a - 1) for a in addresses)
+    status[10] = sum(1 << (a - 1) for a in garbled)
+    bus.identity, bus.raw_reply = b"", b""
+
+    if garbled:
+        result = 12
+    elif op == NUMBERING_OP_SET_AT:
+        current = data[4]
+        if current + 1 not in addresses:
+            result = 10
+        elif current == arg:
+            result = 13
+        elif arg + 1 in addresses:
+            result = 18
+        else:
+            status[4] = current + 1
+            result = _write_module(state, status, current, arg)
+    elif not addresses:
+        result = 10
+    elif len(addresses) > 1:
+        result = 11
+    elif op == NUMBERING_OP_SCAN:
+        bus.identity = _sensor_name(_part_for_module(state, addresses[0] - 1))
+        result = 2
+    elif addresses[0] - 1 == arg:
+        result = 13
+    else:
+        result = _write_module(state, status, addresses[0] - 1, arg)
+    status[1] = result
+    status[8] = len(bus.identity)
+    status[9] = len(bus.raw_reply)
+    bus.status = status
+    return 0
+
+
+def _write_module(state: TactileMockState, status: bytearray, current: int, new: int) -> int:
+    """The board's module write to the fingertip at ``current``; returns the result code."""
+    bus = state.numbering
+    bus.identity = _sensor_name(_part_for_module(state, current))
+    if not bus.write_reply:
+        bus.pending[current] = new
+        return 15
+    status[6] = bus.write_status
+    # Opaque to orca_core: the board's capture of the fingertip's reply.
+    reply = bytes([0xAA, 0x55, current + 1, bus.write_status])
+    bus.raw_reply = reply + bytes([calculate_checksum(reply)])
+    if bus.write_status != 0:
+        return 17
+    bus.pending[current] = new
+    return 1
+
+
+def _numbering_block(state: TactileMockState, address: int) -> bytes | None:
+    bus = state.numbering
+    if not bus.supported:
+        return None
+    if address == ADDR_EXT_ID:
+        caps = EXT_CAP_FINGERTIP_NUMBERING | EXT_CAP_SLOT_IDENTITY
+        return EXT_ID_MAGIC + bytes([1, caps | (EXT_CAP_NUMBERING_SET_AT if bus.set_at else 0)])
+    if address == ADDR_NUMBERING_STATUS:
+        return bytes(bus.status)
+    if address == ADDR_NUMBERING_IDENTITY:
+        return bus.identity
+    if address == ADDR_NUMBERING_RAW_REPLY:
+        return bus.raw_reply
+    offset = address - ADDR_SLOT_IDENTITY_START
+    if 0 <= offset < SLOT_IDENTITY_STRIDE * len(DEFAULT_FINGER_TO_SENSOR_ID) and offset % SLOT_IDENTITY_STRIDE == 0:
+        slot = offset // SLOT_IDENTITY_STRIDE
+        modules = _bus_modules(state)
+        if modules.count(slot) == 1:
+            return _sensor_name(_part_for_module(state, slot))[:SLOT_IDENTITY_LENGTH]
+        return b""
+    return None
 
 
 def install_tactile_mock(link: MockHandSerialLink, state: TactileMockState) -> None:
@@ -136,13 +308,18 @@ def _respond_to_request(request: bytes, state: TactileMockState) -> bytes | None
         data = _read_register_value(address, count, state)
         return _build_read_response(address, data)
     if func == FUNC_CODE_WRITE:
-        state.write_log.append((address, bytes(request[8:8 + count])))
-        return _build_write_response(address)
+        data = bytes(request[8:8 + count])
+        state.write_log.append((address, data))
+        status = _run_numbering_command(state, data) if address == ADDR_NUMBERING_COMMAND else 0
+        return _build_write_response(address, status)
     return None
 
 
 def _read_register_value(address: int, count: int, state: TactileMockState) -> bytes:
-    if address == ADDR_CONNECTED_SENSORS_START:
+    numbering = _numbering_block(state, address)
+    if numbering is not None:
+        block = numbering
+    elif address == ADDR_CONNECTED_SENSORS_START:
         block = _encode_connected_sensors(state)
     elif address == ADDR_NUM_TAXELS_START:
         block = _encode_num_taxels(state)
@@ -200,8 +377,8 @@ def _build_read_response(address: int, data: bytes) -> bytes:
     return body + bytes([calculate_checksum(body)])
 
 
-def _build_write_response(address: int) -> bytes:
-    payload = bytes([0x00])  # status byte: 0 = success
+def _build_write_response(address: int, status: int = 0) -> bytes:
+    payload = bytes([status])  # 0 = success
     body = (
         PROTOCOL_HEADER_RESPONSE
         + bytes([PROTOCOL_RESERVED, FUNC_CODE_WRITE])

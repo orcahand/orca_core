@@ -212,7 +212,8 @@ sensors:
   port: auto
   # baudrate auto-detected from the connected sensor; set an explicit int
   # only to force a specific rate.
-  # Fixed production wiring: connector N carries finger N (slot = connector - 1).
+  # Slot = the fingertip's Paxini module number (bus address = slot + 1), whichever
+  # connector it plugs into. Fingertips are numbered thumb 0 ... pinky 4.
   finger_to_sensor_id:
     thumb: 0
     index: 1
