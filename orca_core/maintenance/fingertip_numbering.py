@@ -142,7 +142,6 @@ class FingertipNumbering:
     old_module: int
     new_module: int
     identity: str = ""
-    power_cycle_required: bool = True
     acknowledged: bool = True
     raw_reply: bytes = b""
 

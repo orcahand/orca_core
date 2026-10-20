@@ -21,8 +21,9 @@ def test_register_map_follows_the_firmware_spec():
 
     assert (c.ADDR_EXT_ID, c.EXT_ID_MAGIC, c.ADDR_NUMBERING_COMMAND, c.ADDR_NUMBERING_STATUS,
             c.ADDR_NUMBERING_IDENTITY, c.ADDR_NUMBERING_RAW_REPLY, c.ADDR_SLOT_IDENTITY_START,
-            c.SLOT_IDENTITY_STRIDE, c.EXT_CAP_NUMBERING_SET_AT) == (
-        0x6100, b"OX", 0x6110, 0x6120, 0x6130, 0x6150, 0x6200, 0x20, 0x04)
+            c.SLOT_IDENTITY_STRIDE, c.EXT_CAP_FINGERTIP_NUMBERING, c.EXT_CAP_SLOT_IDENTITY,
+            c.EXT_CAP_NUMBERING_SET_AT) == (
+        0x6100, b"OX", 0x6110, 0x6120, 0x6130, 0x6150, 0x6200, 0x20, 0x01, 0x02, 0x04)
 
 
 def _single_tip(tactile_mock_factory, module=2, part="PXSR-CMDDP18B"):
@@ -67,10 +68,10 @@ def test_scan_writes_nothing_but_the_scan_command(tactile_mock_factory):
     assert state.numbering.pending == {}
 
 
-def test_set_sends_the_keyed_command_and_asks_for_a_power_cycle(tactile_mock_factory):
+def test_set_sends_the_keyed_command(tactile_mock_factory):
     client, state = _single_tip(tactile_mock_factory, module=2, part="PXSR-CMDDP18A")
     done = fn.set_fingertip_module(client, 0)
-    assert (done.old_module, done.new_module, done.power_cycle_required) == (2, 0, True)
+    assert (done.old_module, done.new_module) == (2, 0)
     assert state.write_log == [(COMMAND_REGISTER, SCAN), (COMMAND_REGISTER, b"\x02MN\x00")]
 
 
@@ -127,6 +128,17 @@ def test_set_at_renumbers_the_named_fingertip_in_a_full_hand(tactile_mock_factor
     done = fn.set_fingertip_module(client, 5, current=1)
     assert (done.old_module, done.new_module) == (1, 5)
     assert state.write_log == [(COMMAND_REGISTER, SCAN), (COMMAND_REGISTER, b"\x03MN\x05\x01")]
+
+
+def test_swapping_two_fingertips_through_the_spare_number(tactile_mock_factory):
+    client, state = _hand(tactile_mock_factory, [0, 1, 2, 3, 4])
+    state.numbering.parts = {0: "PXSR-CMDDP18C", 4: "PXSR-CMDDP18A"}
+    for new, current in [(5, 0), (0, 4), (4, 5)]:
+        fn.set_fingertip_module(client, new, current=current)
+        tactile_mock.power_cycle(state)
+    assert sorted(state.numbering.modules) == [0, 1, 2, 3, 4]
+    assert (state.numbering.parts[0], state.numbering.parts[4]) == ("PXSR-CMDDP18A", "PXSR-CMDDP18C")
+    assert state.write_log[-1] == (COMMAND_REGISTER, b"\x03MN\x04\x05")
 
 
 @pytest.mark.parametrize(
