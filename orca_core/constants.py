@@ -17,10 +17,7 @@ HARDWARE_VERSION = "hardware_version"
 # major*10 + minor: 2 is v2.0, 21 is v2.1.
 HARDWARE_VERSION_V21 = 21
 JOINT_ROM_DICT = "joint_roms"
-JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"
-MOTOR_TO_JOINT_DICT = "motor_to_joint"
-MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
 
 DYNAMIXEL = "dynamixel"
 FEETECH = "feetech"
@@ -97,6 +94,11 @@ KNOWN_VIDS: dict[str, list[int]] = {
         0x2F5D,  # ORCA Dexterity hand controller board (dual-CDC; PID 0x2202)
     ],
 }
+
+def motor_family_vids() -> "set[int]":
+    """USB vendor IDs of every supported motor family's adapters."""
+    return {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}
+
 
 # The hand's controller board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY
 # lets the host distinguish motor vs sensor.

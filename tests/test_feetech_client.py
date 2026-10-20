@@ -159,7 +159,9 @@ def client(monkeypatch):
     handler = FakePacketHandler({1: 100, 2: 200, 3: 300})
     feetech.packet_handler = handler
     feetech._connected = True
+    feetech.port_handler.is_open = True
     yield feetech, handler
+    feetech.port_handler.is_open = False
     feetech._connected = False
     FeetechClient.OPEN_CLIENTS.discard(feetech)
 
@@ -171,7 +173,7 @@ def _patch_sleep(monkeypatch):
 
 
 def _expected_pos(client: FeetechClient, raw: int) -> float:
-    return FeetechClient._raw_to_rad(raw, client.pos_scale)
+    return -raw * 2.0 * np.pi / 4096
 
 
 def test_full_sync_read_reports_ok(client):

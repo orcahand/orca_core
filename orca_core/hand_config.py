@@ -409,6 +409,20 @@ def _parse_joint_control_gains(
     return gains_all, overrides
 
 
+def _shared_hand_kwargs(config: dict) -> dict:
+    """The joint-space fields every hand config carries, taken from a parsed ``config.yaml``."""
+    kwargs = {}
+    if "type" in config:
+        kwargs["type"] = config["type"]
+    if JOINT_IDS in config:
+        kwargs["joint_ids"] = list(config[JOINT_IDS])
+    if JOINT_ROM_DICT in config:
+        kwargs["joint_roms_dict"] = dict(config[JOINT_ROM_DICT])
+    if "neutral_position" in config:
+        kwargs["neutral_position"] = dict(config["neutral_position"])
+    return kwargs
+
+
 @dataclass(frozen=True)
 class BaseHandConfig:
     """Base joint-space configuration for a hand model."""
@@ -439,17 +453,7 @@ class BaseHandConfig:
         )
         config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
 
-        kwargs = {"config_path": resolved_config_path}
-        if "type" in config:
-            kwargs["type"] = config["type"]
-        if JOINT_IDS in config:
-            kwargs["joint_ids"] = list(config[JOINT_IDS])
-        if JOINT_ROM_DICT in config:
-            kwargs["joint_roms_dict"] = dict(config[JOINT_ROM_DICT])
-        if "neutral_position" in config:
-            kwargs["neutral_position"] = dict(config["neutral_position"])
-
-        return cls(**kwargs)
+        return cls(config_path=resolved_config_path, **_shared_hand_kwargs(config))
 
     def validate(self) -> None:
         """Validate shared joint-space configuration."""
@@ -708,14 +712,14 @@ class OrcaHandConfig(BaseHandConfig):
         return self.use_joint_feedback
 
     @classmethod
-    def from_config_path(
+    def _kwargs_from_config_path(
         cls,
         config_path: str | None = None,
         calibration_path: str | None = None,
         model_version: str | None = None,
         model_name: str | None = None,
-    ) -> "OrcaHandConfig":
-        """Load hardware-backed ORCA hand configuration from canonical YAML keys."""
+    ) -> "tuple[dict, dict]":
+        """Constructor kwargs and the parsed yaml document for a hardware-backed hand."""
         resolved_config_path = _resolve_config_path(
             config_path,
             model_version=model_version,
@@ -732,16 +736,11 @@ class OrcaHandConfig(BaseHandConfig):
                 "from the bundled model or your hand's backup."
             )
 
-        kwargs = {"config_path": resolved_config_path, "calibration_path": resolved_calibration_path}
-
-        if "type" in config:
-            kwargs["type"] = config["type"]
-        if JOINT_IDS in config:
-            kwargs["joint_ids"] = list(config[JOINT_IDS])
-        if JOINT_ROM_DICT in config:
-            kwargs["joint_roms_dict"] = dict(config[JOINT_ROM_DICT])
-        if "neutral_position" in config:
-            kwargs["neutral_position"] = dict(config["neutral_position"])
+        kwargs = {
+            "config_path": resolved_config_path,
+            "calibration_path": resolved_calibration_path,
+            **_shared_hand_kwargs(config),
+        }
         if "baudrate" in config:
             kwargs["baudrate"] = int(config["baudrate"])
         if "port" in config:
@@ -841,6 +840,20 @@ class OrcaHandConfig(BaseHandConfig):
             kwargs["joint_gains_all"] = gains_all
             kwargs["joint_gains_overrides"] = overrides
 
+        return kwargs, config
+
+    @classmethod
+    def from_config_path(
+        cls,
+        config_path: str | None = None,
+        calibration_path: str | None = None,
+        model_version: str | None = None,
+        model_name: str | None = None,
+    ) -> "OrcaHandConfig":
+        """Load hardware-backed ORCA hand configuration from canonical YAML keys."""
+        kwargs, _ = cls._kwargs_from_config_path(
+            config_path, calibration_path, model_version, model_name
+        )
         # A pinned version is in force from load, so a hand built straight from
         # the path (not through load_hand) still gets that revision's map.
         return cls(**kwargs).with_hardware_version(kwargs.get("hardware_version"))
@@ -1071,6 +1084,19 @@ class OrcaHandConfig(BaseHandConfig):
         return dataclasses.replace(self, hardware_version=hardware_version)
 
 
+def _sensor_kwargs(sensors: dict) -> dict:
+    """Touch-config constructor kwargs from the ``sensors:`` block."""
+    sensor_kwargs = {}
+    if "port" in sensors:
+        sensor_kwargs["sensor_port"] = sensors["port"]
+    if "baudrate" in sensors:
+        raw_baud = sensors["baudrate"]
+        sensor_kwargs["sensor_baudrate"] = raw_baud if raw_baud == "auto" else int(raw_baud)
+    if "finger_to_sensor_id" in sensors:
+        sensor_kwargs["finger_to_sensor_id"] = dict(sensors["finger_to_sensor_id"])
+    return sensor_kwargs
+
+
 @dataclass(frozen=True)
 class OrcaHandTouchConfig(OrcaHandConfig):
     """ORCA hand configuration with tactile sensor support."""
@@ -1091,28 +1117,16 @@ class OrcaHandTouchConfig(OrcaHandConfig):
         model_version: str | None = None,
         model_name: str | None = None,
     ) -> "OrcaHandTouchConfig":
-        base = OrcaHandConfig.from_config_path(
-            config_path=config_path,
-            calibration_path=calibration_path,
-            model_version=model_version,
-            model_name=model_name,
+        kwargs, config = cls._kwargs_from_config_path(
+            config_path, calibration_path, model_version, model_name
         )
+        try:
+            sensor_kwargs = _sensor_kwargs(config.get("sensors", {}))
+        except Exception:
+            OrcaHandConfig(**kwargs)  # a base-field error is reported ahead of a sensors one
+            raise
 
-        config = read_yaml(base.config_path) or {}
-        sensors = config.get("sensors", {})
-
-        sensor_kwargs = {}
-        if "port" in sensors:
-            sensor_kwargs["sensor_port"] = sensors["port"]
-        if "baudrate" in sensors:
-            raw_baud = sensors["baudrate"]
-            sensor_kwargs["sensor_baudrate"] = (
-                raw_baud if raw_baud == "auto" else int(raw_baud)
-            )
-        if "finger_to_sensor_id" in sensors:
-            sensor_kwargs["finger_to_sensor_id"] = dict(sensors["finger_to_sensor_id"])
-
-        return cls(**{f.name: getattr(base, f.name) for f in dataclasses.fields(base)}, **sensor_kwargs)
+        return cls(**kwargs, **sensor_kwargs).with_hardware_version(kwargs.get("hardware_version"))
 
     def validate_config(self) -> None:
         super().validate_config()
@@ -1129,6 +1143,3 @@ class OrcaHandTouchConfig(OrcaHandConfig):
                 f"finger_to_sensor_id values must be 0-4 with no duplicates, "
                 f"got {sorted(self.finger_to_sensor_id.values())}"
             )
-
-
-HandConfig = BaseHandConfig

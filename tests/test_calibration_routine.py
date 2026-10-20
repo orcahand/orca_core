@@ -1,6 +1,8 @@
 """Failure-path tests for calibration routine internals: guarded motor reads,
 offset-calibration failures, and the atomic YAML persistence helper."""
 
+import dataclasses
+import logging
 import os
 import shutil
 import sys
@@ -382,34 +384,102 @@ def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# calibration currents are set once, per motor
+# calibration currents are set per motor
 # ---------------------------------------------------------------------------
 
 
-def test_calibration_sets_currents_once_as_a_per_motor_list(connected_hand, monkeypatch):
+def test_a_step_mixing_the_wrist_and_a_finger_keeps_each_motors_own_current(connected_hand, monkeypatch):
     hand = connected_hand
+    hand.config = dataclasses.replace(
+        hand.config,
+        calibration_current=250,
+        wrist_calibration_current=500,
+        max_current=600,
+        calibration_sequence=[{"step": 1, "joints": {"index_mcp": "flex", "wrist": "flex"}}],
+    )
     calls = []
     real = hand.set_max_current
     monkeypatch.setattr(hand, "set_max_current",
                         lambda current: (calls.append(current), real(current))[1])
 
-    hand.calibrate(joints=["wrist", "index_mcp"], persist=False)
+    hand.calibrate(force_wrist=True, persist=False)
 
-    wrist_index = hand.config.motor_ids.index(hand.config.joint_to_motor_map["wrist"])
-    lists = [c for c in calls if isinstance(c, list)]
-    assert len(lists) == 1, "one per-motor list before the steps, nothing per step"
-    # Finger tendons are driven at each motor's own ceiling: a cap below what
-    # the joint needs stalls it short of its stop. The wrist drives a belt and
-    # keeps its configured current.
+    # Finger tendons are driven at each motor's own ceiling; the wrist drives a
+    # belt and keeps its configured current.
     ceilings = hand.motor_client.read_current_limits()
-    fingers = lists[0][:wrist_index] + lists[0][wrist_index + 1:]
-    finger_ids = [m for i, m in enumerate(hand.config.motor_ids) if i != wrist_index]
-    assert lists[0][wrist_index] == hand.config.wrist_calibration_current
-    assert fingers == [float(ceilings[m]) for m in finger_ids]
-    assert set(fingers) != {float(hand.config.calibration_current)}
-    scalars = [c for c in calls if not isinstance(c, list)]
-    assert scalars[-1] == hand.config.max_current, \
-        "the run ends by restoring the hand-wide ceiling"
-    # Every other scalar is a step arming one joint at its own drive current.
-    allowed = set(lists[0]) | {float(hand.config.max_current)}
-    assert set(float(c) for c in scalars[:-1]) <= allowed
+    wrist_motor = hand.config.joint_to_motor_map["wrist"]
+    expected = [
+        500.0 if motor_id == wrist_motor else float(ceilings[motor_id])
+        for motor_id in hand.config.motor_ids
+    ]
+    assert float(ceilings[hand.config.joint_to_motor_map["index_mcp"]]) not in (250.0, 500.0)
+    assert calls == [expected, expected, 600]
+
+
+@pytest.mark.parametrize("drive_ends", ["stopped", "raises"])
+def test_a_redrive_restores_each_motors_nominal_current_however_it_ends(
+    connected_hand, monkeypatch, drive_ends
+):
+    hand = connected_hand
+    hand.config = dataclasses.replace(
+        hand.config, calibration_current=250, wrist_calibration_current=500
+    )
+    writes = []
+    monkeypatch.setattr(hand, "set_max_current", writes.append)
+
+    def drive(*args, **kwargs):
+        if drive_ends == "raises":
+            raise RuntimeError("bus died")
+        return None
+
+    monkeypatch.setattr(calibration_routine, "_drive_step", drive)
+    state = calibration_routine._DriveState(pending_limits={})
+    run = lambda: calibration_routine._redrive_joint(  # noqa: E731
+        hand, "index_mcp", 3, current=450.0, state=state,
+        encoder_pass=None, progress_callback=None, should_stop=lambda: False,
+    )
+
+    if drive_ends == "raises":
+        with pytest.raises(RuntimeError, match="bus died"):
+            run()
+    else:
+        assert run() is False
+
+    assert writes == [[500.0] + [910.0] * 16]
+
+
+# ---------------------------------------------------------------------------
+# reporting and direction sign
+# ---------------------------------------------------------------------------
+
+
+def test_a_reported_event_is_also_logged(connected_hand, caplog):
+    motor_id = connected_hand.config.joint_to_motor_map["index_mcp"]
+
+    with caplog.at_level(logging.INFO, logger="orca_core.maintenance.calibration_routine"):
+        calibration_routine._record_limit(
+            connected_hand, {motor_id: [None, None]}, motor_id, 1, 0.5, None
+        )
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "motor 3 (index_mcp) reached the limit at 0.5000 rad"
+    ]
+
+
+@pytest.mark.parametrize(
+    "inverted, direction, expected",
+    [
+        (False, "flex", 1),
+        (False, "extend", -1),
+        (True, "flex", -1),
+        (True, "extend", 1),
+    ],
+)
+def test_direction_sign_honours_joint_inversion(inverted, direction, expected):
+    from types import SimpleNamespace
+
+    hand = SimpleNamespace(
+        config=SimpleNamespace(joint_inversion_dict={"index_mcp": inverted})
+    )
+
+    assert calibration_routine._direction_sign(hand, "index_mcp", direction) == expected

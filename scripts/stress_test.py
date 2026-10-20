@@ -4,27 +4,23 @@ import argparse
 import time
 
 from orca_core.utils import enable_ansi_escapes
-from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
+from orca_core.utils.cli import (
+    add_hand_arguments,
+    connect_hand,
+    create_hand_from_args,
+    group_joints_by_finger,
+    shutdown_hand,
+)
 
 from orca_core.constants import NUM_STEPS, STEP_SIZE
+from orca_core.demo_poses import load_demo_poses
 
 
 TEMP_CHECK_INTERVAL = 2.0
 
-# Pose targets as fractions of each joint's configured ROM.
-OPEN_FRACTIONS = {
-    "thumb_cmc": 0.70, "thumb_abd": 0.80, "thumb_mcp": 0.85, "thumb_dip": 0.80,
-    "index_abd": 0.10, "middle_abd": 0.50, "ring_abd": 0.70, "pinky_abd": 0.85,
-    "index_mcp": 0.15, "middle_mcp": 0.15, "ring_mcp": 0.15, "pinky_mcp": 0.15,
-    "index_pip": 0.10, "middle_pip": 0.10, "ring_pip": 0.10, "pinky_pip": 0.10,
-    "wrist": 0.30,
-}
-CLOSE_FRACTIONS = {
-    "thumb_cmc": 0.35, "thumb_abd": 0.55, "thumb_mcp": 0.20, "thumb_dip": 0.85,
-    "index_mcp": 0.85, "middle_mcp": 0.85, "ring_mcp": 0.85, "pinky_mcp": 0.85,
-    "index_pip": 0.90, "middle_pip": 0.90, "ring_pip": 0.90, "pinky_pip": 0.90,
-    "wrist": 0.55,
-}
+_MAIN_DEMO_POSES = load_demo_poses()["main"].pose_fractions
+OPEN_FRACTIONS = _MAIN_DEMO_POSES["open_hand"]
+CLOSE_FRACTIONS = _MAIN_DEMO_POSES["power_grasp"]
 
 
 RST = "\033[0m"
@@ -43,22 +39,16 @@ def temp_color(pct: float) -> str:
     return GREEN
 
 
-def finger_groups(joint_ids: list[str]) -> dict[str, list[str]]:
-    """Group the config's joint names by finger prefix ({finger}_{type}; bare wrist)."""
-    groups: dict[str, list[str]] = {}
-    for joint in joint_ids:
-        groups.setdefault(joint.split("_", 1)[0], []).append(joint)
-    return groups
-
-
 def print_temp_table(hand, temps: dict, max_temp: float) -> None:
     """Print a compact color-coded temperature table grouped by finger."""
     motor_to_joint = hand.config.motor_to_joint_dict
 
-    grouped = {finger: [] for finger in finger_groups(hand.config.joint_ids)}
+    by_finger = group_joints_by_finger(hand.config.joint_ids)
+    finger_of = {joint: finger for finger, joints in by_finger.items() for joint in joints}
+    grouped = {finger: [] for finger in by_finger}
     for mid, t in temps.items():
         joint = motor_to_joint.get(mid, f"motor_{mid}")
-        grouped.setdefault(joint.split("_", 1)[0], []).append((joint, mid, t))
+        grouped.setdefault(finger_of.get(joint, "motor"), []).append((joint, mid, t))
 
     print("\033[2J\033[H", end="")  # clear screen, cursor home
 

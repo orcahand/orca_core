@@ -271,3 +271,22 @@ def test_the_uncapped_hold_leaves_the_wrist_capped(connected_mock_hand):
     assert by_motor[wrist_motor] == pytest.approx(float(hand.config.max_current))
     for motor_id in finger_motor_ids(hand.config):
         assert by_motor[motor_id] >= float(hand.config.max_current)
+
+
+def test_run_tension_restore_failure_on_the_success_path_still_raises(connected_mock_hand, monkeypatch):
+    from orca_core.maintenance.tensioning import run_tension
+
+    def stuck(*args, **kwargs):
+        raise RuntimeError("torque stuck")
+
+    monkeypatch.setattr(connected_mock_hand, "disable_torque", stuck)
+    events = []
+
+    with pytest.raises(RuntimeError, match="torque stuck"):
+        run_tension(
+            connected_mock_hand, move_motors=False, should_stop=lambda: True,
+            progress_callback=events.append, offset_deg=0.0,
+        )
+
+    assert [e["event"] for e in events] == ["phase", "phase"]
+    assert [e["phase"] for e in events] == ["holding", "released"]
