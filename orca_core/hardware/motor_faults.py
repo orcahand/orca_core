@@ -39,8 +39,15 @@ class FaultPolicyConfig:
 
     # Reboots of one motor before its repetition is called out prominently.
     report_after_reboots: int = 3
-    # Reboots of one motor before it is left latched instead of recovered.
+    # Load reboots of one motor before it is left latched instead of
+    # recovered. Counted separately from thermal: a joint that keeps stalling
+    # is a mechanical fault, and recovering it again only hides the cause.
     giveup_after_reboots: int = 5
+    # Thermal recoveries before a motor is left latched. ``None`` means never
+    # give up, which is the default: a motor that has cooled can work again,
+    # and the wait is self-limiting because it does not come back until it
+    # has cooled.
+    thermal_giveup_after_reboots: Optional[int] = None
     # How far below its temperature limit a motor must cool before the
     # thermal latch is cleared.
     thermal_clear_margin_c: float = 10.0
@@ -96,6 +103,7 @@ class MotorFaultRecord:
     # restores what the operator had rather than energizing a relaxed hand.
     torque_was_on: bool = False
     given_up: bool = False
+    thermal_given_up: bool = False
 
     def count(self, condition: str, *, stopped_only: bool = False) -> int:
         return sum(1 for event in self.events
@@ -277,6 +285,17 @@ class MotorFaultPolicy:
         last = record.last_reboot_monotonic
         if last is not None and monotonic - last < self.config.min_reboot_interval_s:
             return []
+
+        allowed = self.config.thermal_giveup_after_reboots
+        if allowed is not None and record.thermal_recoveries >= allowed:
+            if record.thermal_given_up:
+                return []
+            record.thermal_given_up = True
+            return [FaultAction(
+                NOTIFY, obs.motor_id,
+                f"left latched after {record.thermal_recoveries} thermal "
+                "recoveries: it keeps overheating, so whatever is heating it "
+                "has not been dealt with", prominent=True)]
 
         record.cooling = False
         record.thermal_recoveries += 1

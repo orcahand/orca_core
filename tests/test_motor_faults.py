@@ -281,3 +281,47 @@ class TestWhatGetsRecorded:
             assert policy.records == {}
         finally:
             client.disconnect()
+
+
+class TestTheTwoBudgetsAreSeparate:
+    def test_thermal_recovery_is_unlimited_by_default(self):
+        """A motor that cooled can work again, and the wait is self-limiting:
+        it does not come back until it has cooled."""
+        client = _client(MockDynamixelClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            now = 0.0
+            for _ in range(8):
+                policy.observe([_obs(0x04, DXL_MASK, temperature_c=81.0,
+                                     torque_enabled=False)], now=now)
+                now += 10.0
+                policy.observe([_obs(0x04, DXL_MASK, temperature_c=60.0,
+                                     torque_enabled=False)], now=now)
+                now += 10.0
+                policy.record(1).last_raw = 0
+            record = policy.record(1)
+            assert record.thermal_recoveries == 8
+            assert record.thermal_given_up is False
+            # Load budget untouched by any of it.
+            assert record.reboots == 0
+        finally:
+            client.disconnect()
+
+    def test_a_thermal_budget_can_be_set(self):
+        client = _client(MockDynamixelClient)
+        try:
+            policy = MotorFaultPolicy(
+                client, FaultPolicyConfig(thermal_giveup_after_reboots=2))
+            now = 0.0
+            for _ in range(4):
+                policy.observe([_obs(0x04, DXL_MASK, temperature_c=81.0,
+                                     torque_enabled=False)], now=now)
+                now += 10.0
+                policy.observe([_obs(0x04, DXL_MASK, temperature_c=60.0,
+                                     torque_enabled=False)], now=now)
+                now += 10.0
+                policy.record(1).last_raw = 0
+            assert policy.record(1).thermal_recoveries == 2
+            assert policy.record(1).thermal_given_up is True
+        finally:
+            client.disconnect()
