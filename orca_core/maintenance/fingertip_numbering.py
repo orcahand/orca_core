@@ -49,6 +49,7 @@ from ..hardware.sensing.constants import (
 )
 from ..hardware.tactile_client import TactileClient
 
+STATE_BUSY = 1
 STATE_DONE = 2
 COMMAND_TIMEOUT_S = 2.0
 POLL_INTERVAL_S = 0.02
@@ -173,7 +174,7 @@ def set_fingertip_module(
         raise ValueError(f"module number must be 0..{NUMBERING_MAX_MODULE}, got {new_module}")
     scan = scan_fingertips(client, timeout_s)
     if scan.result != "scan_ok":
-        raise FingertipNumberingError(scan.result, RESULT_MESSAGES[scan.result])
+        raise FingertipNumberingError(scan.result, _message(scan.result))
     current = scan.single_module
     if expected_current is not None and current != expected_current:
         raise FingertipNumberingError(
@@ -194,7 +195,7 @@ def set_fingertip_module(
             raw_reply=status["raw_reply"],
         )
     if status["result"] != "set_ok":
-        message = RESULT_MESSAGES.get(status["result"], f"Numbering failed ({status['result']}).")
+        message = _message(status["result"])
         if status["raw_reply"]:
             message += f" Reply: {status['raw_reply'].hex(' ')}"
         raise FingertipNumberingError(status["result"], message)
@@ -237,13 +238,16 @@ def _run(client: TactileClient, command: bytes, timeout_s: float) -> dict:
     try:
         client._write_register(ADDR_NUMBERING_COMMAND, command, attempts=1)
     except IOError as e:
-        raise FingertipNumberingError("rejected", f"The board refused the numbering command: {e}") from e
-    deadline = time.time() + timeout_s
+        # A lost ACK fails the write too; the board marks a command it took busy before acking it.
+        st = client._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
+        if st[0] != STATE_BUSY and st[2] == seq_before:
+            raise FingertipNumberingError("rejected", f"The board didn't take the numbering command: {e}") from e
+    deadline = time.monotonic() + timeout_s
     while True:
         st = client._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
         if st[0] == STATE_DONE and st[2] != seq_before:
             break
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             raise FingertipNumberingError("timeout", "The board didn't finish the numbering command.")
         time.sleep(POLL_INTERVAL_S)
     identity = _text(client._read_register(ADDR_NUMBERING_IDENTITY, st[8])) if st[8] else ""
@@ -256,6 +260,10 @@ def _run(client: TactileClient, command: bytes, timeout_s: float) -> dict:
         "identity": identity,
         "raw_reply": raw,
     }
+
+
+def _message(result: str) -> str:
+    return RESULT_MESSAGES.get(result, f"Numbering failed ({result}).")
 
 
 def _text(raw: bytes) -> str:
