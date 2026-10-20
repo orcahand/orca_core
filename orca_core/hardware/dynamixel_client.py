@@ -44,6 +44,7 @@ ADDR_SECONDARY_ID = 12
 # from inside the tool.
 ADDR_PROTOCOL_TYPE = 13
 ADDR_TEMPERATURE_LIMIT = 31
+ADDR_SHUTDOWN = 63  # which Hardware Error Status (70) bits turn torque off; same bit layout
 ADDR_ACCELERATION_LIMIT = 40
 ADDR_VELOCITY_LIMIT = 44
 # 40..47 is contiguous, so both ceilings read back in one transaction.
@@ -251,6 +252,7 @@ class DynamixelClient(MotorClient):
     default_calibration_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
+    supports_reboot = True
     supports_pwm_cap = True
 
     def __init__(self,
@@ -1112,6 +1114,23 @@ class DynamixelClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return value
+
+    def read_stop_mask(self) -> "dict[int, Optional[int]]":
+        """Each motor's Shutdown register (address 63)."""
+        masks: "dict[int, Optional[int]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                if not self._present([motor_id]):
+                    masks[int(motor_id)] = None
+                    continue
+                value, comm_result, _ = self.packet_handler.read1ByteTxRx(
+                    self.port_handler, motor_id, ADDR_SHUTDOWN)
+                if comm_result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    masks[int(motor_id)] = None
+                else:
+                    masks[int(motor_id)] = value
+        return masks
 
     def read_hardware_errors(
         self, motor_ids: Sequence[int]

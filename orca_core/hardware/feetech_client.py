@@ -107,6 +107,12 @@ CLAMP_WARN_INTERVAL_S = 5.0
 # the read rate.
 STATUS_WARN_INTERVAL_S = 5.0
 
+# A rebooting servo is off the bus for roughly 800 ms, so the first ping is
+# not worth sending before then.
+MOTOR_REBOOT_SETTLE_S = 0.8
+MOTOR_REBOOT_TIMEOUT_S = 3.0
+MOTOR_REBOOT_POLL_S = 0.05
+
 
 # Operator-editable settings. Three of the Dynamixel entries have no HLS
 # counterpart and are absent rather than disabled: return delay time (this
@@ -225,6 +231,7 @@ class FeetechClient(MotorClient):
         (0x08, "overcurrent"),
         (0x20, "overload"),
     )
+    supports_reboot = True
     position_range_rad = POSITION_RANGE_RAD
     current_scale_ma = HLS.CURRENT_SCALE_MA
     max_current_ma = HLS.GOAL_CURRENT_MAX_RAW * HLS.CURRENT_SCALE_MA
@@ -701,6 +708,67 @@ class FeetechClient(MotorClient):
                 retries -= 1
             return remaining_ids
 
+    def reboot_motor(self, motor_id: int) -> None:
+        """Restart one motor and put its RAM settings back.
+
+        A reboot is the only in-band way to clear a latched fault. It also
+        clears RAM, and on this family that means Goal Current reloads from
+        Protection Current — the overcurrent trip point, far above any
+        configured ceiling — so a recovered motor would run effectively
+        uncapped until something wrote the ceiling again. The cached ceiling
+        is therefore re-applied before returning.
+
+        Torque is deliberately left off: re-energizing is the caller's call.
+        """
+        self._check_connected()
+        with self._bus_lock:
+            result = self.packet_handler.reBoot(motor_id)
+            if result != COMM_SUCCESS:
+                logging.error(
+                    "Motor %d did not accept the reboot instruction: %s",
+                    motor_id, self.packet_handler.getTxRxResult(result))
+                self._flush_input_buffer()
+                return
+            # The instruction draws no reply, so the motor going quiet is
+            # expected rather than a failed transaction.
+            if not self._await_motor_after_reboot(motor_id):
+                logging.error(
+                    "Motor %d did not answer within %.1f s of its reboot; its "
+                    "current ceiling was not restored and it may be running at "
+                    "its protection current.", motor_id, MOTOR_REBOOT_TIMEOUT_S)
+                return
+            self._restore_ram_after_reboot(motor_id)
+            self._status_warned_at = {
+                key: when for key, when in self._status_warned_at.items()
+                if key[0] != motor_id
+            }
+
+    def _await_motor_after_reboot(self, motor_id: int) -> bool:
+        """Ping until the rebooted motor answers; False if it never does."""
+        deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
+        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        while True:
+            _, result, _ = self.packet_handler.ping(motor_id)
+            if result == COMM_SUCCESS:
+                return True
+            if time.monotonic() >= deadline:
+                self._flush_input_buffer()
+                return False
+            time.sleep(MOTOR_REBOOT_POLL_S)
+
+    def _restore_ram_after_reboot(self, motor_id: int) -> None:
+        """Re-apply the goal current a reboot reset to Protection Current."""
+        sync_write = self._sync_write(HLS.GOAL_CURRENT, 2)
+        sync_write.clearParam()
+        if not sync_write.addParam(motor_id, self._current_bytes(motor_id)):
+            logging.error("Motor %d: could not stage its current ceiling "
+                          "after the reboot", motor_id)
+            return
+        if sync_write.txPacket() != COMM_SUCCESS:
+            logging.error("Motor %d: current ceiling not restored after the "
+                          "reboot", motor_id)
+        sync_write.clearParam()
+
     def _log_status_error(self, motor_id: int, error: int, context: str) -> None:
         """Log a motor's decoded status byte; the transaction itself succeeded.
 
@@ -732,6 +800,21 @@ class FeetechClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return error
+
+    def read_stop_mask(self) -> "dict[int, Optional[int]]":
+        """Each motor's Unload Conditions register (address 19)."""
+        self._check_connected()
+        masks: "dict[int, Optional[int]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                value, result, _ = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.UNLOAD_CONDITIONS)
+                if result != COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    masks[int(motor_id)] = None
+                else:
+                    masks[int(motor_id)] = value
+        return masks
 
     def set_operating_mode(self, motor_ids: Sequence[int], mode: int) -> None:
         """Sets the operating mode for the specified motors.
