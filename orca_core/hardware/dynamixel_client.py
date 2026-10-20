@@ -619,16 +619,20 @@ class DynamixelClient(MotorClient):
 
         One bus read each for the Moving register and the positions, so the
         whole chain is judged from the same instant rather than motor by
-        motor.
+        motor. Motors absent since connect are never read, so they are skipped.
         """
+        responding = self.responding_motor_ids()
         try:
             moving = self._moving_reader.read().astype(np.int64)
             positions = self._pos_vel_cur_reader.read()[0]
         except Exception:
             logging.debug("arrival poll failed", exc_info=True)
-            return list(self.motor_ids)
+            return responding
+        present = set(responding)
         unsettled = []
         for index, motor_id in enumerate(self.motor_ids):
+            if motor_id not in present:
+                continue
             if int(moving[index]):
                 unsettled.append(int(motor_id))
                 continue

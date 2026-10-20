@@ -110,6 +110,13 @@ class TestDynamixelArrival:
         client = make_client([0, 0], [5.0, 5.0], {})
         assert client._unsettled_motors() == []
 
+    def test_a_motor_absent_since_connect_is_not_waited_for(self, make_client):
+        """It is never read again, so its goal could never be met."""
+        client = make_client([0, 0], [0.0, 0.0], {1: 0.0, 2: 1.0})
+        client._model_numbers = {1: 1220}
+        client._adopt_responding()
+        assert client._unsettled_motors() == []
+
     def test_a_failed_poll_is_not_read_as_arrival(self, make_client):
         """Losing the bus mid-move must not look like the chain settled."""
         client = make_client([0, 0], [0.0, 0.0], {1: 0.0})

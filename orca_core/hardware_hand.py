@@ -1213,12 +1213,13 @@ class OrcaHand(BaseHand):
 
         motor_pos = self._read_motor_pos_for_offsets()
 
-        lower_limit = np.array(
-            [self.motor_limits_dict[motor_id][0] for motor_id in self.config.motor_ids]
-        )
-        higher_limit = np.array(
-            [self.motor_limits_dict[motor_id][1] for motor_id in self.config.motor_ids]
-        )
+        limits = [
+            self.motor_limits_dict[motor_id]
+            if self.calibration._motor_has_limits(motor_id) else (None, None)
+            for motor_id in self.config.motor_ids
+        ]
+        lower_limit = np.array([limit[0] for limit in limits])
+        higher_limit = np.array([limit[1] for limit in limits])
 
         offsets = {}
         for idx, motor_id in enumerate(self.config.motor_ids):

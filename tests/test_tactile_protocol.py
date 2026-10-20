@@ -11,6 +11,7 @@ from orca_core.hardware.sensing.tactile_protocol import (
     parse_read_response,
     parse_write_response,
     unpack_auto_payload,
+    compute_expected_payload_size,
     decode_auto_payload,
     decode_resultant_register,
     decode_connected_sensors,
@@ -272,9 +273,15 @@ def test_decode_auto_payload_resultant(raw, expected, hi_byte):
     assert decode_auto_payload(data, fingers, {}, True, False) == (expected, None)
 
 
-def test_decode_auto_payload_wrong_size_raises_with_its_bytes():
+@pytest.mark.parametrize("resultant, taxels", [(True, False), (False, True), (True, True)])
+def test_decode_auto_payload_wrong_size_raises_with_its_bytes(resultant, taxels):
     with pytest.raises(ValueError, match="size mismatch.*first bytes: dead"):
-        decode_auto_payload(b"\xDE\xAD", ["thumb"], {"thumb": 2}, True, True)
+        decode_auto_payload(b"\xDE\xAD", ["thumb"], {"thumb": 2}, resultant, taxels)
+
+
+def test_payload_size_needs_a_taxel_count_for_every_sensor():
+    with pytest.raises(KeyError):
+        compute_expected_payload_size(False, True, ["thumb"], {"index": 87})
 
 
 def test_decode_auto_payload_taxels_only():

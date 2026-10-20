@@ -16,7 +16,7 @@ orca_core/
 │   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
 │   ├── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
 │   ├── fingertip_numbering.py       # number tactile fingertips through the connector board
-│   └── progress.py                  # ProgressCallback/ShouldStop types and emit_progress()
+│   └── progress.py                  # ProgressCallback/ShouldStop types and progress_emitter()
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog

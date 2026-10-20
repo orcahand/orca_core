@@ -1053,32 +1053,42 @@ def test_calibration_result_drops_malformed_measured_rom_entries(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# an unusable joint-to-motor ratio on the read path
+# an unusable calibration entry on the read path
 # ---------------------------------------------------------------------------
 
 _DROPPED = object()
 
 
-@pytest.mark.parametrize("ratio", [None, _DROPPED], ids=["none", "missing"])
-def test_an_unusable_ratio_reads_as_uncalibrated_instead_of_raising(calib_dir, caplog, ratio):
+@pytest.mark.parametrize(
+    "field, value, missing",
+    [
+        ("joint_to_motor_ratios_dict", None, "joint-to-motor ratio"),
+        ("joint_to_motor_ratios_dict", _DROPPED, "joint-to-motor ratio"),
+        ("motor_limits_dict", [], "motor limits"),
+    ],
+    ids=["ratio-none", "ratio-missing", "limits-empty"],
+)
+def test_an_unusable_entry_reads_as_uncalibrated_instead_of_raising(
+    calib_dir, caplog, field, value, missing
+):
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     success, msg = hand.connect()
     assert success, msg
     try:
         motor_id = hand.config.motor_ids[0]
         joint = hand.config.motor_to_joint_dict[motor_id]
-        ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
-        if ratio is _DROPPED:
-            del ratios[motor_id]
+        entries = dict(getattr(hand.calibration, field))
+        if value is _DROPPED:
+            del entries[motor_id]
         else:
-            ratios[motor_id] = ratio
-        hand.calibration = dc.replace(hand.calibration, joint_to_motor_ratios_dict=ratios)
+            entries[motor_id] = value
+        hand.calibration = dc.replace(hand.calibration, **{field: entries})
 
         with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
             positions = hand._motor_to_joint_pos(np.zeros(len(hand.config.motor_ids)))
 
         assert positions[joint] is None
         (record,) = caplog.records
-        assert "(missing joint-to-motor ratio)" in record.getMessage()
+        assert f"(missing {missing})" in record.getMessage()
     finally:
         hand.disconnect()
