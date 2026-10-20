@@ -363,3 +363,25 @@ def test_a_reboot_clears_that_motors_latch_and_leaves_the_others(make):
         assert client.reboot_count[1] == 1
     finally:
         client.disconnect()
+
+
+def test_feetech_records_the_status_byte_it_already_receives():
+    """Every reply on that family carries the byte, so noticing a fault is
+    free - but logging it is not reporting it. A fault raised while the hand
+    is being driven must not be lost because nothing happened to be polling
+    the error register.
+    """
+    # The real client, unconnected: recording is bookkeeping on a byte the
+    # caller already has, so it needs no bus.
+    client = FeetechClient([1, 2], port="/dev/null", baudrate=1000000)
+    # Only the log line needs the handler; the recording is pure bookkeeping.
+    client.packet_handler = types.SimpleNamespace(
+        getRxPacketError=lambda error: f"status 0x{error:02X}")
+    assert client.take_hardware_alerts() == {}
+
+    client._log_status_error(1, 0x04, "sync read")
+    client._log_status_error(1, 0x04, "sync read")  # log throttled, still recorded
+    client._log_status_error(2, 0x20, "sync read")
+
+    assert client.take_hardware_alerts() == {1: 0x04, 2: 0x20}
+    assert client.take_hardware_alerts() == {}, "draining clears"

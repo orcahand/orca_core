@@ -324,3 +324,40 @@ class TestTheTwoBudgetsAreSeparate:
             assert policy.record(1).thermal_given_up is True
         finally:
             client.disconnect()
+
+
+class TestCoolingHoldsTheMotorOff:
+    def test_a_motor_that_re_energizes_itself_while_cooling_is_held_off(self):
+        """Feetech's thermal protection tracks the live condition with about a
+        degree of hysteresis, so the motor comes back on its own just under
+        the limit and chatters there instead of cooling. The margin only
+        means something if it is enforced."""
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            # Overheats at 81 against an 80 limit and stops itself.
+            policy.observe([_obs(0x04, FEETECH_MASK, temperature_c=81.0,
+                                 torque_enabled=False)], now=0.0)
+            assert policy.record(1).cooling is True
+
+            # Drops a degree and the hardware re-energizes it.
+            actions = policy.observe([_obs(0x04, FEETECH_MASK,
+                                           temperature_c=79.0,
+                                           torque_enabled=True)], now=10.0)
+            assert _kinds(actions) == [DISABLE_TORQUE]
+            assert policy.record(1).cooling is True
+
+            # Still held off well above the margin.
+            actions = policy.observe([_obs(0x04, FEETECH_MASK,
+                                           temperature_c=74.0,
+                                           torque_enabled=True)], now=20.0)
+            assert _kinds(actions) == [DISABLE_TORQUE]
+
+            # Margin met: cleared and brought back.
+            actions = policy.observe([_obs(0x04, FEETECH_MASK,
+                                           temperature_c=69.0,
+                                           torque_enabled=True)], now=30.0)
+            assert REBOOT in _kinds(actions)
+            assert policy.record(1).cooling is False
+        finally:
+            client.disconnect()

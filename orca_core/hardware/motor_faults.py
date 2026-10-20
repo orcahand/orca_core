@@ -281,7 +281,18 @@ class MotorFaultPolicy:
         temperature = obs.temperature_c
         if limit is None or temperature is None:
             return []
+
         if temperature > limit - self.config.thermal_clear_margin_c:
+            # One family re-energizes itself the moment it drops below its
+            # limit, which is about a degree of hysteresis - so it chatters
+            # in and out at the threshold and never actually cools. Hold it
+            # off until the margin is met; that is the point of the margin.
+            if obs.torque_enabled:
+                return [FaultAction(
+                    DISABLE_TORQUE, obs.motor_id,
+                    f"re-energized at {temperature:.0f} degC while cooling; "
+                    "holding it off until it is "
+                    f"{self.config.thermal_clear_margin_c:.0f} degC below its limit")]
             return []
 
         # Same floor as a load recovery: if clearing the latch does not take,

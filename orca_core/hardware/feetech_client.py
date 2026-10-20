@@ -314,6 +314,10 @@ class FeetechClient(MotorClient):
         self._clamp_counts: dict = {}
         self._clamp_warned_at: dict = {}
 
+        # Status bytes seen since the last drain, for take_hardware_alerts.
+        # Every reply carries one, so this costs no extra traffic.
+        self._hardware_alerts: "dict[int, int]" = {}
+        self._alerts_lock = threading.Lock()
         # Last-warned time per (motor, status flags, context), and each motor's
         # known operating mode, so an unchanged mode costs no EEPROM write.
         self._status_warned_at: dict = {}
@@ -712,6 +716,13 @@ class FeetechClient(MotorClient):
                 retries -= 1
             return remaining_ids
 
+    def take_hardware_alerts(self) -> "dict[int, int]":
+        """Motors seen reporting a fault since the last call, and clear."""
+        with self._alerts_lock:
+            alerts = dict(self._hardware_alerts)
+            self._hardware_alerts.clear()
+        return alerts
+
     def reboot_motor(self, motor_id: int) -> None:
         """Restart one motor and put its RAM settings back.
 
@@ -746,6 +757,8 @@ class FeetechClient(MotorClient):
                 key: when for key, when in self._status_warned_at.items()
                 if key[0] != motor_id
             }
+            with self._alerts_lock:
+                self._hardware_alerts.pop(int(motor_id), None)
 
     def _await_motor_after_reboot(self, motor_id: int) -> bool:
         """Ping until the rebooted motor answers; False if it never does."""
@@ -801,11 +814,24 @@ class FeetechClient(MotorClient):
                 ", ".join(str(a) for a in failures))
 
     def _log_status_error(self, motor_id: int, error: int, context: str) -> None:
-        """Log a motor's decoded status byte; the transaction itself succeeded.
+        """Record and log a motor's decoded status byte; the transaction itself
+        succeeded.
 
-        Repeats of the same flags on the same motor are throttled, so a latched
-        condition costs one line per interval instead of one per read.
+        Every reply on this family carries the byte, so noticing a fault costs
+        nothing - but logging it is not reporting it. The byte is recorded
+        here for :meth:`take_hardware_alerts` to drain, so a caller watching
+        for faults sees them without paying for a second read, and a fault
+        raised while the hand is being driven is not lost just because
+        nothing happened to be polling the register.
+
+        Repeats of the same flags on the same motor are throttled, so a
+        standing condition costs one line per interval instead of one per
+        read. The recording is not throttled: a drain must not miss a fault
+        because a log line was suppressed.
         """
+        with self._alerts_lock:
+            self._hardware_alerts[int(motor_id)] = int(error)
+
         key = (motor_id, error, context)
         now = time.monotonic()
         if now - self._status_warned_at.get(key, -STATUS_WARN_INTERVAL_S) < \
