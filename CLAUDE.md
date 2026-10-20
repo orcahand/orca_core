@@ -14,7 +14,8 @@ orca_core/
 │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
 │   ├── motor_travel.py              # per-joint motor-travel baselines (config.yaml joint_motor_travel)
 │   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
-│   └── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
+│   ├── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
+│   └── fingertip_numbering.py       # number tactile fingertips through the connector board
 ├── data/                         # Packaged content (demo_poses.yaml)
 ├── control/                      # Closed-loop joint control
 │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog

@@ -34,6 +34,16 @@ DEFAULT_TAXEL_COUNTS = {
     "thumb": 51, "index": 87, "middle": 87, "ring": 87, "pinky": 51,
 }
 
+# Paxini part number of the fingertip each finger carries; the sensor reports
+# it in its name string (connector-board slot identity registers).
+FINGER_SENSOR_PART = {
+    "thumb": "PXSR-CMDDP18A",
+    "index": "PXSR-CMDDP18B",
+    "middle": "PXSR-CMDDP18B",
+    "ring": "PXSR-CMDDP18B",
+    "pinky": "PXSR-CMDDP18C",
+}
+
 # Sensor model (taxel-geometry YAML under sensing/models/) per finger.
 FINGER_MODELS = {
     "thumb": "touch-sensor-thumb",
@@ -74,6 +84,28 @@ ADDR_AUTO_ENABLE = 0x0017
 # Register write values
 REGISTER_ENABLE = bytes([0x01])
 REGISTER_DISABLE = bytes([0x00])
+
+# ORCA extension registers of the connector board (unused by Paxini's map).
+# Firmware without them reads zeros here, so EXT_ID gates everything below.
+ADDR_EXT_ID = 0x6100
+EXT_ID_LENGTH = 4
+EXT_ID_MAGIC = b"OX"
+EXT_CAP_FINGERTIP_NUMBERING = 0x01
+EXT_CAP_SLOT_IDENTITY = 0x02
+ADDR_NUMBERING_COMMAND = 0x6110
+ADDR_NUMBERING_STATUS = 0x6120
+NUMBERING_STATUS_LENGTH = 16
+ADDR_NUMBERING_IDENTITY = 0x6130
+NUMBERING_IDENTITY_LENGTH = 32
+ADDR_NUMBERING_RAW_REPLY = 0x6150
+NUMBERING_RAW_REPLY_LENGTH = 24
+ADDR_SLOT_IDENTITY_START = 0x6200
+SLOT_IDENTITY_STRIDE = 0x20
+SLOT_IDENTITY_LENGTH = 24
+NUMBERING_OP_SCAN = 0x01
+NUMBERING_OP_SET = 0x02
+NUMBERING_SET_KEY = b"MN"
+NUMBERING_MAX_MODULE = 5
 
 # ---------------------------------------------------------------------------
 # Codec internals (used by protocol.py decoders)
