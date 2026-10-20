@@ -390,8 +390,9 @@ def test_probe_orca_info_gives_up_after_both_queries_time_out(scripted_port, vir
     assert probe_orca_info(OH_MOTOR_PORT, timeout=0.2) is None
 
     assert port.writes == [ORCA_INFO_QUERY, ORCA_ID_QUERY]
-    # Real time counts toward each 0.2 s deadline, so only the total is bounded below.
-    assert virtual_clock.monotonic() - start_clock >= 0.4
+    # Real time counts toward each 0.2 s deadline, so only the total is bounded below
+    # (less float rounding: the clock reads hundreds of seconds on Windows runners).
+    assert virtual_clock.monotonic() - start_clock >= 0.4 - 1e-9
     assert virtual_clock.offset - start_slept <= 0.5
 
 
