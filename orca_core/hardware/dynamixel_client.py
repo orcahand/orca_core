@@ -1115,6 +1115,23 @@ class DynamixelClient(MotorClient):
                 return None
             return value
 
+    def read_temperature_limits(self) -> "dict[int, Optional[float]]":
+        """Each motor's Temperature Limit register (address 31), in degC."""
+        limits: "dict[int, Optional[float]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                if not self._present([motor_id]):
+                    limits[int(motor_id)] = None
+                    continue
+                value, comm_result, _ = self.packet_handler.read1ByteTxRx(
+                    self.port_handler, motor_id, ADDR_TEMPERATURE_LIMIT)
+                if comm_result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    limits[int(motor_id)] = None
+                else:
+                    limits[int(motor_id)] = float(value)
+        return limits
+
     def read_stop_mask(self) -> "dict[int, Optional[int]]":
         """Each motor's Shutdown register (address 63)."""
         masks: "dict[int, Optional[int]]" = {}

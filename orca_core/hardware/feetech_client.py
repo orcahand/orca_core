@@ -299,6 +299,10 @@ class FeetechClient(MotorClient):
         # start at full scale until connect() reads the motor's protection current.
         self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
         self._current_ceiling_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
+        # Position-loop gains this client has written, by motor then address.
+        # SRAM, so a reboot reloads EEPROM's values and these are needed to
+        # restore what the caller asked for.
+        self._servo_gains_raw: "dict[int, dict[int, int]]" = {}
 
         # Sync read/write groups, built once per packet handler and reused: the
         # 100 Hz read path must not rebuild a param table per call.
@@ -757,17 +761,44 @@ class FeetechClient(MotorClient):
             time.sleep(MOTOR_REBOOT_POLL_S)
 
     def _restore_ram_after_reboot(self, motor_id: int) -> None:
-        """Re-apply the goal current a reboot reset to Protection Current."""
-        sync_write = self._sync_write(HLS.GOAL_CURRENT, 2)
-        sync_write.clearParam()
-        if not sync_write.addParam(motor_id, self._current_bytes(motor_id)):
-            logging.error("Motor %d: could not stage its current ceiling "
-                          "after the reboot", motor_id)
-            return
-        if sync_write.txPacket() != COMM_SUCCESS:
-            logging.error("Motor %d: current ceiling not restored after the "
-                          "reboot", motor_id)
-        sync_write.clearParam()
+        """Re-apply every RAM setting the reboot cleared.
+
+        A reboot reloads RAM from EEPROM, which on this family means the goal
+        current snaps back to the protection current - the overcurrent trip
+        point, far above any configured ceiling - and the position-loop gains
+        and motion profile revert to whatever the motor shipped with. A motor
+        recovered without this runs effectively uncapped and differently
+        tuned from its neighbours.
+        """
+        motor_id = int(motor_id)
+        failures = []
+
+        # Goal current first: it is the one that matters for safety.
+        for address, value in (
+            (HLS.GOAL_CURRENT, self._current_limit_raw.get(
+                motor_id, HLS.GOAL_CURRENT_MAX_RAW)),
+            (HLS.GOAL_SPEED, self._motor_speed.get(motor_id, DEFAULT_SPEED)),
+        ):
+            result, _ = self.packet_handler.write2ByteTxRx(
+                motor_id, address, int(value))
+            if result != COMM_SUCCESS:
+                failures.append(address)
+
+        for address, value in (
+            (HLS.ACC, self._motor_acc.get(motor_id, DEFAULT_ACC)),
+            *sorted(self._servo_gains_raw.get(motor_id, {}).items()),
+        ):
+            result, _ = self.packet_handler.write1ByteTxRx(
+                motor_id, address, int(value))
+            if result != COMM_SUCCESS:
+                failures.append(address)
+
+        if failures:
+            logging.error(
+                "Motor %d: %d RAM register(s) not restored after its reboot "
+                "(addresses %s); it may be running uncapped or untuned.",
+                motor_id, len(failures),
+                ", ".join(str(a) for a in failures))
 
     def _log_status_error(self, motor_id: int, error: int, context: str) -> None:
         """Log a motor's decoded status byte; the transaction itself succeeded.
@@ -800,6 +831,21 @@ class FeetechClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return error
+
+    def read_temperature_limits(self) -> "dict[int, Optional[float]]":
+        """Each motor's Max Temperature register (address 13), in degC."""
+        self._check_connected()
+        limits: "dict[int, Optional[float]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                value, result, _ = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.MAX_TEMPERATURE)
+                if result != COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    limits[int(motor_id)] = None
+                else:
+                    limits[int(motor_id)] = float(value)
+        return limits
 
     def read_stop_mask(self) -> "dict[int, Optional[int]]":
         """Each motor's Unload Conditions register (address 19)."""
@@ -1090,6 +1136,9 @@ class FeetechClient(MotorClient):
                 ):
                     if value is None:
                         continue
+                    # SRAM: a reboot reloads these from EEPROM, so remember
+                    # what was asked for in order to put it back.
+                    self._servo_gains_raw.setdefault(motor_id, {})[address] = int(value)
                     result, error = self.packet_handler.write1ByteTxRx(
                         motor_id, address, int(value))
                     if result != COMM_SUCCESS or error != 0:

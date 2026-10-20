@@ -569,6 +569,16 @@ class MotorClient(ABC):
         return (cls.canonical_faults(value & mask),
                 cls.canonical_faults(value & ~mask))
 
+    def read_temperature_limits(self) -> "dict[int, float | None]":
+        """Per motor, the temperature at which it shuts itself down, in degC.
+
+        Read rather than assumed: it is a writable EEPROM register on both
+        families and hands do not all ship the same value, so a thermal
+        margin has to be measured against each motor's own limit. ``None``
+        marks a motor that did not answer.
+        """
+        return {}
+
     def read_stop_mask(self) -> "dict[int, int | None]":
         """Per motor, which error bits turn that motor's torque off.
 

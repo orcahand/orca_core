@@ -65,6 +65,12 @@ class FaultEvent:
     ``stopped`` says whether the motor's own stop mask covered the bits that
     were raised, which is the difference between "it quit" and "it carried on
     and told us".
+
+    Deliberately no current reading. The sampled value at the moment a fault
+    is noticed understates the spike that caused it, badly enough to mislead
+    anyone reading it as "the current this motor faults at". A per-direction
+    running average would mean something, and calibration already records
+    one; a single sample does not.
     """
 
     motor_id: int
@@ -75,7 +81,6 @@ class FaultEvent:
     stopped: bool
     at: float               # wall clock, for reporting
     monotonic: float        # for durations and rate limits
-    current_ma: Optional[float] = None
     temperature_c: Optional[float] = None
     cleared_at: Optional[float] = None
     duration_s: Optional[float] = None
@@ -139,7 +144,6 @@ class MotorObservation:
     raw_error: Optional[int]
     stop_mask: Optional[int]
     joint: Optional[str] = None
-    current_ma: Optional[float] = None
     temperature_c: Optional[float] = None
     temperature_limit_c: Optional[float] = None
     torque_enabled: bool = False
@@ -201,7 +205,7 @@ class MotorFaultPolicy:
             flag_names=set(self._client.decode_hardware_error(appeared) or []),
             raw=appeared, stopped=bool(stopped),
             at=time.time(), monotonic=monotonic,
-            current_ma=obs.current_ma, temperature_c=obs.temperature_c,
+            temperature_c=obs.temperature_c,
         )
         record.events.append(event)
         actions.append(FaultAction(

@@ -29,7 +29,7 @@ def _client(cls):
 
 def _obs(raw, mask, **kwargs):
     base = dict(motor_id=1, raw_error=raw, stop_mask=mask, joint="index_pip",
-                current_ma=1180.0, temperature_c=40.0,
+                 temperature_c=40.0,
                 temperature_limit_c=80.0, torque_enabled=True)
     base.update(kwargs)
     return MotorObservation(**base)
@@ -254,11 +254,11 @@ class TestThermal:
 
 
 class TestWhatGetsRecorded:
-    def test_every_fault_records_cause_current_and_timing(self):
+    def test_every_fault_records_cause_and_timing(self):
         client = _client(MockDynamixelClient)
         try:
             policy = MotorFaultPolicy(client)
-            policy.observe([_obs(0x20, DXL_MASK, current_ma=2714.0)], now=0.0)
+            policy.observe([_obs(0x20, DXL_MASK)], now=0.0)
             policy.record(1).last_raw = 0x20
             policy.observe([_obs(0x00, DXL_MASK)], now=12.0)
 
@@ -266,7 +266,6 @@ class TestWhatGetsRecorded:
             assert event.conditions == {EXCESS_LOAD}
             assert event.flag_names == {"overload"}
             assert event.stopped is True
-            assert event.current_ma == 2714.0
             assert event.joint == "index_pip"
             assert event.at > 0
             assert event.duration_s == pytest.approx(12.0)
