@@ -10,14 +10,16 @@
 
 A fingertip's module number decides which finger slot its data lands in
 (slot = module number, bus address = module + 1), and fresh fingertips all
-share one default. The connector board renumbers the one fingertip connected
-to it and builds the sensor command itself; this module only drives the
-board's numbering registers through a connected ``TactileClient``.
+share one default. The connector board renumbers a fingertip and builds the
+sensor command itself; this module only drives the board's numbering
+registers through a connected ``TactileClient``.
 
-Typical assembly flow, one finger at a time with only that fingertip plugged in:
-``scan_fingertips`` -> ``set_fingertip_module`` -> power-cycle the hand ->
-``scan_fingertips`` again to confirm. Stop the tactile stream first; the
-board pauses its own polling while a command runs.
+Fresh fingertips are numbered one at a time, with only that one plugged in.
+Fingertips that already have distinct numbers can be renumbered in a full
+hand by naming the one to change; ``NUMBERING_SPARE_MODULE`` is free for
+swaps. Each change is ``scan_fingertips`` -> ``set_fingertip_module`` ->
+power-cycle the hand -> ``scan_fingertips`` again to confirm. The board
+pauses its own polling while a command runs.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ from ..hardware.sensing.constants import (
     ADDR_SLOT_IDENTITY_START,
     DEFAULT_FINGER_TO_SENSOR_ID,
     EXT_CAP_FINGERTIP_NUMBERING,
+    EXT_CAP_NUMBERING_SET_AT,
     EXT_CAP_SLOT_IDENTITY,
     EXT_ID_LENGTH,
     EXT_ID_MAGIC,
@@ -42,7 +45,9 @@ from ..hardware.sensing.constants import (
     NUMBERING_MAX_MODULE,
     NUMBERING_OP_SCAN,
     NUMBERING_OP_SET,
+    NUMBERING_OP_SET_AT,
     NUMBERING_SET_KEY,
+    NUMBERING_SPARE_MODULE,  # noqa: F401  (callers read it from here)
     NUMBERING_STATUS_LENGTH,
     SLOT_IDENTITY_LENGTH,
     SLOT_IDENTITY_STRIDE,
@@ -67,12 +72,14 @@ RESULTS = {
     15: "no_reply",
     16: "bad_reply",
     17: "sensor_rejected",
+    18: "taken",
 }
 RESULT_MESSAGES = {
-    "no_sensor": "No fingertip answered. Check that exactly one fingertip is plugged in.",
-    "multiple": "Several fingertips are connected. Unplug all but the one to number.",
-    "bus_error": "Several fingertips seem to be connected (or a cable is bad). Connect only one.",
+    "no_sensor": "No fingertip answered. Check that the fingertip is plugged in.",
+    "multiple": "Several fingertips are connected. Say which one to renumber.",
+    "bus_error": "Two fingertips seem to share a number (or a cable is bad). Unplug one of them.",
     "already": "The fingertip already has that number.",
+    "taken": "Another fingertip already has that number. Move it to the spare number first.",
     "no_reply": "The fingertip did not answer the numbering command.",
     "bad_reply": "The fingertip answered the numbering command unexpectedly.",
     "sensor_rejected": "The fingertip rejected the numbering command.",
@@ -95,15 +102,24 @@ class FingertipNumberingUnsupported(FingertipNumberingError):
 
 @dataclass(frozen=True)
 class FingertipScan:
-    """Which bus addresses answered, and the name string of a lone fingertip."""
+    """Which bus addresses answered, and the name string of a lone fingertip.
+
+    ``garbled`` lists addresses whose reply came back broken, usually two
+    fingertips sharing that number.
+    """
 
     result: str
     addresses: tuple[int, ...]
     identity: str = ""
+    garbled: tuple[int, ...] = ()
 
     @property
     def modules(self) -> tuple[int, ...]:
         return tuple(a - 1 for a in self.addresses)
+
+    @property
+    def garbled_modules(self) -> tuple[int, ...]:
+        return tuple(a - 1 for a in self.garbled)
 
     @property
     def single_module(self) -> Optional[int]:
@@ -156,35 +172,52 @@ def scan_fingertips(client: TactileClient, timeout_s: float = COMMAND_TIMEOUT_S)
         result=status["result"],
         addresses=status["addresses"],
         identity=status["identity"],
+        garbled=status["garbled"],
     )
 
 
 def set_fingertip_module(
     client: TactileClient,
     new_module: int,
-    expected_current: Optional[int] = None,
+    current: Optional[int] = None,
     timeout_s: float = COMMAND_TIMEOUT_S,
 ) -> FingertipNumbering:
-    """Renumber the one connected fingertip to ``new_module``.
+    """Renumber a fingertip to ``new_module``.
 
-    Refuses unless exactly one fingertip answers (and, if given, it is at
-    ``expected_current``). The board re-checks this before writing.
+    ``current`` picks the fingertip by its present number, so the others can
+    stay connected as long as no two share a number and ``new_module`` is
+    free. Without it, exactly one fingertip may be connected. The board
+    re-checks all of this right before writing.
     """
-    if not 0 <= new_module <= NUMBERING_MAX_MODULE:
-        raise ValueError(f"module number must be 0..{NUMBERING_MAX_MODULE}, got {new_module}")
+    for n in (new_module, current):
+        if n is not None and not 0 <= n <= NUMBERING_MAX_MODULE:
+            raise ValueError(f"module number must be 0..{NUMBERING_MAX_MODULE}, got {n}")
+    caps = read_extension_caps(client)
     scan = scan_fingertips(client, timeout_s)
-    if scan.result != "scan_ok":
-        raise FingertipNumberingError(scan.result, _message(scan.result))
-    current = scan.single_module
-    if expected_current is not None and current != expected_current:
-        raise FingertipNumberingError(
-            "unexpected_module",
-            f"The connected fingertip is module {current}, expected {expected_current}.",
-        )
+    if scan.result == "bus_error":
+        raise FingertipNumberingError("bus_error", _collision_message(scan))
+    targeted = current is not None
+    if not targeted:
+        if scan.result != "scan_ok":
+            raise FingertipNumberingError(scan.result, _message(scan.result))
+        current = scan.single_module
+    elif current not in scan.modules:
+        raise FingertipNumberingError("no_sensor", f"No fingertip answers at module {current}.")
     if current == new_module:
         raise FingertipNumberingError("already", RESULT_MESSAGES["already"])
+    if new_module in scan.modules:
+        raise FingertipNumberingError("taken", RESULT_MESSAGES["taken"])
 
-    command = bytes([NUMBERING_OP_SET, *NUMBERING_SET_KEY, new_module])
+    if targeted and caps & EXT_CAP_NUMBERING_SET_AT:
+        command = bytes([NUMBERING_OP_SET_AT, *NUMBERING_SET_KEY, new_module, current])
+    elif len(scan.modules) == 1:
+        command = bytes([NUMBERING_OP_SET, *NUMBERING_SET_KEY, new_module])
+    else:
+        raise FingertipNumberingError(
+            "multiple",
+            "This connector-board firmware renumbers only a lone fingertip; "
+            "update it or unplug the others.",
+        )
     status = _run(client, command, timeout_s)
     if status["result"] in ("no_reply", "bad_reply"):
         return FingertipNumbering(
@@ -256,14 +289,26 @@ def _run(client: TactileClient, command: bytes, timeout_s: float) -> dict:
         "result": RESULTS.get(st[1], f"code_{st[1]}"),
         "found_address": st[4],
         "sensor_status": st[6],
-        "addresses": tuple(a for a in range(1, SCAN_LAST_ADDRESS + 1) if st[7] >> (a - 1) & 1),
+        "addresses": _addresses(st[7]),
+        "garbled": _addresses(st[10]),
         "identity": identity,
         "raw_reply": raw,
     }
 
 
+def _addresses(mask: int) -> tuple[int, ...]:
+    return tuple(a for a in range(1, SCAN_LAST_ADDRESS + 1) if mask >> (a - 1) & 1)
+
+
 def _message(result: str) -> str:
     return RESULT_MESSAGES.get(result, f"Numbering failed ({result}).")
+
+
+def _collision_message(scan: FingertipScan) -> str:
+    if not scan.garbled_modules:
+        return RESULT_MESSAGES["bus_error"]
+    shared = ", ".join(str(m) for m in scan.garbled_modules)
+    return f"Two fingertips seem to share module {shared} (or a cable is bad). Unplug one of them."
 
 
 def _text(raw: bytes) -> str:

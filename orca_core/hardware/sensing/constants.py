@@ -92,6 +92,7 @@ EXT_ID_LENGTH = 4
 EXT_ID_MAGIC = b"OX"
 EXT_CAP_FINGERTIP_NUMBERING = 0x01
 EXT_CAP_SLOT_IDENTITY = 0x02
+EXT_CAP_NUMBERING_SET_AT = 0x04
 ADDR_NUMBERING_COMMAND = 0x6110
 ADDR_NUMBERING_STATUS = 0x6120
 NUMBERING_STATUS_LENGTH = 16
@@ -104,8 +105,11 @@ SLOT_IDENTITY_STRIDE = 0x20
 SLOT_IDENTITY_LENGTH = 24
 NUMBERING_OP_SCAN = 0x01
 NUMBERING_OP_SET = 0x02
+NUMBERING_OP_SET_AT = 0x03
 NUMBERING_SET_KEY = b"MN"
 NUMBERING_MAX_MODULE = 5
+# No finger reads this number, so a fingertip can wait on it while others are swapped.
+NUMBERING_SPARE_MODULE = 5
 
 # ---------------------------------------------------------------------------
 # Codec internals (used by protocol.py decoders)

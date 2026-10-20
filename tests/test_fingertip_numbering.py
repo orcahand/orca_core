@@ -21,13 +21,20 @@ def test_register_map_follows_the_firmware_spec():
 
     assert (c.ADDR_EXT_ID, c.EXT_ID_MAGIC, c.ADDR_NUMBERING_COMMAND, c.ADDR_NUMBERING_STATUS,
             c.ADDR_NUMBERING_IDENTITY, c.ADDR_NUMBERING_RAW_REPLY, c.ADDR_SLOT_IDENTITY_START,
-            c.SLOT_IDENTITY_STRIDE) == (0x6100, b"OX", 0x6110, 0x6120, 0x6130, 0x6150, 0x6200, 0x20)
+            c.SLOT_IDENTITY_STRIDE, c.EXT_CAP_NUMBERING_SET_AT) == (
+        0x6100, b"OX", 0x6110, 0x6120, 0x6130, 0x6150, 0x6200, 0x20, 0x04)
 
 
 def _single_tip(tactile_mock_factory, module=2, part="PXSR-CMDDP18B"):
     link, client, state = tactile_mock_factory(connected_fingers=[])
     state.numbering.modules = [module]
     state.numbering.parts = {module: part}
+    return client, state
+
+
+def _hand(tactile_mock_factory, modules):
+    link, client, state = tactile_mock_factory(connected_fingers=[])
+    state.numbering.modules = list(modules)
     return client, state
 
 
@@ -62,7 +69,7 @@ def test_scan_writes_nothing_but_the_scan_command(tactile_mock_factory):
 
 def test_set_sends_the_keyed_command_and_asks_for_a_power_cycle(tactile_mock_factory):
     client, state = _single_tip(tactile_mock_factory, module=2, part="PXSR-CMDDP18A")
-    done = fn.set_fingertip_module(client, 0, expected_current=2)
+    done = fn.set_fingertip_module(client, 0)
     assert (done.old_module, done.new_module, done.power_cycle_required) == (2, 0, True)
     assert state.write_log == [(COMMAND_REGISTER, SCAN), (COMMAND_REGISTER, b"\x02MN\x00")]
 
@@ -70,7 +77,7 @@ def test_set_sends_the_keyed_command_and_asks_for_a_power_cycle(tactile_mock_fac
 @pytest.mark.parametrize(
     "code, result",
     [(1, "set_ok"), (2, "scan_ok"), (10, "no_sensor"), (11, "multiple"), (12, "bus_error"),
-     (13, "already"), (15, "no_reply"), (16, "bad_reply"), (17, "sensor_rejected")],
+     (13, "already"), (15, "no_reply"), (16, "bad_reply"), (17, "sensor_rejected"), (18, "taken")],
 )
 def test_result_codes_follow_the_firmware_spec(tactile_mock_factory, monkeypatch, code, result):
     client, _ = _single_tip(tactile_mock_factory)
@@ -78,11 +85,11 @@ def test_result_codes_follow_the_firmware_spec(tactile_mock_factory, monkeypatch
     assert fn.scan_fingertips(client).result == result
 
 
-def test_scan_lists_every_responding_module(tactile_mock_factory, monkeypatch):
+def test_scan_lists_every_responding_and_garbled_module(tactile_mock_factory, monkeypatch):
     client, _ = _single_tip(tactile_mock_factory)
-    _board_reports(monkeypatch, {0x01: bytes([2, 11, 0, 2, 2, 0, 0, 0b1010, 0, 0]) + bytes(6)})
+    _board_reports(monkeypatch, {0x01: bytes([2, 12, 0, 2, 2, 0, 0, 0b1010, 0, 0, 0b100]) + bytes(5)})
     scan = fn.scan_fingertips(client)
-    assert (scan.modules, scan.single_module) == ((1, 3), None)
+    assert (scan.modules, scan.garbled_modules, scan.single_module) == ((1, 3), (2,), None)
 
 
 def test_an_unknown_scan_result_is_a_numbering_error(tactile_mock_factory, monkeypatch):
@@ -115,12 +122,34 @@ def test_set_refuses_the_current_number(tactile_mock_factory):
     assert err.value.result == "already"
 
 
-def test_set_checks_the_expected_current_number(tactile_mock_factory):
-    client, state = _single_tip(tactile_mock_factory, module=3)
+def test_set_at_renumbers_the_named_fingertip_in_a_full_hand(tactile_mock_factory):
+    client, state = _hand(tactile_mock_factory, [0, 1, 2, 3, 4])
+    done = fn.set_fingertip_module(client, 5, current=1)
+    assert (done.old_module, done.new_module) == (1, 5)
+    assert state.write_log == [(COMMAND_REGISTER, SCAN), (COMMAND_REGISTER, b"\x03MN\x05\x01")]
+
+
+@pytest.mark.parametrize(
+    "modules, new, current, result",
+    [([0, 1, 2], 1, 2, "taken"), ([0, 1], 5, 3, "no_sensor"), ([0, 2, 2], 5, 0, "bus_error")],
+)
+def test_set_at_refuses_before_writing(tactile_mock_factory, modules, new, current, result):
+    client, state = _hand(tactile_mock_factory, modules)
     with pytest.raises(fn.FingertipNumberingError) as err:
-        fn.set_fingertip_module(client, 0, expected_current=2)
-    assert err.value.result == "unexpected_module"
-    assert state.numbering.pending == {}
+        fn.set_fingertip_module(client, new, current=current)
+    assert err.value.result == result
+    assert [d for _, d in state.write_log] == [SCAN]
+
+
+@pytest.mark.parametrize("modules, sent", [([1], [SCAN, b"\x02MN\x05"]), ([0, 1], [SCAN])])
+def test_firmware_without_set_at_renumbers_only_a_lone_fingertip(tactile_mock_factory, modules, sent):
+    client, state = _hand(tactile_mock_factory, modules)
+    state.numbering.set_at = False
+    try:
+        fn.set_fingertip_module(client, 5, current=1)
+    except fn.FingertipNumberingError as err:
+        assert err.result == "multiple"
+    assert [d for _, d in state.write_log] == sent
 
 
 def test_set_without_a_reply_is_unconfirmed(tactile_mock_factory):

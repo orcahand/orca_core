@@ -32,6 +32,7 @@ from orca_core.hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
     DEFAULT_TAXEL_COUNTS,
     EXT_CAP_FINGERTIP_NUMBERING,
+    EXT_CAP_NUMBERING_SET_AT,
     EXT_CAP_SLOT_IDENTITY,
     EXT_ID_MAGIC,
     FINGER_SENSOR_PART,
@@ -40,6 +41,7 @@ from orca_core.hardware.sensing.constants import (
     NUMBERING_MAX_MODULE,
     NUMBERING_OP_SCAN,
     NUMBERING_OP_SET,
+    NUMBERING_OP_SET_AT,
     NUMBERING_SET_KEY,
     NUMBERING_STATUS_LENGTH,
     PROTOCOL_HEADER_AUTO,
@@ -98,9 +100,11 @@ class FingertipBusMock:
     ``modules`` lists the module number of each physically connected fingertip
     (repeats model two tips sharing a number). ``None`` mirrors the mock's
     connected fingers. A renumbering is staged until ``power_cycle``;
-    ``write_reply=False`` models a fingertip that takes it without answering.
+    ``write_reply=False`` models a fingertip that takes it without answering,
+    ``set_at=False`` firmware that renumbers only a lone fingertip.
     """
     supported: bool = True
+    set_at: bool = True
     modules: list[int] | None = None
     parts: dict[int, str] = field(default_factory=dict)
     write_status: int = 0
@@ -146,53 +150,52 @@ def _run_numbering_command(state: TactileMockState, data: bytes) -> int:
     bus = state.numbering
     if not bus.supported:
         return 0
-    if len(data) != 4:
+    op = data[0] if data else 0
+    keyed = op in (NUMBERING_OP_SET, NUMBERING_OP_SET_AT)
+    sizes = {NUMBERING_OP_SCAN: 4, NUMBERING_OP_SET: 4, NUMBERING_OP_SET_AT: 5 if bus.set_at else 0}
+    if len(data) != sizes.get(op):
         return 1
-    op, key, arg = data[0], bytes(data[1:3]), data[3]
-    if op == NUMBERING_OP_SET and (key != NUMBERING_SET_KEY or arg > NUMBERING_MAX_MODULE):
+    if keyed and (bytes(data[1:3]) != NUMBERING_SET_KEY or max(data[3:]) > NUMBERING_MAX_MODULE):
         return 1
-    if op not in (NUMBERING_OP_SCAN, NUMBERING_OP_SET):
-        return 1
+    arg = data[3]
 
     modules = _bus_modules(state)
-    addresses = sorted({m + 1 for m in modules})
-    shared = len(addresses) != len(modules)
-    responders = 0
-    for a in addresses:
-        responders |= 1 << (a - 1)
+    addresses = sorted({m + 1 for m in modules if modules.count(m) == 1})
+    garbled = sorted({m + 1 for m in modules if modules.count(m) > 1})
     status = bytearray(NUMBERING_STATUS_LENGTH)
     status[0] = 2
     status[2] = (bus.status[2] + 1) & 0xFF
     status[3] = len(addresses)
     status[4] = addresses[0] if addresses else 0
-    status[5] = arg + 1 if op == NUMBERING_OP_SET else 0
-    status[7] = responders
+    status[5] = arg + 1 if keyed else 0
+    status[7] = sum(1 << (a - 1) for a in addresses)
+    status[10] = sum(1 << (a - 1) for a in garbled)
     bus.identity, bus.raw_reply = b"", b""
 
-    if shared:
+    if garbled:
         result = 12
+    elif op == NUMBERING_OP_SET_AT:
+        current = data[4]
+        if current + 1 not in addresses:
+            result = 10
+        elif current == arg:
+            result = 13
+        elif arg + 1 in addresses:
+            result = 18
+        else:
+            status[4] = current + 1
+            result = _write_module(state, status, current, arg)
     elif not addresses:
         result = 10
     elif len(addresses) > 1:
         result = 11
+    elif op == NUMBERING_OP_SCAN:
+        bus.identity = _sensor_name(_part_for_module(state, addresses[0] - 1))
+        result = 2
+    elif addresses[0] - 1 == arg:
+        result = 13
     else:
-        current = addresses[0] - 1
-        bus.identity = _sensor_name(_part_for_module(state, current))
-        if op == NUMBERING_OP_SCAN:
-            result = 2
-        elif current == arg:
-            result = 13
-        elif not bus.write_reply:
-            result = 15
-            bus.pending[current] = arg
-        else:
-            status[6] = bus.write_status
-            # Opaque to orca_core: the board's capture of the fingertip's reply.
-            reply = bytes([0xAA, 0x55, addresses[0], bus.write_status])
-            bus.raw_reply = reply + bytes([calculate_checksum(reply)])
-            result = 1 if bus.write_status == 0 else 17
-            if result == 1:
-                bus.pending[current] = arg
+        result = _write_module(state, status, addresses[0] - 1, arg)
     status[1] = result
     status[8] = len(bus.identity)
     status[9] = len(bus.raw_reply)
@@ -200,12 +203,30 @@ def _run_numbering_command(state: TactileMockState, data: bytes) -> int:
     return 0
 
 
+def _write_module(state: TactileMockState, status: bytearray, current: int, new: int) -> int:
+    """The board's module write to the fingertip at ``current``; returns the result code."""
+    bus = state.numbering
+    bus.identity = _sensor_name(_part_for_module(state, current))
+    if not bus.write_reply:
+        bus.pending[current] = new
+        return 15
+    status[6] = bus.write_status
+    # Opaque to orca_core: the board's capture of the fingertip's reply.
+    reply = bytes([0xAA, 0x55, current + 1, bus.write_status])
+    bus.raw_reply = reply + bytes([calculate_checksum(reply)])
+    if bus.write_status != 0:
+        return 17
+    bus.pending[current] = new
+    return 1
+
+
 def _numbering_block(state: TactileMockState, address: int) -> bytes | None:
     bus = state.numbering
     if not bus.supported:
         return None
     if address == ADDR_EXT_ID:
-        return EXT_ID_MAGIC + bytes([1, EXT_CAP_FINGERTIP_NUMBERING | EXT_CAP_SLOT_IDENTITY])
+        caps = EXT_CAP_FINGERTIP_NUMBERING | EXT_CAP_SLOT_IDENTITY
+        return EXT_ID_MAGIC + bytes([1, caps | (EXT_CAP_NUMBERING_SET_AT if bus.set_at else 0)])
     if address == ADDR_NUMBERING_STATUS:
         return bytes(bus.status)
     if address == ADDR_NUMBERING_IDENTITY:
