@@ -31,9 +31,18 @@ def main() -> int:
         description="Continuously record joint angles while manually moving the hand."
     )
     add_hand_arguments(parser, feedback_flag=False)
-    parser.add_argument("--frequency", type=float, default=50.0)
-    parser.add_argument("--duration", type=float, default=None)
-    parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument(
+        "--frequency", type=float, default=50.0,
+        help="Sampling rate in Hz; stored in the file and used as the replay rate.",
+    )
+    parser.add_argument(
+        "--duration", type=float, default=None,
+        help="Stop after this many seconds. Default: record until Ctrl+C.",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Directory where the recording YAML is written.",
+    )
     parser.add_argument(
         "--force-calibrate",
         action="store_true",
