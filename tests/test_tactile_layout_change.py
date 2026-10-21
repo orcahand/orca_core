@@ -160,3 +160,26 @@ def test_watchdog_rearm_rereads_the_layout(tactile_mock):
 
     assert client.get_tactile_configuration().active_sensors == IMR
     assert client.get_stats().layout_changes == 1
+
+
+def test_failed_reread_backs_off_and_does_not_escape(tactile_mock, monkeypatch):
+    link, client, state = tactile_mock
+    client.start_stream(resultant=True, taxels=False)
+    reads = []
+
+    def unplugged():
+        reads.append(1)
+        raise RuntimeError("hand serial link disconnected")
+
+    monkeypatch.setattr(client, "read_connected_sensors", unplugged)
+    errors = []
+    monkeypatch.setattr(threading, "excepthook", errors.append)
+
+    link.feed_bytes(build_auto_frame(b"\x00" * 7))
+    wait_until(lambda: reads and not client._reread_thread.is_alive())
+    for _ in range(5):
+        link.feed_bytes(build_auto_frame(b"\x00" * 7))
+    wait_until(lambda: client.get_stats().frames_bad_payload_size == 6)
+
+    assert len(reads) == 1
+    assert errors == []

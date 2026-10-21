@@ -572,8 +572,8 @@ class TactileClient:
         with self._auto_lock:
             if self._reread_thread is not None and self._reread_thread.is_alive():
                 return
-            # A re-read that found nothing new means the mismatch is not a layout
-            # change; don't poll the board on every frame for it.
+            # A re-read that failed or found nothing new must not turn every
+            # mismatched frame into a board poll.
             if now - self._last_idle_reread_ts < TACTILE_STREAM_REARM_MIN_INTERVAL_S:
                 return
             self._reread_thread = threading.Thread(
@@ -584,12 +584,15 @@ class TactileClient:
             )
         self._reread_thread.start()
 
-    def _reread_configuration(self, generation: int, backoff_if_unchanged: bool = False) -> None:
+    def _reread_configuration(self, generation: int, backoff: bool = False) -> None:
         """Adopt the board's current fingertip set for a still-running stream."""
         try:
             config = self._get_configuration()
-        except OSError as e:
+        except (OSError, RuntimeError) as e:
             logger.debug("tactile configuration re-read failed: %s", e)
+            if backoff:
+                with self._auto_lock:
+                    self._last_idle_reread_ts = time.monotonic()
             return
         with self._auto_lock:
             if not self._auto_running or generation != self._stream_generation:
@@ -599,7 +602,7 @@ class TactileClient:
             self._tactile_config = config
             if changed:
                 self._auto_stats.layout_changes += 1
-            elif backoff_if_unchanged:
+            elif backoff:
                 self._last_idle_reread_ts = time.monotonic()
         if changed:
             logger.warning(
