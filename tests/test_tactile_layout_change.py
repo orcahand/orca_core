@@ -3,6 +3,8 @@ import itertools
 import threading
 from pathlib import Path
 
+import pytest
+
 from orca_core.hardware.sensing.constants import TACTILE_STREAM_STALE_REARM_S
 from orca_core.hardware.sensing.tactile_mock import feed_resultant_frame
 from orca_core.hardware.sensing.tactile_protocol import build_auto_frame
@@ -129,12 +131,23 @@ def test_stop_stream_during_a_reread_discards_it(tactile_mock, monkeypatch):
     assert state.write_log == []
 
 
-def test_mismatch_without_a_layout_change_backs_off(tactile_mock, monkeypatch):
+@pytest.mark.parametrize("board", ["unchanged", "unreachable"])
+def test_reread_that_finds_nothing_backs_off(tactile_mock, monkeypatch, board):
+    """A mismatch that isn't a layout change must not poll the board every frame."""
     link, client, state = tactile_mock
     client.start_stream(resultant=True, taxels=False)
     reads = []
     orig = client.read_connected_sensors
-    monkeypatch.setattr(client, "read_connected_sensors", lambda: reads.append(1) or orig())
+
+    def read():
+        reads.append(1)
+        if board == "unreachable":
+            raise RuntimeError("hand serial link disconnected")
+        return orig()
+
+    monkeypatch.setattr(client, "read_connected_sensors", read)
+    errors = []
+    monkeypatch.setattr(threading, "excepthook", errors.append)
 
     link.feed_bytes(build_auto_frame(b"\x00" * 7))
     wait_until(lambda: reads and not client._reread_thread.is_alive())
@@ -144,6 +157,7 @@ def test_mismatch_without_a_layout_change_backs_off(tactile_mock, monkeypatch):
 
     assert len(reads) == 1
     assert client.get_stats().layout_changes == 0
+    assert errors == []
 
 
 def test_watchdog_rearm_rereads_the_layout(tactile_mock):
@@ -160,26 +174,3 @@ def test_watchdog_rearm_rereads_the_layout(tactile_mock):
 
     assert client.get_tactile_configuration().active_sensors == IMR
     assert client.get_stats().layout_changes == 1
-
-
-def test_failed_reread_backs_off_and_does_not_escape(tactile_mock, monkeypatch):
-    link, client, state = tactile_mock
-    client.start_stream(resultant=True, taxels=False)
-    reads = []
-
-    def unplugged():
-        reads.append(1)
-        raise RuntimeError("hand serial link disconnected")
-
-    monkeypatch.setattr(client, "read_connected_sensors", unplugged)
-    errors = []
-    monkeypatch.setattr(threading, "excepthook", errors.append)
-
-    link.feed_bytes(build_auto_frame(b"\x00" * 7))
-    wait_until(lambda: reads and not client._reread_thread.is_alive())
-    for _ in range(5):
-        link.feed_bytes(build_auto_frame(b"\x00" * 7))
-    wait_until(lambda: client.get_stats().frames_bad_payload_size == 6)
-
-    assert len(reads) == 1
-    assert errors == []

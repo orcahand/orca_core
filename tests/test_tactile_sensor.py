@@ -544,14 +544,14 @@ def test_rearm_register_writes_use_a_single_attempt(tactile_mock, monkeypatch):
     orig = client._send_register_request
 
     def spy(request, response_timeout_s, attempts=TACTILE_REGISTER_ATTEMPTS):
-        recorded.append(attempts)
+        if client._stream_ctrl_lock.locked():
+            recorded.append(attempts)
         return orig(request, response_timeout_s, attempts)
 
     monkeypatch.setattr(client, "_send_register_request", spy)
     client._rearm_stream(3.0, True, False, client._stream_generation)
 
-    # The configuration re-read that follows runs outside the control lock.
-    assert recorded[:2] == [1, 1]
+    assert recorded == [1, 1]
 
 
 def test_stop_between_rearm_writes_skips_the_enable(tactile_mock, monkeypatch):
