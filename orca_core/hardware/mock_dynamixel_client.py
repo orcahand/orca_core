@@ -26,6 +26,8 @@ class MockDynamixelClient(MockMotorClient):
     """
 
     real_client = DynamixelClient
+    # What this family ships: overheating + electrical shock + overload.
+    default_stop_mask = 52
     default_operating_mode = 3
     # Factory-default position P gain; the rest start at zero, matching a
     # servo straight out of the box.

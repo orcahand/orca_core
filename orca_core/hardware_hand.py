@@ -122,6 +122,18 @@ class OrcaHand(BaseHand):
 
         self._wrap_offsets_dict: Dict[int, float] = None
         self._motor_client: MotorClient = None
+        # Whether this hand is energized, so fault recovery restores what the
+        # operator had instead of energizing a hand they deliberately relaxed.
+        self._torque_enabled: bool = False
+        # Fault handling is opt-in: built on the first poll_faults() call, so
+        # a caller that never asks never gets an automatic reboot.
+        self._fault_policy = None
+        self._stop_masks: dict = {}
+        # Motors held off by disabling torque because they have no current
+        # register to clamp. Releasing them means re-enabling torque, not
+        # restoring a ceiling they never had.
+        self._fault_torque_held: set = set()
+        self._temperature_limits: dict = {}
         self._motor_lock: RLock = RLock()
         self._uncalibrated_warned: set = set()
         self._single_turn_wrist_warned: bool = False
@@ -515,6 +527,14 @@ class OrcaHand(BaseHand):
 
         with self._motor_lock:
             failed_ids = list(self._motor_client.set_torque_enabled(motor_ids, enabled))
+        # Remembered so fault recovery restores what the operator had rather
+        # than energizing a hand they deliberately relaxed. Enabling counts if
+        # any motor took it; disabling only once the whole hand is off.
+        if enabled:
+            if len(failed_ids) < len(list(motor_ids)):
+                self._torque_enabled = True
+        elif not failed_ids and set(motor_ids) >= set(self.config.motor_ids):
+            self._torque_enabled = False
         if failed_ids:
             logger.warning(
                 "Torque %s not acknowledged by motor IDs: %s",
@@ -773,6 +793,121 @@ class OrcaHand(BaseHand):
             self.wait_for_motion()
         except MotionTimeoutError as exc:
             logger.warning("%s; continuing with motors still short of neutral.", exc)
+
+    def poll_faults(self, config=None) -> list:
+        """Act on whatever the motors are reporting, once.
+
+        Opt-in and caller-driven on purpose. Core decides what a fault means
+        and performs the recovery, but a background thread reaching for the
+        bus would contend with whatever a caller is already doing and could
+        reboot a motor in the middle of a calibration - where a reboot resets
+        RAM and invalidates the routine's assumptions. So the caller chooses
+        the moment; a console calls this from the loop it already runs.
+
+        Returns the actions taken, so a front-end can report them to an
+        operator without having to work out what happened.
+        """
+        from .hardware.motor_faults import (
+            DISABLE_TORQUE, ENABLE_TORQUE, HOLD_OFF, LOG, MotorObservation,
+            NOTIFY, MotorFaultPolicy, REBOOT, RELEASE,
+        )
+
+        client = self._motor_client
+        if client is None:
+            return []
+
+        if self._fault_policy is None:
+            self._fault_policy = MotorFaultPolicy(client, config)
+            # EEPROM, so read once: a motor's stop mask and shutdown
+            # temperature do not change under us.
+            self._stop_masks = client.read_stop_mask()
+            self._temperature_limits = client.read_temperature_limits()
+        elif config is not None:
+            # Thresholds are an operator setting, so a later call may change
+            # them. The per-motor counts deliberately survive the change: a
+            # motor that has already been rebooted five times has, whatever
+            # the budget is now set to.
+            self._fault_policy.config = config
+
+        try:
+            errors = client.read_hardware_errors(self.config.motor_ids)
+        except Exception:
+            logger.debug("fault poll: error read failed", exc_info=True)
+            return []
+        try:
+            temps = self.get_motor_temp(as_dict=True)
+        except Exception:
+            temps = {}
+
+        joint_of = self.config.motor_to_joint_dict
+        observations = [
+            MotorObservation(
+                motor_id=int(motor_id),
+                raw_error=errors.get(int(motor_id)),
+                stop_mask=self._stop_masks.get(int(motor_id)),
+                joint=joint_of.get(int(motor_id)),
+                temperature_c=temps.get(int(motor_id)),
+                temperature_limit_c=self._temperature_limits.get(int(motor_id)),
+                torque_enabled=self._torque_enabled,
+            )
+            for motor_id in self.config.motor_ids
+        ]
+
+        actions = self._fault_policy.observe(observations)
+        for action in actions:
+            joint = joint_of.get(action.motor_id)
+            who = f"motor {action.motor_id}" + (f" ({joint})" if joint else "")
+            if action.kind in (LOG, NOTIFY):
+                log = logger.warning if action.prominent else logger.info
+                log("%s %s", who, action.reason)
+                continue
+            try:
+                if action.kind == REBOOT:
+                    client.reboot_motor(action.motor_id)
+                elif action.kind == DISABLE_TORQUE:
+                    self.disable_torque([action.motor_id])
+                elif action.kind == ENABLE_TORQUE:
+                    self.enable_torque([action.motor_id])
+                elif action.kind == HOLD_OFF:
+                    # A zero ceiling persists; a torque disable does not on a
+                    # family that re-energizes itself, so it is the fallback
+                    # for motors with no current register.
+                    if client.hold_motor_off(action.motor_id):
+                        self._fault_torque_held.discard(action.motor_id)
+                    else:
+                        self.disable_torque([action.motor_id])
+                        self._fault_torque_held.add(action.motor_id)
+                elif action.kind == RELEASE:
+                    # Undo whichever hold was used. A motor held by the
+                    # fallback has no ceiling to restore, so releasing it
+                    # means giving its torque back - without this it stays
+                    # dead after the hand has recovered.
+                    client.release_motor(action.motor_id)
+                    if action.motor_id in self._fault_torque_held:
+                        self._fault_torque_held.discard(action.motor_id)
+                        if self._torque_enabled:
+                            self.enable_torque([action.motor_id])
+            except Exception:
+                logger.exception("%s: %s failed", who, action.kind)
+        return actions
+
+    def clear_fault_record(self, motor_id: int) -> None:
+        """Forget one motor's reboot history, after a manual reboot.
+
+        Without this a motor left latched for exceeding its threshold stays
+        abandoned for the rest of the session, however many times someone
+        fixes the cause and restarts it.
+        """
+        policy = self._fault_policy
+        if policy is not None:
+            policy.forget_motor(motor_id)
+        self._fault_torque_held.discard(int(motor_id))
+
+    @property
+    def fault_records(self) -> dict:
+        """Per-motor fault history, empty until :meth:`poll_faults` has run."""
+        policy = self._fault_policy
+        return dict(policy.records) if policy is not None else {}
 
     def get_motor_temp(self, as_dict: bool = False) -> Union[np.ndarray, dict]:
         """Read the present temperature of each motor.

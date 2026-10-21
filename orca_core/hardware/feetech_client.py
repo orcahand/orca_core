@@ -107,6 +107,12 @@ CLAMP_WARN_INTERVAL_S = 5.0
 # the read rate.
 STATUS_WARN_INTERVAL_S = 5.0
 
+# A rebooting servo is off the bus for roughly 800 ms, so the first ping is
+# not worth sending before then.
+MOTOR_REBOOT_SETTLE_S = 0.8
+MOTOR_REBOOT_TIMEOUT_S = 3.0
+MOTOR_REBOOT_POLL_S = 0.05
+
 
 # Operator-editable settings. Three of the Dynamixel entries have no HLS
 # counterpart and are absent rather than disabled: return delay time (this
@@ -225,6 +231,7 @@ class FeetechClient(MotorClient):
         (0x08, "overcurrent"),
         (0x20, "overload"),
     )
+    supports_reboot = True
     position_range_rad = POSITION_RANGE_RAD
     current_scale_ma = HLS.CURRENT_SCALE_MA
     max_current_ma = HLS.GOAL_CURRENT_MAX_RAW * HLS.CURRENT_SCALE_MA
@@ -292,6 +299,10 @@ class FeetechClient(MotorClient):
         # start at full scale until connect() reads the motor's protection current.
         self._current_limit_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
         self._current_ceiling_raw = {mid: HLS.GOAL_CURRENT_MAX_RAW for mid in self.motor_ids}
+        # Position-loop gains this client has written, by motor then address.
+        # SRAM, so a reboot reloads EEPROM's values and these are needed to
+        # restore what the caller asked for.
+        self._servo_gains_raw: "dict[int, dict[int, int]]" = {}
 
         # Sync read/write groups, built once per packet handler and reused: the
         # 100 Hz read path must not rebuild a param table per call.
@@ -303,6 +314,12 @@ class FeetechClient(MotorClient):
         self._clamp_counts: dict = {}
         self._clamp_warned_at: dict = {}
 
+        # Status bytes seen since the last drain, for take_hardware_alerts.
+        # Every reply carries one, so this costs no extra traffic.
+        self._hardware_alerts: "dict[int, int]" = {}
+        # Motors clamped off to cool; waiting for them to arrive is pointless.
+        self._held_off: "set[int]" = set()
+        self._alerts_lock = threading.Lock()
         # Last-warned time per (motor, status flags, context), and each motor's
         # known operating mode, so an unchanged mode costs no EEPROM write.
         self._status_warned_at: dict = {}
@@ -701,12 +718,129 @@ class FeetechClient(MotorClient):
                 retries -= 1
             return remaining_ids
 
-    def _log_status_error(self, motor_id: int, error: int, context: str) -> None:
-        """Log a motor's decoded status byte; the transaction itself succeeded.
+    def take_hardware_alerts(self) -> "dict[int, int]":
+        """Motors seen reporting a fault since the last call, and clear."""
+        with self._alerts_lock:
+            alerts = dict(self._hardware_alerts)
+            self._hardware_alerts.clear()
+        return alerts
 
-        Repeats of the same flags on the same motor are throttled, so a latched
-        condition costs one line per interval instead of one per read.
+    def reboot_motor(self, motor_id: int) -> None:
+        """Restart one motor and put its RAM settings back.
+
+        A reboot is the only in-band way to clear a latched fault. It also
+        clears RAM, and on this family that means Goal Current reloads from
+        Protection Current — the overcurrent trip point, far above any
+        configured ceiling — so a recovered motor would run effectively
+        uncapped until something wrote the ceiling again. The cached ceiling
+        is therefore re-applied before returning.
+
+        Torque is deliberately left off: re-energizing is the caller's call.
         """
+        self._check_connected()
+        with self._bus_lock:
+            result = self.packet_handler.reBoot(motor_id)
+            if result != COMM_SUCCESS:
+                logging.error(
+                    "Motor %d did not accept the reboot instruction: %s",
+                    motor_id, self.packet_handler.getTxRxResult(result))
+                self._flush_input_buffer()
+                return
+            # The instruction draws no reply, so the motor going quiet is
+            # expected rather than a failed transaction.
+            if not self._await_motor_after_reboot(motor_id):
+                logging.error(
+                    "Motor %d did not answer within %.1f s of its reboot; its "
+                    "current ceiling was not restored and it may be running at "
+                    "its protection current.", motor_id, MOTOR_REBOOT_TIMEOUT_S)
+                return
+            self._restore_ram_after_reboot(motor_id)
+            self._status_warned_at = {
+                key: when for key, when in self._status_warned_at.items()
+                if key[0] != motor_id
+            }
+            with self._alerts_lock:
+                self._hardware_alerts.pop(int(motor_id), None)
+
+    def _await_motor_after_reboot(self, motor_id: int) -> bool:
+        """Ping until the rebooted motor answers; False if it never does."""
+        deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
+        time.sleep(MOTOR_REBOOT_SETTLE_S)
+        while True:
+            try:
+                _, result, _ = self.packet_handler.ping(motor_id)
+            except Exception:
+                # A motor still off the bus can answer oddly; that is "not
+                # back yet", not a reason to abandon the reboot - abandoning
+                # it skips the RAM restore and leaves the motor at its
+                # protection current.
+                result = None
+            if result == COMM_SUCCESS:
+                return True
+            if time.monotonic() >= deadline:
+                self._flush_input_buffer()
+                return False
+            time.sleep(MOTOR_REBOOT_POLL_S)
+
+    def _restore_ram_after_reboot(self, motor_id: int) -> None:
+        """Re-apply every RAM setting the reboot cleared.
+
+        A reboot reloads RAM from EEPROM, which on this family means the goal
+        current snaps back to the protection current - the overcurrent trip
+        point, far above any configured ceiling - and the position-loop gains
+        and motion profile revert to whatever the motor shipped with. A motor
+        recovered without this runs effectively uncapped and differently
+        tuned from its neighbours.
+        """
+        motor_id = int(motor_id)
+        failures = []
+
+        # Goal current first: it is the one that matters for safety.
+        for address, value in (
+            (HLS.GOAL_CURRENT, self._current_limit_raw.get(
+                motor_id, HLS.GOAL_CURRENT_MAX_RAW)),
+            (HLS.GOAL_SPEED, self._motor_speed.get(motor_id, DEFAULT_SPEED)),
+        ):
+            result, _ = self.packet_handler.write2ByteTxRx(
+                motor_id, address, int(value))
+            if result != COMM_SUCCESS:
+                failures.append(address)
+
+        for address, value in (
+            (HLS.ACC, self._motor_acc.get(motor_id, DEFAULT_ACC)),
+            *sorted(self._servo_gains_raw.get(motor_id, {}).items()),
+        ):
+            result, _ = self.packet_handler.write1ByteTxRx(
+                motor_id, address, int(value))
+            if result != COMM_SUCCESS:
+                failures.append(address)
+
+        if failures:
+            logging.error(
+                "Motor %d: %d RAM register(s) not restored after its reboot "
+                "(addresses %s); it may be running uncapped or untuned.",
+                motor_id, len(failures),
+                ", ".join(str(a) for a in failures))
+
+    def _log_status_error(self, motor_id: int, error: int, context: str) -> None:
+        """Record and log a motor's decoded status byte; the transaction itself
+        succeeded.
+
+        Every reply on this family carries the byte, so noticing a fault costs
+        nothing - but logging it is not reporting it. The byte is recorded
+        here for :meth:`take_hardware_alerts` to drain, so a caller watching
+        for faults sees them without paying for a second read, and a fault
+        raised while the hand is being driven is not lost just because
+        nothing happened to be polling the register.
+
+        Repeats of the same flags on the same motor are throttled, so a
+        standing condition costs one line per interval instead of one per
+        read. The recording is not throttled: a drain must not miss a fault
+        because a log line was suppressed.
+        """
+        with self._alerts_lock:
+            self._hardware_alerts[int(motor_id)] = int(error)
+
         key = (motor_id, error, context)
         now = time.monotonic()
         if now - self._status_warned_at.get(key, -STATUS_WARN_INTERVAL_S) < \
@@ -732,6 +866,68 @@ class FeetechClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return error
+
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Clamp this motor's goal current to zero (register 44).
+
+        The cached ceiling is left alone, so release_motor() restores what
+        the caller configured rather than the zero written here.
+        """
+        self._check_connected()
+        with self._bus_lock:
+            result, _ = self.packet_handler.write2ByteTxRx(
+                int(motor_id), HLS.GOAL_CURRENT, 0)
+        if result != COMM_SUCCESS:
+            logging.error("Motor %d: could not clamp its goal current to zero",
+                          motor_id)
+            return False
+        self._held_off.add(int(motor_id))
+        return True
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Restore this motor's configured goal current."""
+        self._check_connected()
+        raw = self._current_limit_raw.get(int(motor_id),
+                                         HLS.GOAL_CURRENT_MAX_RAW)
+        with self._bus_lock:
+            result, _ = self.packet_handler.write2ByteTxRx(
+                int(motor_id), HLS.GOAL_CURRENT, int(raw))
+        if result != COMM_SUCCESS:
+            logging.error("Motor %d: goal current not restored; it will not "
+                          "move until something writes it again", motor_id)
+            return False
+        self._held_off.discard(int(motor_id))
+        return True
+
+    def read_temperature_limits(self) -> "dict[int, Optional[float]]":
+        """Each motor's Max Temperature register (address 13), in degC."""
+        self._check_connected()
+        limits: "dict[int, Optional[float]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                value, result, _ = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.MAX_TEMPERATURE)
+                if result != COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    limits[int(motor_id)] = None
+                else:
+                    limits[int(motor_id)] = float(value)
+        return limits
+
+    def read_stop_mask(self) -> "dict[int, Optional[int]]":
+        """Each motor's Unload Conditions register (address 19)."""
+        self._check_connected()
+        masks: "dict[int, Optional[int]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                value, result, _ = self.packet_handler.read1ByteTxRx(
+                    motor_id, HLS.UNLOAD_CONDITIONS)
+                if result != COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    masks[int(motor_id)] = None
+                else:
+                    masks[int(motor_id)] = value
+        return masks
 
     def set_operating_mode(self, motor_ids: Sequence[int], mode: int) -> None:
         """Sets the operating mode for the specified motors.
@@ -1007,6 +1203,9 @@ class FeetechClient(MotorClient):
                 ):
                     if value is None:
                         continue
+                    # SRAM: a reboot reloads these from EEPROM, so remember
+                    # what was asked for in order to put it back.
+                    self._servo_gains_raw.setdefault(motor_id, {})[address] = int(value)
                     result, error = self.packet_handler.write1ByteTxRx(
                         motor_id, address, int(value))
                     if result != COMM_SUCCESS or error != 0:
@@ -1269,7 +1468,13 @@ class FeetechClient(MotorClient):
             logging.debug('arrival position read failed', exc_info=True)
             return []
         short = []
+        stuck = self.motors_unable_to_move()
         for index, motor_id in enumerate(self.motor_ids):
+            if int(motor_id) in stuck:
+                # Clamped off or carrying a latched fault: it will never
+                # arrive, and waiting burns the whole timeout at every
+                # waypoint, stalling the hand over one motor.
+                continue
             goal = self._goal_positions.get(int(motor_id))
             if goal is None:
                 continue

@@ -28,6 +28,8 @@ class MockFeetechClient(MockMotorClient):
     """
 
     real_client = FeetechClient
+    # What this family ships: voltage + temperature + current.
+    default_stop_mask = 13
     # Servo mode, the family's power-on default.
     default_operating_mode = 0
     # The gains a Feetech servo powers up with, from its EEPROM

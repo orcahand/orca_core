@@ -325,3 +325,87 @@ def test_dynamixel_return_delay_is_written_in_two_us_units(delay_us, register):
 def test_dynamixel_rejects_an_unencodable_return_delay(delay_us):
     stub = types.SimpleNamespace(write_byte=lambda *a: pytest.fail("wrote an invalid delay"))
     assert DynamixelClient.change_return_delay_time(stub, 5, delay_us) is False
+
+
+def test_reboot_is_declared_uniformly_across_family():
+    """Clearing a latched fault in band is the same call on every client.
+
+    A caller offering recovery has to know whether the family can do it at
+    all before promising the operator anything, so the capability is declared
+    rather than discovered by catching an exception.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert cls.supports_reboot is True, cls.__name__
+        assert callable(getattr(cls, "reboot_motor", None)), cls.__name__
+
+    # A family without the instruction says so instead of silently no-opping:
+    # a caller that believed a fault was cleared would drive a dead motor.
+    assert MotorClient.supports_reboot is False
+    with pytest.raises(NotImplementedError, match="power-cycled"):
+        MotorClient.reboot_motor(types.SimpleNamespace(), 1)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: MockDynamixelClient([1, 2], port="mock", baudrate=1000000),
+    lambda: MockFeetechClient([1, 2], port="mock", baudrate=1000000),
+])
+def test_a_reboot_clears_that_motors_latch_and_leaves_the_others(make):
+    client = make()
+    client.connect()
+    try:
+        client.latched_errors = {1: 0x20, 2: 0x04}
+
+        client.reboot_motor(1)
+
+        assert client.read_hardware_error(1) == 0
+        assert client.read_hardware_error(2) == 0x04, "rebooted the wrong motor"
+        assert client.reboot_count[1] == 1
+    finally:
+        client.disconnect()
+
+
+def test_feetech_records_the_status_byte_it_already_receives():
+    """Every reply on that family carries the byte, so noticing a fault is
+    free - but logging it is not reporting it. A fault raised while the hand
+    is being driven must not be lost because nothing happened to be polling
+    the error register.
+    """
+    # The real client, unconnected: recording is bookkeeping on a byte the
+    # caller already has, so it needs no bus.
+    client = FeetechClient([1, 2], port="/dev/null", baudrate=1000000)
+    # Only the log line needs the handler; the recording is pure bookkeeping.
+    client.packet_handler = types.SimpleNamespace(
+        getRxPacketError=lambda error: f"status 0x{error:02X}")
+    assert client.take_hardware_alerts() == {}
+
+    client._log_status_error(1, 0x04, "sync read")
+    client._log_status_error(1, 0x04, "sync read")  # log throttled, still recorded
+    client._log_status_error(2, 0x20, "sync read")
+
+    assert client.take_hardware_alerts() == {1: 0x04, 2: 0x20}
+    assert client.take_hardware_alerts() == {}, "draining clears"
+
+
+def test_a_short_ping_reply_is_not_a_crash():
+    """A motor part way through a reboot answers the ping and then has nothing
+    to say about its model number. Indexing that blindly turned every
+    liveness check into an IndexError, which aborted a reboot before its RAM
+    was restored and left the motor at its protection current."""
+    from orca_core.hardware.feetech.protocol_packet_handler import (
+        protocol_packet_handler,
+    )
+
+    handler = protocol_packet_handler(portHandler=None, protocol_end=0)
+    handler.txRxPacket = lambda packet: ([], 0, 0)
+
+    for short in ([], [7], None):
+        handler.readTxRx = lambda scs_id, address, length: (short, 0, 0)
+        model, result, error = handler.ping(1)
+        assert model == 0, short
+        assert result == 0, "the ping itself answered; only the model is unknown"
+
+    # A full reply still reports the model.
+    handler.readTxRx = lambda scs_id, address, length: ([0x34, 0x12], 0, 0)
+    model, result, _ = handler.ping(1)
+    assert model == 0x1234

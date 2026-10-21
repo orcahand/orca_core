@@ -44,6 +44,7 @@ ADDR_SECONDARY_ID = 12
 # from inside the tool.
 ADDR_PROTOCOL_TYPE = 13
 ADDR_TEMPERATURE_LIMIT = 31
+ADDR_SHUTDOWN = 63  # which Hardware Error Status (70) bits turn torque off; same bit layout
 ADDR_ACCELERATION_LIMIT = 40
 ADDR_VELOCITY_LIMIT = 44
 # 40..47 is contiguous, so both ceilings read back in one transaction.
@@ -251,6 +252,7 @@ class DynamixelClient(MotorClient):
     default_calibration_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
+    supports_reboot = True
     supports_pwm_cap = True
 
     def __init__(self,
@@ -316,6 +318,8 @@ class DynamixelClient(MotorClient):
         self._ram_settings: Dict[int, Dict[Tuple[int, int], int]] = {}
         # Motors seen with the Alert bit set, drained by take_hardware_alerts().
         self._hardware_alerts: Dict[int, int] = {}
+        # Motors clamped off to cool; waiting for them to arrive is pointless.
+        self._held_off: "set[int]" = set()
         # Last error byte logged per motor, so a persisting fault logs once.
         self._logged_alerts: Dict[int, int] = {}
         self._alerts_lock = threading.Lock()
@@ -630,8 +634,14 @@ class DynamixelClient(MotorClient):
             return responding
         present = set(responding)
         unsettled = []
+        stuck = self.motors_unable_to_move()
         for index, motor_id in enumerate(self.motor_ids):
             if motor_id not in present:
+                continue
+            if int(motor_id) in stuck:
+                # Clamped off or carrying a latched fault: it will never
+                # arrive, and waiting burns the whole timeout at every
+                # waypoint, stalling the hand over one motor.
                 continue
             if int(moving[index]):
                 unsettled.append(int(motor_id))
@@ -1112,6 +1122,71 @@ class DynamixelClient(MotorClient):
                 self._flush_input_buffer()
                 return None
             return value
+
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Clamp this motor's Goal Current to zero (address 102).
+
+        Written straight to the register rather than through
+        write_desired_current, so neither the remembered RAM nor the
+        configured ceiling records the zero: a reboot or a release has to put
+        the real ceiling back, not this.
+        """
+        motor_id = int(motor_id)
+        if self._current_ceiling_ma(motor_id) is None:
+            # No current register on this model; the caller falls back.
+            return False
+        with self._bus_lock:
+            self.sync_write([motor_id], [0], ADDR_GOAL_CURRENT,
+                            LEN_GOAL_CURRENT)
+        self._held_off.add(motor_id)
+        return True
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Restore this motor's configured Goal Current."""
+        motor_id = int(motor_id)
+        remembered = self._ram_settings.get(motor_id, {}).get(
+            (ADDR_GOAL_CURRENT, LEN_GOAL_CURRENT))
+        if remembered is None:
+            return False
+        with self._bus_lock:
+            self.sync_write([motor_id], [int(remembered)], ADDR_GOAL_CURRENT,
+                            LEN_GOAL_CURRENT)
+        self._held_off.discard(motor_id)
+        return True
+
+    def read_temperature_limits(self) -> "dict[int, Optional[float]]":
+        """Each motor's Temperature Limit register (address 31), in degC."""
+        limits: "dict[int, Optional[float]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                if not self._present([motor_id]):
+                    limits[int(motor_id)] = None
+                    continue
+                value, comm_result, _ = self.packet_handler.read1ByteTxRx(
+                    self.port_handler, motor_id, ADDR_TEMPERATURE_LIMIT)
+                if comm_result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    limits[int(motor_id)] = None
+                else:
+                    limits[int(motor_id)] = float(value)
+        return limits
+
+    def read_stop_mask(self) -> "dict[int, Optional[int]]":
+        """Each motor's Shutdown register (address 63)."""
+        masks: "dict[int, Optional[int]]" = {}
+        with self._bus_lock:
+            for motor_id in self.motor_ids:
+                if not self._present([motor_id]):
+                    masks[int(motor_id)] = None
+                    continue
+                value, comm_result, _ = self.packet_handler.read1ByteTxRx(
+                    self.port_handler, motor_id, ADDR_SHUTDOWN)
+                if comm_result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    masks[int(motor_id)] = None
+                else:
+                    masks[int(motor_id)] = value
+        return masks
 
     def read_hardware_errors(
         self, motor_ids: Sequence[int]

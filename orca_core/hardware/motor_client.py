@@ -522,6 +522,137 @@ class MotorClient(ABC):
         """
         return {int(mid): self.read_hardware_error(mid) for mid in motor_ids}
 
+    CANONICAL_FAULTS: ClassVar["dict[str, str]"] = {
+        "input_voltage": "input_voltage",
+        "overheating": "thermal",
+        "overload": "excess_load",
+        "overcurrent": "excess_load",
+        "motor_encoder": "encoder",
+        "angle_sensor": "encoder",
+        "electrical_shock": "electrical_shock",
+    }
+    """Each family's decoded bit name mapped to one cross-family condition.
+
+    The bit tables disagree on both names and positions - one family calls an
+    encoder fault ``angle_sensor`` and puts it on 0x02, the other calls it
+    ``motor_encoder`` on 0x08, and 0x08 is an overcurrent on the first. The
+    two current-ish conditions collapse into ``excess_load`` on purpose: a
+    stalled tendon is one physical event, and a caller deciding what to do
+    about it should not have to know which bit a vendor chose to raise.
+    """
+
+    @classmethod
+    def canonical_faults(cls, value: "int | None") -> "set[str]":
+        """The cross-family conditions a raw error byte stands for."""
+        names = cls.decode_hardware_error(value) or []
+        return {cls.CANONICAL_FAULTS[name] for name in names
+                if name in cls.CANONICAL_FAULTS}
+
+    @classmethod
+    def split_faults(
+        cls, value: "int | None", stop_mask: "int | None"
+    ) -> "tuple[set[str], set[str]]":
+        """``(stopped, flagged)`` conditions, as cross-family names.
+
+        The split has to be made on the raw bits, not on the canonical
+        conditions: one family raises overcurrent and overload as separate
+        bits that both mean ``excess_load``, and stops the motor for only one
+        of them. Asking whether ``excess_load`` is in the mask would answer
+        yes and recover a motor that never stopped.
+
+        With no mask readable nothing is reported as stopped - better to
+        under-react than to reboot a motor that is still driving.
+        """
+        if not value:
+            return set(), set()
+        mask = stop_mask or 0
+        return (cls.canonical_faults(value & mask),
+                cls.canonical_faults(value & ~mask))
+
+    def motors_unable_to_move(self) -> "set[int]":
+        """Motors that cannot reach a goal, so waiting on them is pointless.
+
+        A motor clamped off to cool, or carrying a latched fault, will never
+        arrive. Waiting for it burns the whole settle timeout at every
+        waypoint, which stalls playback for the entire hand because of one
+        motor - the hand looks frozen when sixteen of seventeen are fine.
+
+        Known state only: no bus traffic.
+        """
+        return set(self._held_off) | {int(m) for m in self._hardware_alerts}
+
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Make one motor unable to produce torque, and keep it that way.
+
+        Written as a goal current of zero rather than a torque disable,
+        because a family whose thermal protection re-energizes the motor a
+        degree below its limit will undo a torque disable within the second.
+        A zero ceiling is a single write that survives, and the motor stays
+        on the bus and readable.
+
+        The configured ceiling is remembered, not overwritten, so
+        :meth:`release_motor` can put it back. Returns ``False`` where the
+        motor has no current register, leaving the caller to fall back to a
+        torque disable it will have to keep re-asserting.
+        """
+        return False
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Give one motor its configured current ceiling back."""
+        return False
+
+    def read_temperature_limits(self) -> "dict[int, float | None]":
+        """Per motor, the temperature at which it shuts itself down, in degC.
+
+        Read rather than assumed: it is a writable EEPROM register on both
+        families and hands do not all ship the same value, so a thermal
+        margin has to be measured against each motor's own limit. ``None``
+        marks a motor that did not answer.
+        """
+        return {}
+
+    def read_stop_mask(self) -> "dict[int, int | None]":
+        """Per motor, which error bits turn that motor's torque off.
+
+        Whether a fault stops the motor is configuration, not a family trait:
+        both families hold it in a writable register, and the two ship almost
+        disjoint defaults - one stops on overload but not under-voltage, the
+        other the reverse. A caller that assumes "latched means stopped" is
+        wrong on one of them, so it has to read this instead.
+
+        The register uses the same bit layout as the error register on both
+        families, so :meth:`decode_hardware_error` and
+        :meth:`canonical_faults` read it unchanged. ``None`` marks a motor
+        that did not answer; an empty dict marks a family that cannot report.
+        """
+        return {}
+
+    supports_reboot: ClassVar[bool] = False
+
+    # Motors clamped off by hold_motor_off, and status bytes seen since the
+    # last drain. Class-level empties so a client that sets neither still
+    # answers motors_unable_to_move().
+    _held_off: "set[int]" = frozenset()
+    _hardware_alerts: "dict[int, int]" = {}
+    """Whether :meth:`reboot_motor` can restart a motor over the bus.
+
+    A reboot is the only way to clear a latched fault without power-cycling
+    the hand, so a caller offering recovery has to know whether this family
+    can do it before promising the operator anything.
+    """
+
+    def reboot_motor(self, motor_id: int) -> None:
+        """Restart one motor, clearing its latched fault flags.
+
+        A reboot also clears RAM, so an implementation must put back whatever
+        it holds there — the current ceiling above all, which otherwise
+        reverts to a hardware default far above the configured one. Torque is
+        left off: re-energizing is the caller's decision.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot reboot a motor; the hand has to be "
+            "power-cycled to clear a latched fault")
+
     def take_hardware_alerts(self) -> "dict[int, int]":
         """Motors seen carrying a latched fault since the last call, and clear.
 
