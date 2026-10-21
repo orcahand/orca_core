@@ -41,6 +41,12 @@ def test_a_tolerance_is_declared_and_is_coarser_than_one_encoder_count():
     assert MotorClient.arrival_tolerance_rad < 0.1
 
 
+def test_the_tolerance_admits_a_servo_holding_against_tendon_load():
+    """Motors on a tendon-loaded hand hold up to 0.045 rad off goal; below
+    that every wait runs to its timeout."""
+    assert MotorClient.arrival_tolerance_rad > 0.045
+
+
 # The servo's control table as a sync read sees it: Moving (122) is 1 while the
 # motor travels, Moving Status (123) bit 0 is In-Position (set once it has
 # arrived), and Present Position (132) counts 4096 per turn.
