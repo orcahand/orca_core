@@ -108,6 +108,11 @@ class MotorFaultRecord:
     last_raw: int = 0
     # Set while a thermal latch is waiting on the motor to cool.
     cooling: bool = False
+    # Cooled past the margin and waiting only on its neighbours. Separate
+    # from ``cooling`` because with the whole hand held, a motor that is
+    # ready must keep being held until the last one is: releasing it alone is
+    # what makes one finger start moving while the rest stay still.
+    ready: bool = False
     # Thermal latches cleared after cooling. Not gated by the reboot
     # thresholds - those count load recoveries - but counted so a motor that
     # keeps cooking itself is visible.
@@ -186,13 +191,34 @@ class MotorFaultPolicy:
         """Fold one tick's readings in and return the actions to perform."""
         monotonic = time.monotonic() if now is None else now
         observations = list(observations)
+        # Readiness first, for every motor, before any recovery decision.
+        # Deciding as we walk the list means a motor is judged against
+        # neighbours whose temperature has not been read yet this tick, and
+        # the hand comes back one motor per tick instead of together.
+        self._update_readiness(observations)
+
         actions: List[FaultAction] = []
         for observation in observations:
             actions.extend(self._observe_one(observation, monotonic))
-        actions.extend(self._reconcile_thermal_hold(observations))
+        rebooted = {action.motor_id for action in actions
+                    if action.kind == REBOOT}
+        actions.extend(self._reconcile_thermal_hold(observations, rebooted))
         return actions
 
-    def _reconcile_thermal_hold(self, observations) -> List[FaultAction]:
+    def _update_readiness(self, observations) -> None:
+        """Mark which cooling motors have reached the margin this tick."""
+        margin = self.config.thermal_clear_margin_c
+        for obs in observations:
+            record = self.records.get(int(obs.motor_id))
+            if record is None or not record.cooling:
+                continue
+            if obs.temperature_c is None or obs.temperature_limit_c is None:
+                continue
+            record.ready = obs.temperature_c <= obs.temperature_limit_c - margin
+
+    def _reconcile_thermal_hold(self, observations,
+                                rebooted: "set[int]" = frozenset()
+                                ) -> List[FaultAction]:
         """Bring the set of held-off motors in line with who is cooling.
 
         Emitting holds and releases from one place keeps the two modes a
@@ -206,6 +232,13 @@ class MotorFaultPolicy:
             wanted = {int(obs.motor_id) for obs in observations}
         else:
             wanted = cooling
+
+        # A reboot puts the motor's configured ceiling back, so its clamp is
+        # gone whether or not we asked. One that must stay held is therefore
+        # forgotten here and clamped again below, after the reboot; one that
+        # is being let go keeps its release, which also covers a reboot that
+        # did not take.
+        self._held -= (rebooted & wanted)
 
         actions: List[FaultAction] = []
         for motor_id in sorted(wanted - self._held):
@@ -270,6 +303,7 @@ class MotorFaultPolicy:
 
         if THERMAL in stopped:
             record.cooling = True
+            record.ready = False
             actions.append(FaultAction(
                 NOTIFY, obs.motor_id,
                 "overheated and stopped; holding until it cools "
@@ -327,6 +361,14 @@ class MotorFaultPolicy:
         if limit is None or temperature is None:
             return []
 
+        # Holding the whole hand means recovering it as one: a motor that has
+        # cooled waits for the last one, or the hand comes back a finger at a
+        # time. Toggling the mode on mid-run therefore also overrides any
+        # motor that was about to be released on its own.
+        if self.config.thermal_hold_all and not all(
+                other.ready for other in self.records.values() if other.cooling):
+            return []
+
         if temperature > limit - self.config.thermal_clear_margin_c:
             # One family re-energizes itself the moment it drops below its
             # limit, which is about a degree of hysteresis - so it chatters
@@ -352,6 +394,7 @@ class MotorFaultPolicy:
                 "has not been dealt with", prominent=True)]
 
         record.cooling = False
+        record.ready = False
         record.thermal_recoveries += 1
         record.last_reboot_monotonic = monotonic
         record.last_raw = 0

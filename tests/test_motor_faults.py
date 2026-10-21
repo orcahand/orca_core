@@ -427,3 +427,97 @@ class TestWhoGetsHeldWhileOneMotorCools:
             assert policy._held == set()
         finally:
             client.disconnect()
+
+
+class TestSwitchingModesMidRun:
+    """Ticking hold-all on must take precedence over any motor already
+    waiting to be released on its own, or one finger restarts while the rest
+    of the hand stays held."""
+
+    def _obs(self, mid, temp, raw=0x00):
+        return MotorObservation(
+            motor_id=mid, raw_error=raw, stop_mask=FEETECH_MASK,
+            joint=f"j{mid}", temperature_c=temp, temperature_limit_c=80.0,
+            torque_enabled=True)
+
+    def test_ticking_hold_all_on_takes_over_pending_releases(self):
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(
+                client, FaultPolicyConfig(thermal_hold_all=False))
+            policy.observe([self._obs(1, 81.0, 0x04),
+                            self._obs(2, 81.0, 0x04)], now=0.0)
+            assert policy._held == {1, 2}
+
+            policy.config = FaultPolicyConfig(thermal_hold_all=True)
+            # One has cooled past the margin and would have been released.
+            actions = policy.observe([self._obs(1, 69.0, 0x04),
+                                      self._obs(2, 79.0, 0x04)], now=10.0)
+            assert REBOOT not in _kinds(actions), "released while a motor is hot"
+            assert RELEASE not in _kinds(actions)
+            assert policy.record(1).ready is True
+            assert policy.record(1).cooling is True
+        finally:
+            client.disconnect()
+
+    def test_the_hand_comes_back_when_the_last_motor_cools(self):
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            policy.observe([self._obs(1, 81.0, 0x04),
+                            self._obs(2, 81.0, 0x04),
+                            self._obs(3, 60.0)], now=0.0)
+            assert policy._held == {1, 2, 3}
+
+            actions = policy.observe([self._obs(1, 68.0, 0x04),
+                                      self._obs(2, 69.0, 0x04),
+                                      self._obs(3, 60.0)], now=20.0)
+            # Both latched motors recover in the same tick, and the neighbour
+            # that was only held for them is released with them.
+            assert {a.motor_id for a in actions if a.kind == REBOOT} == {1, 2}
+            assert 3 in {a.motor_id for a in actions if a.kind == RELEASE}
+            assert policy._held == set()
+        finally:
+            client.disconnect()
+
+    def test_readiness_is_judged_across_the_whole_tick(self):
+        """Deciding motor by motor as the list is walked judges each against
+        neighbours whose temperature has not been read yet, and the hand comes
+        back one motor per tick instead of together."""
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            policy.observe([self._obs(1, 81.0, 0x04),
+                            self._obs(2, 81.0, 0x04)], now=0.0)
+            # Motor 2 is read last but is ready; motor 1 must still see that.
+            actions = policy.observe([self._obs(1, 69.0, 0x04),
+                                      self._obs(2, 69.0, 0x04)], now=20.0)
+            assert {a.motor_id for a in actions if a.kind == REBOOT} == {1, 2}
+        finally:
+            client.disconnect()
+
+    def test_a_reboot_does_not_quietly_free_a_motor_that_is_still_held(self):
+        """A reboot restores the configured ceiling, which undoes the clamp.
+        Without re-clamping, a motor recovered from a load fault starts
+        driving while the rest of the hand is held for a neighbour."""
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            # Motor 1 overheats and the hand is held.
+            policy.observe([self._obs(1, 81.0, 0x04),
+                            self._obs(2, 60.0)], now=0.0)
+            assert policy._held == {1, 2}
+
+            # Motor 2 now draws over its current limit, which this family
+            # does stop it for, and is rebooted while motor 1 is still
+            # cooling. (Overload, 0x20, would not: it is absent from the
+            # unload mask, so that motor keeps driving and is only logged.)
+            actions = policy.observe([self._obs(1, 79.0, 0x04),
+                                      self._obs(2, 60.0, 0x08)], now=10.0)
+            kinds = [(a.kind, a.motor_id) for a in actions]
+            assert (REBOOT, 2) in kinds
+            assert kinds.index((REBOOT, 2)) < kinds.index((HOLD_OFF, 2)), \
+                "re-clamped after the reboot, not before"
+            assert policy._held == {1, 2}
+        finally:
+            client.disconnect()
