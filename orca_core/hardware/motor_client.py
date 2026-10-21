@@ -569,6 +569,18 @@ class MotorClient(ABC):
         return (cls.canonical_faults(value & mask),
                 cls.canonical_faults(value & ~mask))
 
+    def motors_unable_to_move(self) -> "set[int]":
+        """Motors that cannot reach a goal, so waiting on them is pointless.
+
+        A motor clamped off to cool, or carrying a latched fault, will never
+        arrive. Waiting for it burns the whole settle timeout at every
+        waypoint, which stalls playback for the entire hand because of one
+        motor - the hand looks frozen when sixteen of seventeen are fine.
+
+        Known state only: no bus traffic.
+        """
+        return set(self._held_off) | {int(m) for m in self._hardware_alerts}
+
     def hold_motor_off(self, motor_id: int) -> bool:
         """Make one motor unable to produce torque, and keep it that way.
 
@@ -616,6 +628,12 @@ class MotorClient(ABC):
         return {}
 
     supports_reboot: ClassVar[bool] = False
+
+    # Motors clamped off by hold_motor_off, and status bytes seen since the
+    # last drain. Class-level empties so a client that sets neither still
+    # answers motors_unable_to_move().
+    _held_off: "set[int]" = frozenset()
+    _hardware_alerts: "dict[int, int]" = {}
     """Whether :meth:`reboot_motor` can restart a motor over the bus.
 
     A reboot is the only way to clear a latched fault without power-cycling

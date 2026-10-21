@@ -457,3 +457,35 @@ class TestFeetechPerMotorProfile:
         profile = client.read_servo_profile([1, 2])
 
         assert profile[1].acceleration_rad_s2 != profile[2].acceleration_rad_s2
+
+
+class TestOneStuckMotorDoesNotStallTheHand:
+    """A clamped or latched motor never arrives. Waiting for it burns the whole
+    settle timeout at every waypoint, so playback crawls and the hand looks
+    frozen because of one motor out of seventeen."""
+
+    def test_a_held_off_motor_is_not_waited_on(self):
+        from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+
+        client = MockDynamixelClient([1, 2], port="mock", baudrate=1000000)
+        client.connect()
+        try:
+            assert client.motors_unable_to_move() == set()
+            client.hold_motor_off(1)
+            assert 1 in client.motors_unable_to_move()
+            client.release_motor(1)
+            assert 1 not in client.motors_unable_to_move()
+        finally:
+            client.disconnect()
+
+    def test_a_motor_carrying_a_latched_fault_is_not_waited_on(self):
+        from orca_core.hardware.feetech_client import FeetechClient
+        import types
+
+        client = FeetechClient([1, 2], port="/dev/null", baudrate=1000000)
+        client.packet_handler = types.SimpleNamespace(
+            getRxPacketError=lambda error: f"status 0x{error:02X}")
+        assert client.motors_unable_to_move() == set()
+
+        client._log_status_error(2, 0x20, "sync read")
+        assert 2 in client.motors_unable_to_move()

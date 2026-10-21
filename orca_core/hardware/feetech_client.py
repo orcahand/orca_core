@@ -317,6 +317,8 @@ class FeetechClient(MotorClient):
         # Status bytes seen since the last drain, for take_hardware_alerts.
         # Every reply carries one, so this costs no extra traffic.
         self._hardware_alerts: "dict[int, int]" = {}
+        # Motors clamped off to cool; waiting for them to arrive is pointless.
+        self._held_off: "set[int]" = set()
         self._alerts_lock = threading.Lock()
         # Last-warned time per (motor, status flags, context), and each motor's
         # known operating mode, so an unchanged mode costs no EEPROM write.
@@ -879,6 +881,7 @@ class FeetechClient(MotorClient):
             logging.error("Motor %d: could not clamp its goal current to zero",
                           motor_id)
             return False
+        self._held_off.add(int(motor_id))
         return True
 
     def release_motor(self, motor_id: int) -> bool:
@@ -893,6 +896,7 @@ class FeetechClient(MotorClient):
             logging.error("Motor %d: goal current not restored; it will not "
                           "move until something writes it again", motor_id)
             return False
+        self._held_off.discard(int(motor_id))
         return True
 
     def read_temperature_limits(self) -> "dict[int, Optional[float]]":
@@ -1464,7 +1468,13 @@ class FeetechClient(MotorClient):
             logging.debug('arrival position read failed', exc_info=True)
             return []
         short = []
+        stuck = self.motors_unable_to_move()
         for index, motor_id in enumerate(self.motor_ids):
+            if int(motor_id) in stuck:
+                # Clamped off or carrying a latched fault: it will never
+                # arrive, and waiting burns the whole timeout at every
+                # waypoint, stalling the hand over one motor.
+                continue
             goal = self._goal_positions.get(int(motor_id))
             if goal is None:
                 continue

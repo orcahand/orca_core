@@ -318,6 +318,8 @@ class DynamixelClient(MotorClient):
         self._ram_settings: Dict[int, Dict[Tuple[int, int], int]] = {}
         # Motors seen with the Alert bit set, drained by take_hardware_alerts().
         self._hardware_alerts: Dict[int, int] = {}
+        # Motors clamped off to cool; waiting for them to arrive is pointless.
+        self._held_off: "set[int]" = set()
         # Last error byte logged per motor, so a persisting fault logs once.
         self._logged_alerts: Dict[int, int] = {}
         self._alerts_lock = threading.Lock()
@@ -632,8 +634,14 @@ class DynamixelClient(MotorClient):
             return responding
         present = set(responding)
         unsettled = []
+        stuck = self.motors_unable_to_move()
         for index, motor_id in enumerate(self.motor_ids):
             if motor_id not in present:
+                continue
+            if int(motor_id) in stuck:
+                # Clamped off or carrying a latched fault: it will never
+                # arrive, and waiting burns the whole timeout at every
+                # waypoint, stalling the hand over one motor.
                 continue
             if int(moving[index]):
                 unsettled.append(int(motor_id))
@@ -1130,6 +1138,7 @@ class DynamixelClient(MotorClient):
         with self._bus_lock:
             self.sync_write([motor_id], [0], ADDR_GOAL_CURRENT,
                             LEN_GOAL_CURRENT)
+        self._held_off.add(motor_id)
         return True
 
     def release_motor(self, motor_id: int) -> bool:
@@ -1142,6 +1151,7 @@ class DynamixelClient(MotorClient):
         with self._bus_lock:
             self.sync_write([motor_id], [int(remembered)], ADDR_GOAL_CURRENT,
                             LEN_GOAL_CURRENT)
+        self._held_off.discard(motor_id)
         return True
 
     def read_temperature_limits(self) -> "dict[int, Optional[float]]":
