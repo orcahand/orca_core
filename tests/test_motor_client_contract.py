@@ -385,3 +385,27 @@ def test_feetech_records_the_status_byte_it_already_receives():
 
     assert client.take_hardware_alerts() == {1: 0x04, 2: 0x20}
     assert client.take_hardware_alerts() == {}, "draining clears"
+
+
+def test_a_short_ping_reply_is_not_a_crash():
+    """A motor part way through a reboot answers the ping and then has nothing
+    to say about its model number. Indexing that blindly turned every
+    liveness check into an IndexError, which aborted a reboot before its RAM
+    was restored and left the motor at its protection current."""
+    from orca_core.hardware.feetech.protocol_packet_handler import (
+        protocol_packet_handler,
+    )
+
+    handler = protocol_packet_handler(portHandler=None, protocol_end=0)
+    handler.txRxPacket = lambda packet: ([], 0, 0)
+
+    for short in ([], [7], None):
+        handler.readTxRx = lambda scs_id, address, length: (short, 0, 0)
+        model, result, error = handler.ping(1)
+        assert model == 0, short
+        assert result == 0, "the ping itself answered; only the model is unknown"
+
+    # A full reply still reports the model.
+    handler.readTxRx = lambda scs_id, address, length: ([0x34, 0x12], 0, 0)
+    model, result, _ = handler.ping(1)
+    assert model == 0x1234

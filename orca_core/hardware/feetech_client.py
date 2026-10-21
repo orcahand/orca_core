@@ -765,7 +765,14 @@ class FeetechClient(MotorClient):
         deadline = time.monotonic() + MOTOR_REBOOT_TIMEOUT_S
         time.sleep(MOTOR_REBOOT_SETTLE_S)
         while True:
-            _, result, _ = self.packet_handler.ping(motor_id)
+            try:
+                _, result, _ = self.packet_handler.ping(motor_id)
+            except Exception:
+                # A motor still off the bus can answer oddly; that is "not
+                # back yet", not a reason to abandon the reboot - abandoning
+                # it skips the RAM restore and leaves the motor at its
+                # protection current.
+                result = None
             if result == COMM_SUCCESS:
                 return True
             if time.monotonic() >= deadline:
