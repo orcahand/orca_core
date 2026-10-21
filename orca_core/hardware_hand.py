@@ -129,6 +129,10 @@ class OrcaHand(BaseHand):
         # a caller that never asks never gets an automatic reboot.
         self._fault_policy = None
         self._stop_masks: dict = {}
+        # Motors held off by disabling torque because they have no current
+        # register to clamp. Releasing them means re-enabling torque, not
+        # restoring a ceiling they never had.
+        self._fault_torque_held: set = set()
         self._temperature_limits: dict = {}
         self._motor_lock: RLock = RLock()
         self._uncalibrated_warned: set = set()
@@ -804,8 +808,8 @@ class OrcaHand(BaseHand):
         operator without having to work out what happened.
         """
         from .hardware.motor_faults import (
-            DISABLE_TORQUE, ENABLE_TORQUE, LOG, MotorObservation, NOTIFY,
-            MotorFaultPolicy, REBOOT,
+            DISABLE_TORQUE, ENABLE_TORQUE, HOLD_OFF, LOG, MotorObservation,
+            NOTIFY, MotorFaultPolicy, REBOOT, RELEASE,
         )
 
         client = self._motor_client
@@ -864,6 +868,25 @@ class OrcaHand(BaseHand):
                     self.disable_torque([action.motor_id])
                 elif action.kind == ENABLE_TORQUE:
                     self.enable_torque([action.motor_id])
+                elif action.kind == HOLD_OFF:
+                    # A zero ceiling persists; a torque disable does not on a
+                    # family that re-energizes itself, so it is the fallback
+                    # for motors with no current register.
+                    if client.hold_motor_off(action.motor_id):
+                        self._fault_torque_held.discard(action.motor_id)
+                    else:
+                        self.disable_torque([action.motor_id])
+                        self._fault_torque_held.add(action.motor_id)
+                elif action.kind == RELEASE:
+                    # Undo whichever hold was used. A motor held by the
+                    # fallback has no ceiling to restore, so releasing it
+                    # means giving its torque back - without this it stays
+                    # dead after the hand has recovered.
+                    client.release_motor(action.motor_id)
+                    if action.motor_id in self._fault_torque_held:
+                        self._fault_torque_held.discard(action.motor_id)
+                        if self._torque_enabled:
+                            self.enable_torque([action.motor_id])
             except Exception:
                 logger.exception("%s: %s failed", who, action.kind)
         return actions

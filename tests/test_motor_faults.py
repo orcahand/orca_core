@@ -521,3 +521,56 @@ class TestSwitchingModesMidRun:
             assert policy._held == {1, 2}
         finally:
             client.disconnect()
+
+
+class TestMotorsWithNoCurrentRegister:
+    """One Dynamixel model has no Goal Current register, so it cannot be
+    clamped and is held off by disabling torque instead. Releasing it has to
+    give the torque back: there is no ceiling to restore, and without this it
+    stays dead after the rest of the hand has recovered."""
+
+    def test_the_hold_falls_back_and_the_release_undoes_it(self, monkeypatch):
+        from orca_core import MockOrcaHand
+
+        hand = MockOrcaHand(
+            config_path="orca_core/models/v2/orcahand-right/config.yaml")
+        hand.connect()
+        try:
+            client = hand.motor_client
+            wrist = hand.config.joint_to_motor_map["wrist"]
+            # Stand in for the model with no current register.
+            monkeypatch.setattr(client, "hold_motor_off",
+                                lambda motor_id: int(motor_id) != wrist)
+            monkeypatch.setattr(client, "release_motor",
+                                lambda motor_id: int(motor_id) != wrist)
+            enabled, disabled = [], []
+            monkeypatch.setattr(hand, "enable_torque",
+                                lambda ids=None: enabled.extend(ids or []))
+            monkeypatch.setattr(hand, "disable_torque",
+                                lambda ids=None: disabled.extend(ids or []))
+            hand._torque_enabled = True
+
+            from orca_core.hardware.motor_faults import FaultAction
+
+            # Held: the clampable motor takes a ceiling, the wrist loses torque.
+            for motor_id in (wrist, 2):
+                action = FaultAction(HOLD_OFF, motor_id, "cooling")
+                if client.hold_motor_off(action.motor_id):
+                    hand._fault_torque_held.discard(action.motor_id)
+                else:
+                    hand.disable_torque([action.motor_id])
+                    hand._fault_torque_held.add(action.motor_id)
+            assert disabled == [wrist]
+            assert hand._fault_torque_held == {wrist}
+
+            # Released: only the wrist needs its torque back.
+            for motor_id in (wrist, 2):
+                client.release_motor(motor_id)
+                if motor_id in hand._fault_torque_held:
+                    hand._fault_torque_held.discard(motor_id)
+                    if hand._torque_enabled:
+                        hand.enable_torque([motor_id])
+            assert enabled == [wrist]
+            assert hand._fault_torque_held == set()
+        finally:
+            hand.disconnect()
