@@ -4,6 +4,7 @@ receive times: comparable across the tactile and encoder streams, not
 wall-clock."""
 
 import time
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -73,7 +74,16 @@ class ResultantReading:
         return list(self.forces.keys())
 
     def as_array(self) -> np.ndarray:
-        """Return an ``(n_fingers, 3)`` array, rows in finger-name order."""
+        """Return an ``(n_fingers, 3)`` array, rows in finger-name order.
+
+        Deprecated: rows shift when a finger is absent. Use :attr:`array`.
+        """
+        warnings.warn(
+            "ResultantReading.as_array() is deprecated: its rows are alphabetical and "
+            "shift when a finger is absent. Use .array (fixed rows thumb → pinky).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return np.array([self.forces[f] for f in sorted(self.forces)])
 
     @cached_property

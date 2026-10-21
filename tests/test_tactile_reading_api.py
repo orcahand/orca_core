@@ -16,7 +16,7 @@ from orca_core.hardware.sensing.tactile_mock import (
     install_tactile_mock,
 )
 from orca_core.hardware.sensing.tactile_protocol import build_auto_frame
-from orca_core.hardware.sensing.types import NUM_TAXELS, TAXEL_SLICES
+from orca_core.hardware.sensing.types import NUM_TAXELS, TAXEL_SLICES, ResultantReading
 from orca_core.hardware.tactile_client import TactileClient
 from tests._helpers import wait_until
 
@@ -207,3 +207,10 @@ def test_concurrent_readers_see_whole_frames_in_order(tactile_mock):
 
     assert errors == []
     assert client.get_latest().seq == frames
+
+
+def test_alphabetical_as_array_is_deprecated():
+    reading = ResultantReading({"thumb": [0.0, 0.0, 1.0], "index": [0.0, 0.0, 2.0]})
+    with pytest.warns(DeprecationWarning, match=r"\.array"):
+        rows = reading.as_array()
+    np.testing.assert_array_equal(rows[:, 2], [2.0, 1.0])
