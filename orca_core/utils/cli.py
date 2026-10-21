@@ -350,6 +350,9 @@ def print_calibration_progress(event: dict) -> None:
         )
     elif name == "manual_capture_skipped":
         print(f"  {event['joint']} {event['direction']} skipped; previous limit kept.")
+    elif name == "manual_capture_back":
+        joints = ", ".join(event.get("joints") or {}) or "the previous step"
+        print(f"  Back to {joints}: its limits are cleared and captured again.")
     elif name == "calibration_done":
         boosted = event.get("boosted_joints") or {}
         if boosted:

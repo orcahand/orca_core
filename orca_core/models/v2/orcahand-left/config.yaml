@@ -330,19 +330,19 @@ manual_calibration_sequence:
 
 joint_motor_travel_v21:
   wrist: 156.18
-  thumb_cmc: 57.57
-  thumb_abd: 56.25
-  thumb_mcp: 116.1
-  thumb_dip: 96.86
-  index_abd: 39.11
-  index_mcp: 139.39
-  index_pip: 131.04
-  middle_abd: 47.9
-  middle_mcp: 132.01
-  middle_pip: 103.36
-  ring_abd: 49.75
-  ring_mcp: 143.09
-  ring_pip: 112.85
-  pinky_abd: 49.13
-  pinky_mcp: 113.91
-  pinky_pip: 115.84
+  thumb_cmc: 59
+  thumb_abd: 56
+  thumb_mcp: 115
+  thumb_dip: 99
+  index_abd: 43
+  index_mcp: 122
+  index_pip: 100
+  middle_abd: 45
+  middle_mcp: 129
+  middle_pip: 101
+  ring_abd: 44
+  ring_mcp: 128
+  ring_pip: 101
+  pinky_abd: 50
+  pinky_mcp: 110
+  pinky_pip: 97

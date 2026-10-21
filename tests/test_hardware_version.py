@@ -99,7 +99,7 @@ def test_a_v21_hand_uses_the_packaged_baseline(path):
     config = OrcaHandConfig.from_config_path(config_path=path).with_hardware_version(
         HARDWARE_VERSION_V21)
     assert config.uses_motor_travel
-    assert config.expected_motor_travel_deg("index_mcp") == pytest.approx(139.39)
+    assert config.expected_motor_travel_deg("index_mcp") == pytest.approx(122)
 
 
 def test_a_hands_own_measurement_wins_over_the_packaged_baseline(tmp_path):
@@ -107,7 +107,7 @@ def test_a_hands_own_measurement_wins_over_the_packaged_baseline(tmp_path):
                         joint_motor_travel={"index_mcp": 120.0})
     config = OrcaHandConfig.from_config_path(config_path=path)
     assert config.expected_motor_travel_deg("index_mcp") == pytest.approx(120.0)
-    assert config.expected_motor_travel_deg("index_pip") == pytest.approx(131.04)
+    assert config.expected_motor_travel_deg("index_pip") == pytest.approx(100)
 
 
 def test_a_pin_is_in_force_without_load_hand(tmp_path):
