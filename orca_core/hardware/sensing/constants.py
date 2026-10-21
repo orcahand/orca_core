@@ -123,6 +123,9 @@ RESOLUTION_N_PER_LSB = 0.1
 # Decimal places to round returned force values to (matches RESOLUTION_N_PER_LSB granularity).
 FORCE_ROUND_DECIMALS = 1
 
+# Highest resultant fz the wire carries (one unsigned byte); a press past it still reads this.
+RESULTANT_FZ_CEILING_N = round(255 * RESOLUTION_N_PER_LSB, FORCE_ROUND_DECIMALS)
+
 # Decimal places for averaged zeroing offsets: finer than the sensor's 0.1 N
 # resolution to avoid bias; subtracted forces still round to FORCE_ROUND_DECIMALS.
 OFFSET_CAPTURE_DECIMALS = 2

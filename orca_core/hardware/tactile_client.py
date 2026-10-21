@@ -28,6 +28,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_ENABLE,
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
+    RESULTANT_FZ_CEILING_N,
     NOISE_GATE_MARGIN_N,
     NOISE_GATE_SCALE,
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
@@ -209,9 +210,9 @@ class TactileClient:
         self._auto_running = False
         self._auto_mode_resultant = True
         self._auto_mode_taxels = False
-        self._auto_latest = None
-        self._auto_latest_taxels = None
+        self._auto_reading: TactileReading | None = None
         self._auto_latest_ts = None
+        self._auto_frames_received = 0
         self._auto_started_ts: float | None = None
         self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
@@ -470,9 +471,9 @@ class TactileClient:
         self.enable_auto_data_transmission()
 
         with self._auto_lock:
-            self._auto_latest = None
-            self._auto_latest_taxels = None
+            self._auto_reading = None
             self._auto_latest_ts = None
+            self._auto_frames_received = 0
             self._auto_started_ts = time.monotonic()
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
@@ -496,8 +497,7 @@ class TactileClient:
                     logger.debug(f"Disabling stream during stop failed, continuing: {e}")
 
         with self._auto_lock:
-            self._auto_latest = None
-            self._auto_latest_taxels = None
+            self._auto_reading = None
             self._auto_latest_ts = None
             self._first_frame_event.clear()
 
@@ -611,38 +611,29 @@ class TactileClient:
             )
 
     def get_latest_forces(self) -> ResultantReading | None:
-        """Return the most recent resultant reading, or ``None`` if none yet."""
+        """Return the most recent resultant reading, or ``None`` if none yet.
+
+        fz tops out at 25.5 N; check ``saturated`` before trusting a value there.
+        """
         self._maybe_rearm_stream()
-        with self._auto_lock:
-            if self._auto_latest is None:
-                return None
-            return ResultantReading(forces=self._auto_latest, timestamp=self._auto_latest_ts)
+        reading = self.get_latest()
+        return reading.forces if reading else None
 
     def get_latest_taxels(self) -> TaxelReading | None:
         """Return the most recent per-taxel reading, or ``None`` if none yet."""
         self._maybe_rearm_stream()
-        with self._auto_lock:
-            if self._auto_latest_taxels is None:
-                return None
-            return TaxelReading(taxels=self._auto_latest_taxels, timestamp=self._auto_latest_ts)
+        reading = self.get_latest()
+        return reading.taxels if reading else None
 
     def get_latest(self) -> TactileReading | None:
         """Return resultant and per-taxel forces from the same frame, or ``None`` if none yet.
 
-        Single locked snapshot, so ``forces`` and ``taxels`` share one
-        timestamp. Either field is ``None`` if its stream mode is disabled.
+        One reading per frame, shared by every caller: ``forces`` and
+        ``taxels`` share one timestamp and ``seq``. Either field is ``None``
+        if its stream mode is disabled.
         """
         with self._auto_lock:
-            forces = self._auto_latest
-            taxels = self._auto_latest_taxels
-            timestamp = self._auto_latest_ts
-        if forces is None and taxels is None:
-            return None
-        return TactileReading(
-            forces=ResultantReading(forces=forces, timestamp=timestamp) if forces is not None else None,
-            taxels=TaxelReading(taxels=taxels, timestamp=timestamp) if taxels is not None else None,
-            timestamp=timestamp,
-        )
+            return self._auto_reading
 
     def get_stats(self):
         """Return a snapshot copy of ``TactileStreamStats`` for the current loop."""
@@ -884,6 +875,8 @@ class TactileClient:
             mode_taxels = self._auto_mode_taxels
             config = self._tactile_config
             generation = self._stream_generation
+            self._auto_frames_received += 1
+            seq = self._auto_frames_received
 
         # AA 56 (2) + reserved (1) + effective_length (2) + payload + LRC (1).
         payload = frame_bytes[2 + AUTO_FRAME_META_SIZE:-1]
@@ -912,19 +905,30 @@ class TactileClient:
             valid, config.active_sensors, config.num_taxels, mode_resultant, mode_taxels,
         )
 
+        # Judged before zeroing, which would move a clipped 25.5 N off the ceiling.
+        saturated = frozenset(
+            finger for finger, force in (parsed_resultant or {}).items()
+            if force[2] >= RESULTANT_FZ_CEILING_N
+        )
         self._apply_stream_offsets(parsed_resultant, parsed_taxels)
 
+        # Monotonic, matching EncoderReading.timestamp, so staleness
+        # logic and cross-stream correlation survive wall-clock steps.
+        timestamp = time.monotonic()
+        reading = TactileReading(
+            forces=ResultantReading(parsed_resultant, timestamp, seq, saturated)
+            if parsed_resultant is not None else None,
+            taxels=TaxelReading(parsed_taxels, timestamp, seq)
+            if parsed_taxels is not None else None,
+            timestamp=timestamp,
+            seq=seq,
+        )
         with self._auto_lock:
             # Re-check under the lock: stop_stream may have flipped
             # the flag and cleared the cache while we were decoding.
-            if not self._auto_running:
+            if not self._auto_running or generation != self._stream_generation:
                 return
-            if mode_resultant and parsed_resultant is not None:
-                self._auto_latest = parsed_resultant
-            if mode_taxels and parsed_taxels is not None:
-                self._auto_latest_taxels = parsed_taxels
-            # Monotonic, matching EncoderReading.timestamp, so staleness
-            # logic and cross-stream correlation survive wall-clock steps.
-            self._auto_latest_ts = time.monotonic()
+            self._auto_reading = reading
+            self._auto_latest_ts = timestamp
             self._auto_stats.frames_ok += 1
             self._first_frame_event.set()
