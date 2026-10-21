@@ -574,3 +574,48 @@ class TestMotorsWithNoCurrentRegister:
             assert hand._fault_torque_held == set()
         finally:
             hand.disconnect()
+
+
+class TestEveryConditionIsReported:
+    """A fault reaches an operator whichever family raised it and whichever
+    bit it arrived on. Only overload and overheating are recovered from - a
+    reboot clears a latch, not a cause - but the others must not be a log
+    line nobody reads."""
+
+    def _report(self, cls, raw, mask):
+        client = cls([1], port="mock", baudrate=1000000)
+        client.connect()
+        try:
+            policy = MotorFaultPolicy(client)
+            return policy.observe([MotorObservation(
+                motor_id=1, raw_error=raw, stop_mask=mask, joint="index_pip",
+                temperature_c=30.0, temperature_limit_c=80.0,
+                torque_enabled=True)], now=0.0)
+        finally:
+            client.disconnect()
+
+    @pytest.mark.parametrize("cls, raw, mask", [
+        (MockDynamixelClient, 0x01, DXL_MASK),      # keeps driving
+        (MockDynamixelClient, 0x10, DXL_MASK),      # stops
+        (MockFeetechClient, 0x01, FEETECH_MASK),    # stops
+    ])
+    def test_a_power_fault_is_reported_prominently_and_never_rebooted(
+            self, cls, raw, mask):
+        actions = self._report(cls, raw, mask)
+        assert REBOOT not in _kinds(actions), "a reboot cannot fix wiring"
+        prominent = [a for a in actions if a.kind == NOTIFY and a.prominent]
+        assert prominent, "a supply fault must reach an operator"
+        assert "Power the hand down" in prominent[0].reason
+
+    @pytest.mark.parametrize("cls, raw, mask", [
+        (MockFeetechClient, 0x02, FEETECH_MASK),   # angle_sensor
+        (MockDynamixelClient, 0x08, DXL_MASK),     # motor_encoder
+    ])
+    def test_an_encoder_fault_is_reported_the_same_on_both_families(
+            self, cls, raw, mask):
+        """Different bit, different vendor name, one report."""
+        actions = self._report(cls, raw, mask)
+        assert REBOOT not in _kinds(actions)
+        prominent = [a for a in actions if a.kind == NOTIFY and a.prominent]
+        assert prominent
+        assert "position sensor" in prominent[0].reason

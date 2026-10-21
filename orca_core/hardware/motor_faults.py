@@ -28,9 +28,18 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Set
 
-# Conditions this module acts on. Others are recorded and reported only.
+# Every condition is logged and reported. Only these two are recovered from:
+# a reboot clears a latch, not a cause, and these are the two causes that end
+# on their own - a stall is released and heat dissipates. A supply fault or a
+# dead encoder does not, so rebooting those would clear the flag and have it
+# latch again on the next command, burning the bus and burying the diagnosis.
 EXCESS_LOAD = "excess_load"
 THERMAL = "thermal"
+
+# Reported prominently and never recovered: the cause is wiring or supply,
+# and the hand should be powered down rather than driven on.
+POWER = ("input_voltage", "electrical_shock")
+ENCODER = "encoder"
 
 
 @dataclass(frozen=True)
@@ -317,6 +326,9 @@ class MotorFaultPolicy:
             f"{'stopped by' if stopped else 'reported'} "
             f"{', '.join(sorted(event.flag_names)) or 'unknown'}"))
 
+        actions.extend(self._report_unrecoverable(obs, stopped | flagged,
+                                                   bool(stopped)))
+
         if not stopped:
             # Nothing to recover: the motor is still driving and said so.
             return actions
@@ -340,6 +352,37 @@ class MotorFaultPolicy:
 
         if EXCESS_LOAD in stopped:
             actions.extend(self._recover_load(obs, record, monotonic))
+        return actions
+
+    def _report_unrecoverable(self, obs: MotorObservation,
+                              conditions: Set[str],
+                              stopped: bool) -> List[FaultAction]:
+        """Report the conditions a reboot cannot fix, the same way on both
+        families.
+
+        Every fault reaches an operator, not only the two that are recovered
+        from - otherwise a supply fault or a failed encoder is a log line
+        nobody reads, on whichever family happens to raise it.
+        """
+        actions: List[FaultAction] = []
+        power = sorted(c for c in conditions if c in POWER)
+        if power:
+            actions.append(FaultAction(
+                NOTIFY, obs.motor_id,
+                f"reports {' + '.join(power)}, which is a supply or wiring "
+                "fault: it is not recovered and cooling will not help. Power "
+                "the hand down and check this motor's cable and connector at "
+                "both ends, and the rail voltage while it is driven"
+                + ("" if stopped else " - the motor is still being driven"),
+                prominent=True))
+        if ENCODER in conditions:
+            actions.append(FaultAction(
+                NOTIFY, obs.motor_id,
+                "reports a fault in its own position sensor, so its reported "
+                "position cannot be trusted"
+                + (". It has stopped itself" if stopped else
+                   " and it is still being driven"),
+                prominent=True))
         return actions
 
     def _recover_load(self, obs: MotorObservation, record: MotorFaultRecord,
