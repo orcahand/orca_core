@@ -77,17 +77,18 @@ class TactileStreamStats:
     frames_bad_payload: int = 0
     last_error_code: int = 0  # most recent sensor-reported error code (0 = no error)
     stream_rearms: int = 0  # re-arm attempts after mid-stream silence (device reset)
+    layout_changes: int = 0  # fingertip sets adopted mid-stream after a re-read
 
 
 @dataclass
 class TactileSensorConfiguration:
     """Snapshot of connected sensors and their properties.
 
-    Captured at stream start and treated as immutable for the stream. The
-    connector board can drop and re-add fingertips mid-stream. Frames carry no
-    slot IDs, so a frame whose size no longer matches is dropped, but one that
-    keeps the size is decoded under this snapshot's labels until the stream
-    restarts.
+    Captured at stream start and replaced, never mutated, when the connector
+    board adds or drops a fingertip mid-stream: a frame whose size no longer
+    matches triggers a re-read. Frames carry no slot IDs, so a change that
+    keeps the frame size (one 51-taxel fingertip swapped for another) goes
+    unnoticed until the stream restarts or the watchdog re-arms it.
     """
     connected: dict[str, bool] = field(default_factory=dict)  # {finger: is_connected}
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
@@ -109,6 +110,11 @@ class TactileSensorConfiguration:
     def __str__(self) -> str:
         active = ", ".join(self.active_sensors) if self.active_sensors else "none"
         return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
+
+
+def _layout(config: TactileSensorConfiguration) -> list[tuple[str, int]]:
+    """What decides a frame's layout: the active fingers and their taxel counts."""
+    return [(f, config.num_taxels.get(f, 0)) for f in config.active_sensors]
 
 
 def _subtract_offset(force: list[float], offset: list[float]) -> list[float]:
@@ -216,6 +222,8 @@ class TactileClient:
         self._rearm_thread: threading.Thread | None = None
         self._stream_ctrl_lock = threading.Lock()
         self._stream_generation = 0
+        self._reread_thread: threading.Thread | None = None
+        self._last_idle_reread_ts = 0.0
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
@@ -469,6 +477,7 @@ class TactileClient:
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
             self._last_rearm_ts = 0.0
+            self._last_idle_reread_ts = 0.0
 
     def stop_stream(self) -> None:
         """Disable the AA 56 stream on the device and clear the latest cache."""
@@ -553,6 +562,50 @@ class TactileClient:
                 self.enable_auto_data_transmission(attempts=1)
             except Exception as e:
                 logger.warning("tactile stream re-arm failed: %s", e)
+                return
+        self._reread_configuration(generation)
+
+    def _maybe_reread_configuration(self, generation: int) -> None:
+        """Re-read the fingertip set off the demuxer thread, which must stay
+        free to deliver the register replies."""
+        now = time.monotonic()
+        with self._auto_lock:
+            if self._reread_thread is not None and self._reread_thread.is_alive():
+                return
+            # A re-read that found nothing new means the mismatch is not a layout
+            # change; don't poll the board on every frame for it.
+            if now - self._last_idle_reread_ts < TACTILE_STREAM_REARM_MIN_INTERVAL_S:
+                return
+            self._reread_thread = threading.Thread(
+                target=self._reread_configuration,
+                args=(generation, True),
+                name="TactileConfigReread",
+                daemon=True,
+            )
+        self._reread_thread.start()
+
+    def _reread_configuration(self, generation: int, backoff_if_unchanged: bool = False) -> None:
+        """Adopt the board's current fingertip set for a still-running stream."""
+        try:
+            config = self._get_configuration()
+        except OSError as e:
+            logger.debug("tactile configuration re-read failed: %s", e)
+            return
+        with self._auto_lock:
+            if not self._auto_running or generation != self._stream_generation:
+                return
+            old = self._tactile_config
+            changed = old is None or _layout(old) != _layout(config)
+            self._tactile_config = config
+            if changed:
+                self._auto_stats.layout_changes += 1
+            elif backoff_if_unchanged:
+                self._last_idle_reread_ts = time.monotonic()
+        if changed:
+            logger.warning(
+                "tactile fingertips changed mid-stream: %s -> %s; frames in "
+                "between were dropped", old, config,
+            )
 
     def get_latest_forces(self) -> ResultantReading | None:
         """Return the most recent resultant reading, or ``None`` if none yet."""
@@ -823,6 +876,7 @@ class TactileClient:
             mode_resultant = self._auto_mode_resultant
             mode_taxels = self._auto_mode_taxels
             config = self._tactile_config
+            generation = self._stream_generation
 
         # AA 56 (2) + reserved (1) + effective_length (2) + payload + LRC (1).
         payload = frame_bytes[2 + AUTO_FRAME_META_SIZE:-1]
@@ -842,6 +896,9 @@ class TactileClient:
         if expected_size == 0 or len(valid) != expected_size:
             with self._auto_lock:
                 self._auto_stats.frames_bad_payload_size += 1
+            if len(valid) != expected_size:
+                # Size alone can't tell which fingertip joined or left.
+                self._maybe_reread_configuration(generation)
             return
 
         parsed_resultant, parsed_taxels = decode_auto_payload(
