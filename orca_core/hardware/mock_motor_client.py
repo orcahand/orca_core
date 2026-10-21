@@ -66,6 +66,16 @@ class MockMotorClient(MotorClient):
     real_client: ClassVar[type]
     """The real client class this mock stands in for."""
 
+    supports_reboot: ClassVar[bool] = True
+
+    default_stop_mask: ClassVar[int] = 0
+    """Which error bits de-energize a motor of this family, as its hardware
+    ships. Read off real hands; the two families differ, and a mock that
+    flattened them would hide the asymmetry the policy exists to handle."""
+
+    default_shutdown_temp_c: ClassVar[float] = 80.0
+    """Temperature a motor of this family stops itself at."""
+
     default_operating_mode: ClassVar[int]
     """Operating-mode value a motor of this family powers up in."""
 
@@ -109,6 +119,22 @@ class MockMotorClient(MotorClient):
         self._pos = {mid: 0.0 for mid in self.motor_ids}
         self._vel = {mid: 0.0 for mid in self.motor_ids}
         self._cur = {mid: 0.0 for mid in self.motor_ids}
+        # Fault simulation, shared by every family's mock so recovery code is
+        # exercised the same way whichever one a test picks.
+        #
+        # Simulated latched Hardware Error Status per motor; reboot_motor()
+        # clears an entry and counts the restart.
+        self.latched_errors: dict = {}
+        self.reboot_count: dict = {}
+        # Which error bits stop a motor, and the temperature it stops itself
+        # at. Both default to the figures read off real hardware; a test
+        # overrides either per motor.
+        self.stop_mask: dict = {}
+        self.temperature_limits: dict = {}
+        # Motors clamped to zero goal current. The same attribute the ABC
+        # reads, so motors_unable_to_move() sees them as it would on real
+        # hardware.
+        self._held_off: set = set()
         # Per-motor goal-current ceilings a test may script, in mA; None = no current register.
         self.current_ceilings_ma: dict = {}
         self._servo_gains = {int(mid): self.default_servo_gains for mid in self.motor_ids}
@@ -195,9 +221,49 @@ class MockMotorClient(MotorClient):
         )
 
     def read_hardware_error(self, motor_id: int) -> "int | None":
-        """A responding motor answers fault-free; any other ID is silent."""
+        """A responding motor answers whatever ``latched_errors`` holds for it
+        (fault-free by default); any other ID is silent."""
         self.check_connected()
-        return 0 if motor_id in self.responding_motor_ids() else None
+        if motor_id not in self.responding_motor_ids():
+            return None
+        return int(self.latched_errors.get(int(motor_id), 0))
+
+    def read_stop_mask(self) -> "dict[int, int | None]":
+        """Which error bits stop each motor, defaulting to this family's own
+        shipped mask so a test exercises the asymmetry rather than a fiction."""
+        self.check_connected()
+        default = self.default_stop_mask
+        return {int(mid): int(self.stop_mask.get(int(mid), default))
+                for mid in self.motor_ids}
+
+    def read_temperature_limits(self) -> "dict[int, float | None]":
+        """The temperature each motor shuts itself down at."""
+        self.check_connected()
+        return {int(mid): float(self.temperature_limits.get(
+            int(mid), self.default_shutdown_temp_c))
+            for mid in self.motor_ids}
+
+    @property
+    def held_off(self) -> set:
+        """Motors currently clamped, for tests to assert on."""
+        return self._held_off
+
+    def hold_motor_off(self, motor_id: int) -> bool:
+        self.check_connected()
+        self._held_off.add(int(motor_id))
+        return True
+
+    def release_motor(self, motor_id: int) -> bool:
+        self.check_connected()
+        self._held_off.discard(int(motor_id))
+        return True
+
+    def reboot_motor(self, motor_id: int) -> None:
+        """Clear this motor's simulated latch and count the restart."""
+        self.check_connected()
+        self.latched_errors.pop(int(motor_id), None)
+        self.reboot_count[int(motor_id)] = (
+            self.reboot_count.get(int(motor_id), 0) + 1)
 
     def read_temperature(self) -> np.ndarray:
         """Reads and returns the simulated temperatures."""
