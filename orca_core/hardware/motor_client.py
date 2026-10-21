@@ -142,8 +142,9 @@ class MotorClient(ABC):
     # How close to its goal a motor must be to count as arrived, in radians.
     # A moving flag alone is not enough: a servo stalled against a load
     # reports stopped while short of its target, and a caller that advanced
-    # on that would desynchronise a chain mid-motion.
-    arrival_tolerance_rad: ClassVar[float] = 0.02
+    # on that would desynchronise a chain mid-motion. Servos holding against
+    # tendon load sit up to about 0.045 rad off their goal, so this sits above that.
+    arrival_tolerance_rad: ClassVar[float] = 0.06
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
