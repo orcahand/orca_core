@@ -409,3 +409,49 @@ def test_a_short_ping_reply_is_not_a_crash():
     handler.readTxRx = lambda scs_id, address, length: ([0x34, 0x12], 0, 0)
     model, result, _ = handler.ping(1)
     assert model == 0x1234
+
+
+# Methods the fault policy calls on a live client. Checked against the real
+# classes, not the mocks: a mock cannot catch a real client calling a helper
+# that no longer exists, which is how a renamed connection check shipped a
+# policy that died on its first poll and recovered nothing.
+_FAULT_POLICY_METHODS = (
+    "read_stop_mask",
+    "read_temperature_limits",
+    "hold_motor_off",
+    "release_motor",
+    "reboot_motor",
+    "read_hardware_error",
+    "take_hardware_alerts",
+)
+
+
+@pytest.mark.parametrize("cls", [DynamixelClient, FeetechClient])
+def test_the_fault_policy_methods_only_call_helpers_that_exist(cls):
+    """Every ``self.x`` these methods reach for must be on the class.
+
+    This is the one bug a mock cannot find: the method is never executed
+    against a real client in the suite, so a helper renamed underneath it
+    only shows up as an AttributeError on hardware.
+    """
+    import inspect
+    import re
+
+    # An unconnected instance, so attributes set in __init__ count as real.
+    # Nothing here is called; only the names are checked.
+    client = cls([1, 2], port="/dev/null", baudrate=1000000)
+
+    missing = []
+    for name in _FAULT_POLICY_METHODS:
+        method = getattr(cls, name, None)
+        if method is None or not callable(method):
+            continue
+        try:
+            source = inspect.getsource(method)
+        except (OSError, TypeError):
+            continue
+        for attribute in sorted(set(re.findall(r"self\.([A-Za-z_][A-Za-z0-9_]*)",
+                                               source))):
+            if not hasattr(client, attribute):
+                missing.append(f"{cls.__name__}.{name} -> self.{attribute}")
+    assert not missing, "calls that do not exist: " + ", ".join(missing)

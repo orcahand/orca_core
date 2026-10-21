@@ -737,7 +737,7 @@ class FeetechClient(MotorClient):
 
         Torque is deliberately left off: re-energizing is the caller's call.
         """
-        self._check_connected()
+        self.check_connected()
         with self._bus_lock:
             result = self.packet_handler.reBoot(motor_id)
             if result != COMM_SUCCESS:
@@ -873,7 +873,7 @@ class FeetechClient(MotorClient):
         The cached ceiling is left alone, so release_motor() restores what
         the caller configured rather than the zero written here.
         """
-        self._check_connected()
+        self.check_connected()
         with self._bus_lock:
             result, _ = self.packet_handler.write2ByteTxRx(
                 int(motor_id), HLS.GOAL_CURRENT, 0)
@@ -886,7 +886,7 @@ class FeetechClient(MotorClient):
 
     def release_motor(self, motor_id: int) -> bool:
         """Restore this motor's configured goal current."""
-        self._check_connected()
+        self.check_connected()
         raw = self._current_limit_raw.get(int(motor_id),
                                          HLS.GOAL_CURRENT_MAX_RAW)
         with self._bus_lock:
@@ -901,7 +901,7 @@ class FeetechClient(MotorClient):
 
     def read_temperature_limits(self) -> "dict[int, Optional[float]]":
         """Each motor's Max Temperature register (address 13), in degC."""
-        self._check_connected()
+        self.check_connected()
         limits: "dict[int, Optional[float]]" = {}
         with self._bus_lock:
             for motor_id in self.motor_ids:
@@ -916,7 +916,7 @@ class FeetechClient(MotorClient):
 
     def read_stop_mask(self) -> "dict[int, Optional[int]]":
         """Each motor's Unload Conditions register (address 19)."""
-        self._check_connected()
+        self.check_connected()
         masks: "dict[int, Optional[int]]" = {}
         with self._bus_lock:
             for motor_id in self.motor_ids:
