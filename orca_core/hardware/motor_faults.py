@@ -187,6 +187,28 @@ class MotorFaultPolicy:
         return self.records.setdefault(int(motor_id),
                                        MotorFaultRecord(motor_id=int(motor_id)))
 
+    def forget_motor(self, motor_id: int) -> None:
+        """Clear one motor's reboot history, after someone rebooted it.
+
+        A manual reboot is the operator taking the decision back, so the
+        count that made us stop recovering it starts again from there -
+        otherwise the motor is permanently abandoned for the rest of the
+        session however many times it is fixed and restarted.
+        """
+        motor_id = int(motor_id)
+        record = self.records.get(motor_id)
+        if record is None:
+            return
+        record.reboots = 0
+        record.given_up = False
+        record.thermal_recoveries = 0
+        record.thermal_given_up = False
+        record.cooling = False
+        record.ready = False
+        record.last_raw = 0
+        record.last_reboot_monotonic = None
+        self._held.discard(motor_id)
+
     def observe(self, observations, now: float | None = None) -> List[FaultAction]:
         """Fold one tick's readings in and return the actions to perform."""
         monotonic = time.monotonic() if now is None else now
@@ -328,9 +350,10 @@ class MotorFaultPolicy:
                 record.given_up = True
             return [FaultAction(
                 NOTIFY, obs.motor_id,
-                f"left latched after {record.reboots} reboots: it keeps "
-                "overloading, so recovering it again would only hide the "
-                "mechanical cause", prominent=True)]
+                f"has exceeded the reboot threshold ({record.reboots}). You "
+                "may be consistently overloading it. Reboot manually if you "
+                "wish, or increase the reboot threshold",
+                prominent=True)]
 
         last = record.last_reboot_monotonic
         if last is not None and monotonic - last < config.min_reboot_interval_s:
@@ -389,9 +412,10 @@ class MotorFaultPolicy:
             record.thermal_given_up = True
             return [FaultAction(
                 NOTIFY, obs.motor_id,
-                f"left latched after {record.thermal_recoveries} thermal "
-                "recoveries: it keeps overheating, so whatever is heating it "
-                "has not been dealt with", prominent=True)]
+                f"has exceeded the thermal recovery threshold "
+                f"({record.thermal_recoveries}). You may be consistently "
+                "overheating it. Reboot manually if you wish, or increase the "
+                "threshold", prominent=True)]
 
         record.cooling = False
         record.ready = False

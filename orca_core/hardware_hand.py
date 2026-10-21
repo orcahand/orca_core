@@ -891,6 +891,18 @@ class OrcaHand(BaseHand):
                 logger.exception("%s: %s failed", who, action.kind)
         return actions
 
+    def clear_fault_record(self, motor_id: int) -> None:
+        """Forget one motor's reboot history, after a manual reboot.
+
+        Without this a motor left latched for exceeding its threshold stays
+        abandoned for the rest of the session, however many times someone
+        fixes the cause and restarts it.
+        """
+        policy = self._fault_policy
+        if policy is not None:
+            policy.forget_motor(motor_id)
+        self._fault_torque_held.discard(int(motor_id))
+
     @property
     def fault_records(self) -> dict:
         """Per-motor fault history, empty until :meth:`poll_faults` has run."""

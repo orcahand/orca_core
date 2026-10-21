@@ -84,6 +84,7 @@ ORCA_HAND = BASE_HAND | {
     "get_motor_pos",
     "get_motor_state",
     "get_motor_temp",
+    "clear_fault_record",
     "fault_records",
     "init_joints",
     "poll_faults",
