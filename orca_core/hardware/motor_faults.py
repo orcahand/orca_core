@@ -48,6 +48,14 @@ class FaultPolicyConfig:
     # and the wait is self-limiting because it does not come back until it
     # has cooled.
     thermal_giveup_after_reboots: Optional[int] = None
+    # Whether one overheating motor takes the whole hand off torque.
+    #
+    # On by default because the motors heat each other: a motor packed
+    # between driving neighbours can reach its limit and then never get back
+    # under the margin, because the heat is not its own. Holding only the hot
+    # motor off is the right answer on a hand where they are thermally
+    # independent, and wrong on one where they are not.
+    thermal_hold_all: bool = True
     # How far below its temperature limit a motor must cool before the
     # thermal latch is cleared.
     thermal_clear_margin_c: float = 10.0
@@ -166,6 +174,9 @@ class MotorFaultPolicy:
         self._client = client
         self.config = config or FaultPolicyConfig()
         self.records: Dict[int, MotorFaultRecord] = {}
+        # Motors currently clamped to zero current, so a hold is issued once
+        # rather than re-issued every tick.
+        self._held: "set[int]" = set()
 
     def record(self, motor_id: int) -> MotorFaultRecord:
         return self.records.setdefault(int(motor_id),
@@ -174,9 +185,41 @@ class MotorFaultPolicy:
     def observe(self, observations, now: float | None = None) -> List[FaultAction]:
         """Fold one tick's readings in and return the actions to perform."""
         monotonic = time.monotonic() if now is None else now
+        observations = list(observations)
         actions: List[FaultAction] = []
         for observation in observations:
             actions.extend(self._observe_one(observation, monotonic))
+        actions.extend(self._reconcile_thermal_hold(observations))
+        return actions
+
+    def _reconcile_thermal_hold(self, observations) -> List[FaultAction]:
+        """Bring the set of held-off motors in line with who is cooling.
+
+        Emitting holds and releases from one place keeps the two modes a
+        difference in *which* motors are held rather than in how holding
+        works, and makes a hold idempotent: a motor already held is not
+        clamped again on every tick.
+        """
+        cooling = {motor_id for motor_id, record in self.records.items()
+                   if record.cooling}
+        if cooling and self.config.thermal_hold_all:
+            wanted = {int(obs.motor_id) for obs in observations}
+        else:
+            wanted = cooling
+
+        actions: List[FaultAction] = []
+        for motor_id in sorted(wanted - self._held):
+            reason = ("held off while a motor cools; these motors heat each "
+                      "other, so one cannot cool while its neighbours drive"
+                      if motor_id not in cooling else
+                      "held off until it has cooled "
+                      f"{self.config.thermal_clear_margin_c:.0f} degC below "
+                      "its limit")
+            actions.append(FaultAction(HOLD_OFF, motor_id, reason))
+        for motor_id in sorted(self._held - wanted):
+            actions.append(FaultAction(
+                RELEASE, motor_id, "cooled enough to drive again"))
+        self._held = wanted
         return actions
 
     def _observe_one(self, obs: MotorObservation,
@@ -237,10 +280,6 @@ class MotorFaultPolicy:
             # reports torque on - a cleared mask bit, or a read that raced
             # the stop - take it off ourselves rather than leave a hot motor
             # driving.
-            actions.append(FaultAction(
-                HOLD_OFF, obs.motor_id,
-                "clamped to zero current until it has cooled "
-                f"{self.config.thermal_clear_margin_c:.0f} degC below its limit"))
             return actions
 
         if EXCESS_LOAD in stopped:
@@ -293,12 +332,6 @@ class MotorFaultPolicy:
             # limit, which is about a degree of hysteresis - so it chatters
             # in and out at the threshold and never actually cools. Hold it
             # off until the margin is met; that is the point of the margin.
-            if obs.torque_enabled:
-                return [FaultAction(
-                    HOLD_OFF, obs.motor_id,
-                    f"re-energized at {temperature:.0f} degC while cooling; "
-                    "held off until it is "
-                    f"{self.config.thermal_clear_margin_c:.0f} degC below its limit")]
             return []
 
         # Same floor as a load recovery: if clearing the latch does not take,
@@ -323,14 +356,10 @@ class MotorFaultPolicy:
         record.last_reboot_monotonic = monotonic
         record.last_raw = 0
         self._close_open_events(record, monotonic)
-        actions = [
-            FaultAction(RELEASE, obs.motor_id,
-                        "cooled enough to be given its current ceiling back"),
-            FaultAction(
-                REBOOT, obs.motor_id,
-                f"cooled to {temperature:.0f} degC, {limit - temperature:.0f} "
-                "degC below its limit; clearing the thermal latch"),
-        ]
+        actions = [FaultAction(
+            REBOOT, obs.motor_id,
+            f"cooled to {temperature:.0f} degC, {limit - temperature:.0f} "
+            "degC below its limit; clearing the thermal latch")]
         if record.torque_was_on:
             actions.append(FaultAction(ENABLE_TORQUE, obs.motor_id,
                                        "torque was on before it overheated"))

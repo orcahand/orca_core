@@ -204,7 +204,8 @@ class TestThermal:
         try:
             policy = MotorFaultPolicy(client)
             rounds = self._cool_to(policy, [81.0, 75.0, 69.0])
-            assert _kinds(rounds[2])[:2] == [RELEASE, REBOOT]
+            assert REBOOT in _kinds(rounds[2])
+            assert RELEASE in _kinds(rounds[2])
             assert policy.record(1).cooling is False
             assert policy.record(1).thermal_recoveries == 1
         finally:
@@ -342,24 +343,87 @@ class TestCoolingHoldsTheMotorOff:
                                  torque_enabled=False)], now=0.0)
             assert policy.record(1).cooling is True
 
-            # Drops a degree and the hardware re-energizes it.
+            # The clamp persists, so it is issued once rather than
+            # re-asserted on every tick.
             actions = policy.observe([_obs(0x04, FEETECH_MASK,
                                            temperature_c=79.0,
                                            torque_enabled=True)], now=10.0)
-            assert _kinds(actions) == [HOLD_OFF]
+            assert HOLD_OFF not in _kinds(actions), "already held"
             assert policy.record(1).cooling is True
+            assert policy._held == {1}
 
-            # Still held off well above the margin.
             actions = policy.observe([_obs(0x04, FEETECH_MASK,
                                            temperature_c=74.0,
                                            torque_enabled=True)], now=20.0)
-            assert _kinds(actions) == [HOLD_OFF]
+            assert HOLD_OFF not in _kinds(actions)
+            assert policy._held == {1}
 
             # Margin met: cleared and brought back.
             actions = policy.observe([_obs(0x04, FEETECH_MASK,
                                            temperature_c=69.0,
                                            torque_enabled=True)], now=30.0)
             assert REBOOT in _kinds(actions)
+            assert RELEASE in _kinds(actions)
             assert policy.record(1).cooling is False
+            assert policy._held == set()
+        finally:
+            client.disconnect()
+
+
+class TestWhoGetsHeldWhileOneMotorCools:
+    """These motors heat each other, so a motor packed between driving
+    neighbours can reach its limit and never get back under the margin -
+    the heat is not its own. Holding the whole hand off is the default; the
+    per-motor hold is right only where they are thermally independent."""
+
+    def _observations(self, hot_temp):
+        return [
+            MotorObservation(motor_id=1, raw_error=0x04, stop_mask=FEETECH_MASK,
+                             joint="index_pip", temperature_c=hot_temp,
+                             temperature_limit_c=80.0, torque_enabled=True),
+            MotorObservation(motor_id=2, raw_error=0x00, stop_mask=FEETECH_MASK,
+                             joint="index_mcp", temperature_c=60.0,
+                             temperature_limit_c=80.0, torque_enabled=True),
+        ]
+
+    def test_by_default_one_hot_motor_holds_the_whole_hand(self):
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            assert policy.config.thermal_hold_all is True
+            actions = policy.observe(self._observations(81.0), now=0.0)
+            held = {a.motor_id for a in actions if a.kind == HOLD_OFF}
+            assert held == {1, 2}, "the cool neighbour is held too"
+        finally:
+            client.disconnect()
+
+    def test_per_motor_mode_holds_only_the_hot_one(self):
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(
+                client, FaultPolicyConfig(thermal_hold_all=False))
+            actions = policy.observe(self._observations(81.0), now=0.0)
+            held = {a.motor_id for a in actions if a.kind == HOLD_OFF}
+            assert held == {1}
+        finally:
+            client.disconnect()
+
+    def test_the_hand_is_released_only_once_nothing_is_cooling(self):
+        client = _client(MockFeetechClient)
+        try:
+            policy = MotorFaultPolicy(client)
+            policy.observe(self._observations(81.0), now=0.0)
+            assert policy._held == {1, 2}
+
+            # Still too hot: nothing released.
+            actions = policy.observe(self._observations(75.0), now=10.0)
+            assert RELEASE not in _kinds(actions)
+            assert policy._held == {1, 2}
+
+            # Margin met: the whole hand comes back.
+            actions = policy.observe(self._observations(69.0), now=20.0)
+            released = {a.motor_id for a in actions if a.kind == RELEASE}
+            assert released == {1, 2}
+            assert policy._held == set()
         finally:
             client.disconnect()
