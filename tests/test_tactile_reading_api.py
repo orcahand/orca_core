@@ -1,6 +1,8 @@
 """Frame numbers, resultant saturation and fixed-order arrays on tactile readings."""
+import json
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -21,6 +23,7 @@ from orca_core.hardware.tactile_client import TactileClient
 from tests._helpers import wait_until
 
 MODES = [(True, False), (False, True), (True, True)]
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @contextmanager
@@ -214,3 +217,70 @@ def test_alphabetical_as_array_is_deprecated():
     with pytest.warns(DeprecationWarning, match=r"\.array"):
         rows = reading.as_array()
     np.testing.assert_array_equal(rows[:, 2], [2.0, 1.0])
+
+
+def _fixture_chunks(name):
+    raw = (FIXTURES / name).read_bytes()
+    chunks, pos = [], 0
+    while pos < len(raw):
+        n = int.from_bytes(raw[pos:pos + 2], "little")
+        chunks.append(raw[pos + 2:pos + 2 + n])
+        pos += 2 + n
+    return chunks
+
+
+def _scan_frames(stream: bytes):
+    """Find complete, checksum-valid AA 56 / AA A9 frames; returns ``[(kind, end, frame)]``."""
+    frames, i = [], 0
+    while i + 5 <= len(stream):
+        if stream[i] == 0xAA and stream[i + 1] in (0x56, 0xA9) and stream[i + 2] == 0:
+            end = i + 5 + int.from_bytes(stream[i + 3:i + 5], "little") + 1
+            frame = stream[i:end]
+            if end <= len(stream) and (-sum(frame[:-1])) & 0xFF == frame[-1]:
+                frames.append((frame[1], end, frame))
+                i = end
+                continue
+        i += 1
+    return frames
+
+
+def test_raw_bytes_from_a_touch_hand_replay_through_framer_and_decoder(tactile_mock):
+    """Read chunks captured off a real hand's sensing port (combined mode, a press
+    on index reaching the 25.5 N ceiling) decode frame for frame like the reference."""
+    link, client, state = tactile_mock
+    meta = json.loads((FIXTURES / "tactile_touch_chunks.json").read_text())
+    assert state.active_sensors == meta["fingers"]
+    chunks = _fixture_chunks("tactile_touch_chunks.bin")
+    frames = _scan_frames(b"".join(chunks))
+    tactile = [(end, f) for kind, end, f in frames if kind == 0x56]
+    encoder_count = sum(kind == 0xA9 for kind, _, _ in frames)
+    assert len(tactile) >= 25 and encoder_count > 0
+
+    encoder_frames = []
+    link.register_frame_handler(0xA9, encoder_frames.append)
+    client.start_stream(resultant=True, taxels=True)
+
+    fed, next_frame, saturated_seen = 0, 0, set()
+    for chunk in chunks:
+        link.feed_bytes(chunk)
+        fed += len(chunk)
+        while next_frame < len(tactile) and tactile[next_frame][0] <= fed:
+            next_frame += 1
+            wait_until(lambda: client.get_stats().frames_ok == next_frame)
+            reading = client.get_latest()
+            frame = tactile[next_frame - 1][1]
+            ref_forces, ref_taxels, ref_saturated = _reference_decode(
+                frame[6:-1], meta["fingers"], True, True)
+            assert reading.seq == next_frame
+            for row, finger in enumerate(FINGER_NAMES):
+                np.testing.assert_allclose(reading.forces.array[row], ref_forces[finger], atol=1e-9)
+                np.testing.assert_allclose(
+                    reading.taxels.array[TAXEL_SLICES[finger]], ref_taxels[finger], atol=1e-9)
+            assert reading.forces.saturated == ref_saturated
+            saturated_seen |= ref_saturated
+
+    stats = client.get_stats()
+    assert stats.frames_ok == len(tactile)
+    assert stats.frames_bad_payload_size == stats.frames_bad_payload == 0
+    assert saturated_seen == {"index"}
+    wait_until(lambda: len(encoder_frames) == encoder_count)

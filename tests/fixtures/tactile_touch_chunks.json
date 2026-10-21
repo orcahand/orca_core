@@ -1,0 +1,17 @@
+{
+ "mode": "combined",
+ "fingers": [
+  "thumb",
+  "index",
+  "middle",
+  "ring",
+  "pinky"
+ ],
+ "taxels": {
+  "thumb": 51,
+  "index": 87,
+  "middle": 87,
+  "ring": 87,
+  "pinky": 51
+ }
+}
