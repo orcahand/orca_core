@@ -39,9 +39,9 @@ METADATA_TIMEOUT_S = ORCA_ID_PROBE_TIMEOUT_S
 LINE_RETRIES = 2
 
 _META = re.compile(
-    rb"ORCA:CAL;SLOT=(\d+);SEQ=(\d+);LEN=(\d+);CRC=([0-9A-Fa-f]{4});CHUNK=(\d+)"
+    rb"ORCA:CAL;SLOT=(\d+);SEQ=(\d+);LEN=(\d+);CRC=([0-9A-Fa-f]{4});CHUNK=(\d+)\n"
 )
-_CHUNK = re.compile(rb"ORCA:CALD;(\d+);([0-9A-Fa-f]{4});([0-9A-Fa-f]*)")
+_CHUNK = re.compile(rb"ORCA:CALD;(\d+);([0-9A-Fa-f]{4});([0-9A-Fa-f]*)\n")
 _NONE = re.compile(rb"ORCA:CAL;NONE")
 
 

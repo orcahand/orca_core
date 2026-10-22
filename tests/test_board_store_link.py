@@ -86,6 +86,44 @@ class FakeBoard:
                 index, crc16(part), part.hex().upper().encode())
 
 
+class SplittingBoard(FakeBoard):
+    """A board whose replies arrive a few bytes at a time, as a real one's do.
+
+    This is what hardware does and what a fake that answers in whole lines
+    never shows: a reader that matches on a partial line decodes a truncated
+    hex field, or reads CHUNK=12 out of a CHUNK=128 that has not finished
+    arriving.
+    """
+
+    def __init__(self, *args, piece=7, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.piece = piece
+
+    def read(self, _size):
+        out, self.out = bytes(self.out[:self.piece]), self.out[self.piece:]
+        return out
+
+
+class TestRepliesThatArriveInPieces:
+    """Pinned because real hardware split them and the fakes did not."""
+
+    def test_the_metadata_is_not_read_until_the_line_is_whole(self):
+        store = blob()
+        meta = board_store_link.read_metadata_over_link(SplittingBoard(store))
+        assert meta is not None
+        assert meta.length == len(store)
+        assert meta.chunk_bytes == 128     # not 1, 12 or anything truncated
+
+    def test_a_chunk_is_not_decoded_until_its_line_is_whole(self):
+        store = blob()
+        assert board_store_link.read_store_over_link(SplittingBoard(store)) == store
+
+    def test_it_holds_up_down_to_a_byte_at_a_time(self):
+        store = blob()
+        assert board_store_link.read_store_over_link(
+            SplittingBoard(store, piece=1)) == store
+
+
 class TestReadingTheStore:
     def test_the_metadata_says_what_the_board_holds(self):
         store = blob(sequence=7)
