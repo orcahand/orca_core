@@ -217,8 +217,14 @@ class TestTheMirror:
         assert board_store.calibrations_dir() == tmp_path
 
 
-class TestAHandAdoptsItsBoardsCalibration:
-    """What a connect does with a board that carries a calibration."""
+class TestAHandAdoptsWhatIsKeptForIt:
+    """What a connect loads, and in what order.
+
+    A copy on this machine wins over the board's, because it is the only one a
+    calibration run can reach: writing a board needs tooling orca_core does not
+    ship, so a board that outranked the local copy would mean a fresh
+    calibration here was silently ignored.
+    """
 
     @pytest.fixture()
     def board(self, monkeypatch, tmp_path):
@@ -250,7 +256,7 @@ class TestAHandAdoptsItsBoardsCalibration:
         board.store = blob(sequence=5)
         hand = self.hand()
         on_disk = hand.calibration.motor_limits_dict.get(1)
-        hand._adopt_board_calibration("mock")
+        hand._adopt_stored_calibration("mock")
         assert hand.calibration.motor_limits_dict[1] == [-1.0, 1.0]
         assert hand.calibration.motor_limits_dict[1] != on_disk
         assert hand._board_store.sequence == 5
@@ -258,7 +264,7 @@ class TestAHandAdoptsItsBoardsCalibration:
     def test_a_board_with_no_store_changes_nothing(self, board):
         hand = self.hand()
         before = hand.calibration
-        hand._adopt_board_calibration("mock")
+        hand._adopt_stored_calibration("mock")
         assert hand.calibration is before
         assert hand._board_store is None
 
@@ -266,30 +272,48 @@ class TestAHandAdoptsItsBoardsCalibration:
         board.answers_info = False
         hand = self.hand()
         before = hand.calibration
-        hand._adopt_board_calibration("mock")
+        hand._adopt_stored_calibration("mock")
         assert hand.calibration is before
 
     def test_a_store_read_adopted_once_is_mirrored_for_next_time(self, board, tmp_path):
         board.store = blob()
-        self.hand()._adopt_board_calibration("mock")
+        self.hand()._adopt_stored_calibration("mock")
         assert (tmp_path / "0123456789ABCDEF.bin").read_bytes() == board.store
 
-    def test_an_unchanged_store_is_not_pulled_again(self, board, tmp_path):
-        """One round trip when the mirror already matches the board's CRC."""
-        board.store = blob()
-        board_store.write_cache(board.store, "0123456789ABCDEF", directory=tmp_path)
-        hand = self.hand()
-        hand._adopt_board_calibration("mock")
-        assert hand._board_store is not None
-        assert not any(q.startswith(b"ORCA_CAL?0") for q in board.asked)
-
-    def test_a_changed_store_is_pulled_even_though_one_is_mirrored(self, board, tmp_path):
-        board_store.write_cache(blob(sequence=1), "0123456789ABCDEF", directory=tmp_path)
+    def test_a_copy_on_this_machine_is_used_without_asking_the_board(
+        self, board, tmp_path
+    ):
+        """The board's store is not even read when one is kept here."""
+        board_store.write_cache(blob(sequence=4), "0123456789ABCDEF", directory=tmp_path)
         board.store = blob(sequence=9)
         hand = self.hand()
-        hand._adopt_board_calibration("mock")
+        hand._adopt_stored_calibration("mock")
+        assert hand._board_store.sequence == 4
+        assert not any(q.startswith(b"ORCA_CAL?") for q in board.asked)
+
+    def test_a_local_calibration_run_is_what_the_hand_comes_up_on(
+        self, board, tmp_path
+    ):
+        """The reason for the order: a run here cannot write the board."""
+        from orca_core.board_store import pack
+
+        local = pack({"calibrated": True, "motor_limits": {1: [-7.5, 7.5]}},
+                     identity=BoardIdentity(side="right", serial="ser-0000"),
+                     sequence=2)
+        board_store.write_cache(local, "0123456789ABCDEF", directory=tmp_path)
+        board.store = blob(sequence=99)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand.calibration.motor_limits_dict[1] == [-7.5, 7.5]
+
+    def test_the_board_is_read_when_nothing_is_kept_here(self, board, tmp_path):
+        """First contact with a shipped hand."""
+        board.store = blob(sequence=9)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
         assert hand._board_store.sequence == 9
-        assert any(q.startswith(b"ORCA_CAL?0") for q in board.asked)
+        assert any(q.startswith(b"ORCA_CAL?") for q in board.asked)
+        assert (tmp_path / "0123456789ABCDEF.bin").exists()
 
     def test_a_store_this_version_cannot_read_leaves_the_disk_copy(self, board, caplog):
         store = bytearray(blob())
@@ -301,7 +325,7 @@ class TestAHandAdoptsItsBoardsCalibration:
         hand = self.hand()
         before = hand.calibration
         with caplog.at_level("WARNING"):
-            hand._adopt_board_calibration("mock")
+            hand._adopt_stored_calibration("mock")
         assert hand.calibration is before
         assert "cannot" in caplog.text
 
@@ -312,7 +336,7 @@ class TestAHandAdoptsItsBoardsCalibration:
 
         board.write = explode
         hand = self.hand()
-        hand._adopt_board_calibration("mock")   # must not raise
+        hand._adopt_stored_calibration("mock")   # must not raise
         assert hand._board_store is None
 
 
@@ -356,19 +380,19 @@ class TestNothingChangesForAHandWithNoOnboardCalibration:
     def test_no_orca_board_at_all(self, hand, monkeypatch):
         """A plain adapter: the query reaches the motors, which ignore it."""
         self.fake_port(monkeypatch, FakeBoard(None, answers_info=False))
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration == self.disk_calibration(hand)
 
     def test_an_orca_board_whose_firmware_predates_the_store(self, hand, monkeypatch):
         """It answers ORCA_INFO? but not ORCA_CAL?, so there is nothing to take."""
         board = FakeBoard(None)
         self.fake_port(monkeypatch, board)
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration == self.disk_calibration(hand)
 
     def test_an_orca_board_with_an_empty_store(self, hand, monkeypatch):
         self.fake_port(monkeypatch, FakeBoard(None))
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration == self.disk_calibration(hand)
 
     def test_the_port_cannot_even_be_opened(self, hand, monkeypatch):
@@ -378,14 +402,14 @@ class TestNothingChangesForAHandWithNoOnboardCalibration:
             raise OSError("busy")
 
         monkeypatch.setattr(serial, "Serial", explode)
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration == self.disk_calibration(hand)
 
     def test_nothing_is_written_to_the_mirror_when_there_is_no_store(
         self, hand, monkeypatch, tmp_path
     ):
         self.fake_port(monkeypatch, FakeBoard(None))
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert list(tmp_path.iterdir()) == []
 
     def test_a_full_connect_on_a_hand_with_no_board_still_succeeds(self, hand):
@@ -401,5 +425,5 @@ class TestNothingChangesForAHandWithNoOnboardCalibration:
         """Not merely equal: untouched, so nothing downstream sees a new object."""
         before = hand.calibration
         self.fake_port(monkeypatch, FakeBoard(None))
-        hand._adopt_board_calibration("/dev/null")
+        hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration is before

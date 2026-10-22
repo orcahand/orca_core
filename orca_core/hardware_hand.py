@@ -332,9 +332,9 @@ class OrcaHand(BaseHand):
             raise ConnectionError(
                 f"no motor responded on {port} (check power and wiring)"
             )
-        # Before the client takes the port: a hand's calibration belongs to its
-        # own board, and this is the window where the port is free to ask.
-        self._adopt_board_calibration(port)
+        # Before the client takes the port: this is the window where it is free
+        # to ask the board which hand this is, and to load what is kept for it.
+        self._adopt_stored_calibration(port)
         self._motor_client = self._create_motor_client()
         # The family is known now, so a config that says "default" gets its
         # current limits before anything reads them.
@@ -349,48 +349,55 @@ class OrcaHand(BaseHand):
                 "leave these joints out", absent, self.absent_motor_ids)
 
 
-    def _adopt_board_calibration(self, port: str) -> None:
-        """Take the calibration from the board, if the board has one.
+    def _adopt_stored_calibration(self, port: str) -> None:
+        """Take the calibration kept for this hand, local copy first.
 
-        The board wins over anything on disk: it travels with the hand, so it
-        cannot be the wrong hand's, and it cannot be a copy someone forgot to
-        update. The file in the model directory stays the pre-connect default —
-        it is all there is before a port is known — and what is read here
-        replaces it for the session.
+        Order, once the board has named itself:
 
-        One round trip in the ordinary case: the board reports what it holds and
-        its CRC, and a mirrored copy with the same CRC is used as it is. Only a
-        board whose store has changed is read out in full. A hand on a plain
-        adapter pays one short probe timeout, the same budget asking what the
-        board is already costs.
+        1. ``~/.orca_core/calibrations/<board id>.bin`` on this machine, which is
+           either what was last read off that board or what a calibration run
+           here produced.
+        2. The board's own store, which is then mirrored to (1) so a shipped
+           hand is known to this machine from first contact.
+        3. ``calibration.yaml`` in the model directory, as it always was.
+
+        The local copy wins because it is the only one a calibration run can
+        reach: writing to a board needs tooling that does not ship with
+        orca_core, so a board that outranked the local copy would mean a fresh
+        calibration here was quietly ignored. When that tooling is packaged, a
+        flag to prefer the board becomes worth having; until then preferring it
+        would just be a trap.
 
         Everything here is best-effort. A plain adapter, older firmware, an
-        empty store, a board that will not answer: all of them leave the
-        calibration as it was loaded from disk, and none of them fail a connect.
+        empty store, a board that will not answer, a layout this version cannot
+        read: each leaves the calibration as it was loaded from disk, and none
+        of them can fail a connect.
         """
         from . import board_store, board_store_link
         from .hardware.sensing.serial_discovery import probe_orca_info_over_link
 
         blob = None
+        source = None
         board_id = None
         try:
             import serial
 
             with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE,
                                timeout=0.05, exclusive=True) as link:
-                metadata = board_store_link.read_metadata_over_link(link)
-                if metadata is None:
-                    return
                 info = probe_orca_info_over_link(link)
                 board_id = info.board_id if info else None
                 if board_id:
-                    cached = board_store.cached_blob(board_id)
-                    if cached is not None and board_store.crc16(cached) == metadata.crc:
-                        blob = cached
+                    blob = board_store.cached_blob(board_id)
+                    source = "this machine" if blob is not None else None
                 if blob is None:
+                    # Nothing kept here for it: ask the board itself.
+                    metadata = board_store_link.read_metadata_over_link(link)
+                    if metadata is None:
+                        return
                     blob = board_store_link.read_store_over_link(link, metadata)
+                    source = "the hand's own board"
         except Exception as exc:
-            logger.debug("no calibration store read from the board on %s: %s", port, exc)
+            logger.debug("no stored calibration read for %s: %s", port, exc)
             return
         if blob is None:
             return
@@ -399,20 +406,20 @@ class OrcaHand(BaseHand):
             store = board_store.unpack(blob)
         except board_store.BoardStoreError as exc:
             logger.warning(
-                "the board on %s holds a calibration store this version cannot "
-                "read (%s); using the calibration on disk instead", port, exc)
+                "the calibration store for this hand is one this version cannot "
+                "read (%s); using the calibration on disk instead", exc)
             return
 
         self.calibration = result_from_mapping(store.calibration, self.config.motor_ids)
         self._board_store = store
-        if board_id:
+        if board_id and source != "this machine":
             try:
                 board_store.write_cache(blob, board_id)
             except Exception as exc:
                 logger.debug("could not mirror the calibration store: %s", exc)
         logger.info(
-            "calibration taken from the hand's own board (sequence %d, %d bytes)",
-            store.sequence, len(blob))
+            "calibration taken from %s (sequence %d, %d bytes)",
+            source, store.sequence, len(blob))
 
     def _try_port(
         self, port: str, base_config: "OrcaHandConfig"
