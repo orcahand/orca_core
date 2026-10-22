@@ -22,7 +22,6 @@ from .motor_travel import (
     write_joint_motor_travel,
 )
 from .tensioning import run_jitter, run_tension
-from .tension_probe import ProbeSettings, run_tension_probe
 from .slack_test import SlackTestSettings, run_slack_test
 from .tension_sweep import SweepSettings, run_tension_sweep
 from .motor_chain import (
@@ -52,7 +51,6 @@ __all__ = [
     "measured_travel_by_joint",
     "motor_travel_deg",
     "plan_motor_chain",
-    "ProbeSettings",
     "read_last_tension",
     "reset_all_motors",
     "resolve_port",
@@ -60,7 +58,6 @@ __all__ = [
     "run_guided_tension",
     "run_jitter",
     "run_tension",
-    "run_tension_probe",
     "run_slack_test",
     "run_tension_sweep",
     "SlackTestSettings",

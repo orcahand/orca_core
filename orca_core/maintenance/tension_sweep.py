@@ -9,7 +9,7 @@
 """Tension sweep: the current each motor draws while it slowly walks its joint
 from one calibrated limit to the other and back.
 
-One group at a time (see tension_probe.probe_groups: every thumb joint
+One group at a time (see joint_motion.joint_groups: every thumb joint
 alone, the four fingers together per joint kind; or one joint at a time with
 ``parallel`` off), each
 motor is driven in position mode at a fixed slow speed between the two motor
@@ -42,16 +42,14 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, TINY_SLEEP
 from .motor_reads import read_motor_pos_checked
-from .tension_probe import (
+from .joint_motion import (
     POSE_MID,
     SENSES,
-    ProbeSettings,
-    _Clock,
-    _move_to_pose,
+    Clock,
     direction_for,
-    joint_sense,
-    probe_groups,
-    probe_joints,
+    finger_joints,
+    joint_groups,
+    move_to_pose,
 )
 
 if TYPE_CHECKING:
@@ -190,7 +188,7 @@ def run_tension_sweep(
     settings: SweepSettings = SweepSettings(),
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[ShouldStop] = None,
-    clock: Optional[_Clock] = None,
+    clock: Optional[Clock] = None,
     repeats: int = 1,
     parallel: bool = True,
 ) -> dict:
@@ -224,10 +222,10 @@ def run_tension_sweep(
         raise ValueError("repeats must be at least 1")
     if should_stop is None:
         should_stop = lambda: False  # noqa: E731
-    clock = clock or _Clock()
+    clock = clock or Clock()
     config = hand.config
     absent = [j for j in getattr(hand, "absent_joints", []) if j != "wrist"]
-    targets = probe_joints(config, absent)
+    targets = finger_joints(config, absent)
     if joints is not None:
         wanted = set(joints)
         targets = [j for j in targets if j in wanted]
@@ -248,11 +246,6 @@ def run_tension_sweep(
     ]
     idx = config.motor_id_to_idx_dict
     control_mode = config.control_mode
-    pose_settings = ProbeSettings(
-        hold_current_ma=settings.hold_current_ma,
-        pose_current_ma=settings.pose_current_ma,
-        pose_tolerance_deg=settings.pose_tolerance_deg,
-    )
 
     def _restore() -> None:
         hand.disable_torque()
@@ -278,13 +271,18 @@ def run_tension_sweep(
         hand.set_control_mode(CURRENT_BASED_POSITION, all_present)
         hand.disable_torque()
         hand.set_max_current(_currents(None, settings.hold_current_ma))
-        short = _move_to_pose(hand, targets, all_present, clock, POSE_MID, pose_settings, idx)
+        short = move_to_pose(
+            hand, targets, all_present, clock, POSE_MID, idx,
+            hold_current_ma=settings.hold_current_ma,
+            pose_current_ma=settings.pose_current_ma,
+            pose_tolerance_deg=settings.pose_tolerance_deg,
+        )
         if short:
             _emit(progress_callback, "pose_short", joints=short)
         centre = read_motor_pos_checked(hand)
         hand.write_motor_pos(all_present, centre[[idx[m] for m in all_present]])
         hand.enable_torque(all_present)
-        groups = probe_groups(targets, parallel)
+        groups = joint_groups(targets, parallel)
         # Every calibrated motor's limits in the turn it reports, swept or not,
         # so the thumb and the fingers can be parked out of each other's way.
         known: Dict[str, _Motor] = {}

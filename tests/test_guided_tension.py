@@ -125,6 +125,21 @@ def test_an_older_hand_is_refused_unless_overridden(connected_mock_hand):
     assert result.completed
 
 
+def test_a_joint_asked_to_test_again_loses_its_kept_pass(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive(hand, lambda j: 0.9 if j == "index_mcp" else 0.2)
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=True, hand_key="ser-0003")
+    asks = [{"index_mcp"}]
+    prompt, progress = _drive(hand, lambda j: 0.0)
+    result = run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True, hand_key="ser-0003",
+        forget=lambda: asks.pop() if asks else set(),
+    )
+    by_joint = {m["joint"]: m for m in result.spreads}
+    assert by_joint["index_mcp"]["kept"] is None and by_joint["index_mcp"]["status"] != "pass"
+    assert read_progress(hand.config, "ser-0003")["best"]["index_mcp"] < 0.1
+
+
 def test_stop_during_prompt_releases(connected_mock_hand):
     hand = connected_mock_hand
     stop = threading.Event()
@@ -472,9 +487,6 @@ def test_an_end_needs_a_settled_motor_and_two_visits():
     assert (
         dataclasses.replace(spread, minus_hits=1).status(4.0, "slack") == "unconfirmed"
     )
-    assert (
-        dataclasses.replace(spread, probe_slack_deg=6.0).status(4.0, "slack") == "slack"
-    )
     # Fraction scoring never looks at the visit counts.
     assert dataclasses.replace(spread, minus_hits=1).status(0.85) == "pass"
 
@@ -723,41 +735,6 @@ def test_a_flick_past_the_hardstop_is_not_a_slack_end(connected_mock_hand):
     assert rows[0]["plus_deg"] < 2.0 and rows[0]["spread_deg"] < 2.0
 
 
-def test_probe_slack_blocks_a_pass_until_the_ratchet_has_been_used(connected_mock_hand):
-    hand = connected_mock_hand
-    sweeper = _Sweeper(hand)
-    targets = tension_targets(hand.config)
-    scores = []
-
-    def prompt(p):
-        if p["action"] == "range_check":
-            for t in targets:
-                if t.joint in p["stage"]["joints"]:
-                    sweeper.sweep(t.motor_id, math.radians(0.98 * t.expected_deg) / 2)
-        if p["action"] == "score":
-            scores.append({m["joint"]: m for m in p["motors"]})
-            return FINISH if FINISH in p["options"] else TENSION
-        return DONE if p["action"] == "tension" else p["options"][0]
-
-    result = run_guided_tension(
-        hand,
-        prompt_callback=prompt,
-        progress_callback=sweeper.progress,
-        persist=False,
-        scoring="slack",
-        probe_slack_deg={"index_mcp": 8.0, "ring_pip": 1.0},
-        tension_offset_deg=0,
-    )
-    assert scores[0]["index_mcp"]["status"] == "slack"
-    assert scores[0]["index_mcp"]["probe_slack_deg"] == 8.0
-    assert scores[0]["ring_pip"]["status"] == "pass"
-    assert scores[1]["index_mcp"]["status"] == "pass"
-    assert result.completed and result.rounds == 2
-
-
-# ----- faults (both scorings) -------------------------------------------------
-
-
 def test_a_latched_motor_is_reported_and_holds_again_after_its_reboot(
     connected_mock_hand,
 ):
@@ -832,66 +809,3 @@ def test_a_latched_motor_is_reported_and_holds_again_after_its_reboot(
     )
     assert not result.completed
     assert all(m["fault"] is None for m in result.spreads)
-
-
-def test_the_check_hook_runs_between_score_and_tension_with_torque_off(connected_mock_hand):
-    """With a check callback the score step offers "Check & tension": the hand
-    goes limp for a pose prompt, the callback runs on the hand, and the
-    tension step follows with the motors holding again."""
-    from orca_core.maintenance.guided_tension import (
-        CHECK, CONTINUE, DEFAULT_RANGE_STAGES, SKIP_CHECK, run_guided_tension,
-    )
-
-    hand = connected_mock_hand
-    client = hand.motor_client
-    seen, checked = [], []
-
-    def check(h):
-        assert h is hand and not any(client._torque_enabled.values())
-        checked.append(True)
-
-    def prompt(p):
-        seen.append((p["action"], p["options"][0]))
-        if p["action"] == "check_pose":
-            assert not any(client._torque_enabled.values())
-            return CONTINUE if len(checked) == 0 else SKIP_CHECK
-        if p["action"] == "tension":
-            assert all(client._torque_enabled[t.motor_id] for t in tension_targets(hand.config))
-            return "Done"
-        if p["action"] == "score":
-            return CHECK if seen.count(("score", CHECK)) <= 2 else FINISH_ANYWAY
-        return p["options"][0]
-
-    result = run_guided_tension(
-        hand, prompt_callback=prompt, persist=False, resume=False, check_callback=check,
-        stages=DEFAULT_RANGE_STAGES[:1],
-    )
-    actions = [a for a, _ in seen]
-    assert actions[:6] == ["pose", "range_check", "score", "check_pose", "tension", "pose"]
-    # Round two skipped the check: straight from the pose prompt to tensioning.
-    assert actions[6:10] == ["range_check", "score", "check_pose", "tension"]
-    assert checked == [True] and result.rounds == 3
-    assert not any(client._torque_enabled.values())
-
-
-def test_check_first_opens_on_the_check_and_the_ratchet(connected_mock_hand):
-    from orca_core.maintenance.guided_tension import CONTINUE, DEFAULT_RANGE_STAGES, run_guided_tension
-
-    hand = connected_mock_hand
-    seen = []
-
-    def prompt(p):
-        seen.append(p["action"])
-        if p["action"] == "check_pose":
-            return CONTINUE
-        if p["action"] == "score":
-            return FINISH_ANYWAY
-        return p["options"][0]
-
-    result = run_guided_tension(
-        hand, prompt_callback=prompt, persist=False, resume=False, check_first=True,
-        check_callback=lambda h: None, stages=DEFAULT_RANGE_STAGES[:1],
-    )
-    # No finger is moved before the first check and ratchet; the stages follow in round two.
-    assert seen[:4] == ["check_pose", "tension", "pose", "range_check"]
-    assert result.rounds == 2

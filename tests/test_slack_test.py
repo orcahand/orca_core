@@ -1,5 +1,6 @@
-"""Slack test: a spool turns at the test current only as far as its slack lets
-it; one that completes the half turn blocks calibration. Torque off afterwards."""
+"""Slack test: with the joint held, a spool turns only as far as its slack lets
+it; more than half a turn fails the joint and blocks calibration. Torque off
+afterwards."""
 
 import math
 
@@ -22,8 +23,8 @@ class _FakeClock:
 
 
 class _Spools:
-    """Each motor turns ``slack_deg`` freely from where it starts, in either
-    direction, and not a degree more at a current under 60 mA."""
+    """With its joint held, each motor turns ``slack_deg`` freely from where it
+    starts, in either direction, and no further."""
 
     def __init__(self, hand, slack_deg):
         self.hand = hand
@@ -44,7 +45,7 @@ class _Spools:
         out = []
         for m in hand.config.motor_ids:
             start, goal = self.start[m], self.goal.get(m, self.start[m])
-            reach = math.radians(self.slack.get(m, 0.0) + max(0.0, self.current[m] - 60.0) * 0.2)
+            reach = math.radians(self.slack.get(m, 0.0))
             delta = goal - start
             out.append(start + math.copysign(min(abs(delta), reach), delta) if delta else start)
         return np.array(out)
@@ -61,36 +62,44 @@ def spooled(connected_mock_hand, monkeypatch):
     return hand, spools
 
 
-def test_slack_shows_as_free_rotation_and_a_half_turn_blocks(spooled):
+def test_held_joints_report_their_free_rotation_and_too_much_fails(spooled):
     hand, spools = spooled
-    events = []
-    report = run_slack_test(hand, progress_callback=events.append, clock=_FakeClock())
+    events, held = [], []
+    report = run_slack_test(hand, progress_callback=events.append, clock=_FakeClock(),
+                            hold_callback=lambda j: held.append(j) or True)
     by = {r["joint"]: r for r in report["results"]}
+    assert held == report["joints"] and "wrist" not in by
     assert by["index_pip"]["plus_deg"] == pytest.approx(12.0, abs=0.1)
     assert by["index_pip"]["minus_deg"] == pytest.approx(12.0, abs=0.1)
-    assert by["index_pip"]["total_deg"] == pytest.approx(24.0, abs=0.2)
-    assert by["index_pip"]["status"] == "slack" and not by["index_pip"]["plus_capped"]
-    assert by["middle_pip"]["total_deg"] == pytest.approx(0.0) and by["middle_pip"]["status"] == "taut"
-    assert by["ring_mcp"]["plus_capped"] and by["ring_mcp"]["status"] == "unspool"
-    assert by["ring_mcp"]["plus_deg"] <= 180.0
+    assert by["index_pip"]["status"] == "pass"
+    assert by["middle_pip"]["total_deg"] == pytest.approx(0.0) and by["middle_pip"]["status"] == "pass"
+    # Past the half turn the joint fails, and the spool is never wound much further.
+    assert by["ring_mcp"]["status"] == "fail" and by["ring_mcp"]["total_deg"] <= 186.0
     assert report["blocked"] is True
     assert {by["index_pip"]["plus_sense"], by["index_pip"]["minus_sense"]} == {"flex", "extend"}
-    assert "wrist" not in by
     # Torque is off and the configured limit is back at the end.
     assert not any(hand.motor_client._torque_enabled.values())
     assert spools.current[hand.config.joint_to_motor_map["index_pip"]] == hand.config.max_current
     kinds = [e["event"] for e in events]
-    assert kinds[0] == "slack_plan" and kinds.count("slack_phase_done") == 2
-    phases = [e["direction"] for e in events if e["event"] == "slack_phase"]
-    assert phases == [1, -1]
+    assert kinds[0] == "slack_plan" and kinds.count("slack_joint_done") == len(report["joints"])
 
 
-def test_a_taut_hand_passes_and_a_stop_leaves_torque_off(spooled):
+def test_slack_adds_up_over_both_directions(spooled):
     hand, spools = spooled
-    report = run_slack_test(hand, joints=["index_pip", "middle_pip"], clock=_FakeClock(),
-                            settings=SlackTestSettings(slack_tolerance_deg=30.0))
+    spools.slack[hand.config.joint_to_motor_map["index_pip"]] = 100.0
+    report = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock())
+    (r,) = report["results"]
+    assert r["plus_deg"] == pytest.approx(100.0, abs=0.1)
+    assert r["status"] == "fail" and report["blocked"] is True
+
+
+def test_a_skipped_joint_is_not_moved_and_a_stop_leaves_torque_off(spooled):
+    hand, spools = spooled
+    report = run_slack_test(hand, joints=["index_pip", "ring_mcp"], clock=_FakeClock(),
+                            hold_callback=lambda j: j != "ring_mcp")
+    by = {r["joint"]: r for r in report["results"]}
+    assert by["ring_mcp"]["status"] == "skipped" and by["ring_mcp"]["total_deg"] == 0.0
     assert report["blocked"] is False
-    assert {r["status"] for r in report["results"]} == {"taut"}
     calls = {"n": 0}
 
     def should_stop():
@@ -101,4 +110,4 @@ def test_a_taut_hand_passes_and_a_stop_leaves_torque_off(spooled):
         run_slack_test(hand, should_stop=should_stop, clock=_FakeClock())
     assert not any(hand.motor_client._torque_enabled.values())
     with pytest.raises(ValueError):
-        SlackTestSettings(max_turn_deg=360.0).validate()
+        SlackTestSettings(max_free_deg=360.0).validate()

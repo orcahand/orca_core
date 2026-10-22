@@ -77,7 +77,7 @@ def swept(connected_mock_hand, monkeypatch):
     monkeypatch.setattr(hand, "set_max_current", tendon.set_max_current)
     monkeypatch.setattr(tension_sweep, "read_motor_pos_checked", tendon.read_pos)
     monkeypatch.setattr(tension_sweep, "_read_state_checked", tendon.read_state)
-    monkeypatch.setattr(tension_sweep, "_move_to_pose", lambda *a, **k: {})
+    monkeypatch.setattr(tension_sweep, "move_to_pose", lambda *a, **k: {})
     return hand, tendon
 
 
@@ -171,7 +171,7 @@ def test_the_thumb_and_the_fingers_are_parked_out_of_each_others_way(swept):
 
     run_tension_sweep(hand, joints=["thumb_dip", "index_pip"], progress_callback=progress,
                       clock=_FakeClock(), settings=SweepSettings(speed_deg_s=60.0))
-    from orca_core.maintenance.tension_probe import direction_for
+    from orca_core.maintenance.joint_motion import direction_for
     flex = {j: direction_for(hand.config, j, "flex") for j in ("thumb_dip", "index_pip", "ring_pip")}
     # Straight = the extend limit plus the park margin, on the extend side.
     def straight(j):

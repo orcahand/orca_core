@@ -130,6 +130,14 @@ dev_scripts/
 
 # Per-hand calibration output (machine-specific, not committed)
 calibration.yaml
+calibration_auto.yaml
+calibration_manual.yaml
+setup.yaml
+# Before setup.yaml these were separate files; still read until rewritten.
+slack_tests.yaml
+tension_probes.yaml
+tension_sweeps.yaml
+travel_baselines.yaml
 
 # Generated soak-test output (metrics.csv, progress.png)
 soak_logs/

@@ -44,7 +44,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -55,8 +54,8 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
-from ..utils.utils import read_yaml, write_yaml_atomic
 from .motor_reads import read_motor_pos_checked
+from .setup_file import read_section, write_section
 from .tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, pull_tendons
 
 if TYPE_CHECKING:
@@ -90,7 +89,10 @@ SETTLE_DEG = 1.0
 REPEAT_TOL_DEG = 2.0
 AWAY_FRACTION = 0.25
 AWAY_MIN_DEG = 5.0
+# Sections of setup.yaml, and the files they were kept in before it.
+LAST_TENSION_SECTION = "last_tension"
 LAST_TENSION_FILE = "last_tension.yaml"
+PROGRESS_SECTION = "tension_progress"
 PROGRESS_FILE = "tension_progress.yaml"
 DEFAULT_HAND_KEY = "default"
 
@@ -98,9 +100,6 @@ CONTINUE = "Continue"
 NEXT = "Next"
 CHECK_SCORE = "Score"
 TENSION = "Tension"
-# Score step with a check hook: run the tension check first, then tension.
-CHECK = "Check & tension"
-SKIP_CHECK = "Skip check"
 FINISH = "Finish"
 FINISH_ANYWAY = "Finish anyway"
 DONE = "Done"
@@ -115,7 +114,6 @@ STATUS_PARTIAL = "partial"
 STATUS_LOW = "low"
 STATUS_UNSCORED = "unscored"
 STATUS_UNCONFIRMED = "unconfirmed"  # slack: within tolerance, but an end was reached only once
-STATUS_SLACK = "slack"  # slack: a tension probe measured slack above the tolerance on this joint
 STATUS_FAULT = "fault"  # a latched hardware error: the motor answers but never energizes
 FAULT_RECHECK_S = 1.0
 
@@ -136,7 +134,6 @@ class MotorSpread:
     kept: Optional[float] = None  # fraction: best fraction from earlier rounds or sessions
     plus_hits: int = 0  # slack: settled visits to the + end (2 confirm it)
     minus_hits: int = 0
-    probe_slack_deg: Optional[float] = None  # slack: what a tension probe measured before this round
     fault: Optional[List[str]] = None  # latched error bits while the motor is limp
 
     @property
@@ -175,8 +172,6 @@ class MotorSpread:
             slack = self.slack_deg
             if slack is None:
                 return STATUS_UNSCORED
-            if self.probe_slack_deg is not None and self.probe_slack_deg > threshold:
-                return STATUS_SLACK
             if slack <= threshold:
                 return STATUS_PASS if self.confirmed else STATUS_UNCONFIRMED
             return STATUS_PARTIAL if (self.live_fraction or 0.0) >= PARTIAL_FRACTION else STATUS_LOW
@@ -207,9 +202,6 @@ class MotorSpread:
             "confirmed": self.confirmed,
             "plus_hits": self.plus_hits,
             "minus_hits": self.minus_hits,
-            "probe_slack_deg": (
-                None if self.probe_slack_deg is None else round(self.probe_slack_deg, 2)
-            ),
             "status": self.status(threshold, scoring),
             "scoring": scoring,
             "pass_fraction": None if slack_mode else threshold,
@@ -350,29 +342,21 @@ def score(
     }
 
 
-def last_tension_path(config: "OrcaHandConfig") -> str:
-    return os.path.join(os.path.dirname(config.calibration_path), LAST_TENSION_FILE)
-
-
 def read_last_tension(config: "OrcaHandConfig") -> Optional[dict]:
     """The last guided tension that reached 100 %, or ``None``."""
-    data = read_yaml(last_tension_path(config))
-    return data or None
+    return read_section(config, LAST_TENSION_SECTION, LAST_TENSION_FILE) or None
 
 
 def record_hold_tension(config: "OrcaHandConfig") -> None:
     """Record a plain hold-and-ratchet tension, which has nothing to score."""
-    write_yaml_atomic(
-        last_tension_path(config),
+    write_section(
+        config,
+        LAST_TENSION_SECTION,
         {
             "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": "hold",
         },
     )
-
-
-def progress_path(config: "OrcaHandConfig") -> str:
-    return os.path.join(os.path.dirname(config.calibration_path), PROGRESS_FILE)
 
 
 def read_progress(
@@ -386,7 +370,7 @@ def read_progress(
     ``best``. Slack: ``updated_at``, ``rounds`` and the last round's ``scores``
     per joint (``slack_deg``, ``fraction``, ``status``), kept in the record's
     ``slack`` part so the two scorings never see each other's numbers."""
-    hands = (read_yaml(progress_path(config)) or {}).get("hands") or {}
+    hands = (read_section(config, PROGRESS_SECTION, PROGRESS_FILE) or {}).get("hands") or {}
     record = hands.get(hand_key or DEFAULT_HAND_KEY) or {}
     if scoring == SCORING_SLACK:
         return record.get("slack") or None
@@ -402,8 +386,7 @@ def _write_progress(
 ) -> None:
     """Replace the ``scoring`` part of one hand's record (``None`` drops it);
     ``scoring=None`` drops the whole record."""
-    path = progress_path(config)
-    hands = dict((read_yaml(path) or {}).get("hands") or {})
+    hands = dict((read_section(config, PROGRESS_SECTION, PROGRESS_FILE) or {}).get("hands") or {})
     current = dict(hands.get(hand_key) or {})
     if scoring is None:
         current = {}
@@ -422,7 +405,7 @@ def _write_progress(
         hands.pop(hand_key)
     else:
         return
-    write_yaml_atomic(path, {"hands": hands})
+    write_section(config, PROGRESS_SECTION, {"hands": hands})
 
 
 def clear_progress(
@@ -619,6 +602,13 @@ def record_sample(
             track.minus_away = False
 
 
+def forget_spread(spread: MotorSpread) -> None:
+    """Drop a joint's kept score and the ends it reached, so it is tested again."""
+    spread.kept = None
+    spread.offset_deg = spread.plus_deg = spread.minus_deg = 0.0
+    spread.plus_hits = spread.minus_hits = 0
+
+
 class _SpreadSampler(threading.Thread):
     """Tracks each motor's drag from ``centre`` until stopped.
 
@@ -639,8 +629,10 @@ class _SpreadSampler(threading.Thread):
         excluded=(),
         watch: Optional[_FaultWatch] = None,
         scoring: str = SCORING_FRACTION,
+        forget: Optional[Callable[[], set]] = None,
     ):
         super().__init__(daemon=True, name="guided-tension-sampler")
+        self._forget = forget
         self._hand = hand
         self._watch = watch
         self._excluded = list(excluded)
@@ -689,10 +681,28 @@ class _SpreadSampler(threading.Thread):
             spread.plus_hits = spread.minus_hits = 0
             self._tracks[n] = _EndTracker()
 
+    def _apply_forget(self) -> None:
+        """Start over the joints the operator asked to test again: their kept
+        score and this round's ends are dropped, and the tracks restart."""
+        joints = self._forget() if self._forget is not None else set()
+        if not joints:
+            return
+        for n, spread in enumerate(self._spreads):
+            if spread.joint in joints:
+                forget_spread(spread)
+                self._tracks[n] = _EndTracker()
+        _emit(
+            self._progress_callback,
+            "spread",
+            round=self._round,
+            **score(self._spreads, self._threshold, self._excluded, self._scoring),
+        )
+
     def run(self) -> None:
         try:
             next_recheck = time.monotonic() + FAULT_RECHECK_S
             while not self._stop_event.wait(SAMPLE_PERIOD_S):
+                self._apply_forget()
                 if not self._active.is_set():
                     continue
                 self._apply_rebase()
@@ -799,24 +809,6 @@ def _resolve(current: Current) -> float:
     return float(current() if callable(current) else current)
 
 
-def _run_check(
-    hand, motor_ids, check_callback, prompt_callback, progress_callback, should_stop, round_no
-) -> None:
-    """Torque off so the operator can pose the hand clear of its stops, then run
-    the check on it and put the motors back in current-based position mode."""
-    hand.disable_torque(motor_ids)
-    _emit(progress_callback, "step", step="check_pose", round=round_no)
-    answer = _ask(prompt_callback, should_stop, "check_pose", [CONTINUE, SKIP_CHECK], round=round_no)
-    if answer == SKIP_CHECK:
-        return
-    _emit(progress_callback, "step", step="check", round=round_no)
-    try:
-        check_callback(hand)
-    finally:
-        hand.disable_torque(motor_ids)
-        hand.set_control_mode(CURRENT_BASED_POSITION, motor_ids)
-
-
 def _ask(
     prompt_callback: PromptCallback,
     should_stop: ShouldStop,
@@ -847,14 +839,12 @@ def run_guided_tension(
     scoring: str = SCORING_FRACTION,
     pass_fraction: PassFraction = PASS_FRACTION,
     pass_slack_deg: PassSlack = PASS_SLACK_DEG,
-    probe_slack_deg: Optional[Dict[str, float]] = None,
     persist: Optional[bool] = None,
     hand_key: Optional[str] = None,
     resume: bool = True,
     stages: Sequence[RangeStage] = DEFAULT_RANGE_STAGES,
     any_hardware: bool = False,
-    check_callback: Optional[Callable[["OrcaHand"], None]] = None,
-    check_first: bool = False,
+    forget: Optional[Callable[[], Sequence[str]]] = None,
 ) -> GuidedTensionResult:
     """Run centre → range check → score → tension rounds until 100 % or finish.
 
@@ -872,14 +862,7 @@ def run_guided_tension(
       ``hold_current`` per joint and the ``freeze_current``.
       → ``Next``, or ``Score`` on the round's last stage (``Back`` to re-pose)
     - ``score``: carries the round's score. → ``Finish`` at 100 %, else
-      ``Tension`` / ``Finish anyway`` (``Back`` to the last stage). With a
-      ``check_callback`` the first option is ``Check & tension`` instead:
-      torque goes off, a ``check_pose`` prompt (→ ``Continue`` / ``Skip check``)
-      lets the operator pose the hand clear of its stops, then the callback
-      runs on the hand (a tension check: the console's breakaway probe) under
-      a ``check`` step, and the tension step follows. With ``check_first`` the
-      first round opens on that check and its ratchet before any finger is
-      moved; the range stages follow in round two.
+      ``Tension`` / ``Finish anyway`` (``Back`` to the last stage).
     - ``tension``: motors hold at ``tension_current``; take up the slack with
       the ratchet tool, without overtensioning. → ``Done`` (``Pull more``
       pulls ``tension_extra_deg`` further and asks again; scores are untouched)
@@ -890,6 +873,11 @@ def run_guided_tension(
     a jump from ``tension`` opens the next round on that stage.
     Stage prompts offer ``goto:score`` and ``goto:tension`` (the score so far,
     then straight to tensioning), and the score offers ``goto:tension`` too.
+
+    ``forget()``, polled while the run goes on, returns joints the operator
+    wants tested again: their kept score is dropped (also from the saved
+    progress at the next score) and their ends start over, so a joint that
+    passed once has to pass again.
 
     Progress events: ``step`` (``step``, ``round``), ``spread`` and ``score``
     (``round``, ``passed``, ``scored``, ``fraction``, ``motors``),
@@ -924,21 +912,17 @@ def run_guided_tension(
 
     Fraction: each joint's best score is kept across rounds and, keyed by
     ``hand_key`` (a hand serial or board id; one shared slot when ``None``),
-    across runs in ``tension_progress.yaml``: a joint that has passed stays
+    across runs in the ``tension_progress`` section of ``setup.yaml``: a joint that has passed stays
     passed, so later checks only need the joints still short.
 
-    Slack: ``probe_slack_deg`` is slack a tension probe measured per joint
-    before this run (motor degrees): in the first round a joint above its
-    tolerance there scores ``slack`` whatever its sweep says, so the probe's
-    finding is tensioned out; it is dropped once the ratchet has been used.
-    Every round is scored on its own sweep alone; the last round's scores and
+    Slack: every round is scored on its own sweep alone; the last round's scores and
     the round count are saved per ``hand_key`` in the record's ``slack`` part.
 
     Either way ``resume=False`` starts from scratch and drops what that scoring
     had saved, and reaching 100 % clears it.
 
-    A round that reaches 100 % is recorded in ``last_tension.yaml`` beside the
-    hand's calibration (unless ``persist`` is false; mock hands default to not
+    A round that reaches 100 % is recorded in the ``last_tension`` section of
+    ``setup.yaml`` beside the hand's calibration (unless ``persist`` is false; mock hands default to not
     persisting). On any exit torque is disabled and the configured control
     mode and current limit are restored.
 
@@ -1025,9 +1009,21 @@ def run_guided_tension(
             updated_at=saved.get("updated_at"),
         )
     template = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
-    probe = {}
-    if slack_mode:
-        probe = {j: float(v) for j, v in (probe_slack_deg or {}).items() if v is not None}
+
+    forget_lock = threading.Lock()
+
+    def _drain_forget() -> set:
+        """Joints to test again, their kept score dropped from ``best`` and the template."""
+        if forget is None:
+            return set()
+        with forget_lock:
+            joints = set(forget())
+            for joint in joints:
+                best.pop(joint, None)
+            for spread in template:
+                if spread.joint in joints:
+                    spread.kept = None
+            return joints
 
     keys = [st.key for st in stages]
     stage_of = {f"{GOTO}{k}": j for j, k in enumerate(keys)}
@@ -1041,27 +1037,17 @@ def run_guided_tension(
         hand.set_control_mode(CURRENT_BASED_POSITION, motor_ids)
         while True:
             round_no += 1
-            spreads = [
-                dataclasses.replace(
-                    s, kept=best.get(s.joint), probe_slack_deg=probe.get(s.joint)
-                )
-                for s in template
-            ]
+            _drain_forget()
+            spreads = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
             watch.bind(spreads)
             passed = [_stage_passed(st, spreads, threshold, scoring) for st in stages]
             thresholds = {s.joint: pass_threshold(threshold, s.joint) for s in spreads}
             threshold_key = "pass_slack_deg" if slack_mode else "pass_fraction"
             sampler = None
             i = next_pending(passed, 0) if start is None else start
-            first = check_first and check_callback is not None and round_no == 1
             try:
                 while True:
                     jump = None
-                    if first:
-                        # Straight to the check: no stage this round, nothing to score.
-                        first = False
-                        i = len(stages)
-                        jump = CHECK
                     while i < len(stages):
                         stage = stages[i]
                         info = dict(
@@ -1113,6 +1099,7 @@ def run_guided_tension(
                                 excluded,
                                 watch,
                                 scoring,
+                                _drain_forget,
                             )
                             sampler.start()
                             sampler.resume(stage.joints)
@@ -1141,6 +1128,10 @@ def run_guided_tension(
                         sampler.pause()
                         if sampler.error is not None:
                             raise sampler.error
+                    again = _drain_forget()
+                    for spread in spreads:
+                        if spread.joint in again:
+                            forget_spread(spread)
 
                     result = score(spreads, threshold, excluded, scoring)
                     record = {
@@ -1160,19 +1151,16 @@ def run_guided_tension(
                             if m["fraction"] is not None:
                                 best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
                         record["best"] = {j: round(f, 3) for j, f in best.items()}
-                    if persist and jump != CHECK:
+                    if persist:
                         _write_progress(config, key, record, scoring)
                     completed = result["passed"] == result["scored"]
-                    if jump in (GOTO_TENSION, CHECK):
+                    if jump == GOTO_TENSION:
                         _emit(progress_callback, "score", round=round_no, **result)
-                        answer = TENSION if jump == GOTO_TENSION else CHECK
+                        answer = TENSION
                         break
                     _emit(progress_callback, "step", step="score", round=round_no)
                     _emit(progress_callback, "score", round=round_no, **result)
-                    options = (
-                        [FINISH] if completed
-                        else [CHECK if check_callback is not None else TENSION, FINISH_ANYWAY]
-                    )
+                    options = [FINISH] if completed else [TENSION, FINISH_ANYWAY]
                     back = previous_pending(passed, len(stages))
                     options += (
                         ([BACK] if back is not None else [])
@@ -1196,12 +1184,6 @@ def run_guided_tension(
             finally:
                 if sampler is not None:
                     sampler.stop()
-            if answer == CHECK:
-                _run_check(
-                    hand, motor_ids, check_callback, prompt_callback, progress_callback,
-                    should_stop, round_no,
-                )
-                answer = TENSION
             if answer != TENSION:
                 break
 
@@ -1235,7 +1217,6 @@ def run_guided_tension(
                     pulled += extra
             finally:
                 sweeper.stop()
-            probe = {}
             start = stage_of.get(answer)
     except BaseException:
         try:
@@ -1265,5 +1246,5 @@ def run_guided_tension(
                 expected_deg={m["joint"]: m["expected_deg"] for m in motors},
             )
             del last["pass_fraction"]
-        write_yaml_atomic(last_tension_path(config), last)
+        write_section(config, LAST_TENSION_SECTION, last)
     return GuidedTensionResult(completed, round_no, result["motors"])
