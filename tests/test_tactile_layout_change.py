@@ -1,12 +1,13 @@
 """Fingertips joining or leaving mid-stream: the client re-reads the layout and recovers."""
 import itertools
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from orca_core.hardware.sensing.constants import TACTILE_STREAM_STALE_REARM_S
-from orca_core.hardware.sensing.tactile_mock import feed_resultant_frame
+from orca_core.hardware.sensing.tactile_mock import feed_combined_frame, feed_resultant_frame
 from orca_core.hardware.sensing.tactile_protocol import build_auto_frame
 from tests._helpers import wait_until
 
@@ -174,3 +175,30 @@ def test_watchdog_rearm_rereads_the_layout(tactile_mock):
 
     assert client.get_tactile_configuration().active_sensors == IMR
     assert client.get_stats().layout_changes == 1
+
+
+def test_zeroing_restarts_when_a_fingertip_drops_out(tactile_mock):
+    link, client, state = tactile_mock
+    client.start_stream(resultant=True, taxels=True)
+    taxels = {f: [[0.0, 0.0, 0.2]] * n for f, n in state.taxel_counts.items()}
+    result, errors = {}, []
+
+    def capture():
+        try:
+            result["offsets"] = client.capture_taxel_offsets(num_samples=5, timeout_s=5.0)
+        except Exception as e:  # noqa: BLE001 - surfaced by the main thread
+            errors.append(e)
+
+    capturing = threading.Thread(target=capture)
+    capturing.start()
+    for _ in range(3):
+        feed_combined_frame(link, FORCES, taxels, ALL)
+        time.sleep(0.03)
+    state.connected_fingers = list(IMR)
+    while capturing.is_alive():
+        feed_combined_frame(link, FORCES, taxels, state.active_sensors)
+        time.sleep(0.03)
+
+    assert errors == []
+    assert set(result["offsets"]) == set(IMR)
+    assert set(client.resultant_offsets) == set(IMR)

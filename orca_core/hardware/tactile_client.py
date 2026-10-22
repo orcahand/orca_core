@@ -763,6 +763,10 @@ class TactileClient:
                     and reading.taxels is not None
                     and reading.taxels.taxels is not last_taxels
                 ):
+                    if frames and reading.taxels.taxels.keys() != frames[0].keys():
+                        # A fingertip joined or left: average one layout only.
+                        frames.clear()
+                        resultant_frames.clear()
                     frames.append(reading.taxels.taxels)
                     # Same locked snapshot, so this resultant belongs to the
                     # frame whose taxels were just recorded.
