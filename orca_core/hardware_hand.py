@@ -145,6 +145,9 @@ class OrcaHand(BaseHand):
         self._lock = threading.Lock()
         self._current_task = None
 
+        # Where the model directory keeps its document, kept because
+        # calibration_path moves to a hand's own file once it has one.
+        self._model_calibration_path = self.config.calibration_path
         self.calibration = CalibrationResult.from_calibration_path(
             self.config.calibration_path, self.config.motor_ids
         )
@@ -155,6 +158,9 @@ class OrcaHand(BaseHand):
         # board id, else one a user assigned (see orca_core.hand_ids). None on a
         # board-less hand nobody has named yet.
         self._hand_id = None
+        # What the hardware said it was called, kept so saying "auto" again can
+        # go back to it.
+        self._board_hand_id = None
         stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
             ROM_FRAME_KEY
         )
@@ -353,6 +359,63 @@ class OrcaHand(BaseHand):
                 "leave these joints out", absent, self.absent_motor_ids)
 
 
+    @property
+    def hand_id(self) -> "str | None":
+        """The name this hand's settings are filed under, or None if unnamed.
+
+        A board's serial, else its board id, else a name somebody assigned to a
+        hand with no board to ask. See :mod:`orca_core.hand_ids`.
+        """
+        return self._hand_id
+
+    @property
+    def board_hand_id(self) -> "str | None":
+        """The name this hand's own board gave, or None if it has no board.
+
+        What "auto" resolves to, and the thing a front-end needs to tell a
+        hand that named itself from one a user named. Resolved from the port
+        this hand actually answered on, so a second hand on the same machine
+        cannot be mistaken for it.
+        """
+        return self._board_hand_id
+
+    def set_hand_id(self, name: "str | None") -> "str | None":
+        """Say which hand this is, and load what is kept for it.
+
+        This is the whole operation, not just a label: a different hand means a
+        different calibration, so the document filed under ``name`` is loaded
+        and becomes what the hand reads and writes. Without that, choosing a
+        hand would change what the console displays and nothing else.
+
+        ``None`` means auto: what the hardware said it was called, else the
+        first name assigned on this machine -- the same rule
+        :func:`orca_core.hand_ids.auto_id` states, so a front-end does not have
+        to work it out again.
+        A name with nothing filed under it yet is still adopted — the hand keeps
+        the calibration it has, and the next run files it under that name.
+
+        Returns the name in force.
+        """
+        from . import board_store, hand_ids
+
+        if name is not None:
+            hand_ids.check_id(name)
+        chosen = name or self._board_hand_id or hand_ids.auto_id()
+        self._hand_id = chosen
+        if chosen is None:
+            return None
+        if self._load_local_calibration([chosen]):
+            return chosen
+        if board_store.cached_document_path(chosen).exists():
+            self._point_at_hand_file(chosen)
+        else:
+            # Nothing filed under this name yet. Writes go back to the model
+            # directory until a run claims a file, so they cannot land on
+            # whichever hand was named before.
+            self.config = dataclasses.replace(
+                self.config, calibration_path=self._model_calibration_path)
+        return chosen
+
     def _adopt_stored_calibration(self, port: str) -> None:
         """Find this hand's calibration and point the hand's writes at it.
 
@@ -403,6 +466,7 @@ class OrcaHand(BaseHand):
 
         if keys:
             self._hand_id = keys[0]
+            self._board_hand_id = keys[0]
         if blob is None:
             # Nothing on the board either: the hand keeps exactly what it loaded
             # from the model directory, and writes there until a calibration run
@@ -609,8 +673,20 @@ class OrcaHand(BaseHand):
         # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
         unresolved = None
+        picked = None
         if first_port == "auto":
-            detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
+            # More than one hand on the bench: ask rather than race, so a
+            # script cannot silently drive whichever answered first.
+            if interactive:
+                from .hand_factory import choose_board, scan_boards
+
+                attached = scan_boards()
+                if len(attached) > 1:
+                    picked = choose_board(boards=attached)
+                    if picked is None:
+                        return False, "Connection failed: no hand selected"
+            detected = (picked or auto_detect_port(self.config.motor_type)
+                        or find_single_usb_serial_port())
             if detected is None:
                 # Opening the literal "auto" reports a missing-file error that
                 # reads like a config typo; name the real failure instead.
@@ -633,6 +709,10 @@ class OrcaHand(BaseHand):
             # ports cannot fix that.
             return False, f"config.yaml is not valid for the motors on {first_port}: {error}"
         logger.warning("Connection failed on %s: %s", first_port, error)
+        if picked is not None:
+            # A hand that was chosen is the only one meant: trying the others
+            # would quietly connect to a different hand than was asked for.
+            return False, f"Connection failed on the selected hand {first_port}: {error}"
 
         chosen_port = auto_detect_port(self.config.motor_type)
         if chosen_port and chosen_port != first_port:

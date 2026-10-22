@@ -568,3 +568,118 @@ class TestOneHandKeepsOneName:
         hand_ids.add_id("my-other-hand", tmp_path)
         self.hand()._adopt_stored_calibration("mock")
         assert hand_ids.assigned_ids(tmp_path) == ["my-other-hand"]
+
+
+class TestNamingAHandLoadsWhatIsKeptForIt:
+    """``set_hand_id`` is the whole operation, not a label.
+
+    A front-end that only recorded the name would show a hand it is not
+    actually reading or writing, so naming loads that hand's document and
+    points writes at its file.
+    """
+
+    @pytest.fixture()
+    def here(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV, str(tmp_path))
+        return tmp_path
+
+    def hand(self):
+        from orca_core.hardware_hand import MockOrcaHand
+
+        return MockOrcaHand()
+
+    def test_naming_a_hand_loads_its_calibration(self, here):
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-7.0, 7.0]}}, sequence=2),
+            "ser-0001", directory=here)
+        hand = self.hand()
+        assert hand.set_hand_id("ser-0001") == "ser-0001"
+        assert hand.calibration.motor_limits_dict[1] == [-7.0, 7.0]
+        assert hand.config.calibration_path == str(here / "ser-0001.yaml")
+
+    def test_a_name_with_nothing_filed_under_it_is_still_adopted(self, here):
+        hand = self.hand()
+        before = hand.calibration
+        assert hand.set_hand_id("ser-0002") == "ser-0002"
+        assert hand.hand_id == "ser-0002"
+        assert hand.calibration is before
+
+    def test_a_name_with_no_file_does_not_write_over_the_last_hand(self, here):
+        """The path must leave the previous hand's file, or its calibration
+        would be overwritten by the next run under a different name."""
+        from orca_core.board_store import pack
+
+        board_store.write_cache(pack({}, sequence=1), "ser-0001", directory=here)
+        hand = self.hand()
+        model_path = hand.config.calibration_path
+        hand.set_hand_id("ser-0001")
+        assert hand.config.calibration_path == str(here / "ser-0001.yaml")
+        hand.set_hand_id("ser-0002")
+        assert hand.config.calibration_path == model_path
+
+    def test_auto_goes_back_to_what_the_board_said(self, here):
+        hand = self.hand()
+        hand._board_hand_id = "ser-0001"
+        hand._hand_id = "ser-0001"
+        hand.set_hand_id("chosen-name")
+        assert hand.hand_id == "chosen-name"
+        assert hand.set_hand_id(None) == "ser-0001"
+
+    def test_auto_on_a_board_less_hand_takes_the_first_assigned_name(self, here):
+        from orca_core import hand_ids
+
+        hand_ids.add_id("bench-left", directory=here)
+        assert self.hand().set_hand_id(None) == "bench-left"
+
+    def test_a_chosen_name_is_not_mistaken_for_the_board_s(self, here):
+        """Choosing a name must not overwrite what the hardware reported, or
+        going back to auto would return the chosen name forever."""
+        from orca_core.board_store import pack
+
+        board_store.write_cache(pack({}, sequence=1), "bench-left", directory=here)
+        hand = self.hand()
+        hand._board_hand_id = "ser-0001"
+        hand.set_hand_id("bench-left")
+        assert hand._board_hand_id == "ser-0001"
+
+    def test_a_name_that_cannot_be_one_is_refused(self, here):
+        from orca_core.hand_ids import HandIdError
+
+        hand = self.hand()
+        with pytest.raises(HandIdError):
+            hand.set_hand_id("not a name")
+
+
+class TestTellingAHandThatNamedItselfFromOneAUserNamed:
+    """``board_hand_id`` is what the hardware said, and only that.
+
+    A front-end needs it to resolve "auto" for the hand it is driving rather
+    than for whatever board the machine happens to have.
+    """
+
+    @pytest.fixture()
+    def here(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV, str(tmp_path))
+        return tmp_path
+
+    def hand(self):
+        from orca_core.hardware_hand import MockOrcaHand
+
+        return MockOrcaHand()
+
+    def test_a_hand_with_no_board_claims_none(self, here):
+        assert self.hand().board_hand_id is None
+
+    def test_a_board_read_sets_it(self, here, monkeypatch):
+        hand = self.hand()
+        hand._board_hand_id = "ser-0001"
+        assert hand.board_hand_id == "ser-0001"
+
+    def test_naming_the_hand_does_not_change_what_the_board_said(self, here):
+        hand = self.hand()
+        hand._board_hand_id = "ser-0001"
+        hand.set_hand_id("bench-left")
+        assert hand.hand_id == "bench-left"
+        assert hand.board_hand_id == "ser-0001"

@@ -192,7 +192,7 @@ class TestThePicker:
     def test_it_says_so_when_there_is_nothing_to_choose_from(self, tmp_path):
         typist = Typist("q")
         assert self.pick(typist, tmp_path) is None
-        assert "knows no hands yet" in typist.screen
+        assert "no registered hand ids yet" in typist.screen
 
     def test_deleting_asks_before_it_does_it(self, tmp_path):
         hand_ids.add_id("doomed", tmp_path)
@@ -495,3 +495,32 @@ class TestOnlyChosenNamesAreOffered:
         assert hand_ids.choose_id(ask=typist, show=typist.show,
                                   directory=tmp_path) == "chosen"
         assert "ser-0001" not in typist.screen
+
+
+class TestARegisterThatCannotBeWritten:
+    """An unwritable calibrations directory must not end the run.
+
+    The hand cannot be named, but the calibration still has somewhere to go --
+    the model directory, exactly as before hand ids existed -- so this reports
+    and steps aside rather than raising into a script mid-prompt.
+    """
+
+    @pytest.fixture()
+    def unwritable(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o500)
+        yield locked / "calibrations"
+        locked.chmod(0o700)
+
+    def test_adding_says_what_went_wrong_instead_of_raising(self, unwritable):
+        shown = []
+        answers = iter(["a", "bench-left"])
+        assert hand_ids.choose_id(ask=lambda *a: next(answers, "q"),
+                                  directory=unwritable,
+                                  show=shown.append) is None
+        assert any("Could not register" in line for line in shown)
+
+    def test_listing_an_unreachable_register_is_not_an_error(self, unwritable):
+        assert hand_ids.known_ids(unwritable) == []
+        assert hand_ids.assigned_ids(unwritable) == []
+        assert hand_ids.auto_id(directory=unwritable) is None

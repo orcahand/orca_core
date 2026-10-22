@@ -201,7 +201,7 @@ def choose_id(
             for index, name in enumerate(names, 1):
                 show(f"{index:2d}. {name}")
         else:
-            show("This machine knows no hands yet. (a to add one, q to quit)")
+            show("This machine has no registered hand ids yet! (a to add one, q to quit)")
 
         try:
             answer = ask("> ").strip()
@@ -219,7 +219,13 @@ def choose_id(
                 continue
             except (EOFError, KeyboardInterrupt):
                 return None
-            add_id(name, directory)
+            try:
+                add_id(name, directory)
+            except OSError as exc:
+                # Nowhere to keep the register: naming the hand cannot work,
+                # but the run still can, against the model directory.
+                show(f"Could not register {name!r}: {exc}")
+                return None
             show(f"Added {name}.")
             known = None            # re-read, so the new one is listed
             continue

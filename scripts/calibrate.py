@@ -9,7 +9,9 @@ from orca_core.utils.cli import (
     create_hand_from_args,
     open_encoder_stream,
     print_calibration_progress,
+    push_calibration_to_board,
     select_joints,
+    settle_hand_id,
     shutdown_hand,
 )
 
@@ -81,8 +83,14 @@ def main():
         print(f"Failed to connect to the hand: {e}")
         sys.exit(1)
     print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
+    # This run writes a calibration, so it has to be filed under the right
+    # hand. A board names itself; a hand without one needs the operator.
+    hand_id = settle_hand_id(hand, interactive=not args.mock)
+    if hand_id:
+        print(f"Calibrating hand {hand_id}.")
 
     client = None
+    ran = False
     streams = ExitStack()
     encoder_pass = (
         hand.config.joint_feedback_enabled
@@ -108,11 +116,17 @@ def main():
             joint_encoder_client=client,
             progress_callback=print_calibration_progress,
         )
+        ran = True
     except KeyboardInterrupt:
         print("\nCalibration interrupted.")
     finally:
         streams.close()
         shutdown_hand(hand)
+
+    # The board is written once the hand has let go of the port: the tool that
+    # writes it opens the port itself.
+    if ran and not args.mock:
+        push_calibration_to_board(hand)
 
 
 if __name__ == "__main__":

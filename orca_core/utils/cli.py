@@ -52,6 +52,14 @@ def add_hand_arguments(
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
     )
     parser.add_argument(
+        "--motor-port",
+        dest="motor_port",
+        default=None,
+        help="Motor bus device to use (e.g. /dev/cu.usbmodemXXXX), instead of "
+             "being asked which attached hand to drive. For bring-up and "
+             "headless rigs; normally the hand is detected or picked.",
+    )
+    parser.add_argument(
         "--hardware-version",
         dest="hardware_version",
         type=int,
@@ -112,6 +120,11 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
     }
     options.update(overrides)
     hand = create_hand(args.config_path, **options)
+    port = getattr(args, "motor_port", None)
+    if port:
+        import dataclasses
+
+        hand.config = dataclasses.replace(hand.config, port=port)
     version = getattr(args, "hardware_version", None)
     if version is not None:
         pin_hardware_version(hand, version)
@@ -153,6 +166,25 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
         print("Please enter a whole number (2 or 21) or press Enter.")
 
 
+
+def push_calibration_to_board(hand) -> bool:
+    """Keep this hand's fresh calibration on the hand's own board.
+
+    Call once the hand has released its port. Best-effort: this machine's keyed
+    file is the authority, so a board that could not be written is reported and
+    nothing else changes.
+    """
+    from ..board_push import push_for_hand
+
+    result = push_for_hand(hand)
+    if result.written:
+        print(f"Calibration also written to the hand's own board "
+              f"(sequence {result.sequence}, {result.size} bytes).")
+    elif result.reason:
+        print(f"Calibration kept on this machine only: {result.reason}.")
+    return result.written
+
+
 def settle_hand_id(hand, *, interactive: bool = True, ask=input) -> "str | None":
     """Decide which hand this is, so its settings can be filed under it.
 
@@ -172,7 +204,7 @@ def settle_hand_id(hand, *, interactive: bool = True, ask=input) -> "str | None"
     """
     from ..hand_ids import auto_id, choose_id, known_ids
 
-    existing = getattr(hand, "_hand_id", None)
+    existing = hand.hand_id
     if existing:
         return existing
 
@@ -182,8 +214,7 @@ def settle_hand_id(hand, *, interactive: bool = True, ask=input) -> "str | None"
         board.board_id if board else None,
     ) if board else None
     if from_board:
-        hand._hand_id = from_board
-        return from_board
+        return hand.set_hand_id(from_board)
 
     # Only a terminal can answer: a piped or captured stdin leaves the hand
     # unnamed rather than blocking, and the old path still works.
@@ -196,12 +227,13 @@ def settle_hand_id(hand, *, interactive: bool = True, ask=input) -> "str | None"
                 "hand id.")
         return None
 
-    print("This hand has no controller board to identify itself.")
+    print("This hand does not have a pre-programmed identity, please select "
+          "one manually:")
     chosen = choose_id(ask=ask)
     if chosen is None:
         print("No hand chosen; using the calibration in the model directory.")
         return None
-    hand._hand_id = chosen
+    chosen = hand.set_hand_id(chosen)
     print(f"Using hand id {chosen}.")
     return chosen
 

@@ -650,3 +650,117 @@ def test_connect_rejects_a_pinned_max_current_below_the_family_calibration_curre
     assert not ok
     assert "Max current" in msg and "config.yaml" in msg
     assert not hand.is_connected()
+
+
+# ----- picking among several attached hands ---------------------------------
+#
+# detect_hand() answers "what is plugged in" for one hand. With two, something
+# has to choose, and choosing wrong means driving the other hand.
+
+
+def board(device, kind="oh_board", hand_id=None, side=None, model=None, busy=False):
+    return hand_factory.BoardEntry(
+        device=device, kind=kind, side=side, hand_id=hand_id,
+        model_name=model, ports=(device,), busy=busy)
+
+
+class TestDescribingABoard:
+    def test_identity_comes_first(self):
+        line = hand_factory.describe_board(
+            board("/dev/ttyX", hand_id="ser-0000", side="right",
+                  model="orcahand-right"))
+        assert line.startswith("/dev/ttyX")
+        assert "ser-0000" in line and "right" in line
+
+    def test_a_board_that_did_not_answer_says_so(self):
+        assert "unidentified" in hand_factory.describe_board(board("/dev/ttyX"))
+
+    def test_an_adapter_has_no_identity_to_show(self):
+        line = hand_factory.describe_board(board("/dev/ttyX", kind="motor_adapter"))
+        assert "no board" in line
+
+
+class TestChoosingAmongThem:
+    def test_one_hand_is_not_worth_asking_about(self):
+        def refuse(_):
+            raise AssertionError("asked about a choice that does not exist")
+
+        assert hand_factory.choose_board(
+            boards=[board("/dev/ttyX")], ask=refuse) == "/dev/ttyX"
+
+    def test_nothing_attached_is_nothing_to_ask(self):
+        assert hand_factory.choose_board(boards=[], ask=None) is None
+
+    def test_the_number_picks_that_one(self):
+        entries = [board("/dev/ttyA"), board("/dev/ttyB")]
+        assert hand_factory.choose_board(
+            boards=entries, ask=lambda _: "2", show=lambda _: None) == "/dev/ttyB"
+
+    def test_quitting_chooses_nothing(self):
+        entries = [board("/dev/ttyA"), board("/dev/ttyB")]
+        assert hand_factory.choose_board(
+            boards=entries, ask=lambda _: "q", show=lambda _: None) is None
+
+    def test_answers_that_run_out_do_not_spin_forever(self):
+        entries = [board("/dev/ttyA"), board("/dev/ttyB")]
+        assert hand_factory.choose_board(
+            boards=entries, ask=lambda _: "", show=lambda _: None) is None
+
+
+class TestConnectingWithTwoHandsAttached:
+    """A script must not silently drive whichever hand answered first.
+
+    Exercised on a real OrcaHand: the mock classes rewrite ``port: auto`` to
+    ``mock`` so they never touch a bus, which is also past the choice.
+    """
+
+    @pytest.fixture()
+    def tried(self, monkeypatch):
+        """A hand whose port opens, recording what it was pointed at."""
+        from orca_core import hardware_hand as hw
+
+        monkeypatch.setattr(hand_factory, "scan_boards",
+                            lambda: [board("/dev/ttyA", hand_id="ser-0000"),
+                                     board("/dev/ttyB", kind="motor_adapter")])
+        monkeypatch.setattr(hw, "auto_detect_port", lambda *a, **k: "/dev/ttyA")
+        opened = []
+        monkeypatch.setattr(hw.OrcaHand, "_try_port",
+                            lambda self, port, cfg: opened.append(port))
+        return opened
+
+    def hand(self):
+        hand = OrcaHand()
+        hand.config = dataclasses.replace(hand.config, port="auto")
+        return hand
+
+    def test_the_hand_that_was_picked_is_the_one_opened(self, tried, monkeypatch):
+        monkeypatch.setattr(hand_factory, "choose_board",
+                            lambda **kwargs: "/dev/ttyB")
+        assert self.hand().connect()[0]
+        assert tried == ["/dev/ttyB"], "opened a hand other than the one picked"
+
+    def test_declining_the_choice_opens_nothing(self, tried, monkeypatch):
+        monkeypatch.setattr(hand_factory, "choose_board", lambda **kwargs: None)
+        ok, message = self.hand().connect()
+        assert not ok and "no hand selected" in message
+        assert tried == []
+
+    def test_a_headless_caller_is_never_prompted(self, tried, monkeypatch):
+        """The console passes interactive=False and must keep working."""
+        def refuse(**kwargs):
+            raise AssertionError("prompted a headless caller")
+
+        monkeypatch.setattr(hand_factory, "choose_board", refuse)
+        assert self.hand().connect(interactive=False)[0]
+        assert tried == ["/dev/ttyA"]
+
+    def test_a_given_port_is_not_asked_about(self, tried, monkeypatch):
+        """port: in the yaml, or --motor-port, is a decision already made."""
+        def refuse(**kwargs):
+            raise AssertionError("asked although a port was given")
+
+        monkeypatch.setattr(hand_factory, "choose_board", refuse)
+        hand = OrcaHand()
+        hand.config = dataclasses.replace(hand.config, port="/dev/ttyZ")
+        assert hand.connect()[0]
+        assert tried == ["/dev/ttyZ"]
