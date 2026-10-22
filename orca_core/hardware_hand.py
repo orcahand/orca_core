@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 
 from .base_hand import BaseHand
-from .calibration import CalibrationResult
+from .calibration import CalibrationResult, result_from_mapping
 from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import (
@@ -53,6 +53,7 @@ from .constants import (
     WRIST,
     NUM_STEPS,
     STEP_SIZE,
+    ORCA_ID_PROBE_BAUDRATE,
 )
 
 from .joint_position import OrcaJointPositions
@@ -147,6 +148,9 @@ class OrcaHand(BaseHand):
         self.calibration = CalibrationResult.from_calibration_path(
             self.config.calibration_path, self.config.motor_ids
         )
+        # What the hand's own board was holding, once a connect has read it.
+        # None until then, and on any hand whose board does not carry one.
+        self._board_store = None
         stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
             ROM_FRAME_KEY
         )
@@ -328,6 +332,9 @@ class OrcaHand(BaseHand):
             raise ConnectionError(
                 f"no motor responded on {port} (check power and wiring)"
             )
+        # Before the client takes the port: a hand's calibration belongs to its
+        # own board, and this is the window where the port is free to ask.
+        self._adopt_board_calibration(port)
         self._motor_client = self._create_motor_client()
         # The family is known now, so a config that says "default" gets its
         # current limits before anything reads them.
@@ -340,6 +347,72 @@ class OrcaHand(BaseHand):
             logger.warning(
                 "no motor answered for %s (motor IDs %s); maintenance routines "
                 "leave these joints out", absent, self.absent_motor_ids)
+
+
+    def _adopt_board_calibration(self, port: str) -> None:
+        """Take the calibration from the board, if the board has one.
+
+        The board wins over anything on disk: it travels with the hand, so it
+        cannot be the wrong hand's, and it cannot be a copy someone forgot to
+        update. The file in the model directory stays the pre-connect default —
+        it is all there is before a port is known — and what is read here
+        replaces it for the session.
+
+        One round trip in the ordinary case: the board reports what it holds and
+        its CRC, and a mirrored copy with the same CRC is used as it is. Only a
+        board whose store has changed is read out in full. A hand on a plain
+        adapter pays one short probe timeout, the same budget asking what the
+        board is already costs.
+
+        Everything here is best-effort. A plain adapter, older firmware, an
+        empty store, a board that will not answer: all of them leave the
+        calibration as it was loaded from disk, and none of them fail a connect.
+        """
+        from . import board_store, board_store_link
+        from .hardware.sensing.serial_discovery import probe_orca_info_over_link
+
+        blob = None
+        board_id = None
+        try:
+            import serial
+
+            with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE,
+                               timeout=0.05, exclusive=True) as link:
+                metadata = board_store_link.read_metadata_over_link(link)
+                if metadata is None:
+                    return
+                info = probe_orca_info_over_link(link)
+                board_id = info.board_id if info else None
+                if board_id:
+                    cached = board_store.cached_blob(board_id)
+                    if cached is not None and board_store.crc16(cached) == metadata.crc:
+                        blob = cached
+                if blob is None:
+                    blob = board_store_link.read_store_over_link(link, metadata)
+        except Exception as exc:
+            logger.debug("no calibration store read from the board on %s: %s", port, exc)
+            return
+        if blob is None:
+            return
+
+        try:
+            store = board_store.unpack(blob)
+        except board_store.BoardStoreError as exc:
+            logger.warning(
+                "the board on %s holds a calibration store this version cannot "
+                "read (%s); using the calibration on disk instead", port, exc)
+            return
+
+        self.calibration = result_from_mapping(store.calibration, self.config.motor_ids)
+        self._board_store = store
+        if board_id:
+            try:
+                board_store.write_cache(blob, board_id)
+            except Exception as exc:
+                logger.debug("could not mirror the calibration store: %s", exc)
+        logger.info(
+            "calibration taken from the hand's own board (sequence %d, %d bytes)",
+            store.sequence, len(blob))
 
     def _try_port(
         self, port: str, base_config: "OrcaHandConfig"

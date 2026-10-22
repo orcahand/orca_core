@@ -157,6 +157,19 @@ def _query_until(
         return _query_link(link, timeout, query, is_complete)
 
 
+def probe_orca_info_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
+    """The board's identity, asked over an already-open link.
+
+    Same question as :func:`probe_orca_info`, for a caller that is holding the
+    port: a connect cannot open it a second time, and the board answers in band
+    without putting anything on the wire.
+    """
+    reply = _query_link(link, timeout, ORCA_INFO_QUERY, _info_line_ready)
+    if reply is None:
+        return None
+    return parse_orca_info(_info_line(reply))
+
+
 def motor_baud_rates_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
     """Rates the transport behind an already-open ``link`` can carry.
 

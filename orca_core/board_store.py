@@ -30,8 +30,11 @@ calibration produced, with no digits lost in between.
 
 from __future__ import annotations
 
+import logging
+import os
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 MAGIC = b"OHC1"
@@ -46,6 +49,8 @@ _SECTION_BYTES = struct.calcsize(_SECTION_FMT)
 # variants/OpenRB-150/linker_scripts/gcc/flash_with_bootloader.ld, which is the
 # authority for the board's flash map. A packed store must fit one slot.
 SLOT_BYTES = 0x4000
+
+logger = logging.getLogger(__name__)
 
 FLAG_CALIBRATED = 1 << 0
 FLAG_WRIST_CALIBRATED = 1 << 1
@@ -496,3 +501,81 @@ def unpack(blob: bytes) -> BoardStore:
         layout_version=version,
         unknown_sections=tuple(unknown),
     )
+
+
+# ----- the mirror on this machine -------------------------------------------
+#
+# A hand's calibration lives on its board. This directory is a mirror of what
+# was last read off one, keyed by the board's own id: it makes a connect cheap
+# (the board's CRC is compared against the copy before any bytes are pulled),
+# and it is what a tool can read when no hand is plugged in.
+#
+# Not inside either checkout. orca_core may be installed into site-packages and
+# the flashing tools live in another repo, so a folder inside one is unreachable
+# from the other; orca_firmware's tools/bench/cal_store.py writes the same place
+# and honours the same override.
+
+CALIBRATIONS_DIR_ENV = "ORCA_CALIBRATIONS_DIR"
+DEFAULT_CALIBRATIONS_DIR = Path.home() / ".orca_core" / "calibrations"
+
+
+def calibrations_dir() -> Path:
+    return Path(os.environ.get(CALIBRATIONS_DIR_ENV) or DEFAULT_CALIBRATIONS_DIR)
+
+
+def cached_blob(board_id: str, directory: Optional[Path] = None) -> Optional[bytes]:
+    """The bytes last mirrored off that board, if they still check out."""
+    path = (Path(directory) if directory else calibrations_dir()) / f"{board_id}.bin"
+    try:
+        blob = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        unpack(blob)
+    except BoardStoreError:
+        return None
+    return blob
+
+
+def write_cache(blob: bytes, board_id: str, directory: Optional[Path] = None) -> Path:
+    """Mirror a store: the bytes, and a readable copy of what they say.
+
+    The ``.bin`` is the authority — it is what the board holds, byte for byte,
+    and what a CRC comparison is made against. The ``.yaml`` beside it is for
+    reading; nothing loads it back, so a stale or hand-edited one cannot take
+    effect.
+    """
+    store = unpack(blob)        # raises rather than mirroring something broken
+    directory = Path(directory) if directory else calibrations_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    path = directory / f"{board_id}.bin"
+    tmp = path.with_suffix(".bin.part")
+    tmp.write_bytes(blob)
+    os.replace(tmp, path)
+
+    try:
+        import yaml
+
+        readable = dict(store.calibration)
+        readable["_board"] = {
+            "board_id": board_id,
+            "sequence": store.sequence,
+            "side": store.identity.side,
+            "hw_version": store.identity.hw_version,
+            "config": store.identity.config,
+            "serial": store.identity.serial,
+        }
+        text = (
+            "# Mirrored from the hand's own board. Reading only: nothing loads\n"
+            "# this back, and the board is the authority. Edit it and nothing\n"
+            "# happens; recalibrate the hand instead.\n"
+            + yaml.safe_dump(readable, sort_keys=False)
+        )
+        yaml_path = directory / f"{board_id}.yaml"
+        yaml_tmp = yaml_path.with_suffix(".yaml.part")
+        yaml_tmp.write_text(text, encoding="utf-8")
+        os.replace(yaml_tmp, yaml_path)
+    except Exception:       # the readable copy is a convenience, never the point
+        logger.debug("could not write the readable mirror for %s", board_id)
+    return path
