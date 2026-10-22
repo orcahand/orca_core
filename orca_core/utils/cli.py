@@ -153,6 +153,59 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
         print("Please enter a whole number (2 or 21) or press Enter.")
 
 
+def settle_hand_id(hand, *, interactive: bool = True, ask=input) -> "str | None":
+    """Decide which hand this is, so its settings can be filed under it.
+
+    A board names itself -- its serial, else its board id -- and nothing is
+    asked. Only a hand with no board needs a human: nothing can tell which one
+    is in front of us, so the operator picks from the names this machine knows,
+    adds one, or forgets one (:func:`orca_core.hand_ids.choose_id`).
+
+    Returns the id in force, or ``None`` when there is no board and nobody to
+    ask -- in which case the hand keeps using the calibration in its model
+    directory, exactly as it always did.
+
+    Called by the scripts that use hand-keyed settings, not by
+    :func:`connect_hand`: every script connects but only some care which hand
+    this is, and a caller's one ``ask`` cannot sensibly answer both this and
+    the hardware-version question.
+    """
+    from ..hand_ids import auto_id, choose_id, known_ids
+
+    existing = getattr(hand, "_hand_id", None)
+    if existing:
+        return existing
+
+    board = board_info_for_port(getattr(hand.config, "port", "") or "")
+    from_board = auto_id(
+        board.serial if board else None,
+        board.board_id if board else None,
+    ) if board else None
+    if from_board:
+        hand._hand_id = from_board
+        return from_board
+
+    # Only a terminal can answer: a piped or captured stdin leaves the hand
+    # unnamed rather than blocking, and the old path still works.
+    can_ask = ask is not input or sys.stdin.isatty()
+    if not (interactive and can_ask):
+        if known_ids():
+            logger.info(
+                "this hand has no board to name itself; its calibration will come "
+                "from its model directory. Run a script interactively to pick a "
+                "hand id.")
+        return None
+
+    print("This hand has no controller board to identify itself.")
+    chosen = choose_id(ask=ask)
+    if chosen is None:
+        print("No hand chosen; using the calibration in the model directory.")
+        return None
+    hand._hand_id = chosen
+    print(f"Using hand id {chosen}.")
+    return chosen
+
+
 def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
     """Decide the connected hand's hardware version the way the console does.
 

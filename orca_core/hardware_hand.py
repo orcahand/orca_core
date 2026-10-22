@@ -151,6 +151,10 @@ class OrcaHand(BaseHand):
         # What the hand's own board was holding, once a connect has read it.
         # None until then, and on any hand whose board does not carry one.
         self._board_store = None
+        # The name this hand's settings are filed under: its serial, else its
+        # board id, else one a user assigned (see orca_core.hand_ids). None on a
+        # board-less hand nobody has named yet.
+        self._hand_id = None
         stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
             ROM_FRAME_KEY
         )
@@ -373,22 +377,32 @@ class OrcaHand(BaseHand):
         read: each leaves the calibration as it was loaded from disk, and none
         of them can fail a connect.
         """
-        from . import board_store, board_store_link
+        from . import board_store, board_store_link, hand_ids
         from .hardware.sensing.serial_discovery import probe_orca_info_over_link
 
         blob = None
         source = None
-        board_id = None
+        # Every name this hand answers to, best first: the serial it was
+        # provisioned with follows the hand even if its board is replaced, so it
+        # outranks the board's own id. A hand first seen before it had a serial
+        # is still found under the board id, and migrates forward below.
+        keys = []
         try:
             import serial
 
             with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE,
                                timeout=0.05, exclusive=True) as link:
                 info = probe_orca_info_over_link(link)
-                board_id = info.board_id if info else None
-                if board_id:
-                    blob = board_store.cached_blob(board_id)
-                    source = "this machine" if blob is not None else None
+                if info:
+                    keys = [k for k in (info.serial, info.board_id)
+                            if k and hand_ids.valid_id(k)]
+                if not keys and self._hand_id:
+                    keys = [self._hand_id]      # a board-less hand the user named
+                for key in keys:
+                    blob = board_store.cached_blob(key)
+                    if blob is not None:
+                        source = f"this machine ({key})"
+                        break
                 if blob is None:
                     # Nothing kept here for it: ask the board itself.
                     metadata = board_store_link.read_metadata_over_link(link)
@@ -412,9 +426,12 @@ class OrcaHand(BaseHand):
 
         self.calibration = result_from_mapping(store.calibration, self.config.motor_ids)
         self._board_store = store
-        if board_id and source != "this machine":
+        self._hand_id = keys[0] if keys else self._hand_id
+        # File it under the best name this hand answers to. A hand found under
+        # an older name is written under the better one, so it migrates forward.
+        if keys and source != f"this machine ({keys[0]})":
             try:
-                board_store.write_cache(blob, board_id)
+                board_store.write_cache(blob, keys[0])
             except Exception as exc:
                 logger.debug("could not mirror the calibration store: %s", exc)
         logger.info(

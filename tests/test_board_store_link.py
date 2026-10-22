@@ -276,9 +276,10 @@ class TestAHandAdoptsWhatIsKeptForIt:
         assert hand.calibration is before
 
     def test_a_store_read_adopted_once_is_mirrored_for_next_time(self, board, tmp_path):
+        """Filed under the serial, which is the best name the hand answers to."""
         board.store = blob()
         self.hand()._adopt_stored_calibration("mock")
-        assert (tmp_path / "0123456789ABCDEF.bin").read_bytes() == board.store
+        assert (tmp_path / "ser-0000.bin").read_bytes() == board.store
 
     def test_a_copy_on_this_machine_is_used_without_asking_the_board(
         self, board, tmp_path
@@ -313,6 +314,57 @@ class TestAHandAdoptsWhatIsKeptForIt:
         hand._adopt_stored_calibration("mock")
         assert hand._board_store.sequence == 9
         assert any(q.startswith(b"ORCA_CAL?") for q in board.asked)
+        assert (tmp_path / "ser-0000.bin").exists()
+
+    def test_the_serial_outranks_the_board_id(self, board, tmp_path):
+        """The serial follows the hand; the board id follows the board."""
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-1.0, 1.0]}}, sequence=1),
+            "0123456789ABCDEF", directory=tmp_path)
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-2.0, 2.0]}}, sequence=1),
+            "ser-0000", directory=tmp_path)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand.calibration.motor_limits_dict[1] == [-2.0, 2.0]
+        assert hand._hand_id == "ser-0000"
+
+    def test_a_hand_filed_before_it_had_a_serial_is_still_found(self, board, tmp_path):
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-3.0, 3.0]}}, sequence=1),
+            "0123456789ABCDEF", directory=tmp_path)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand.calibration.motor_limits_dict[1] == [-3.0, 3.0]
+
+    def test_and_is_then_filed_under_the_better_name(self, board, tmp_path):
+        """Migrates forward, so the next connect finds it under the serial."""
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-3.0, 3.0]}}, sequence=1),
+            "0123456789ABCDEF", directory=tmp_path)
+        self.hand()._adopt_stored_calibration("mock")
+        assert (tmp_path / "ser-0000.bin").exists()
+
+    def test_a_board_with_no_serial_is_filed_under_its_board_id(self, board, tmp_path):
+        board.store = blob()
+        board.out = bytearray()
+
+        original = board.write
+
+        def no_serial(data):
+            original(data)
+            board.out = bytearray(board.out.replace(b"SN=ser-0000;", b""))
+
+        board.write = no_serial
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand._hand_id == "0123456789ABCDEF"
         assert (tmp_path / "0123456789ABCDEF.bin").exists()
 
     def test_a_store_this_version_cannot_read_leaves_the_disk_copy(self, board, caplog):
