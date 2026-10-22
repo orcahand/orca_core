@@ -201,8 +201,8 @@ def detect_hand() -> HandDetection:
     responding (see ``missing_capabilities``).
 
     Boards that report no ``CFG`` — unprovisioned, or firmware predating the
-    field — fall back to probing: joint encoders from a live encoder stream on
-    the sensing CDC, tactile from a sensor register reply (on the shared CDC or
+    field — fall back to probing: joint encoders from an encoder stream on the
+    sensing CDC with at least one encoder reading a valid angle, tactile from a sensor register reply (on the shared CDC or
     a dedicated adapter). The motor family comes from probing the motor bus; a
     hand whose motor side is a bare USB adapter is found by the adapter's
     vendor ID and confirmed by that same probe. Anything the hardware doesn't

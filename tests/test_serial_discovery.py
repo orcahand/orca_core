@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -278,8 +279,21 @@ def _encoder_frame(payload: bytes = bytes(AUTO_ENC_PAYLOAD_BYTES), error_byte: i
     return body + bytes([calculate_checksum(body)])
 
 
+def _encoder_word(angle: int) -> int:
+    """A valid AS5048A word: 14-bit angle, error flag clear, even-parity bit 15."""
+    return angle | (bin(angle).count("1") % 2) << 15
+
+
+NO_ENCODER = 0xFFFF  # pulled-up MISO with no chip: error flag set
+SLOTS = AUTO_ENC_PAYLOAD_BYTES // 2
+
+
+def _payload(words) -> bytes:
+    return b"".join(w.to_bytes(2, "little") for w in words)
+
+
 def test_detect_encoder_stream_finds_valid_frame():
-    frame = _encoder_frame(payload=bytes(range(AUTO_ENC_PAYLOAD_BYTES)))
+    frame = _encoder_frame(payload=_payload([_encoder_word(0x1234)] + [NO_ENCODER] * (SLOTS - 1)))
     # Garbage prefix includes a fake AA A9 header with an implausible length,
     # then a truncated frame, then real frames.
     stream = b"\x12\x34" + PROTOCOL_HEADER_AUTO_ENC + b"\x00garbage" + frame[:10] + frame + frame
@@ -295,6 +309,41 @@ def test_detect_encoder_stream_rejects_bad_lrc():
     stream = b"\x00" * 4 + bytes(corrupted) + bytes(corrupted)
     with patch("serial.Serial", return_value=FakeSerial(stream)):
         assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+def test_detect_encoder_stream_ignores_a_board_without_encoders():
+    """A connector board streams AA A9 with no encoders wired: every slot errors."""
+    stream = _encoder_frame(payload=_payload([NO_ENCODER] * SLOTS)) * 200
+    with patch("serial.Serial", return_value=FakeSerial(stream, max_chunk=256)):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+def test_detect_encoder_stream_ignores_bad_parity():
+    bad = _encoder_word(0x1234) ^ 0x8000
+    stream = _encoder_frame(payload=_payload([bad] + [NO_ENCODER] * (SLOTS - 1))) * 50
+    with patch("serial.Serial", return_value=FakeSerial(stream, max_chunk=256)):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.05) is False
+
+
+def test_detect_encoder_stream_counts_one_live_encoder_among_dead_ones():
+    words = [NO_ENCODER] * SLOTS
+    words[7] = _encoder_word(5000)
+    stream = _encoder_frame(payload=_payload([NO_ENCODER] * SLOTS)) * 20 + _encoder_frame(
+        payload=_payload(words))
+    with patch("serial.Serial", return_value=FakeSerial(stream, max_chunk=256)):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.2) is True
+
+
+def test_detect_encoder_stream_on_bytes_from_a_touch_hand():
+    """Sensing-port bytes from a touch hand without encoders (180 AA A9, 30 AA 56)."""
+    raw = (Path(__file__).parent / "fixtures" / "tactile_touch_chunks.bin").read_bytes()
+    stream, pos = bytearray(), 0
+    while pos < len(raw):
+        n = int.from_bytes(raw[pos:pos + 2], "little")
+        stream += raw[pos + 2:pos + 2 + n]
+        pos += 2 + n
+    with patch("serial.Serial", return_value=FakeSerial(bytes(stream), max_chunk=256)):
+        assert detect_encoder_stream(FTDI_PORT, timeout=0.2) is False
 
 
 def test_detect_encoder_stream_rejects_pure_garbage():
