@@ -276,3 +276,92 @@ class TestAHandAdoptsItsBoardsCalibration:
         hand = self.hand()
         hand._adopt_board_calibration("mock")   # must not raise
         assert hand._board_store is None
+
+
+class TestNothingChangesForAHandWithNoOnboardCalibration:
+    """The no-regression contract.
+
+    Most hands in the field have no store: no ORCA board at all, firmware older
+    than the store, or a board that simply has not been written. Every one of
+    them must behave exactly as it did before any of this existed.
+    """
+
+    def disk_calibration(self, hand):
+        """What the hand would have had, loaded straight off disk."""
+        from orca_core.calibration import CalibrationResult
+
+        return CalibrationResult.from_calibration_path(
+            hand.config.calibration_path, hand.config.motor_ids)
+
+    @pytest.fixture()
+    def hand(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV, str(tmp_path))
+        from orca_core.hardware_hand import MockOrcaHand
+
+        return MockOrcaHand()
+
+    def fake_port(self, monkeypatch, board):
+        class FakeSerial:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return board
+
+            def __exit__(self, *exc):
+                return False
+
+        import serial
+
+        monkeypatch.setattr(serial, "Serial", FakeSerial)
+
+    def test_no_orca_board_at_all(self, hand, monkeypatch):
+        """A plain adapter: the query reaches the motors, which ignore it."""
+        self.fake_port(monkeypatch, FakeBoard(None, answers_info=False))
+        hand._adopt_board_calibration("/dev/null")
+        assert hand.calibration == self.disk_calibration(hand)
+
+    def test_an_orca_board_whose_firmware_predates_the_store(self, hand, monkeypatch):
+        """It answers ORCA_INFO? but not ORCA_CAL?, so there is nothing to take."""
+        board = FakeBoard(None)
+        self.fake_port(monkeypatch, board)
+        hand._adopt_board_calibration("/dev/null")
+        assert hand.calibration == self.disk_calibration(hand)
+
+    def test_an_orca_board_with_an_empty_store(self, hand, monkeypatch):
+        self.fake_port(monkeypatch, FakeBoard(None))
+        hand._adopt_board_calibration("/dev/null")
+        assert hand.calibration == self.disk_calibration(hand)
+
+    def test_the_port_cannot_even_be_opened(self, hand, monkeypatch):
+        import serial
+
+        def explode(*args, **kwargs):
+            raise OSError("busy")
+
+        monkeypatch.setattr(serial, "Serial", explode)
+        hand._adopt_board_calibration("/dev/null")
+        assert hand.calibration == self.disk_calibration(hand)
+
+    def test_nothing_is_written_to_the_mirror_when_there_is_no_store(
+        self, hand, monkeypatch, tmp_path
+    ):
+        self.fake_port(monkeypatch, FakeBoard(None))
+        hand._adopt_board_calibration("/dev/null")
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_full_connect_on_a_hand_with_no_board_still_succeeds(self, hand):
+        ok, _ = hand.connect()
+        assert ok
+        assert hand._board_store is None
+        assert hand.calibration == self.disk_calibration(hand)
+        hand.disconnect()
+
+    def test_the_calibration_is_the_same_object_the_constructor_built(
+        self, hand, monkeypatch
+    ):
+        """Not merely equal: untouched, so nothing downstream sees a new object."""
+        before = hand.calibration
+        self.fake_port(monkeypatch, FakeBoard(None))
+        hand._adopt_board_calibration("/dev/null")
+        assert hand.calibration is before
