@@ -523,6 +523,11 @@ def calibrations_dir() -> Path:
     return Path(os.environ.get(CALIBRATIONS_DIR_ENV) or DEFAULT_CALIBRATIONS_DIR)
 
 
+def cached_document_path(hand_id: str, directory: Optional[Path] = None) -> Path:
+    """Where this machine keeps that hand's calibration document."""
+    return (Path(directory) if directory else calibrations_dir()) / f"{hand_id}.yaml"
+
+
 def cached_blob(board_id: str, directory: Optional[Path] = None) -> Optional[bytes]:
     """The bytes last mirrored off that board, if they still check out."""
     path = (Path(directory) if directory else calibrations_dir()) / f"{board_id}.bin"
@@ -538,12 +543,12 @@ def cached_blob(board_id: str, directory: Optional[Path] = None) -> Optional[byt
 
 
 def write_cache(blob: bytes, board_id: str, directory: Optional[Path] = None) -> Path:
-    """Mirror a store: the bytes, and a readable copy of what they say.
+    """Mirror a store read off a board: the bytes, and the document they carry.
 
-    The ``.bin`` is the authority — it is what the board holds, byte for byte,
-    and what a CRC comparison is made against. The ``.yaml`` beside it is for
-    reading; nothing loads it back, so a stale or hand-edited one cannot take
-    effect.
+    The ``.yaml`` is the hand's calibration as this machine keeps it, and it is
+    what gets loaded and what a calibration run rewrites. The ``.bin`` beside
+    it is the board's store byte for byte, kept as provenance and as what a
+    push back to the board would send.
     """
     store = unpack(blob)        # raises rather than mirroring something broken
     directory = Path(directory) if directory else calibrations_dir()
@@ -567,9 +572,8 @@ def write_cache(blob: bytes, board_id: str, directory: Optional[Path] = None) ->
             "serial": store.identity.serial,
         }
         text = (
-            "# Mirrored from the hand's own board. Reading only: nothing loads\n"
-            "# this back, and the board is the authority. Edit it and nothing\n"
-            "# happens; recalibrate the hand instead.\n"
+            "# This hand's calibration as this machine keeps it, first read off\n"
+            "# the hand's own board. A calibration run rewrites this file.\n"
             + yaml.safe_dump(readable, sort_keys=False)
         )
         yaml_path = directory / f"{board_id}.yaml"

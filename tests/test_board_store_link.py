@@ -193,7 +193,7 @@ class TestTheMirror:
         assert (tmp_path / "0123456789ABCDEF.bin").read_bytes() == store
         readable = (tmp_path / "0123456789ABCDEF.yaml").read_text()
         assert "board_id: 0123456789ABCDEF" in readable
-        assert "the board is the authority" in readable
+        assert "as this machine keeps it" in readable
 
     def test_the_mirror_reads_back_as_the_same_bytes(self, tmp_path):
         store = blob()
@@ -285,12 +285,18 @@ class TestAHandAdoptsWhatIsKeptForIt:
         self, board, tmp_path
     ):
         """The board's store is not even read when one is kept here."""
-        board_store.write_cache(blob(sequence=4), "0123456789ABCDEF", directory=tmp_path)
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-4.0, 4.0]}}, sequence=4),
+            "ser-0000", directory=tmp_path)
         board.store = blob(sequence=9)
         hand = self.hand()
         hand._adopt_stored_calibration("mock")
-        assert hand._board_store.sequence == 4
+        assert hand.calibration.motor_limits_dict[1] == [-4.0, 4.0]
         assert not any(q.startswith(b"ORCA_CAL?") for q in board.asked)
+        # Nothing was read off the board, so there is no board store to report.
+        assert hand._board_store is None
 
     def test_a_local_calibration_run_is_what_the_hand_comes_up_on(
         self, board, tmp_path
@@ -349,7 +355,7 @@ class TestAHandAdoptsWhatIsKeptForIt:
             pack({"motor_limits": {1: [-3.0, 3.0]}}, sequence=1),
             "0123456789ABCDEF", directory=tmp_path)
         self.hand()._adopt_stored_calibration("mock")
-        assert (tmp_path / "ser-0000.bin").exists()
+        assert (tmp_path / "ser-0000.yaml").exists()
 
     def test_a_board_with_no_serial_is_filed_under_its_board_id(self, board, tmp_path):
         board.store = blob()

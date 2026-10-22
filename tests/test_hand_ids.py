@@ -5,6 +5,8 @@ rules for those names and the picker that adds, chooses and forgets them —
 driven by feeding it answers, the way a person would type them.
 """
 
+from pathlib import Path
+
 import pytest
 
 from orca_core import hand_ids
@@ -339,3 +341,108 @@ class TestThePickerCannotBeMadeToSpin:
         from orca_core.utils import cli
 
         assert "settle_hand_id" not in inspect.getsource(cli.connect_hand)
+
+
+class TestACalibrationRunWritesTheHandsOwnFile:
+    """Where a run persists, and what it must not lose on the way.
+
+    Before a run, a hand reads and writes the model directory exactly as it
+    always did. A run gives a named hand a file of its own, carrying across
+    whatever was in the model directory first -- tactile offsets most of all,
+    which no calibration run would put back.
+    """
+
+    def hand(self, tmp_path, monkeypatch, hand_id="ser-0000"):
+        from orca_core import board_store
+        from orca_core.hardware_hand import MockOrcaHand
+
+        monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV, str(tmp_path))
+        hand = MockOrcaHand()
+        hand._hand_id = hand_id
+        return hand
+
+    def test_connecting_alone_moves_nothing(self, tmp_path, monkeypatch):
+        hand = self.hand(tmp_path, monkeypatch)
+        before = hand.config.calibration_path
+        assert "models" in before
+        assert list(tmp_path.iterdir()) == []
+        assert hand.config.calibration_path == before
+
+    def test_a_run_gives_the_hand_a_file_of_its_own(self, tmp_path, monkeypatch):
+        hand = self.hand(tmp_path, monkeypatch)
+        hand._claim_hand_file()
+        assert hand.config.calibration_path == str(tmp_path / "ser-0000.yaml")
+
+    def test_what_was_in_the_model_directory_comes_across(self, tmp_path, monkeypatch):
+        """Including everything a calibration run does not own.
+
+        A touch hand's tactile offsets live in the same document and no
+        calibration run would put them back, so they have to be carried.
+        """
+        import dataclasses
+
+        from orca_core.utils.utils import read_yaml
+
+        hand = self.hand(tmp_path, monkeypatch)
+        legacy = tmp_path / "legacy-model-dir.yaml"
+        legacy.write_text(
+            "calibrated: true\n"
+            "motor_limits:\n  1: [1.0, 2.0]\n"
+            "sensor_offsets:\n  thumb:\n  - [1.0, 2.0, 3.0]\n"
+            "taxel_noise_gates:\n  thumb: [0.1]\n"
+        )
+        hand.config = dataclasses.replace(hand.config, calibration_path=str(legacy))
+
+        hand._claim_hand_file()
+        carried = read_yaml(hand.config.calibration_path) or {}
+        assert carried["sensor_offsets"] == {"thumb": [[1.0, 2.0, 3.0]]}
+        assert carried["taxel_noise_gates"] == {"thumb": [0.1]}
+        assert carried["motor_limits"] == {1: [1.0, 2.0]}
+
+    def test_the_model_directory_copy_is_left_alone(self, tmp_path, monkeypatch):
+        """So another machine, or an older core, still reads it."""
+        import dataclasses
+
+        hand = self.hand(tmp_path, monkeypatch)
+        legacy = tmp_path / "legacy-model-dir.yaml"
+        legacy.write_text("calibrated: true\n")
+        hand.config = dataclasses.replace(hand.config, calibration_path=str(legacy))
+        before = legacy.read_bytes()
+        hand._claim_hand_file()
+        assert legacy.read_bytes() == before
+
+    def test_claiming_twice_does_not_overwrite_the_hands_file(
+        self, tmp_path, monkeypatch
+    ):
+        from orca_core.utils.utils import read_yaml
+
+        hand = self.hand(tmp_path, monkeypatch)
+        hand._claim_hand_file()
+        own = Path(hand.config.calibration_path)
+        own.write_text("calibrated: true\nmotor_limits: {1: [9.0, 9.5]}\n")
+        hand._claim_hand_file()
+        assert (read_yaml(str(own)) or {})["motor_limits"][1] == [9.0, 9.5]
+
+    def test_a_hand_with_no_name_keeps_writing_where_it_always_did(
+        self, tmp_path, monkeypatch
+    ):
+        hand = self.hand(tmp_path, monkeypatch, hand_id=None)
+        before = hand.config.calibration_path
+        hand._claim_hand_file()
+        assert hand.config.calibration_path == before
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_run_persists_to_the_hands_own_file(self, tmp_path, monkeypatch):
+        """End to end: calibrate a mock hand, and see where it lands."""
+        from orca_core.utils.utils import read_yaml
+
+        hand = self.hand(tmp_path, monkeypatch)
+        hand.connect()
+        hand.calibrate(persist=True)
+        hand.disconnect()
+
+        own = tmp_path / "ser-0000.yaml"
+        assert own.exists()
+        document = read_yaml(str(own)) or {}
+        assert document["calibrated"] is True
+        assert document["motor_limits"]

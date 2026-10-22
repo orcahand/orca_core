@@ -354,39 +354,34 @@ class OrcaHand(BaseHand):
 
 
     def _adopt_stored_calibration(self, port: str) -> None:
-        """Take the calibration kept for this hand, local copy first.
+        """Find this hand's calibration and point the hand's writes at it.
 
-        Order, once the board has named itself:
+        Order, once the hand has a name (its board's serial, else the board id,
+        else one a user assigned):
 
-        1. ``~/.orca_core/calibrations/<board id>.bin`` on this machine, which is
-           either what was last read off that board or what a calibration run
-           here produced.
-        2. The board's own store, which is then mirrored to (1) so a shipped
+        1. ``~/.orca_core/calibrations/<name>.yaml`` — this hand's calibration as
+           this machine keeps it. The local authority, because it is the only
+           one a calibration run can reach: writing a board needs tooling that
+           does not ship with orca_core.
+        2. The board's own store, which is then written to (1), so a shipped
            hand is known to this machine from first contact.
-        3. ``calibration.yaml`` in the model directory, as it always was.
+        3. ``calibration.yaml`` in the model directory, exactly as before.
 
-        The local copy wins because it is the only one a calibration run can
-        reach: writing to a board needs tooling that does not ship with
-        orca_core, so a board that outranked the local copy would mean a fresh
-        calibration here was quietly ignored. When that tooling is packaged, a
-        flag to prefer the board becomes worth having; until then preferring it
-        would just be a trap.
+        ``config.calibration_path`` follows whatever was found, so a calibration
+        run — and the console's tactile zeroing, and anything else that writes
+        through that path — lands on the hand's own file. Until that file exists
+        the path is the model directory, exactly as before: nothing is moved by
+        merely connecting, only by something writing.
 
-        Everything here is best-effort. A plain adapter, older firmware, an
-        empty store, a board that will not answer, a layout this version cannot
-        read: each leaves the calibration as it was loaded from disk, and none
-        of them can fail a connect.
+        Best-effort throughout: a plain adapter, older firmware, an empty store,
+        a board that will not answer, a layout this version cannot read — each
+        leaves the hand exactly as it was loaded, and none can fail a connect.
         """
         from . import board_store, board_store_link, hand_ids
         from .hardware.sensing.serial_discovery import probe_orca_info_over_link
 
-        blob = None
-        source = None
-        # Every name this hand answers to, best first: the serial it was
-        # provisioned with follows the hand even if its board is replaced, so it
-        # outranks the board's own id. A hand first seen before it had a serial
-        # is still found under the board id, and migrates forward below.
         keys = []
+        blob = None
         try:
             import serial
 
@@ -397,46 +392,113 @@ class OrcaHand(BaseHand):
                     keys = [k for k in (info.serial, info.board_id)
                             if k and hand_ids.valid_id(k)]
                 if not keys and self._hand_id:
-                    keys = [self._hand_id]      # a board-less hand the user named
-                for key in keys:
-                    blob = board_store.cached_blob(key)
-                    if blob is not None:
-                        source = f"this machine ({key})"
-                        break
-                if blob is None:
-                    # Nothing kept here for it: ask the board itself.
+                    keys = [self._hand_id]
+                if not self._load_local_calibration(keys):
                     metadata = board_store_link.read_metadata_over_link(link)
-                    if metadata is None:
-                        return
-                    blob = board_store_link.read_store_over_link(link, metadata)
-                    source = "the hand's own board"
+                    if metadata is not None:
+                        blob = board_store_link.read_store_over_link(link, metadata)
         except Exception as exc:
-            logger.debug("no stored calibration read for %s: %s", port, exc)
+            logger.debug("no stored calibration found for %s: %s", port, exc)
             return
+
+        if keys:
+            self._hand_id = keys[0]
         if blob is None:
+            # Nothing on the board either: the hand keeps exactly what it loaded
+            # from the model directory, and writes there until a calibration run
+            # gives it a file of its own.
             return
 
         try:
             store = board_store.unpack(blob)
         except board_store.BoardStoreError as exc:
             logger.warning(
-                "the calibration store for this hand is one this version cannot "
-                "read (%s); using the calibration on disk instead", exc)
+                "the calibration store on this hand's board is one this version "
+                "cannot read (%s); using the calibration on disk instead", exc)
             return
 
         self.calibration = result_from_mapping(store.calibration, self.config.motor_ids)
         self._board_store = store
-        self._hand_id = keys[0] if keys else self._hand_id
-        # File it under the best name this hand answers to. A hand found under
-        # an older name is written under the better one, so it migrates forward.
-        if keys and source != f"this machine ({keys[0]})":
+        if keys:
             try:
                 board_store.write_cache(blob, keys[0])
             except Exception as exc:
-                logger.debug("could not mirror the calibration store: %s", exc)
+                logger.debug("could not keep the calibration store: %s", exc)
+            self._point_at_hand_file(keys[0])
         logger.info(
-            "calibration taken from %s (sequence %d, %d bytes)",
-            source, store.sequence, len(blob))
+            "calibration taken from the hand's own board (sequence %d, %d bytes)",
+            store.sequence, len(blob))
+
+    def _load_local_calibration(self, keys: "list[str]") -> bool:
+        """Load the document this machine keeps for the hand, if it keeps one.
+
+        Tries every name the hand answers to, best first, so a hand first seen
+        before it had a serial is still found under its board id.
+        """
+        from . import board_store
+        from .utils.utils import read_yaml
+
+        for key in keys:
+            path = board_store.cached_document_path(key)
+            if not path.exists():
+                continue
+            document = read_yaml(str(path)) or {}
+            if not document:
+                continue
+            self.calibration = result_from_mapping(document, self.config.motor_ids)
+            self._hand_id = keys[0]
+            if key != keys[0]:
+                # Found under an older name: carry it to the better one, so the
+                # next connect finds it there.
+                try:
+                    board_store.cached_document_path(keys[0]).write_text(
+                        path.read_text(encoding="utf-8"), encoding="utf-8")
+                except OSError as exc:
+                    logger.debug("could not re-file %s as %s: %s", key, keys[0], exc)
+            self._point_at_hand_file(keys[0])
+            logger.info("calibration taken from this machine's copy for %s", keys[0])
+            return True
+        return False
+
+    def _point_at_hand_file(self, hand_id: str) -> None:
+        """Read and write this hand's own file from now on."""
+        from . import board_store
+
+        self.config = dataclasses.replace(
+            self.config,
+            calibration_path=str(board_store.cached_document_path(hand_id)))
+
+    def _claim_hand_file(self) -> None:
+        """Give a named hand a file of its own, about to be written.
+
+        Called by whatever is about to persist. The model directory's document
+        is copied across the first time so nothing in it is lost -- tactile
+        offsets most of all, which a calibration run would not put back -- and
+        the original is left exactly as it was, so another machine or an older
+        core still reads it.
+
+        A hand with no name keeps writing where it always did.
+        """
+        from . import board_store
+
+        if not self._hand_id:
+            return
+        path = board_store.cached_document_path(self._hand_id)
+        if str(path) == str(self.config.calibration_path):
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            legacy = self.config.calibration_path
+            if not path.exists() and legacy and os.path.exists(legacy):
+                path.write_text(open(legacy, encoding="utf-8").read(),
+                                encoding="utf-8")
+                logger.info(
+                    "this hand's calibration is now kept at %s; the model "
+                    "directory's copy is left as it was", path)
+        except OSError as exc:
+            logger.debug("could not claim %s for this hand: %s", path, exc)
+            return
+        self._point_at_hand_file(self._hand_id)
 
     def _try_port(
         self, port: str, base_config: "OrcaHandConfig"
@@ -1280,6 +1342,8 @@ class OrcaHand(BaseHand):
         """
         if persist is None:
             persist = self._persist_calibration
+        if persist:
+            self._claim_hand_file()
         self._dispatch_task(
             blocking,
             self._calibrate_and_apply,
