@@ -28,7 +28,10 @@ from typing import Callable, List, Optional, Sequence
 
 from .board_store import calibrations_dir
 
-#: Suffix marking an id that exists but has no calibration filed under it yet.
+#: Suffix marking an id a person assigned. Board-derived names -- a serial or a
+#: board id -- never get one, because nobody chose them: they are detected. So
+#: the marker is what tells "this hand is called left-bench because I said so"
+#: from "this file belongs to the hand whose board reports ser-0000".
 MARKER_SUFFIX = ".hand"
 _ID_RE = re.compile(r"^[0-9A-Za-z._-]{1,20}$")
 _SUFFIXES = (".bin", ".yaml", MARKER_SUFFIX)
@@ -73,6 +76,24 @@ def known_ids(directory: Optional[Path] = None) -> List[str]:
     return sorted(found)
 
 
+def assigned_ids(directory: Optional[Path] = None) -> List[str]:
+    """Only the names a person gave, sorted.
+
+    What a picker offers. A serial or a board id is detected, not chosen, so
+    listing it would invite someone to pick the hand they already have.
+    """
+    directory = Path(directory) if directory else calibrations_dir()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return []
+    return sorted(
+        entry.name[: -len(MARKER_SUFFIX)]
+        for entry in entries
+        if entry.name.endswith(MARKER_SUFFIX) and valid_id(entry.name[: -len(MARKER_SUFFIX)])
+    )
+
+
 def files_for(name: str, directory: Optional[Path] = None) -> List[Path]:
     """Everything on this machine filed under that id."""
     directory = Path(directory) if directory else calibrations_dir()
@@ -81,19 +102,21 @@ def files_for(name: str, directory: Optional[Path] = None) -> List[Path]:
 
 
 def add_id(name: str, directory: Optional[Path] = None) -> str:
-    """Register an id, so a hand with no board can be told apart from another.
+    """Register an id a person chose, so one hand can be told from another.
 
-    Idempotent: adding one that already exists is not an error.
+    The marker is always written, even beside a calibration that already
+    exists: it is what makes the name a *chosen* one, which is the only kind
+    the pickers offer. Idempotent.
     """
     check_id(name)
     directory = Path(directory) if directory else calibrations_dir()
     directory.mkdir(parents=True, exist_ok=True)
     marker = directory / f"{name}{MARKER_SUFFIX}"
-    if not marker.exists() and not files_for(name, directory):
+    if not marker.exists():
         marker.write_text(
-            "# A hand this machine knows, with no calibration filed under it\n"
-            "# yet. Created by orca_core when a hand with no board needed a\n"
-            "# name; calibrating that hand writes its calibration beside this.\n",
+            "# A hand this machine knows by a name somebody gave it, because it\n"
+            "# has no board to name itself. Calibrating that hand writes its\n"
+            "# calibration beside this file.\n",
             encoding="utf-8",
         )
     return name
@@ -128,12 +151,17 @@ def resolve_from_board(serial: Optional[str], board_id: Optional[str]) -> Option
 
 def auto_id(serial: Optional[str] = None, board_id: Optional[str] = None,
             directory: Optional[Path] = None) -> Optional[str]:
-    """What "auto" resolves to: the board's name, else the first id known here."""
+    """What "auto" resolves to: the board's name, else the first assigned one.
+
+    Only assigned names are candidates for the fallback. A file keyed by some
+    other hand's serial is that hand's, and picking it for a board-less one
+    would hand it the wrong calibration.
+    """
     from_board = resolve_from_board(serial, board_id)
     if from_board:
         return from_board
-    known = known_ids(directory)
-    return known[0] if known else None
+    assigned = assigned_ids(directory)
+    return assigned[0] if assigned else None
 
 
 #: How many answers the menu will take before it gives up. A terminal user gets
@@ -167,7 +195,7 @@ def choose_id(
     confirm = confirm or default_confirm
 
     for _ in range(max_attempts):
-        names = list(known) if known is not None else known_ids(directory)
+        names = list(known) if known is not None else assigned_ids(directory)
         if names:
             show("Which hand is this? (number, a to add, d to delete, q to quit)")
             for index, name in enumerate(names, 1):

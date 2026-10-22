@@ -92,11 +92,12 @@ class TestWhatThisMachineKnows:
         hand_ids.add_id("bench", tmp_path)
         assert (tmp_path / "bench.bin").read_bytes() == b"a calibration"
 
-    def test_no_marker_is_left_beside_a_calibration_that_exists(self, tmp_path):
-        """The marker says "known but not calibrated"; one of them is enough."""
+    def test_the_marker_is_written_even_beside_a_calibration(self, tmp_path):
+        """It is what makes the name a chosen one, which is what gets offered."""
         (tmp_path / "bench.bin").write_bytes(b"a calibration")
         hand_ids.add_id("bench", tmp_path)
-        assert not (tmp_path / f"bench{hand_ids.MARKER_SUFFIX}").exists()
+        assert (tmp_path / f"bench{hand_ids.MARKER_SUFFIX}").exists()
+        assert hand_ids.assigned_ids(tmp_path) == ["bench"]
 
     def test_a_name_that_cannot_be_one_is_refused(self, tmp_path):
         with pytest.raises(HandIdError):
@@ -446,3 +447,51 @@ class TestACalibrationRunWritesTheHandsOwnFile:
         document = read_yaml(str(own)) or {}
         assert document["calibrated"] is True
         assert document["motor_limits"]
+
+
+class TestOnlyChosenNamesAreOffered:
+    """A picker lists names somebody gave, not names the hardware reports.
+
+    A serial or a board id is detected. Listing it would invite someone to pick
+    the hand they already have, and for a board-less hand it would offer
+    another hand's calibration.
+    """
+
+    def test_a_name_somebody_added_is_offered(self, tmp_path):
+        hand_ids.add_id("left-bench", tmp_path)
+        assert hand_ids.assigned_ids(tmp_path) == ["left-bench"]
+
+    def test_a_file_keyed_by_a_serial_is_not(self, tmp_path):
+        (tmp_path / "ser-0001.yaml").write_text("calibrated: true\n")
+        assert hand_ids.known_ids(tmp_path) == ["ser-0001"]
+        assert hand_ids.assigned_ids(tmp_path) == []
+
+    def test_a_file_keyed_by_a_board_id_is_not(self, tmp_path):
+        (tmp_path / "0123456789ABCDEF.bin").write_bytes(b"")
+        assert hand_ids.assigned_ids(tmp_path) == []
+
+    def test_a_name_is_marked_even_beside_a_calibration_that_exists(self, tmp_path):
+        """Which is how a hand whose board died gets picked again by name."""
+        (tmp_path / "ser-0001.yaml").write_text("calibrated: true\n")
+        hand_ids.add_id("ser-0001", tmp_path)
+        assert hand_ids.assigned_ids(tmp_path) == ["ser-0001"]
+        assert (tmp_path / "ser-0001.yaml").read_text() == "calibrated: true\n"
+
+    def test_auto_only_falls_back_to_a_chosen_name(self, tmp_path):
+        """Another hand's serial must never be handed to a board-less one."""
+        (tmp_path / "ser-0001.yaml").write_text("calibrated: true\n")
+        assert hand_ids.auto_id(None, None, tmp_path) is None
+        hand_ids.add_id("my-hand", tmp_path)
+        assert hand_ids.auto_id(None, None, tmp_path) == "my-hand"
+
+    def test_the_board_still_wins_over_any_chosen_name(self, tmp_path):
+        hand_ids.add_id("my-hand", tmp_path)
+        assert hand_ids.auto_id("ser-0000", None, tmp_path) == "ser-0000"
+
+    def test_the_picker_offers_only_chosen_names(self, tmp_path):
+        (tmp_path / "ser-0001.yaml").write_text("calibrated: true\n")
+        hand_ids.add_id("chosen", tmp_path)
+        typist = Typist("1")
+        assert hand_ids.choose_id(ask=typist, show=typist.show,
+                                  directory=tmp_path) == "chosen"
+        assert "ser-0001" not in typist.screen

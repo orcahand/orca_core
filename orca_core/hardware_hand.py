@@ -424,6 +424,7 @@ class OrcaHand(BaseHand):
                 board_store.write_cache(blob, keys[0])
             except Exception as exc:
                 logger.debug("could not keep the calibration store: %s", exc)
+            self._forget_older_names(keys)
             self._point_at_hand_file(keys[0])
         logger.info(
             "calibration taken from the hand's own board (sequence %d, %d bytes)",
@@ -448,17 +449,58 @@ class OrcaHand(BaseHand):
             self.calibration = result_from_mapping(document, self.config.motor_ids)
             self._hand_id = keys[0]
             if key != keys[0]:
-                # Found under an older name: carry it to the better one, so the
-                # next connect finds it there.
-                try:
-                    board_store.cached_document_path(keys[0]).write_text(
-                        path.read_text(encoding="utf-8"), encoding="utf-8")
-                except OSError as exc:
-                    logger.debug("could not re-file %s as %s: %s", key, keys[0], exc)
+                self._refile_under(key, keys[0])
+            self._forget_older_names(keys)
             self._point_at_hand_file(keys[0])
             logger.info("calibration taken from this machine's copy for %s", keys[0])
             return True
         return False
+
+    def _forget_older_names(self, keys: "list[str]") -> None:
+        """Drop files under this hand's lesser names, once the best one has them.
+
+        Every name in ``keys`` is this same hand's -- its serial and its board
+        id both come from the one board -- so a second copy is only a second
+        thing to go stale. The better-named file has to exist first; nothing is
+        thrown away before it does.
+        """
+        from . import board_store, hand_ids
+
+        if len(keys) < 2 or not board_store.cached_document_path(keys[0]).exists():
+            return
+        for older in keys[1:]:
+            if not hand_ids.files_for(older):
+                continue
+            try:
+                removed = hand_ids.delete_id(older)
+            except (OSError, hand_ids.HandIdError) as exc:
+                logger.debug("could not forget %s: %s", older, exc)
+                continue
+            logger.info("dropped %d file(s) under this hand's older name %s",
+                        len(removed), older)
+
+    def _refile_under(self, old: str, new: str) -> None:
+        """Move a hand's files from an older name of its own to a better one.
+
+        A hand first seen before it had a serial is filed under its board id.
+        Once it has a serial that is the better name -- it follows the hand even
+        if the board is replaced -- so the files move rather than being copied:
+        two names for one hand is just a second thing to go stale.
+        """
+        from . import board_store, hand_ids
+
+        try:
+            for suffix in (".yaml", ".bin"):
+                source = board_store.calibrations_dir() / f"{old}{suffix}"
+                if source.exists():
+                    (board_store.calibrations_dir() / f"{new}{suffix}").write_bytes(
+                        source.read_bytes())
+            removed = hand_ids.delete_id(old)
+        except (OSError, hand_ids.HandIdError) as exc:
+            logger.debug("could not re-file %s as %s: %s", old, new, exc)
+            return
+        logger.info("this hand's calibration re-filed from %s to %s (%d file(s) moved)",
+                    old, new, len(removed))
 
     def _point_at_hand_file(self, hand_id: str) -> None:
         """Read and write this hand's own file from now on."""

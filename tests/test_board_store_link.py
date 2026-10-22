@@ -348,7 +348,7 @@ class TestAHandAdoptsWhatIsKeptForIt:
         assert hand.calibration.motor_limits_dict[1] == [-3.0, 3.0]
 
     def test_and_is_then_filed_under_the_better_name(self, board, tmp_path):
-        """Migrates forward, so the next connect finds it under the serial."""
+        """Moved, not copied: one hand with two names is one to go stale."""
         from orca_core.board_store import pack
 
         board_store.write_cache(
@@ -356,6 +356,18 @@ class TestAHandAdoptsWhatIsKeptForIt:
             "0123456789ABCDEF", directory=tmp_path)
         self.hand()._adopt_stored_calibration("mock")
         assert (tmp_path / "ser-0000.yaml").exists()
+        assert not (tmp_path / "0123456789ABCDEF.yaml").exists()
+        assert not (tmp_path / "0123456789ABCDEF.bin").exists()
+
+    def test_the_calibration_survives_the_move(self, board, tmp_path):
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-3.0, 3.0]}}, sequence=1),
+            "0123456789ABCDEF", directory=tmp_path)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand.calibration.motor_limits_dict[1] == [-3.0, 3.0]
 
     def test_a_board_with_no_serial_is_filed_under_its_board_id(self, board, tmp_path):
         board.store = blob()
@@ -485,3 +497,74 @@ class TestNothingChangesForAHandWithNoOnboardCalibration:
         self.fake_port(monkeypatch, FakeBoard(None))
         hand._adopt_stored_calibration("/dev/null")
         assert hand.calibration is before
+
+
+class TestOneHandKeepsOneName:
+    """A hand's serial and its board id come from the one board, so a file
+    under each is a second thing to go stale. The better name keeps them."""
+
+    @pytest.fixture()
+    def board(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV, str(tmp_path))
+        fake = FakeBoard(None)
+
+        class FakeSerial:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return fake
+
+            def __exit__(self, *exc):
+                return False
+
+        import serial
+
+        monkeypatch.setattr(serial, "Serial", FakeSerial)
+        return fake
+
+    def hand(self):
+        from orca_core.hardware_hand import MockOrcaHand
+
+        return MockOrcaHand()
+
+    def test_a_board_id_file_goes_once_the_serial_has_one(self, board, tmp_path):
+        from orca_core.board_store import pack
+
+        board_store.write_cache(pack({"motor_limits": {1: [-5.0, 5.0]}}, sequence=2),
+                                "ser-0000", directory=tmp_path)
+        board_store.write_cache(pack({"motor_limits": {1: [-9.0, 9.0]}}, sequence=1),
+                                "0123456789ABCDEF", directory=tmp_path)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        assert hand.calibration.motor_limits_dict[1] == [-5.0, 5.0]
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "ser-0000.bin", "ser-0000.yaml"]
+
+    def test_nothing_is_dropped_before_the_better_name_has_a_file(
+        self, board, tmp_path
+    ):
+        """So a tidy-up can never be what loses a hand its calibration."""
+        from orca_core.board_store import pack
+
+        board_store.write_cache(pack({"motor_limits": {1: [-9.0, 9.0]}}, sequence=1),
+                                "0123456789ABCDEF", directory=tmp_path)
+        hand = self.hand()
+        hand._adopt_stored_calibration("mock")
+        # Re-filed to the serial, and only then is the old name forgotten.
+        assert (tmp_path / "ser-0000.yaml").exists()
+        assert hand.calibration.motor_limits_dict[1] == [-9.0, 9.0]
+        assert not (tmp_path / "0123456789ABCDEF.yaml").exists()
+
+    def test_a_name_somebody_gave_is_never_dropped_as_redundant(
+        self, board, tmp_path
+    ):
+        """Only the board's own lesser names go; a chosen one is not one."""
+        from orca_core import hand_ids
+        from orca_core.board_store import pack
+
+        board_store.write_cache(pack({"calibrated": True}, sequence=1),
+                                "ser-0000", directory=tmp_path)
+        hand_ids.add_id("my-other-hand", tmp_path)
+        self.hand()._adopt_stored_calibration("mock")
+        assert hand_ids.assigned_ids(tmp_path) == ["my-other-hand"]
