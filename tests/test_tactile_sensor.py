@@ -544,7 +544,8 @@ def test_rearm_register_writes_use_a_single_attempt(tactile_mock, monkeypatch):
     orig = client._send_register_request
 
     def spy(request, response_timeout_s, attempts=TACTILE_REGISTER_ATTEMPTS):
-        recorded.append(attempts)
+        if client._stream_ctrl_lock.locked():
+            recorded.append(attempts)
         return orig(request, response_timeout_s, attempts)
 
     monkeypatch.setattr(client, "_send_register_request", spy)

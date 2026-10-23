@@ -28,6 +28,7 @@ from ...constants import (
     ORCA_INFO_QUERY,
 )
 from .constants import (
+    AUTO_ENC_FRAME_SIZE,
     AUTO_FRAME_META_SIZE,
     DEFAULT_ENCODER_BAUDRATE,
     DEFAULT_SENSOR_BAUDRATE,
@@ -35,6 +36,7 @@ from .constants import (
     MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     PROTOCOL_HEADER_AUTO_ENC,
 )
+from .encoder_protocol import parse_encoder_frame
 from .framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
@@ -441,8 +443,10 @@ def detect_encoder_stream(
     baudrate: int = DEFAULT_ENCODER_BAUDRATE,
     timeout: float = 0.3,
 ) -> bool:
-    """True iff an LRC-valid AA A9 encoder frame arrives on ``port``.
+    """True iff an AA A9 frame on ``port`` carries at least one live encoder.
 
+    Connector boards stream AA A9 even with no encoders wired; there every
+    slot reads 0xFFFF with the error flag, so frames alone prove nothing.
     Passive (nothing is written) and opened exclusively; a busy or
     unopenable port returns False.
     """
@@ -458,16 +462,27 @@ def detect_encoder_stream(
                 if not chunk:
                     continue
                 buf.extend(chunk)
-                if _contains_valid_encoder_frame(buf):
+                if _contains_live_encoder_frame(buf):
                     return True
+                # Every complete frame has been judged; only a partial one can remain.
+                del buf[:-(AUTO_ENC_FRAME_SIZE - 1)]
             return False
     except (OSError, serial.SerialException) as exc:
         logger.debug("encoder-stream probe on %s failed: %s", port, exc)
         return False
 
 
-def _contains_valid_encoder_frame(data: bytes) -> bool:
-    """Scan ``data`` for one complete, LRC-valid AA A9 frame (mirrors the ``HandSerialLink`` demuxer)."""
+def _has_live_slot(frame: bytes) -> bool:
+    """True if any slot reads a valid angle: even parity and no error flag."""
+    try:
+        reading = parse_encoder_frame(frame)
+    except IOError:
+        return False
+    return bool((reading.parity_ok & ~reading.angle_error).any())
+
+
+def _contains_live_encoder_frame(data: bytes) -> bool:
+    """Scan ``data`` for a complete, LRC-valid AA A9 frame with a live slot (resyncs like the ``HandSerialLink`` demuxer)."""
     start = 0
     while True:
         start = data.find(PROTOCOL_HEADER_AUTO_ENC, start)
@@ -484,7 +499,7 @@ def _contains_valid_encoder_frame(data: bytes) -> bool:
             and len(data) >= frame_end
         ):
             frame = data[start:frame_end]
-            if calculate_checksum(frame[:-1]) == frame[-1]:
+            if calculate_checksum(frame[:-1]) == frame[-1] and _has_live_slot(frame):
                 return True
         start += 1  # resync one byte forward, like the demuxer
 

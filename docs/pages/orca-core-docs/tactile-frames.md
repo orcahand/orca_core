@@ -91,6 +91,25 @@ transforms = hand.get_sensor_transforms(frames.BASE)
 contact_world = transforms["index"].apply_to_points(my_sensor_frame_points)
 ```
 
+## Readings: frame numbers, fixed arrays, the force ceiling
+
+`get_tactile_data()`, `get_tactile_forces()` and `get_tactile_taxels()` return
+the latest frame (50 Hz), in the sensor's own axes rather than a 3D frame.
+
+```python
+reading = hand.get_tactile_data()
+reading.seq              # frame number: same number = same frame, a jump = frames missed
+reading.forces.array     # (5, 3) newtons, rows thumb → pinky, NaN for an absent finger
+reading.taxels.array     # (363, 3), finger rows at TAXEL_SLICES[finger], NaN if absent
+reading.forces.saturated # fingers whose normal force reached the 25.5 N ceiling
+```
+
+`seq` counts the frames the computer received since the stream started; it
+can't see frames lost before they arrive. The arrays are read-only and shared
+by every caller of the same frame: `.copy()` before writing. The sensor caps
+the resultant normal force at 25.5 N, so a saturated finger's real force is at
+least that; its taxels keep rising past the cap.
+
 ## Notes
 
 - The kinematic constants (joint origins/axes, sensor mount poses) are packaged
