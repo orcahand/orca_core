@@ -123,79 +123,91 @@ class CalibrationResult:
             calibration_path: Absolute path to ``calibration.yaml``.
             motor_ids: Ordered list of motor IDs; used to build the dicts.
         """
-        calibration = read_yaml(calibration_path) or {}
+        return result_from_mapping(read_yaml(calibration_path) or {}, motor_ids)
+def result_from_mapping(
+    calibration: Dict,
+    motor_ids: List[int],
+) -> CalibrationResult:
+    """Build a result from the mapping a calibration document holds.
 
-        motor_limits_raw = calibration.get("motor_limits", {})
-        motor_limits_dict = {
-            mid: motor_limits_raw.get(mid, [None, None]) for mid in motor_ids
-        }
+    The same parsing whether the document came off disk or off a hand's own
+    board, so the two can never drift. Package-private on purpose: making it
+    public would change the pinned API surface, and nothing outside orca_core
+    needs it yet.
 
-        ratios_raw = calibration.get("joint_to_motor_ratios", {})
-        joint_to_motor_ratios_dict = {
-            mid: ratios_raw.get(mid, 0.0) for mid in motor_ids
-        }
+    Returns an :meth:`CalibrationResult.empty` field for anything absent.
+    """
+    motor_limits_raw = calibration.get("motor_limits", {})
+    motor_limits_dict = {
+        mid: motor_limits_raw.get(mid, [None, None]) for mid in motor_ids
+    }
 
-        encoder_raw = calibration.get("joint_encoder_calibration", {}) or {}
-        joint_encoder_calibration_dict = {
-            joint: JointEncoderCal(
-                enc_at_anchor_count=int(entry["enc_at_anchor_count"]),
+    ratios_raw = calibration.get("joint_to_motor_ratios", {})
+    joint_to_motor_ratios_dict = {
+        mid: ratios_raw.get(mid, 0.0) for mid in motor_ids
+    }
+
+    encoder_raw = calibration.get("joint_encoder_calibration", {}) or {}
+    joint_encoder_calibration_dict = {
+        joint: JointEncoderCal(
+            enc_at_anchor_count=int(entry["enc_at_anchor_count"]),
+        )
+        for joint, entry in encoder_raw.items()
+    }
+
+    measured_raw = calibration.get("joint_roms_measured", {}) or {}
+    joint_roms_measured_dict = {}
+    for joint, rom in measured_raw.items():
+        if not isinstance(rom, (list, tuple)) or len(rom) != 2:
+            print(
+                f"\033[93mWarning: dropping malformed joint_roms_measured "
+                f"entry for {joint}: {rom!r}\033[0m"
             )
-            for joint, entry in encoder_raw.items()
-        }
+            continue
+        joint_roms_measured_dict[joint] = [float(rom[0]), float(rom[1])]
 
-        measured_raw = calibration.get("joint_roms_measured", {}) or {}
-        joint_roms_measured_dict = {}
-        for joint, rom in measured_raw.items():
-            if not isinstance(rom, (list, tuple)) or len(rom) != 2:
-                print(
-                    f"\033[93mWarning: dropping malformed joint_roms_measured "
-                    f"entry for {joint}: {rom!r}\033[0m"
-                )
-                continue
-            joint_roms_measured_dict[joint] = [float(rom[0]), float(rom[1])]
+    travel_raw = calibration.get("motor_travel_measured", {}) or {}
+    motor_travel_measured_dict = {}
+    for joint, travel in travel_raw.items():
+        try:
+            motor_travel_measured_dict[joint] = float(travel)
+        except (TypeError, ValueError):
+            print(
+                f"\033[93mWarning: dropping malformed motor_travel_measured "
+                f"entry for {joint}: {travel!r}\033[0m"
+            )
 
-        travel_raw = calibration.get("motor_travel_measured", {}) or {}
-        motor_travel_measured_dict = {}
-        for joint, travel in travel_raw.items():
+    current_raw = calibration.get("drive_current_measured", {}) or {}
+    drive_current_measured_dict = {}
+    for joint, per_direction in current_raw.items():
+        if not isinstance(per_direction, dict):
+            print(
+                f"\033[93mWarning: dropping malformed drive_current_measured "
+                f"entry for {joint}: {per_direction!r}\033[0m"
+            )
+            continue
+        parsed = {}
+        for direction, value in per_direction.items():
             try:
-                motor_travel_measured_dict[joint] = float(travel)
+                parsed[str(direction)] = float(value)
             except (TypeError, ValueError):
                 print(
-                    f"\033[93mWarning: dropping malformed motor_travel_measured "
-                    f"entry for {joint}: {travel!r}\033[0m"
-                )
-
-        current_raw = calibration.get("drive_current_measured", {}) or {}
-        drive_current_measured_dict = {}
-        for joint, per_direction in current_raw.items():
-            if not isinstance(per_direction, dict):
-                print(
                     f"\033[93mWarning: dropping malformed drive_current_measured "
-                    f"entry for {joint}: {per_direction!r}\033[0m"
+                    f"value for {joint} {direction}: {value!r}\033[0m"
                 )
-                continue
-            parsed = {}
-            for direction, value in per_direction.items():
-                try:
-                    parsed[str(direction)] = float(value)
-                except (TypeError, ValueError):
-                    print(
-                        f"\033[93mWarning: dropping malformed drive_current_measured "
-                        f"value for {joint} {direction}: {value!r}\033[0m"
-                    )
-            if parsed:
-                drive_current_measured_dict[joint] = parsed
+        if parsed:
+            drive_current_measured_dict[joint] = parsed
 
-        return cls(
-            motor_limits_dict=motor_limits_dict,
-            joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
-            calibrated=calibration.get("calibrated", False) or False,
-            wrist_calibrated=calibration.get("wrist_calibrated", False) or False,
-            joint_encoder_calibration_dict=joint_encoder_calibration_dict,
-            joint_roms_measured_dict=joint_roms_measured_dict,
-            motor_travel_measured_dict=motor_travel_measured_dict,
-            drive_current_measured_dict=drive_current_measured_dict,
-        )
+    return CalibrationResult(
+        motor_limits_dict=motor_limits_dict,
+        joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
+        calibrated=calibration.get("calibrated", False) or False,
+        wrist_calibrated=calibration.get("wrist_calibrated", False) or False,
+        joint_encoder_calibration_dict=joint_encoder_calibration_dict,
+        joint_roms_measured_dict=joint_roms_measured_dict,
+        motor_travel_measured_dict=motor_travel_measured_dict,
+        drive_current_measured_dict=drive_current_measured_dict,
+    )
 
 
 def joint_encoder_calibration_to_yaml(

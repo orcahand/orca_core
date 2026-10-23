@@ -377,6 +377,9 @@ def persist_calibration(
             for joint, rom in result.joint_roms_measured_dict.items()
         }
     write_yaml_atomic(calibration_path, doc)
+    # Named, because which file a run lands in decides which calibration the
+    # hand loads next time: a hand's own file outranks its model directory.
+    logger.info("calibration written to %s", calibration_path)
 
 
 def _skips_torque_release(hand: "OrcaHand", motor_id: int) -> bool:

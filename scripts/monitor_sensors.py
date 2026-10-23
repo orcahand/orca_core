@@ -25,7 +25,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import math
 import sys
 import threading
@@ -96,8 +95,6 @@ def parse_args() -> argparse.Namespace:
                    help="Link baud. Default: auto-detect from the connected sensor.")
     p.add_argument("--start-mode", choices=list(MODES), default="Resultant",
                    help="Tactile mode to start in.")
-    p.add_argument("--motor-port", default=None,
-                   help="Motor serial port. Default: autodetect (any USB serial port that answers pings).")
     return p.parse_args()
 
 
@@ -773,8 +770,6 @@ def main() -> int:
     # Motors only: the monitor opens the sensing port itself, and detection
     # runs here, before that thread starts, so the two never race for it.
     hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
-    if args.motor_port:
-        hand.config = dataclasses.replace(hand.config, port=args.motor_port)
     manager = ConnectionManager(args.port, args.baud, args.start_mode)
     manager.start()
     motors = MotorBus(hand)
