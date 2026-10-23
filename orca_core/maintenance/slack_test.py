@@ -19,8 +19,9 @@ and ``blocked`` is set.
 
 No calibration is needed; the test runs on the raw motor positions and leaves
 the motors where it found them, torque off. ``hold_callback(joint)`` blocks
-until the operator holds the joint and returns False to skip it. Like the
-other maintenance routines: ``progress_callback`` events, ``should_stop``.
+until the operator holds the joint and returns False to skip it, or
+``HOLD_BACK`` to test the previous joint again. Like the other maintenance
+routines: ``progress_callback`` events, ``should_stop``.
 """
 
 from __future__ import annotations
@@ -45,7 +46,10 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[dict], None]
 ShouldStop = Callable[[], bool]
 
-HoldCallback = Callable[[str], bool]
+HoldCallback = Callable[[str], "bool | str"]
+
+# A hold answer that discards the previous joint's result and tests it again.
+HOLD_BACK = "back"
 
 PASS = "pass"
 FAIL = "fail"
@@ -125,7 +129,8 @@ def run_slack_test(
 
     ``hold_callback(joint)`` is called before each joint with every motor
     torque off; it returns once the operator holds the joint, False to skip
-    it. Without one every joint is tested straight away.
+    it, ``HOLD_BACK`` to test the previous joint again (ignored on the first).
+    Without one every joint is tested straight away.
 
     Returns::
 
@@ -138,7 +143,7 @@ def run_slack_test(
     (``joint``, ``motor``, ``index``), ``slack_phase`` (``joint``,
     ``direction``, ``sense``), ``slack_sample`` (``joint``, ``direction``,
     ``deg``), ``slack_joint_done`` (the joint's result dict),
-    ``cleanup_failed``. On any exit torque is off and the configured control
+    ``slack_joint_back`` (``joint``, the one tested again), ``cleanup_failed``. On any exit torque is off and the configured control
     mode and current limit are restored.
 
     Raises:
@@ -185,12 +190,22 @@ def run_slack_test(
         hand.set_max_current([settings.current_ma for _ in config.motor_ids])
         _emit(progress_callback, "slack_plan", joints=list(targets),
               motors=[motor_of[j] for j in targets])
-        for n, joint in enumerate(targets):
+        n = 0
+        while n < len(targets):
             _check()
+            joint = targets[n]
             motor = motor_of[joint]
-            r = results[joint]
             _emit(progress_callback, "slack_joint", joint=joint, motor=motor, index=n)
-            if hold_callback is not None and not hold_callback(joint):
+            answer = True if hold_callback is None else hold_callback(joint)
+            if answer == HOLD_BACK:
+                if n > 0:
+                    n -= 1
+                    results[targets[n]] = SlackResult(targets[n], motor_of[targets[n]])
+                    _emit(progress_callback, "slack_joint_back", joint=targets[n])
+                continue
+            r = results[joint]
+            n += 1
+            if not answer:
                 r.skipped = True
                 _emit(progress_callback, "slack_joint_done", result=r.to_dict(settings))
                 continue

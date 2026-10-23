@@ -111,3 +111,17 @@ def test_a_skipped_joint_is_not_moved_and_a_stop_leaves_torque_off(spooled):
     assert not any(hand.motor_client._torque_enabled.values())
     with pytest.raises(ValueError):
         SlackTestSettings(max_free_deg=360.0).validate()
+
+
+def test_back_discards_the_previous_joint_and_tests_it_again(spooled):
+    hand, spools = spooled
+    answers = iter([False, slack_test.HOLD_BACK, True, True])
+    events, held = [], []
+    report = run_slack_test(hand, joints=["index_pip", "ring_mcp"], clock=_FakeClock(),
+                            progress_callback=events.append,
+                            hold_callback=lambda j: held.append(j) or next(answers))
+    assert held == ["index_pip", "ring_mcp", "index_pip", "ring_mcp"]
+    by = {r["joint"]: r for r in report["results"]}
+    assert by["index_pip"]["status"] == "pass" and by["index_pip"]["plus_deg"] == pytest.approx(12.0, abs=0.1)
+    assert by["ring_mcp"]["status"] == "fail"
+    assert [e["joint"] for e in events if e["event"] == "slack_joint_back"] == ["index_pip"]
