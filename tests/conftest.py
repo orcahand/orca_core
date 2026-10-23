@@ -241,3 +241,17 @@ def connected_mock_hand(mock_config_dir):
 def initialized_mock_hand(connected_mock_hand):
     connected_mock_hand.init_joints(force_calibrate=True)
     return connected_mock_hand
+
+
+@pytest.fixture(autouse=True)
+def _calibrations_register_is_never_the_real_one(tmp_path_factory, monkeypatch):
+    """No test reads or writes the hand calibrations kept on this machine.
+
+    A hand is named and then reads and writes the file filed under that name.
+    Pointed at the real register, a test would load somebody's calibration --
+    and a mock hand would write its synthesized one back over it.
+    """
+    from orca_core import board_store
+
+    monkeypatch.setenv(board_store.CALIBRATIONS_DIR_ENV,
+                       str(tmp_path_factory.mktemp("calibrations")))

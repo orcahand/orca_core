@@ -408,12 +408,14 @@ class OrcaHand(BaseHand):
             return chosen
         if board_store.cached_document_path(chosen).exists():
             self._point_at_hand_file(chosen)
-        else:
-            # Nothing filed under this name yet. Writes go back to the model
-            # directory until a run claims a file, so they cannot land on
-            # whichever hand was named before.
-            self.config = dataclasses.replace(
-                self.config, calibration_path=self._model_calibration_path)
+            return chosen
+        # Nothing filed under this name yet. Writes go back to the model
+        # directory until a run claims a file, so they cannot land on
+        # whichever hand was named before.
+        self.config = dataclasses.replace(
+            self.config, calibration_path=self._model_calibration_path)
+        if chosen in hand_ids.assigned_ids():
+            self.calibration = CalibrationResult.empty(self.config.motor_ids)
         return chosen
 
     def _adopt_stored_calibration(self, port: str) -> None:

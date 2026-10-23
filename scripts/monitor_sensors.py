@@ -25,7 +25,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import math
 import sys
 import threading

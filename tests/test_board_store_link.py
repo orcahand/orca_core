@@ -599,12 +599,45 @@ class TestNamingAHandLoadsWhatIsKeptForIt:
         assert hand.calibration.motor_limits_dict[1] == [-7.0, 7.0]
         assert hand.config.calibration_path == str(here / "ser-0001.yaml")
 
-    def test_a_name_with_nothing_filed_under_it_is_still_adopted(self, here):
+    def test_a_board_name_with_nothing_filed_keeps_the_model_directory(self, here):
+        """Where a hand that predates hand ids has always read from."""
         hand = self.hand()
         before = hand.calibration
         assert hand.set_hand_id("ser-0002") == "ser-0002"
         assert hand.hand_id == "ser-0002"
         assert hand.calibration is before
+
+    def test_a_hand_somebody_just_named_is_not_calibrated(self, here):
+        """It must not inherit the numbers of the hand named before it.
+
+        Nothing is filed under the new name, so there is no calibration to
+        report -- and reporting one would have a front-end show a hand as
+        calibrated when nobody has ever calibrated it.
+        """
+        from orca_core import hand_ids
+
+        hand_ids.add_id("bench-new", directory=here)
+        hand = self.hand()
+        assert hand.calibration.calibrated, "fixture should start calibrated"
+        hand.set_hand_id("bench-new")
+        assert not hand.calibration.calibrated
+        assert not any(hand.calibration.joint_to_motor_ratios_dict.values())
+
+    def test_switching_back_restores_the_other_hand_s_calibration(self, here):
+        from orca_core import hand_ids
+        from orca_core.board_store import pack
+
+        board_store.write_cache(
+            pack({"motor_limits": {1: [-7.0, 7.0]}, "calibrated": True}, sequence=2),
+            "ser-0001", directory=here)
+        hand_ids.add_id("bench-new", directory=here)
+        hand = self.hand()
+        hand.set_hand_id("ser-0001")
+        assert hand.calibration.motor_limits_dict[1] == [-7.0, 7.0]
+        hand.set_hand_id("bench-new")
+        assert not hand.calibration.calibrated
+        hand.set_hand_id("ser-0001")
+        assert hand.calibration.motor_limits_dict[1] == [-7.0, 7.0]
 
     def test_a_name_with_no_file_does_not_write_over_the_last_hand(self, here):
         """The path must leave the previous hand's file, or its calibration
