@@ -40,13 +40,29 @@ from orca_core.hardware.sensing.constants import (
     TACTILE_FIRST_FRAME_TIMEOUT_S,
     TACTILE_STREAM_REARM_MIN_INTERVAL_S,
     TACTILE_STREAM_STALE_REARM_S,
+    ADDR_VERSION,
+    VERSION_LENGTH,
+    ADDR_RESET,
+    ADDR_MODULE_ERRORS,
+    MODULE_ERRORS_LENGTH,
+    ADDR_SLOT_COUNTERS,
+    SLOT_COUNTER_STRIDE,
     ADDR_NUMBERING_COMMAND,
     ADDR_NUMBERING_STATUS,
     NUMBERING_STATUS_LENGTH,
+    NUMBERING_OP_ZERO,
+    ZERO_KEY,
+    CONNECTOR_FIRMWARE_1_0,
+    BOARD_REBOOT_TIMEOUT_S,
+    BOARD_REBOOT_SETTLE_S,
+    ADDR_BOARD_STATS,
+    ADDR_BOARD_STATS_LEGACY,
 )
 from orca_core.hardware.sensing.taxel_geometry import TaxelGeometry, load_taxel_geometry
 from orca_core.hardware.sensing.types import (
+    FingertipHealth,
     ResultantForces,
+    SensingBoardVersion,
     ResultantReading,
     TactileReading,
     TaxelReading,
@@ -64,6 +80,8 @@ from orca_core.hardware.sensing.tactile_protocol import (
     decode_connected_sensors,
     decode_num_taxels,
     encode_auto_data_type,
+    decode_fingertip_health,
+    parse_board_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +103,8 @@ BOARD_STATE_BUSY = 1
 BOARD_STATE_DONE = 2
 BOARD_COMMAND_TIMEOUT_S = 2.0
 BOARD_COMMAND_POLL_S = 0.02
+BOARD_RESULT_ZERO_OK = 3
+BOARD_RESULT_ZERO_FAILED = 19
 
 
 @dataclass
@@ -222,6 +242,7 @@ class TactileClient:
         self._sensor_id_to_finger = {v: k for k, v in self._finger_to_sensor_id.items()}
 
         self._tactile_config: TactileSensorConfiguration | None = None
+        self._board_version: SensingBoardVersion | None = None
 
         self._auto_lock = threading.Lock()
         self._auto_running = False
@@ -269,6 +290,11 @@ class TactileClient:
             logger.info(f"Tactile client connected, initial configuration: {self._tactile_config}")
         except IOError as e:
             logger.warning(f"Tactile client connected but failed to get initial configuration: {e}")
+        try:
+            self._board_version = parse_board_version(self._read_register(ADDR_VERSION, VERSION_LENGTH))
+            logger.info(f"Sensing board: {self._board_version}")
+        except IOError as e:
+            logger.warning(f"Could not read the sensing board's version, using no firmware features: {e}")
 
     def disconnect(self) -> None:
         if not self._connected:
@@ -345,6 +371,88 @@ class TactileClient:
         """Return ``{finger: taxel_count}`` from the taxel-count register block."""
         data = self._read_register(ADDR_NUM_TAXELS_START, ADDR_NUM_TAXELS_LENGTH)
         return decode_num_taxels(data, self._sensor_id_to_finger)
+
+    # ----- Board firmware features (gated on the version string) ----------
+
+    @property
+    def board_version(self) -> SensingBoardVersion | None:
+        """The board's version register as read at ``connect()``; ``None`` if unread."""
+        return self._board_version
+
+    def firmware_at_least(self, release: tuple[int, int]) -> bool:
+        """True on ORCA connector firmware of ``release`` or newer."""
+        return self._board_version is not None and self._board_version.at_least(release)
+
+    @property
+    def supports_sensor_zero(self) -> bool:
+        """True when the board can zero the fingertips themselves (connector firmware 1.0+)."""
+        return self.firmware_at_least(CONNECTOR_FIRMWARE_1_0)
+
+    def zero_sensors(self, fingers: list[str] | None = None) -> dict[str, int]:
+        """Zero the fingertips themselves, which must be unloaded; returns ``{finger: status}``.
+
+        Status 0 means the fingertip took the zero; anything else is its refusal or
+        ``ZERO_NO_REPLY`` / ``ZERO_BAD_REPLY``. Only connected fingertips are sent the
+        command (``fingers`` narrows them). The zero lasts until the fingertip powers
+        off, and a zero taken under load leaves a phantom after release that only an
+        unloaded zero or a power cycle removes.
+        """
+        if not self.supports_sensor_zero:
+            raise TactileBoardError("unsupported", "This sensing board can't zero the fingertips itself.")
+        connected = self.read_connected_sensors()
+        targets = [f for f in (fingers if fingers is not None else FINGER_NAMES) if connected.get(f)]
+        if not targets:
+            return {}
+        mask = sum(1 << self._finger_to_sensor_id[f] for f in targets)
+        status = self._run_board_command(bytes([NUMBERING_OP_ZERO, *ZERO_KEY, mask]))
+        if status[1] not in (BOARD_RESULT_ZERO_OK, BOARD_RESULT_ZERO_FAILED):
+            raise TactileBoardError(f"code_{status[1]}", "The board stopped the sensor zero part-way (bus busy).")
+        return {f: status[11 + self._finger_to_sensor_id[f]] for f in targets}
+
+    def read_fingertip_health(self) -> dict[str, FingertipHealth] | None:
+        """Each fingertip's error report and counters, or ``None`` before connector firmware 1.0."""
+        if not self.firmware_at_least(CONNECTOR_FIRMWARE_1_0):
+            return None
+        errors = self._read_register(ADDR_MODULE_ERRORS, MODULE_ERRORS_LENGTH)
+        counters = self._read_register(ADDR_SLOT_COUNTERS, SLOT_COUNTER_STRIDE * len(self._sensor_id_to_finger))
+        return decode_fingertip_health(errors, counters, self._sensor_id_to_finger)
+
+    def reboot_board(self) -> None:
+        """Reboot the connector board and wait until it answers again.
+
+        Fingertip power stays on, so the fingertips keep their zero. The encoder
+        stream on the same board pauses for about 20 ms; a running tactile stream is
+        re-armed here, since the reboot clears its enable register. Raises
+        ``TactileBoardError`` on any other board, or when its counters show no reboot.
+        """
+        kind = self._board_version.kind if self._board_version is not None else None
+        if kind not in ("connector", "connector_legacy"):
+            raise TactileBoardError("unsupported", "Only an ORCA connector board can be rebooted from the host.")
+        stats = ADDR_BOARD_STATS if self.firmware_at_least(CONNECTOR_FIRMWARE_1_0) else ADDR_BOARD_STATS_LEGACY
+        frames_before = self._read_frames_received(stats)
+        try:
+            self._write_register(ADDR_RESET, REGISTER_ENABLE, attempts=1)
+        except IOError:
+            pass  # the board reboots after taking the write even if its ACK is lost; the counters below decide
+        deadline = time.monotonic() + BOARD_REBOOT_TIMEOUT_S
+        time.sleep(BOARD_REBOOT_SETTLE_S)
+        while True:
+            try:
+                frames_after = self._read_frames_received(stats)
+                break
+            except IOError:
+                if time.monotonic() >= deadline:
+                    raise
+        if frames_after >= frames_before:
+            raise TactileBoardError("not_rebooted", "The board didn't reboot: its counters weren't cleared.")
+        with self._auto_lock:
+            running, resultant, taxels = self._auto_running, self._auto_mode_resultant, self._auto_mode_taxels
+        if running:
+            self.set_auto_data_type(resultant=resultant, taxels=taxels)
+            self.enable_auto_data_transmission()
+
+    def _read_frames_received(self, stats_address: int) -> int:
+        return int.from_bytes(self._read_register(stats_address, 4), "little")
 
     def _run_board_command(self, command: bytes, timeout_s: float = BOARD_COMMAND_TIMEOUT_S) -> bytes:
         """Send a command to the board's command register and return its status block when done."""

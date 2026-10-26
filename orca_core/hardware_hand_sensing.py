@@ -46,18 +46,20 @@ from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
 from .hardware.sensing.constants import (
     JOINT_ENCODER_POLARITY_BY_SIDE,
+    SENSOR_ZERO_SETTLE_S,
     TACTILE_PORT_OPEN_SETTLE_S,
 )
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
 from .hardware.sensing.types import (
+    FingertipHealth,
     LinkHealth,
     ResultantReading,
     TactileReading,
     TaxelData,
     TaxelReading,
 )
-from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
+from .hardware.tactile_client import TactileBoardError, TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .hardware_hand import MockMotorResolutionMixin, OrcaHand
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform
@@ -96,6 +98,8 @@ class OrcaHandTouch(OrcaHand):
     # Wait after opening the sensor port, before the first register request.
     # Mock classes zero it: an in-memory link asserts no DTR and never resets.
     _tactile_port_open_settle_s = TACTILE_PORT_OPEN_SETTLE_S
+    # Wait after a sensor zero before the host baseline; mock classes zero it.
+    _sensor_zero_settle_s = SENSOR_ZERO_SETTLE_S
 
     def __init__(
         self,
@@ -300,17 +304,47 @@ class OrcaHandTouch(OrcaHand):
 
     def zero_tactile_sensors(
         self, num_samples: int = 100, timeout_s: float | None = None,
-        gate_noise: bool = True,
+        gate_noise: bool = True, sensor_zero: bool = True,
     ) -> dict:
         """Capture current readings as zero baseline and return offsets.
 
         ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
         deadline from ``num_samples``. ``gate_noise`` also measures each
         taxel's dither from the same frames and gates readings below it.
+
+        With ``sensor_zero`` and a board that supports it (connector firmware
+        1.0+), the fingertips first zero themselves, which also clears a phantom
+        left by powering up under load; the host baseline then captures what
+        remains. The fingertips must be unloaded: a sensor zero under load leaves
+        a phantom after release that ``clear_tactile_zero`` can't remove (zero
+        again unloaded, or power-cycle the hand).
         """
-        return self._require_tactile_client().capture_taxel_offsets(
+        client = self._require_tactile_client()
+        if sensor_zero and client.supports_sensor_zero:
+            try:
+                refused = {f: s for f, s in client.zero_sensors().items() if s != 0}
+                if refused:
+                    logger.warning(f"Fingertips that didn't confirm the sensor zero (status by finger): {refused}")
+            except TactileBoardError as e:
+                logger.warning(f"Sensor zero failed, using the host baseline only: {e}")
+            time.sleep(self._sensor_zero_settle_s)
+        return client.capture_taxel_offsets(
             num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise,
         )
+
+    def get_fingertip_health(self) -> Dict[str, FingertipHealth] | None:
+        """Each fingertip's error report and bus counters, or ``None`` when the
+        sensing board can't report them (connector firmware before 1.0, Paxini boards)."""
+        return self._require_tactile_client().read_fingertip_health()
+
+    def reboot_tactile_board(self) -> None:
+        """Reboot the connector board that carries the tactile stream.
+
+        The fingertips stay powered and keep their zero; a running tactile stream
+        resumes. Refused on a hand whose joint-feedback loop runs, since the
+        encoder stream on the same board stops for about 20 ms.
+        """
+        self._require_tactile_client().reboot_board()
 
     def clear_tactile_zero(self) -> None:
         self._require_tactile_client().clear_taxel_offsets()
@@ -1032,6 +1066,14 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
 
     config_cls = OrcaHandTouchConfig
 
+    def reboot_tactile_board(self) -> None:
+        if self._loop is not None:
+            raise RuntimeError(
+                "reboot_tactile_board() while the joint-feedback loop is running is not "
+                "supported: the encoder stream on the same board stops for about 20 ms."
+            )
+        super().reboot_tactile_board()
+
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True
     ) -> tuple[bool, str]:
@@ -1188,6 +1230,7 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
     """
 
     _tactile_port_open_settle_s = 0.0
+    _sensor_zero_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

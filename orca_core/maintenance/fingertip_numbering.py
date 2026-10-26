@@ -29,6 +29,7 @@ from typing import Optional
 
 from ..hardware.sensing.constants import (
     ADDR_EXT_ID,
+    CONNECTOR_FIRMWARE_1_0,
     ADDR_NUMBERING_IDENTITY,
     ADDR_NUMBERING_RAW_REPLY,
     ADDR_SLOT_IDENTITY_START,
@@ -45,6 +46,7 @@ from ..hardware.sensing.constants import (
     NUMBERING_OP_SET_AT,
     NUMBERING_SET_KEY,
     NUMBERING_SPARE_MODULE,  # noqa: F401  (callers read it from here)
+    SLOT_IDENTITY_LENGTH_1_0,
     SLOT_IDENTITY_LENGTH,
     SLOT_IDENTITY_STRIDE,
 )
@@ -235,9 +237,11 @@ def read_slot_identities(client: TactileClient) -> dict[str, str]:
     """Name string of the fingertip in each finger's slot ('' when absent)."""
     if not read_extension_caps(client) & EXT_CAP_SLOT_IDENTITY:
         raise FingertipNumberingUnsupported("unsupported", "The firmware doesn't report slot identities.")
+    # Connector firmware 1.0 widened the names to fit the fingertip's version suffix.
+    length = SLOT_IDENTITY_LENGTH_1_0 if client.firmware_at_least(CONNECTOR_FIRMWARE_1_0) else SLOT_IDENTITY_LENGTH
     out = {}
     for finger, slot in client._finger_to_sensor_id.items():
-        raw = client._read_register(ADDR_SLOT_IDENTITY_START + SLOT_IDENTITY_STRIDE * slot, SLOT_IDENTITY_LENGTH)
+        raw = client._read_register(ADDR_SLOT_IDENTITY_START + SLOT_IDENTITY_STRIDE * slot, length)
         out[finger] = _text(raw)
     return out
 
