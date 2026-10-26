@@ -81,6 +81,31 @@ RESULTANT_BLOCK_SIZE = 168
 ADDR_AUTO_DATA_TYPE = 0x0016
 ADDR_AUTO_ENABLE = 0x0017
 
+# Version string (Paxini's VERSION_MSG): connector firmware before 1.0 reads
+# zeros, newer reads "ORCA<major>.<minor><-|+><commit>", a Paxini board its own.
+ADDR_VERSION = 0x0000
+VERSION_LENGTH = 16
+VERSION_PREFIX_ORCA = "ORCA"
+ADDR_RESET = 0x0022
+# Connector firmware 1.0+: Paxini's error report layout plus ORCA counters.
+ADDR_TOTAL_ERROR = 0x0023
+ADDR_MODULE_ERRORS = 0x0700
+MODULE_ERRORS_LENGTH = 56
+ADDR_SLOT_COUNTERS = 0x6480
+SLOT_COUNTER_STRIDE = 16
+FINGERTIP_ERROR_GONE = 0x01
+FINGERTIP_ERROR_RESULTANT_READ = 0x02
+FINGERTIP_ERROR_TAXEL_READ = 0x04
+# First connector firmware with sensor-side zeroing, the error report and 32-byte slot names.
+CONNECTOR_FIRMWARE_1_0 = (1, 0)
+# The board takes this long to reboot and answer again (measured ~70 ms).
+BOARD_REBOOT_TIMEOUT_S = 1.0
+# Wait before the first read after a reset: the board reboots 50 ms after acking it.
+BOARD_REBOOT_SETTLE_S = 0.1
+# Host-link stat counters, cleared by a reboot; the first u32 counts received requests.
+ADDR_BOARD_STATS = 0x6400
+ADDR_BOARD_STATS_LEGACY = 0x0700
+
 # Register write values
 REGISTER_ENABLE = bytes([0x01])
 REGISTER_DISABLE = bytes([0x00])
@@ -101,10 +126,16 @@ ADDR_NUMBERING_RAW_REPLY = 0x6150
 ADDR_SLOT_IDENTITY_START = 0x6200
 SLOT_IDENTITY_STRIDE = 0x20
 SLOT_IDENTITY_LENGTH = 24
+SLOT_IDENTITY_LENGTH_1_0 = 32
 NUMBERING_OP_SCAN = 0x01
 NUMBERING_OP_SET = 0x02
 NUMBERING_OP_SET_AT = 0x03
+NUMBERING_OP_ZERO = 0x04
 NUMBERING_SET_KEY = b"MN"
+ZERO_KEY = b"ZR"
+# Per-fingertip outcome of a sensor zero: the fingertip's reply status (0 = took it) or these.
+ZERO_BAD_REPLY = 0xFE
+ZERO_NO_REPLY = 0xFF
 NUMBERING_MAX_MODULE = 5
 # No finger reads this number, so a fingertip can wait on it while others are swapped.
 NUMBERING_SPARE_MODULE = 5
@@ -328,6 +359,10 @@ and no measured interval is known yet."""
 # One auto-stream period @ ~1 kHz. Used after clearing offsets so the reader
 # emits at least one fresh frame before averaging.
 OFFSET_CLEAR_SETTLE_S = 0.01
+
+# After a sensor zero: the next fingertip poll (<= 20 ms) carries it and the
+# next 50 Hz AA 56 frame streams it; wait a little past both before capturing.
+SENSOR_ZERO_SETTLE_S = 0.06
 
 OFFSET_CAPTURE_POLL_S = 0.002
 """Poll interval while collecting frames to average into zeroing offsets."""

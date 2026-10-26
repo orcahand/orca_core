@@ -110,6 +110,30 @@ by every caller of the same frame: `.copy()` before writing. The sensor caps
 the resultant normal force at 25.5 N, so a saturated finger's real force is at
 least that; its taxels keep rising past the cap.
 
+## Zeroing, fingertip health, reboot
+
+```python
+hand.zero_tactile_sensors()      # fingertips unloaded: nothing may touch them
+hand.get_fingertip_health()      # {finger: FingertipHealth} or None
+hand.reboot_tactile_board()      # restarts the sensing board, re-arms the stream
+```
+
+On connector firmware 1.0 and later, `zero_tactile_sensors()` first has the
+fingertips zero themselves, then captures a host baseline; older boards get the
+host baseline only. The fingertip zero also clears a phantom left by powering
+up under load. Zeroing under load leaves a phantom after release: zero again
+unloaded, or power-cycle the hand.
+
+`get_fingertip_health()` returns `None` before firmware 1.0. From 1.0 each
+finger reports an error code (`gone`, `resultant_read_failed`,
+`taxel_read_failed`; 0 = healthy, a good reply clears it) and counters since
+the board started: good polls, timeouts, bad frames, disconnects.
+
+`reboot_tactile_board()` stops the joint-encoder stream for about 20 ms, so a
+hand refuses it while its joint loop runs. Only an ORCA connector board is
+rebooted (Paxini's own comm board drops off USB), and the reboot counts only
+once the board's counters show it happened.
+
 ## Notes
 
 - The kinematic constants (joint origins/axes, sensor mount poses) are packaged

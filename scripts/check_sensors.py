@@ -310,6 +310,28 @@ def phase_enumerate(hand):
     return True, "all 5 sensors connected"
 
 
+def phase_fingertip_health(hand):
+    banner("tactile: board firmware & fingertip health")
+    version = hand._tactile_client.board_version
+    print(f"  sensing board: {version.text or version.kind if version else 'unread'}")
+    health = hand.get_fingertip_health()
+    if health is None:
+        return True, "not reported by this board (connector firmware before 1.0 or a Paxini board)"
+    cfg = hand.get_tactile_configuration()
+    bad = []
+    for f in FINGER_NAMES:
+        h = health[f]
+        flags = [n for on, n in ((h.gone, "gone"), (h.resultant_read_failed, "resultant read failed"),
+                                 (h.taxel_read_failed, "taxel read failed")) if on]
+        print(f"    {f:7s}  error=0x{h.error_code:04x} {', '.join(flags):24s} polls_ok={h.polls_ok} "
+              f"timeouts={h.timeouts} bad_frames={h.bad_frames} disconnects={h.disconnects}")
+        if h.error_code or (cfg.connected.get(f) and h.disconnects):
+            bad.append(f)
+    if bad:
+        return False, f"fingertips with errors or dropouts since boot: {bad}"
+    return True, "no fingertip errors since boot"
+
+
 def prep_zero_baseline(hand):
     """Capture and apply per-taxel zero offsets so the press phases display
     zero-relative readings. Setup, not a scored phase — the zeroing phase
@@ -629,6 +651,7 @@ def run_tactile_checks(hand) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
     try:
         results.append(("tactile: enumerate", *run_phase(phase_enumerate, hand)))
+        results.append(("tactile: fingertip health", *run_phase(phase_fingertip_health, hand)))
 
         if results[0][1]:
             try:

@@ -3,11 +3,21 @@
 Converts between raw bytes (as defined by the sensor hardware protocol)
 and Python objects. Pure functions only — no I/O, no state, no threading.
 """
+import re
+import struct
 from typing import TypedDict
 
 from orca_core.hardware.sensing.framing import calculate_checksum
-from orca_core.hardware.sensing.types import ForceVector, ResultantForces, TaxelForces
+from orca_core.hardware.sensing.types import (
+    FingertipHealth,
+    ForceVector,
+    ResultantForces,
+    SensingBoardVersion,
+    TaxelForces,
+)
 from orca_core.hardware.sensing.constants import (
+    SLOT_COUNTER_STRIDE,
+    VERSION_PREFIX_ORCA,
     PROTOCOL_HEADER_REQUEST,
     PROTOCOL_HEADER_RESPONSE,
     PROTOCOL_HEADER_AUTO,
@@ -386,6 +396,43 @@ def decode_num_taxels(
             )
         distal_indices[sensor_id_to_finger[slot]] = idx
     return {finger: taxel_counts[idx] for finger, idx in distal_indices.items()}
+
+
+_ORCA_VERSION = re.compile(r"ORCA(\d+)\.(\d+)([-+])([0-9a-f]+)")
+
+
+def parse_board_version(data: bytes) -> SensingBoardVersion:
+    """Classify the board from its version register (0x0000, 15 or 16 bytes read)."""
+    if not any(data):
+        return SensingBoardVersion("connector_legacy")
+    raw = bytes(data).split(b"\x00", 1)[0]
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return SensingBoardVersion("unknown")
+    if not text or not text.isprintable():
+        return SensingBoardVersion("unknown", text)
+    if not text.startswith(VERSION_PREFIX_ORCA):
+        return SensingBoardVersion("paxini", text)
+    match = _ORCA_VERSION.fullmatch(text)
+    if match is None:
+        return SensingBoardVersion("connector", text)
+    major, minor, mark, commit = match.groups()
+    return SensingBoardVersion("connector", text, (int(major), int(minor)), commit, mark == "+")
+
+
+def decode_fingertip_health(
+    errors: bytes,
+    counters: bytes,
+    sensor_id_to_finger: dict[int, str],
+) -> dict[str, FingertipHealth]:
+    """Decode the 0x0700 error report and the 0x6480 counters into ``{finger: FingertipHealth}``."""
+    out = {}
+    for slot, finger in sensor_id_to_finger.items():
+        code = int.from_bytes(errors[2 * compute_distal_module_index(slot):][:2], "little")
+        ok, timeouts, bad, gone = struct.unpack_from("<4I", counters, slot * SLOT_COUNTER_STRIDE)
+        out[finger] = FingertipHealth(code, ok, timeouts, bad, gone)
+    return out
 
 
 def decode_auto_data_type(data: bytes) -> AutoDataTypeInfo:

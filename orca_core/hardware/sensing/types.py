@@ -12,7 +12,12 @@ import numpy as np
 
 from orca_core.constants import FINGER_NAMES, FingerName
 from orca_core.hardware.hand_serial_link import LinkStats
-from orca_core.hardware.sensing.constants import DEFAULT_TAXEL_COUNTS
+from orca_core.hardware.sensing.constants import (
+    DEFAULT_TAXEL_COUNTS,
+    FINGERTIP_ERROR_GONE,
+    FINGERTIP_ERROR_RESULTANT_READ,
+    FINGERTIP_ERROR_TAXEL_READ,
+)
 
 
 ForceVector = list[float]
@@ -215,3 +220,52 @@ class LinkHealth:
     port_dead: bool
     port_error: str | None
     stats: LinkStats
+
+
+@dataclass(frozen=True)
+class SensingBoardVersion:
+    """What register 0x0000 says about the board carrying the tactile stream.
+
+    ``kind`` is ``"connector"`` for ORCA connector firmware 1.0 and later
+    (``release`` is ``(major, minor)``, ``None`` if the string doesn't parse),
+    ``"connector_legacy"`` for connector firmware before 1.0 (it reads zeros),
+    ``"paxini"`` for a Paxini comm board's own string, ``"unknown"`` otherwise.
+    """
+
+    kind: str
+    text: str = ""
+    release: tuple[int, int] | None = None
+    commit: str = ""
+    dirty: bool = False
+
+    def at_least(self, release: tuple[int, int]) -> bool:
+        """True on ORCA connector firmware of ``release`` or newer."""
+        return self.kind == "connector" and self.release is not None and self.release >= release
+
+
+@dataclass(frozen=True)
+class FingertipHealth:
+    """One fingertip's error report and bus counters, from connector firmware 1.0+.
+
+    ``error_code`` is the live report (0 = fine); the counters run since the
+    board last booted, and errors count only while the fingertip is connected.
+    """
+
+    error_code: int
+    polls_ok: int
+    timeouts: int
+    bad_frames: int
+    disconnects: int
+
+    @property
+    def gone(self) -> bool:
+        """The fingertip was connected and stopped answering."""
+        return bool(self.error_code & FINGERTIP_ERROR_GONE)
+
+    @property
+    def resultant_read_failed(self) -> bool:
+        return bool(self.error_code & FINGERTIP_ERROR_RESULTANT_READ)
+
+    @property
+    def taxel_read_failed(self) -> bool:
+        return bool(self.error_code & FINGERTIP_ERROR_TAXEL_READ)
