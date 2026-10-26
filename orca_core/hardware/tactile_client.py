@@ -40,6 +40,9 @@ from orca_core.hardware.sensing.constants import (
     TACTILE_FIRST_FRAME_TIMEOUT_S,
     TACTILE_STREAM_REARM_MIN_INTERVAL_S,
     TACTILE_STREAM_STALE_REARM_S,
+    ADDR_NUMBERING_COMMAND,
+    ADDR_NUMBERING_STATUS,
+    NUMBERING_STATUS_LENGTH,
 )
 from orca_core.hardware.sensing.taxel_geometry import TaxelGeometry, load_taxel_geometry
 from orca_core.hardware.sensing.types import (
@@ -68,6 +71,20 @@ logger = logging.getLogger(__name__)
 
 class NoSensorsAvailableError(Exception):
     pass
+
+
+class TactileBoardError(RuntimeError):
+    """The sensing board refused or didn't finish a command; ``result`` names why."""
+
+    def __init__(self, result: str, message: str):
+        super().__init__(message)
+        self.result = result
+
+
+BOARD_STATE_BUSY = 1
+BOARD_STATE_DONE = 2
+BOARD_COMMAND_TIMEOUT_S = 2.0
+BOARD_COMMAND_POLL_S = 0.02
 
 
 @dataclass
@@ -328,6 +345,25 @@ class TactileClient:
         """Return ``{finger: taxel_count}`` from the taxel-count register block."""
         data = self._read_register(ADDR_NUM_TAXELS_START, ADDR_NUM_TAXELS_LENGTH)
         return decode_num_taxels(data, self._sensor_id_to_finger)
+
+    def _run_board_command(self, command: bytes, timeout_s: float = BOARD_COMMAND_TIMEOUT_S) -> bytes:
+        """Send a command to the board's command register and return its status block when done."""
+        seq_before = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)[2]
+        try:
+            self._write_register(ADDR_NUMBERING_COMMAND, command, attempts=1)
+        except IOError as e:
+            # A lost ACK fails the write too; the board marks a command it took busy before acking it.
+            st = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
+            if st[0] != BOARD_STATE_BUSY and st[2] == seq_before:
+                raise TactileBoardError("rejected", f"The board didn't take the command: {e}") from e
+        deadline = time.monotonic() + timeout_s
+        while True:
+            st = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
+            if st[0] == BOARD_STATE_DONE and st[2] != seq_before:
+                return bytes(st)
+            if time.monotonic() >= deadline:
+                raise TactileBoardError("timeout", "The board didn't finish the command.")
+            time.sleep(BOARD_COMMAND_POLL_S)
 
     def read_resultant_force(self) -> ResultantForces:
         """Read resultant force from all connected fingertip sensors, applying offsets."""

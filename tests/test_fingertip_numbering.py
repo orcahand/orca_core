@@ -6,6 +6,7 @@ because production and the mock board share the constants.
 """
 import pytest
 
+from orca_core.hardware import tactile_client
 from orca_core.hardware.sensing import tactile_mock
 from orca_core.maintenance import fingertip_numbering as fn
 
@@ -226,7 +227,7 @@ def test_a_lost_ack_counts_when_the_board_ran_the_command(tactile_mock_factory, 
 
 def test_a_lost_ack_while_the_board_is_busy_waits_for_it(tactile_mock_factory, monkeypatch, virtual_clock):
     client, state = _single_tip(tactile_mock_factory)
-    monkeypatch.setattr(fn, "time", virtual_clock)
+    monkeypatch.setattr(tactile_client, "time", virtual_clock)
     _board_reports(monkeypatch, {0x01: SCAN_OK_AT_3, 0x02: bytes([1, 0]) + bytes(14)})
     _lose_set_acks(client, monkeypatch)
     with pytest.raises(fn.FingertipNumberingError) as err:
@@ -253,7 +254,7 @@ def test_board_refusing_the_command_raises(tactile_mock_factory, monkeypatch):
 
 def test_a_board_that_never_finishes_times_out(tactile_mock_factory, monkeypatch, virtual_clock):
     client, state = _single_tip(tactile_mock_factory)
-    monkeypatch.setattr(fn, "time", virtual_clock)
+    monkeypatch.setattr(tactile_client, "time", virtual_clock)
     monkeypatch.setattr(tactile_mock, "_run_numbering_command", lambda state, data: 0)
     with pytest.raises(fn.FingertipNumberingError) as err:
         fn.scan_fingertips(client, timeout_s=0.5)

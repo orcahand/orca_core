@@ -24,16 +24,13 @@ pauses its own polling while a command runs.
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass
 from typing import Optional
 
 from ..hardware.sensing.constants import (
     ADDR_EXT_ID,
-    ADDR_NUMBERING_COMMAND,
     ADDR_NUMBERING_IDENTITY,
     ADDR_NUMBERING_RAW_REPLY,
-    ADDR_NUMBERING_STATUS,
     ADDR_SLOT_IDENTITY_START,
     DEFAULT_FINGER_TO_SENSOR_ID,
     EXT_CAP_FINGERTIP_NUMBERING,
@@ -48,16 +45,12 @@ from ..hardware.sensing.constants import (
     NUMBERING_OP_SET_AT,
     NUMBERING_SET_KEY,
     NUMBERING_SPARE_MODULE,  # noqa: F401  (callers read it from here)
-    NUMBERING_STATUS_LENGTH,
     SLOT_IDENTITY_LENGTH,
     SLOT_IDENTITY_STRIDE,
 )
-from ..hardware.tactile_client import TactileClient
+from ..hardware.tactile_client import TactileBoardError, TactileClient
 
-STATE_BUSY = 1
-STATE_DONE = 2
 COMMAND_TIMEOUT_S = 2.0
-POLL_INTERVAL_S = 0.02
 # Highest bus address the board's scan covers.
 SCAN_LAST_ADDRESS = 8
 
@@ -266,22 +259,10 @@ def default_module(finger: str) -> int:
 
 
 def _run(client: TactileClient, command: bytes, timeout_s: float) -> dict:
-    seq_before = client._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)[2]
     try:
-        client._write_register(ADDR_NUMBERING_COMMAND, command, attempts=1)
-    except IOError as e:
-        # A lost ACK fails the write too; the board marks a command it took busy before acking it.
-        st = client._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
-        if st[0] != STATE_BUSY and st[2] == seq_before:
-            raise FingertipNumberingError("rejected", f"The board didn't take the numbering command: {e}") from e
-    deadline = time.monotonic() + timeout_s
-    while True:
-        st = client._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
-        if st[0] == STATE_DONE and st[2] != seq_before:
-            break
-        if time.monotonic() >= deadline:
-            raise FingertipNumberingError("timeout", "The board didn't finish the numbering command.")
-        time.sleep(POLL_INTERVAL_S)
+        st = client._run_board_command(command, timeout_s)
+    except TactileBoardError as e:
+        raise FingertipNumberingError(e.result, f"Numbering: {e}") from e
     identity = _text(client._read_register(ADDR_NUMBERING_IDENTITY, st[8])) if st[8] else ""
     raw = bytes(client._read_register(ADDR_NUMBERING_RAW_REPLY, st[9])) if st[9] else b""
     return {
