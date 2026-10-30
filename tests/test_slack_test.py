@@ -125,3 +125,54 @@ def test_back_discards_the_previous_joint_and_tests_it_again(spooled):
     assert by["index_pip"]["status"] == "pass" and by["index_pip"]["plus_deg"] == pytest.approx(12.0, abs=0.1)
     assert by["ring_mcp"]["status"] == "fail"
     assert [e["joint"] for e in events if e["event"] == "slack_joint_back"] == ["index_pip"]
+
+
+def test_encoder_jitter_on_a_held_motor_still_ends_the_phase_on_a_stall(spooled, monkeypatch):
+    hand, spools = spooled
+    tick = 2 * math.pi / 4096
+    reads = {"n": 0}
+
+    def jittery(h):
+        reads["n"] += 1
+        return spools.read_pos(h) + (tick if reads["n"] % 2 else -tick)
+
+    monkeypatch.setattr(slack_test, "read_motor_pos_checked", jittery)
+    events = []
+    report = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(), progress_callback=events.append)
+    phases = [e for e in events if e["event"] == "slack_phase_done"]
+    assert len(phases) == 2
+    assert all(p["reason"] == "stall" and p["seconds"] <= 1.0 for p in phases)
+    assert all(p["returned"] in ("arrived", "stall") and p["return_s"] <= 1.0 for p in phases)
+    assert report["results"][0]["total_deg"] == pytest.approx(24.0, abs=0.5)
+
+
+def test_back_from_the_review_tests_the_last_joint_again(spooled):
+    hand, spools = spooled
+    reviews = iter([slack_test.HOLD_BACK, True])
+    events, held = [], []
+    report = run_slack_test(hand, joints=["index_pip", "ring_mcp"], clock=_FakeClock(),
+                            progress_callback=events.append,
+                            hold_callback=lambda j: held.append(j) or True,
+                            review_callback=lambda: next(reviews))
+    assert held == ["index_pip", "ring_mcp", "ring_mcp"]
+    assert [e["joint"] for e in events if e["event"] == "slack_joint_back"] == ["ring_mcp"]
+    assert {r["joint"]: r["status"] for r in report["results"]} == {"index_pip": "pass", "ring_mcp": "fail"}
+
+
+def test_a_spool_that_breaks_away_late_is_still_measured(spooled, monkeypatch):
+    hand, spools = spooled
+    clock = _FakeClock()
+    moved_at = {}
+
+    def late(h):
+        # Each new goal sits still for 1.5 s before the spool runs through its slack.
+        key = tuple(sorted(spools.goal.items()))
+        since = moved_at.setdefault(key, clock.now())
+        if clock.now() - since >= 1.5:
+            return spools.read_pos(h)
+        return np.array([spools.start[m] for m in h.config.motor_ids])
+
+    monkeypatch.setattr(slack_test, "read_motor_pos_checked", late)
+    (r,) = run_slack_test(hand, joints=["index_pip"], clock=clock)["results"]
+    assert r["plus_deg"] == pytest.approx(12.0, abs=0.1)
+    assert r["minus_deg"] == pytest.approx(12.0, abs=0.1)
