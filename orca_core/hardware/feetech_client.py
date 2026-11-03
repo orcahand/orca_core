@@ -240,7 +240,7 @@ class FeetechClient(MotorClient):
     # hand needs about 800 mA to reach its hardstops, and 900 leaves margin.
     default_max_current_ma = 900
     default_calibration_current_ma = 900
-    # At 60 mA these losses can keep a spool from starting at all; 120 mA starts it both ways.
+    # Provisional: 60 mA often fails to start a spool, and 120 mA can still miss small slack.
     slack_test_current_ma = 120
     sweep_hold_current_ma = 400
     sweep_pose_current_ma = 600

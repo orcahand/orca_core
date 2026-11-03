@@ -263,7 +263,9 @@ All hand-specific settings are in `config.yaml`:
   `default_max_current_ma` / `default_calibration_current_ma` class attributes on its client
   (Dynamixel 300/300, Feetech 900/900). A number pins an override for one hand. Resolution
   happens in `load_hand()` when the family is detected or pinned, otherwise at connect, so
-  read these fields after `connect()`.
+  read these fields after `connect()`. Finger calibration drives at each motor's own ceiling
+  whatever `calibration_current` says, so a lower number does not cap it; the field sets the
+  wrist's default and the re-drive ladder, which never drops below that ceiling.
 - `joint_motor_travel_v21:` / `joint_motor_travel:` - motor-shaft travel between each joint's
   hardstops, in degrees, **keyed by joint name**. **v2.1 hardware only**: on v2.0 or an unknown
   version `expected_motor_travel_deg()` is `None`, so calibration is one plain pass (no travel
@@ -275,13 +277,14 @@ All hand-specific settings are in `config.yaml`:
   (`calibration_travel_retries`, default 3). With nothing pinned each re-drive adds 50 mA
   (`CALIBRATION_RETRY_STEP_MA`; 300 → 350 → 400 → 450 on Dynamixel); pinning `calibration_max_current`
   and/or `calibration_retry_current` switches to an even ramp up to the retry current, capped at
-  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. The v2 models ship one shared v2.1 baseline (the spool
+  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. A re-drive runs at this ladder or the motor's ceiling, whichever is higher, so the ladder only matters above the ceiling. The v2 models ship one shared v2.1 baseline (the spool
   geometry is the same on every hand), measured with `scripts/measure_travel.py` on a freshly
   tensioned hand; guided tensioning (`scripts/guided_tension.py`) scores slack against it too.
 - `calibration_current_v21:` - **v2.1 only**: per motor family, a calibration current per joint
   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
   The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
+  These values only feed the re-drive ladder: they do not set the first pass's drive current.
 - `guided_tension_currents:` - **overrides only** for guided tensioning, per motor family (CLI and
   console): `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
   `--hold-current`), and `tension`, the limit for the pull and for fingers frozen during a range

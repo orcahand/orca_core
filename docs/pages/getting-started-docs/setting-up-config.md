@@ -173,9 +173,9 @@ calibration_threshold: 0.01
 
 **What should be changed?**
 
-`calibration_current: default` drives the joints to their hardstops at the motor family's own calibration current (300 mA on Dynamixel hands, 900 mA on Feetech hands). A number pins a different value; `wrist_calibration_current` follows it unless set.
+Finger joints are driven onto their hardstops at each motor's own current ceiling, because a lower cap can stall a joint short of its stop and record that as the stop. `calibration_current` does not cap this drive. `calibration_current: default` is the motor family's own value (300 mA on Dynamixel hands, 900 mA on Feetech hands), and a number pins a different one. It sets the wrist's current (`wrist_calibration_current` follows it unless set) and where the re-drive ladder starts.
 
-On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). The packaged models calibrate a v2.1 Dynamixel hand's abductions at 300 mA and its MCPs and PIPs at 500 mA; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. Re-drives step up from the joint's own group current.
+On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). The packaged models list 300 mA for a v2.1 Dynamixel hand's abductions and 500 mA for its MCPs and PIPs; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. These values only set where a joint's re-drive ladder starts, and a re-drive never drops below the motor's ceiling.
 
 `guided_tension_currents` overrides guided tensioning's currents per motor family, used by both `scripts/guided_tension.py` and the console. `hold` is the current each joint group (`abd`, `mcp`, `pip`) yields at while you move it through its range; the defaults are 200/140/100 mA on Dynamixel and 380/320/280 mA on Feetech. A joint named under `hold` keeps its own current over its group's and over `--hold-current`; the touch hands hold `thumb_mcp` at 100 mA on Dynamixel. `tension` limits the pull and the fingers frozen during a range check, and follows `max_current` unless set. While you ratchet the spools, the fingers hold at each motor's own current ceiling.
 
@@ -239,25 +239,22 @@ baseline. An over-tensioned tendon makes the drive stall *before* the hardstop,
 so the two limits come out too close together and every angle derived from them
 is wrong. When the measurement falls more than `calibration_travel_margin`
 (a fraction, default `0.25`) below the baseline, that joint alone is re-driven,
-at a higher current when `calibration_max_current` grants headroom, then the
+at the motor's ceiling or the re-drive ladder below, whichever is higher, then the
 nominal calibration current is restored for the rest of the run. Travel *above* the baseline is reported but never re-driven —
 more current cannot shorten a span; that points at a slipped tendon or a stale
 baseline.
 
 - `calibration_travel_margin` — accepted fractional deviation. Default `0.25`.
-- `calibration_max_current` — ceiling (mA) the re-drive may use. Omit it and
-  every re-drive repeats the sweep at `calibration_current`, which still helps
-  a joint that only needed a second pass but gives no extra torque. Set it
-  above `calibration_current` to let the re-drive escalate. Never below the
-  motor family's protection limit is enforced by the client.
+- `calibration_max_current` — cap (mA) on the re-drive ladder. A re-drive never
+  runs below the motor's ceiling, so this only matters if the ladder climbs above it.
+  Never below the motor family's protection limit is enforced by the client.
 - `calibration_retry_current` — current (mA) the last re-drive aims for. Must
   exceed `calibration_current`. Omit it and it defaults to 1.5x
   `calibration_current`. Only reached when `calibration_max_current` allows it.
 - `calibration_travel_retries` — how many re-drives to attempt. Default `3`.
-  With more than one, the current ramps evenly from `calibration_current` up to
-  the target, capped by `calibration_max_current`, so a joint that only needs
-  a nudge is not driven at the full retry current on the first try. Set `0` to
-  report the shortfall and never re-drive.
+  With more than one, the ladder ramps evenly from `calibration_current` up to
+  the target, capped by `calibration_max_current`. Set `0` to report the shortfall
+  and never re-drive.
 
 **What should be changed?**
 
