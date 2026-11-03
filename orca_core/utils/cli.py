@@ -472,6 +472,8 @@ def print_calibration_progress(event: dict) -> None:
             )
             print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
+    elif name == "drive_currents_measured":
+        print(event["table"])
     elif name == "calibration_aborted":
         print("Calibration aborted.")
     elif name == "cleanup_failed":

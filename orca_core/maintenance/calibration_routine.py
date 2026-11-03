@@ -249,6 +249,7 @@ def run_calibration(
             ``wrist_skipped``, ``motor_faulted``, ``sweep_no_motion``,
             ``travel_checked``,
             ``travel_baseline_missing``, ``travel_excess``,
+            ``drive_currents_measured`` (``table``),
             ``travel_retry_started``, ``travel_retry_succeeded``,
             ``travel_retry_exhausted``, ``travel_retry_disabled``,
             ``travel_retry_unavailable``,
@@ -469,12 +470,12 @@ def _drive_current_cell(
     return f"{now:>7.0f}{delta:>+7.0f}{100 * fraction:>+6.0f}%"
 
 
-def _log_drive_current_table(
+def _drive_current_table(
     hand: "OrcaHand",
     measured: Dict[str, Dict[str, float]],
     previous: Dict[str, Dict[str, float]] | None = None,
-) -> None:
-    """Log the mean current each joint drew onto its stops, with the change
+) -> str:
+    """The mean current each joint drew onto its stops, with the change
     against the previous run, grouped by finger.
 
     Informational: a joint well above its siblings, or one that has climbed
@@ -502,7 +503,7 @@ def _log_drive_current_table(
                 + "   "
                 + _drive_current_cell(per_direction.get(EXTEND), was.get(EXTEND))
             )
-    logger.info("\n".join(lines))
+    return "\n".join(lines)
 
 
 def _motor_temperature(hand: "OrcaHand", motor_id: int) -> float | None:
@@ -1490,8 +1491,9 @@ def _drive_calibration(
         )
 
     if drive_current_measured:
-        _log_drive_current_table(hand, drive_current_measured,
-                                 previous_drive_currents)
+        table = _drive_current_table(hand, drive_current_measured, previous_drive_currents)
+        logger.info(table)
+        _emit(progress_callback, "drive_currents_measured", table=table)
 
     _emit(
         progress_callback,

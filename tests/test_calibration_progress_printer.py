@@ -21,6 +21,7 @@ SAMPLE = dict(
     attempt=1, attempts=1, reason="degenerate", boosted_joints={}, motor_travel_deg={},
     rom=[-10.0, 90.0], span_deg=100.0, deviation_deg=-2.5, flex_count=100,
     extend_count=5000, stage=1, stages=2, limit_deg=180.0, pwm_fraction=0.75,
+    table="mean current drawn",
 )
 
 # Progress markers with no information of their own; a GUI uses them to

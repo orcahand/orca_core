@@ -7,9 +7,11 @@ nothing over between rounds."""
 
 import dataclasses
 import glob
+import importlib.util
 import math
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -879,3 +881,26 @@ def test_a_latched_motor_is_reported_and_holds_again_after_its_reboot(
     )
     assert not result.completed
     assert all(m["fault"] is None for m in result.spreads)
+
+
+def _guided_tension_script():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "guided_tension.py"
+    spec = importlib.util.spec_from_file_location("guided_tension_script", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_live_line_shows_the_stages_joints_on_one_row():
+    script = _guided_tension_script()
+    motors = [{"joint": f"joint_{i}", "scoring": "fraction", "fraction": 0.5, "status": "low"} for i in range(16)]
+    event = {"passed": 1, "scored": 16, "motors": motors}
+
+    stage = ["joint_9", "joint_10", "joint_11", "joint_12"]
+    line = script._live_line(event, 80, stage)
+    assert len(script._ANSI_COLOUR.sub("", line)) < 80
+    assert all(f"{joint}:" in line for joint in stage) and "joint_0:" not in line and "..." not in line
+
+    every_joint = [motor["joint"] for motor in motors]
+    line = script._live_line(event, 80, every_joint)
+    assert len(script._ANSI_COLOUR.sub("", line)) < 80 and line.endswith("...")

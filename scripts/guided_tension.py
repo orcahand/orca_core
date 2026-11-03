@@ -6,6 +6,8 @@ See ``orca_core/maintenance/guided_tension.py`` for the protocol.
 """
 
 import argparse
+import re
+import shutil
 import sys
 import threading
 
@@ -22,7 +24,9 @@ from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_fr
 
 _COLOURS = {"pass": "\033[92m", "unconfirmed": "\033[96m", "slack": "\033[91m", "partial": "\033[93m",
             "low": "\033[91m", "unscored": "\033[90m", "fault": "\033[95m"}
+_ANSI_COLOUR = re.compile(r"\033\[\d+m")
 _live = threading.Event()
+_stage_joints: list[str] = []
 
 
 def _bar(motor: dict) -> str:
@@ -37,11 +41,28 @@ def _bar(motor: dict) -> str:
     return f"{_COLOURS[motor['status']]}{motor['joint']}:{text}{mark}\033[0m"
 
 
+def _live_line(event: dict, columns: int, joints: list[str]) -> str:
+    """The score and the joints being moved, on one terminal row: a line that
+    wraps cannot be rewritten in place."""
+    line = f"{event['passed']}/{event['scored']} "
+    width = len(line)
+    for motor in event["motors"]:
+        if motor["joint"] not in joints:
+            continue
+        bar = _bar(motor)
+        bar_width = len(_ANSI_COLOUR.sub("", bar)) + 1
+        if width + bar_width >= columns - 4:
+            return line + " ..."
+        line += f" {bar}"
+        width += bar_width
+    return line
+
+
 def _print_progress(event: dict) -> None:
     kind = event["event"]
     if kind == "spread" and _live.is_set():
-        line = " ".join(_bar(m) for m in event["motors"])
-        sys.stdout.write(f"\r\033[K{event['passed']}/{event['scored']}  {line}")
+        line = _live_line(event, shutil.get_terminal_size().columns, _stage_joints)
+        sys.stdout.write(f"\r\033[K{line}")
         sys.stdout.flush()
     elif kind == "score":
         print()
@@ -75,6 +96,7 @@ def _prompt(prompt: dict) -> str:
               f"through their full range"
               + (", holding each end still for a moment and reaching it twice" if "pass_slack_deg" in prompt else "")
               + ", then press Enter.")
+        _stage_joints[:] = prompt['stage']['joints']
         _live.set()
     elif action == "tension":
         print(f"Motors pulled at {prompt['tension_current']:.0f} mA and are now holding. Take up "
