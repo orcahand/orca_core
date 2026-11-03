@@ -226,6 +226,22 @@ def mock_hand(mock_config_dir):
 
 
 @pytest.fixture
+def connected_feetech_mock_hand(mock_config_dir):
+    from orca_core.utils import update_yaml
+    from orca_core.utils.cli import create_hand
+
+    config_path = str(mock_config_dir / "config.yaml")
+    update_yaml(config_path, "motor_type", "feetech")
+    hand = create_hand(config_path, use_mock=True)
+    success, msg = hand.connect()
+    assert success, f"Failed to connect mock hand: {msg}"
+    try:
+        yield hand
+    finally:
+        hand.disconnect()
+
+
+@pytest.fixture
 def connected_mock_hand(mock_config_dir):
     from orca_core import MockOrcaHand
 

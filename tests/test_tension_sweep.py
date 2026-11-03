@@ -64,9 +64,7 @@ class _Tendon:
         return _Read(self.read_pos(hand), np.array(cur))
 
 
-@pytest.fixture()
-def swept(connected_mock_hand, monkeypatch):
-    hand = connected_mock_hand
+def _with_tendons(hand, monkeypatch):
     motor = hand.config.joint_to_motor_map
     tendon = _Tendon(hand, {motor["index_pip"]: 120.0, motor["ring_pip"]: 60.0},
                      {motor["index_pip"]: 0.0, motor["ring_pip"]: 20.0})
@@ -79,6 +77,31 @@ def swept(connected_mock_hand, monkeypatch):
     monkeypatch.setattr(tension_sweep, "_read_state_checked", tendon.read_state)
     monkeypatch.setattr(tension_sweep, "move_to_pose", lambda *a, **k: {})
     return hand, tendon
+
+
+@pytest.fixture()
+def swept(connected_mock_hand, monkeypatch):
+    return _with_tendons(connected_mock_hand, monkeypatch)
+
+
+def _sweep_currents(report):
+    settings = report["settings"]
+    return settings["hold_current_ma"], settings["pose_current_ma"], settings["sweep_current_ma"]
+
+
+def test_the_sweep_currents_default_to_the_motor_familys_own(connected_mock_hand, connected_feetech_mock_hand, monkeypatch):
+    for hand, expected in ((connected_mock_hand, (200.0, 350.0, 300.0)), (connected_feetech_mock_hand, (400.0, 600.0, 600.0))):
+        hand, _ = _with_tendons(hand, monkeypatch)
+        report = run_tension_sweep(hand, joints=["index_pip"], clock=_FakeClock(),
+                                   settings=SweepSettings(speed_deg_s=60.0))
+        assert _sweep_currents(report) == expected
+
+
+def test_a_chosen_sweep_current_wins_over_the_familys_own(connected_feetech_mock_hand, monkeypatch):
+    hand, _ = _with_tendons(connected_feetech_mock_hand, monkeypatch)
+    report = run_tension_sweep(hand, joints=["index_pip"], clock=_FakeClock(),
+                               settings=SweepSettings(speed_deg_s=60.0, sweep_current_ma=450.0))
+    assert _sweep_currents(report) == (400.0, 600.0, 450.0)
 
 
 def test_the_sweep_records_the_load_level_and_the_dead_band(swept):

@@ -325,6 +325,18 @@ class MotorClient(ABC):
     default_calibration_current_ma: ClassVar[int]
     """Calibration drive current in mA for a config whose ``calibration_current`` is ``default``."""
 
+    slack_test_current_ma: ClassVar[int]
+    """Current in mA that winds a spool through its slack against a held joint in the slack test."""
+
+    sweep_hold_current_ma: ClassVar[int]
+    """Current limit in mA for the motors a tension sweep is not moving."""
+
+    sweep_pose_current_ma: ClassVar[int]
+    """Current limit in mA for driving joints into position before and between tension sweeps."""
+
+    sweep_current_ma: ClassVar[int]
+    """Current limit in mA for the motor a tension sweep is walking from limit to limit."""
+
     hardware_error_bits: ClassVar["tuple[tuple[int, str], ...]"] = (
         (0x01, "input_voltage"),
         (0x04, "overheating"),

@@ -67,9 +67,10 @@ OVER_MARGIN_DEG = 5.0
 
 @dataclass(frozen=True)
 class SlackTestSettings:
-    """Currents in mA, angles in motor degrees, times in seconds."""
+    """Currents in mA, angles in motor degrees, times in seconds. A current left
+    at ``None`` is the connected motor family's own."""
 
-    current_ma: float = 60.0  # winds the spool through its slack against a held joint
+    current_ma: Optional[float] = None  # winds the spool through its slack against a held joint
     max_free_deg: float = 180.0  # more free rotation than this fails the joint
     stall_deg_per_s: float = 2.0  # slower than this for stall_hold_s is a stall
     stall_hold_s: float = 0.5
@@ -78,8 +79,14 @@ class SlackTestSettings:
     sample_period_s: float = 0.05
     return_timeout_s: float = 4.0
 
+    def with_family_currents(self, client) -> "SlackTestSettings":
+        """These settings with an unset current filled in from a motor client or its class."""
+        if self.current_ma is not None:
+            return self
+        return dataclasses.replace(self, current_ma=float(client.slack_test_current_ma))
+
     def validate(self) -> None:
-        if self.current_ma <= 0:
+        if self.current_ma is not None and self.current_ma <= 0:
             raise ValueError("current_ma must be positive")
         if not 0 < self.max_free_deg <= 180.0:
             raise ValueError("max_free_deg must be within (0, 180]")
@@ -164,6 +171,7 @@ def run_slack_test(
         ValueError: On inconsistent settings or no finger motor to test.
         InterruptedError: If ``should_stop`` fires.
     """
+    settings = settings.with_family_currents(hand.motor_client)
     settings.validate()
     if should_stop is None:
         should_stop = lambda: False  # noqa: E731

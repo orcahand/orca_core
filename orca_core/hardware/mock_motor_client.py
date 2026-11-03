@@ -48,6 +48,10 @@ FAMILY_ATTRIBUTES = (
     "max_current_ma",
     "default_max_current_ma",
     "default_calibration_current_ma",
+    "slack_test_current_ma",
+    "sweep_hold_current_ma",
+    "sweep_pose_current_ma",
+    "sweep_current_ma",
 )
 
 

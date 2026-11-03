@@ -250,6 +250,10 @@ class DynamixelClient(MotorClient):
     # tensioned hand to its hardstops; the packaged hands have always run here.
     default_max_current_ma = 300
     default_calibration_current_ma = 300
+    slack_test_current_ma = 60
+    sweep_hold_current_ma = 200
+    sweep_pose_current_ma = 350
+    sweep_current_ma = 300
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
     supports_reboot = True

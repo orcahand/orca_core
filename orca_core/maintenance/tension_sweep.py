@@ -67,14 +67,19 @@ EDGE_FRACTION = 0.2
 DEADBAND_CONFIRM = 3
 
 
+def _or_family(value: Optional[float], family_ma: int) -> float:
+    return float(family_ma) if value is None else value
+
+
 @dataclass(frozen=True)
 class SweepSettings:
-    """Currents in mA, angles in motor degrees, speeds in motor degrees per second."""
+    """Currents in mA, angles in motor degrees, speeds in motor degrees per second.
+    A current left at ``None`` is the connected motor family's own."""
 
-    hold_current_ma: float = 200.0  # every motor not being swept
-    pose_current_ma: float = 350.0  # driving the swept joints to mid-range first
+    hold_current_ma: Optional[float] = None  # every motor not being swept
+    pose_current_ma: Optional[float] = None  # driving the swept joints to mid-range first
     pose_tolerance_deg: float = 10.0
-    sweep_current_ma: float = 300.0  # the limit the swept motor may draw
+    sweep_current_ma: Optional[float] = None  # the limit the swept motor may draw
     speed_deg_s: float = 30.0
     sample_period_s: float = 0.05
     limit_margin_deg: float = 2.0  # the sweep turns around this far before each limit
@@ -86,9 +91,19 @@ class SweepSettings:
     stall_hold_s: float = 0.5  # ... for this long = at the stop, done
     park_margin_deg: float = 5.0  # a parked joint stops this far inside its limit
 
+    def with_family_currents(self, client) -> "SweepSettings":
+        """These settings with each unset current filled in from a motor client or its class."""
+        return dataclasses.replace(
+            self,
+            hold_current_ma=_or_family(self.hold_current_ma, client.sweep_hold_current_ma),
+            pose_current_ma=_or_family(self.pose_current_ma, client.sweep_pose_current_ma),
+            sweep_current_ma=_or_family(self.sweep_current_ma, client.sweep_current_ma),
+        )
+
     def validate(self) -> None:
         for name in ("hold_current_ma", "pose_current_ma", "sweep_current_ma", "speed_deg_s"):
-            if getattr(self, name) <= 0:
+            value = getattr(self, name)
+            if value is not None and value <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.sample_period_s <= 0:
             raise ValueError("sample_period_s must be positive")
@@ -217,6 +232,7 @@ def run_tension_sweep(
             uncalibrated hand.
         InterruptedError: If ``should_stop`` fires.
     """
+    settings = settings.with_family_currents(hand.motor_client)
     settings.validate()
     if repeats < 1:
         raise ValueError("repeats must be at least 1")

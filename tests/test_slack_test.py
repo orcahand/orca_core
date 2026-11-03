@@ -51,15 +51,38 @@ class _Spools:
         return np.array(out)
 
 
-@pytest.fixture()
-def spooled(connected_mock_hand, monkeypatch):
-    hand = connected_mock_hand
+def _with_spools(hand, monkeypatch):
     motor = hand.config.joint_to_motor_map
     spools = _Spools(hand, {motor["index_pip"]: 12.0, motor["ring_mcp"]: 400.0})
     monkeypatch.setattr(hand, "write_motor_pos", spools.write_motor_pos)
     monkeypatch.setattr(hand, "set_max_current", spools.set_max_current)
     monkeypatch.setattr(slack_test, "read_motor_pos_checked", spools.read_pos)
     return hand, spools
+
+
+@pytest.fixture()
+def spooled(connected_mock_hand, monkeypatch):
+    return _with_spools(connected_mock_hand, monkeypatch)
+
+
+def test_the_winding_current_defaults_to_the_motor_familys_own(connected_mock_hand, connected_feetech_mock_hand, monkeypatch):
+    for hand, expected in ((connected_mock_hand, 60.0), (connected_feetech_mock_hand, 120.0)):
+        hand, spools = _with_spools(hand, monkeypatch)
+        limits = []
+        monkeypatch.setattr(hand, "set_max_current", limits.append)
+        report = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock())
+        assert report["settings"]["current_ma"] == expected
+        assert limits[0] == [expected] * len(hand.config.motor_ids)
+
+
+def test_a_chosen_winding_current_wins_over_the_familys_own(connected_feetech_mock_hand, monkeypatch):
+    hand, _ = _with_spools(connected_feetech_mock_hand, monkeypatch)
+    limits = []
+    monkeypatch.setattr(hand, "set_max_current", limits.append)
+    report = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(),
+                            settings=SlackTestSettings(current_ma=80.0))
+    assert report["settings"]["current_ma"] == 80.0
+    assert limits[0] == [80.0] * len(hand.config.motor_ids)
 
 
 def test_held_joints_report_their_free_rotation_and_too_much_fails(spooled):
