@@ -56,7 +56,13 @@ from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
 from .motor_reads import read_motor_pos_checked
 from .setup_file import read_section, write_section
-from .tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, pull_tendons
+from .tensioning import (
+    TENSION_EXTRA_DEG,
+    TENSION_OFFSET_DEG,
+    pull_tendons,
+    settle_at_rest,
+    uncapped_currents,
+)
 
 if TYPE_CHECKING:
     from ..hand_config import OrcaHandConfig
@@ -533,8 +539,8 @@ class _FaultWatch:
 
 class _FaultSweeper(threading.Thread):
     """Re-reads the error register while no sampler runs (the tension step):
-    a motor stalled at the tension current latches there, and a reboot from
-    the front-end clears there."""
+    a motor overloaded during the step latches there, and a reboot from the
+    front-end clears there."""
 
     def __init__(self, watch: _FaultWatch, motor_ids: Sequence[int]):
         super().__init__(daemon=True, name="guided-tension-fault-sweep")
@@ -863,8 +869,9 @@ def run_guided_tension(
       → ``Next``, or ``Score`` on the round's last stage (``Back`` to re-pose)
     - ``score``: carries the round's score. → ``Finish`` at 100 %, else
       ``Tension`` / ``Finish anyway`` (``Back`` to the last stage).
-    - ``tension``: motors hold at ``tension_current``; take up the slack with
-      the ratchet tool, without overtensioning. → ``Done`` (``Pull more``
+    - ``tension``: motors pull at ``tension_current``, then hold at their own
+      current ceiling; take up the slack with the ratchet tool, without
+      overtensioning. → ``Done`` (``Pull more``
       pulls ``tension_extra_deg`` further and asks again; scores are untouched)
 
     Every prompt also offers ``goto:<stage key>`` for each other stage, so the
@@ -1189,10 +1196,28 @@ def run_guided_tension(
 
             tension_ma = _tension_ma()
             pulled = _resolve(tension_offset_deg)
-            hand.set_max_current(tension_ma)
             _emit(progress_callback, "step", step="tension", round=round_no)
-            # Also with no pull: a jump here can arrive with torque off, and the motors must hold.
-            goals = pull_tendons(hand, motor_ids, pulled, should_stop=should_stop)
+
+            def pull_then_hold(offset, start):
+                """Pull at ``tension_ma``, settle, hold the reached pose, then uncap.
+
+                The ratcheting hold runs at each motor's own ceiling: at its goal
+                a motor draws nothing, so the ceiling only binds while the
+                operator pushes, and that is the whole budget it has to refuse
+                being turned with. The goal is re-baselined onto the position
+                actually reached first, because a standing error under an
+                uncapped ceiling sits there drawing it indefinitely.
+                """
+                hand.set_max_current(tension_ma)
+                if offset:
+                    pull_tendons(hand, motor_ids, offset, start=start, should_stop=should_stop)
+                # Also with no pull: a jump here can arrive with torque off,
+                # and the motors must hold.
+                reached = settle_at_rest(hand, motor_ids, should_stop=should_stop)
+                hand.set_max_current(uncapped_currents(hand))
+                return reached
+
+            goals = pull_then_hold(pulled, None)
             watch.sweep(motor_ids)
             sweeper = _FaultSweeper(watch, motor_ids)
             sweeper.start()
@@ -1211,9 +1236,7 @@ def run_guided_tension(
                     if answer != PULL_MORE:
                         break
                     extra = _resolve(tension_extra_deg)
-                    goals = pull_tendons(
-                        hand, motor_ids, extra, start=goals, should_stop=should_stop
-                    )
+                    goals = pull_then_hold(extra, goals)
                     pulled += extra
             finally:
                 sweeper.stop()

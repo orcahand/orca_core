@@ -4,23 +4,16 @@ import argparse
 import time
 
 import numpy as np
-import yaml
 
+from orca_core.utils import ease_in_out, linear_interp
 from orca_core.utils.cli import (
     add_hand_arguments,
+    check_recording_matches_hand,
     connect_hand,
     create_hand_from_args,
-    resolve_input_path,
+    load_recording,
     shutdown_hand,
 )
-
-
-def linear_interp(t: float) -> float:
-    return t
-
-
-def ease_in_out(t: float) -> float:
-    return 0.5 * (1 - np.cos(np.pi * t))
 
 
 def main() -> int:
@@ -42,12 +35,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    replay_path = resolve_input_path(args.replay_file)
-    try:
-        replay_data = yaml.safe_load(replay_path.read_text(encoding="utf-8")) or {}
-    except FileNotFoundError:
-        print(f"Replay file not found: {replay_path}")
+    recording = load_recording(args.replay_file)
+    if recording is None:
         return 1
+    replay_path, replay_data = recording
 
     waypoints = replay_data.get("waypoints", [])
     if not waypoints:
@@ -59,19 +50,9 @@ def main() -> int:
     try:
         connect_hand(hand)
         hand.init_joints()
-
-        expected_joint_ids = metadata.get("joint_ids")
-        if expected_joint_ids is not None and expected_joint_ids != hand.config.joint_ids:
-            raise ValueError("Replay joint order does not match the connected hand configuration.")
-
-        # Left and right hands share a joint order, so only hand_type catches a
-        # sequence recorded on the mirrored hand.
-        if not args.force and metadata.get("hand_type") not in (None, hand.config.type):
-            raise ValueError(
-                f"Replay was recorded for hand_type={metadata['hand_type']}, "
-                f"but the connected config is {hand.config.type}. Pass --force to "
-                "replay it anyway."
-            )
+        check_recording_matches_hand(
+            metadata, hand, force=args.force, force_flag="--force"
+        )
 
         interp_func = linear_interp if args.mode == "linear" else ease_in_out
         wrist_idx = hand.config.joint_ids.index("wrist")

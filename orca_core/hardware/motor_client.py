@@ -8,8 +8,10 @@
 
 """Abstract base class for motor communication clients."""
 
+import atexit
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import ClassVar, NamedTuple, Optional, Sequence
@@ -18,6 +20,10 @@ import numpy as np
 from ..constants import CONTROL_MODES
 
 logger = logging.getLogger(__name__)
+
+
+_atexit_registered = False
+_atexit_lock = threading.Lock()
 
 
 class MotorError(Exception):
@@ -136,8 +142,9 @@ class MotorClient(ABC):
     # How close to its goal a motor must be to count as arrived, in radians.
     # A moving flag alone is not enough: a servo stalled against a load
     # reports stopped while short of its target, and a caller that advanced
-    # on that would desynchronise a chain mid-motion.
-    arrival_tolerance_rad: ClassVar[float] = 0.02
+    # on that would desynchronise a chain mid-motion. Servos holding against
+    # tendon load sit up to about 0.045 rad off their goal, so this sits above that.
+    arrival_tolerance_rad: ClassVar[float] = 0.06
 
     def _flush_input_buffer(self):
         """Discards stale RX bytes so a late reply can't be misread as the next response."""
@@ -149,16 +156,21 @@ class MotorClient(ABC):
         except Exception:
             pass
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # A new motor family gets its own registry; subclasses of an existing
-        # family share theirs, so that family's exit cleanup still sees them.
-        if not any("OPEN_CLIENTS" in base.__dict__ for base in cls.__mro__):
-            cls.OPEN_CLIENTS = set()
+    OPEN_CLIENTS: ClassVar[set] = set()
+    """Connected clients of every family, so exit cleanup only touches live ports."""
+
+    def _register_open(self) -> None:
+        """Add this client to the exit-cleanup registry, hooking atexit on first use."""
+        global _atexit_registered
+        self.OPEN_CLIENTS.add(self)
+        with _atexit_lock:
+            if not _atexit_registered:
+                _atexit_registered = True
+                atexit.register(MotorClient.cleanup_open_clients)
 
     @classmethod
     def cleanup_open_clients(cls):
-        """Disconnect every open client of this family at interpreter exit.
+        """Disconnect every open client at interpreter exit.
 
         Each client is handled independently so one failing client cannot
         prevent torque-disable of the others.
@@ -166,7 +178,7 @@ class MotorClient(ABC):
         for client in list(cls.OPEN_CLIENTS):
             try:
                 if client.port_handler.is_using:
-                    logging.warning("Forcing %s to close.", cls.__name__)
+                    logging.warning("Forcing %s to close.", type(client).__name__)
                 client.port_handler.is_using = False
                 client.disconnect()
             except Exception:
@@ -174,6 +186,23 @@ class MotorClient(ABC):
                     "Exit cleanup failed for client on %s",
                     getattr(client, "port_name", "<unknown>"),
                 )
+
+    def _apply_port_options(self) -> None:
+        """Advisory-lock the open serial port and enable low latency mode, best-effort."""
+        # Exclusive-mode openers elsewhere are rejected while we hold the lock.
+        try:
+            import fcntl
+            fcntl.flock(self.port_handler.ser.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, AttributeError, OSError):
+            pass  # Windows (no fcntl), mocked ports, or lock unavailable
+
+        if hasattr(self.port_handler, 'ser') and hasattr(self.port_handler.ser, 'set_low_latency_mode'):
+            try:
+                self.port_handler.ser.set_low_latency_mode(True)
+                logging.info('Enabled low latency mode for USB serial')
+            except Exception:
+                pass  # Not critical if it fails
 
     # ----- Motor-family description ----------------------------------------
 
@@ -409,6 +438,12 @@ class MotorClient(ABC):
     actually has.
     """
 
+    def _config_register(self, key: str):
+        for entry in self.config_registers:
+            if entry.key == key:
+                return entry
+        raise ValueError(f"{type(self).__name__} has no config register {key!r}")
+
     def read_config_register(self, motor_id: int, key: str) -> "int | None":
         """Raw value of one declared configuration register, or None.
 
@@ -488,6 +523,137 @@ class MotorClient(ABC):
         """
         return {int(mid): self.read_hardware_error(mid) for mid in motor_ids}
 
+    CANONICAL_FAULTS: ClassVar["dict[str, str]"] = {
+        "input_voltage": "input_voltage",
+        "overheating": "thermal",
+        "overload": "excess_load",
+        "overcurrent": "excess_load",
+        "motor_encoder": "encoder",
+        "angle_sensor": "encoder",
+        "electrical_shock": "electrical_shock",
+    }
+    """Each family's decoded bit name mapped to one cross-family condition.
+
+    The bit tables disagree on both names and positions - one family calls an
+    encoder fault ``angle_sensor`` and puts it on 0x02, the other calls it
+    ``motor_encoder`` on 0x08, and 0x08 is an overcurrent on the first. The
+    two current-ish conditions collapse into ``excess_load`` on purpose: a
+    stalled tendon is one physical event, and a caller deciding what to do
+    about it should not have to know which bit a vendor chose to raise.
+    """
+
+    @classmethod
+    def canonical_faults(cls, value: "int | None") -> "set[str]":
+        """The cross-family conditions a raw error byte stands for."""
+        names = cls.decode_hardware_error(value) or []
+        return {cls.CANONICAL_FAULTS[name] for name in names
+                if name in cls.CANONICAL_FAULTS}
+
+    @classmethod
+    def split_faults(
+        cls, value: "int | None", stop_mask: "int | None"
+    ) -> "tuple[set[str], set[str]]":
+        """``(stopped, flagged)`` conditions, as cross-family names.
+
+        The split has to be made on the raw bits, not on the canonical
+        conditions: one family raises overcurrent and overload as separate
+        bits that both mean ``excess_load``, and stops the motor for only one
+        of them. Asking whether ``excess_load`` is in the mask would answer
+        yes and recover a motor that never stopped.
+
+        With no mask readable nothing is reported as stopped - better to
+        under-react than to reboot a motor that is still driving.
+        """
+        if not value:
+            return set(), set()
+        mask = stop_mask or 0
+        return (cls.canonical_faults(value & mask),
+                cls.canonical_faults(value & ~mask))
+
+    def motors_unable_to_move(self) -> "set[int]":
+        """Motors that cannot reach a goal, so waiting on them is pointless.
+
+        A motor clamped off to cool, or carrying a latched fault, will never
+        arrive. Waiting for it burns the whole settle timeout at every
+        waypoint, which stalls playback for the entire hand because of one
+        motor - the hand looks frozen when sixteen of seventeen are fine.
+
+        Known state only: no bus traffic.
+        """
+        return set(self._held_off) | {int(m) for m in self._hardware_alerts}
+
+    def hold_motor_off(self, motor_id: int) -> bool:
+        """Make one motor unable to produce torque, and keep it that way.
+
+        Written as a goal current of zero rather than a torque disable,
+        because a family whose thermal protection re-energizes the motor a
+        degree below its limit will undo a torque disable within the second.
+        A zero ceiling is a single write that survives, and the motor stays
+        on the bus and readable.
+
+        The configured ceiling is remembered, not overwritten, so
+        :meth:`release_motor` can put it back. Returns ``False`` where the
+        motor has no current register, leaving the caller to fall back to a
+        torque disable it will have to keep re-asserting.
+        """
+        return False
+
+    def release_motor(self, motor_id: int) -> bool:
+        """Give one motor its configured current ceiling back."""
+        return False
+
+    def read_temperature_limits(self) -> "dict[int, float | None]":
+        """Per motor, the temperature at which it shuts itself down, in degC.
+
+        Read rather than assumed: it is a writable EEPROM register on both
+        families and hands do not all ship the same value, so a thermal
+        margin has to be measured against each motor's own limit. ``None``
+        marks a motor that did not answer.
+        """
+        return {}
+
+    def read_stop_mask(self) -> "dict[int, int | None]":
+        """Per motor, which error bits turn that motor's torque off.
+
+        Whether a fault stops the motor is configuration, not a family trait:
+        both families hold it in a writable register, and the two ship almost
+        disjoint defaults - one stops on overload but not under-voltage, the
+        other the reverse. A caller that assumes "latched means stopped" is
+        wrong on one of them, so it has to read this instead.
+
+        The register uses the same bit layout as the error register on both
+        families, so :meth:`decode_hardware_error` and
+        :meth:`canonical_faults` read it unchanged. ``None`` marks a motor
+        that did not answer; an empty dict marks a family that cannot report.
+        """
+        return {}
+
+    supports_reboot: ClassVar[bool] = False
+
+    # Motors clamped off by hold_motor_off, and status bytes seen since the
+    # last drain. Class-level empties so a client that sets neither still
+    # answers motors_unable_to_move().
+    _held_off: "set[int]" = frozenset()
+    _hardware_alerts: "dict[int, int]" = {}
+    """Whether :meth:`reboot_motor` can restart a motor over the bus.
+
+    A reboot is the only way to clear a latched fault without power-cycling
+    the hand, so a caller offering recovery has to know whether this family
+    can do it before promising the operator anything.
+    """
+
+    def reboot_motor(self, motor_id: int) -> None:
+        """Restart one motor, clearing its latched fault flags.
+
+        A reboot also clears RAM, so an implementation must put back whatever
+        it holds there — the current ceiling above all, which otherwise
+        reverts to a hardware default far above the configured one. Torque is
+        left off: re-energizing is the caller's decision.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot reboot a motor; the hand has to be "
+            "power-cycled to clear a latched fault")
+
     def take_hardware_alerts(self) -> "dict[int, int]":
         """Motors seen carrying a latched fault since the last call, and clear.
 
@@ -503,6 +669,14 @@ class MotorClient(ABC):
     def supported_baudrates(cls) -> list[int]:
         """Baud rates this family accepts, highest first."""
         return sorted(cls.baud_rate_map, reverse=True)
+
+    @classmethod
+    def scannable_baudrates(cls) -> list[int]:
+        """The subset of :meth:`supported_baudrates` this client's serial
+        driver can actually open a port at, highest first. A motor can be
+        programmed to a rate its host cannot talk at; scans and bus surveys
+        must leave such rates out rather than fail at them."""
+        return cls.supported_baudrates()
 
     @staticmethod
     def probe(port: str, baudrate: int, motor_ids: Sequence[int]) -> bool:
@@ -756,34 +930,28 @@ class MotorClient(ABC):
                 self.current_scale_ma, zeroed)
         return plan
 
-    def write_profile_velocity(
-        self,
-        motor_ids: Sequence[int],
-        profile_velocity: np.ndarray
-    ) -> None:
-        """Writes the motion-profile velocity limit, in this family's raw speed units.
-
-        Args:
-            motor_ids: The motor IDs to write to.
-            profile_velocity: The per-motor speed limits.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot write a profile velocity")
-
-    def read_status_is_done_moving(self) -> bool:
-        """Returns True once every motor reports it has stopped moving."""
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot report moving status")
-
     def check_connected(self) -> None:
-        """Raises ``OSError`` unless the client is connected.
+        """Raises ``OSError`` unless the client is connected."""
+        if not self.is_connected:
+            raise OSError('Must call connect() first.')
 
-        Connects first when the client was built with ``lazy_connect``.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement check_connected")
+    def __enter__(self):
+        """Connects on entry if needed, so the client works as a context manager."""
+        if not self.is_connected:
+            self.connect()
+        return self
 
-    def wait_for_motion_complete(self, timeout: float = 5.0) -> None:
+    def __exit__(self, *args):
+        self.disconnect()
+
+    def __del__(self):
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+
+    def wait_for_motion_complete(self, timeout: float = 5.0,
+                                 poll_interval: float = 0.02) -> None:
         """Block until *every* motor has settled at its commanded position.
 
         A recorded motion is implicitly synchronous: letting one motor start
@@ -801,6 +969,10 @@ class MotorClient(ABC):
         trajectory profile makes a goal write a ramp rather than a step, so
         that is a property of how the family is being driven and not of the
         family itself.
+
+        Args:
+            timeout: Seconds to wait before giving up.
+            poll_interval: Seconds between polls.
 
         Raises:
             MotionTimeoutError: if any motor is still unsettled at ``timeout``.

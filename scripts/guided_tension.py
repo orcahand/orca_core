@@ -77,8 +77,8 @@ def _prompt(prompt: dict) -> str:
               + ", then press Enter.")
         _live.set()
     elif action == "tension":
-        print(f"Motors hold at {prompt['tension_current']:.0f} mA. Take up the slack with the "
-              "ratchet tool. Tension carefully - do not overtension.")
+        print(f"Motors pulled at {prompt['tension_current']:.0f} mA and are now holding. Take up "
+              "the slack with the ratchet tool. Tension carefully - do not overtension.")
     if len(options) == 1:
         input(f"Press Enter to {options[0].lower()}... ")
         _live.clear()
@@ -101,7 +101,7 @@ def main() -> int:
                         help="One range-check hold current for every joint, mA (default: the config's "
                              "guided_tension_currents per group; joints it names keep theirs).")
     parser.add_argument("--tension-current", type=float,
-                        help="Tensioning hold current, mA (default: the config's guided_tension_currents).")
+                        help="Tensioning pull current, mA (default: the config's guided_tension_currents).")
     parser.add_argument("--tension-offset", type=float, default=TENSION_OFFSET_DEG,
                         help=f"Degrees the finger motors turn counterclockwise while tensioning (default {TENSION_OFFSET_DEG:g}).")
     parser.add_argument("--scoring", choices=SCORINGS, default="fraction",

@@ -128,6 +128,7 @@ def tactile_mock_factory():
         connected_fingers,
         taxel_counts=None,
         finger_to_sensor_id=None,
+        firmware=b"",
     ):
         state = TactileMockState(
             connected_fingers=list(connected_fingers),
@@ -141,6 +142,7 @@ def tactile_mock_factory():
                 if finger_to_sensor_id is not None
                 else dict(DEFAULT_FINGER_TO_SENSOR_ID)
             ),
+            firmware=firmware,
         )
         link = MockHandSerialLink()
         install_tactile_mock(link, state)

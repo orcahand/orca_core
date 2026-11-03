@@ -57,6 +57,12 @@ class CalibrationResult:
             tendon spool. Compared against the ``joint_motor_travel`` baseline
             in ``config.yaml`` to catch a joint that stalled short of its
             hardstop; see :mod:`orca_core.maintenance.motor_travel`.
+        drive_current_measured_dict: Maps joint name → ``{"flex": mA,
+            "extend": mA}``, the mean current each joint drew while being
+            driven onto that direction's hardstop. Recorded for information
+            only — nothing reads it back to make a decision. A joint drawing
+            far more than its neighbours is the signature of an over-tensioned
+            tendon. Absent for joints that were skipped or never pressed a stop.
         calibrated: ``True`` when all joints have been fully calibrated.
         wrist_calibrated: ``True`` when the wrist joint has been calibrated.
     """
@@ -68,6 +74,26 @@ class CalibrationResult:
     joint_encoder_calibration_dict: Dict[str, JointEncoderCal] = field(default_factory=dict)
     joint_roms_measured_dict: Dict[str, List[float]] = field(default_factory=dict)
     motor_travel_measured_dict: Dict[str, float] = field(default_factory=dict)
+    drive_current_measured_dict: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def _motor_has_limits(self, motor_id: int) -> bool:
+        """Whether the motor has a non-empty limits list with no None entries."""
+        limits = self.motor_limits_dict.get(motor_id)
+        return bool(limits) and all(limit is not None for limit in limits)
+
+    def _motor_has_ratio(self, motor_id: int) -> bool:
+        """Whether the motor has a usable (present and nonzero) joint-to-motor ratio."""
+        ratio = self.joint_to_motor_ratios_dict.get(motor_id)
+        return ratio is not None and ratio != 0
+
+    def _motor_ready(self, motor_id: int) -> bool:
+        """Whether the motor has both limits and a usable joint-to-motor ratio."""
+        return self._motor_has_limits(motor_id) and self._motor_has_ratio(motor_id)
+
+    def _all_motors_ready(self) -> bool:
+        """Whether every motor in the result is :meth:`_motor_ready`."""
+        motor_ids = set(self.motor_limits_dict) | set(self.joint_to_motor_ratios_dict)
+        return all(self._motor_ready(motor_id) for motor_id in motor_ids)
 
     @classmethod
     def empty(cls, motor_ids: List[int]) -> "CalibrationResult":
@@ -80,6 +106,7 @@ class CalibrationResult:
             joint_encoder_calibration_dict={},
             joint_roms_measured_dict={},
             motor_travel_measured_dict={},
+            drive_current_measured_dict={},
         )
 
     @classmethod
@@ -138,6 +165,27 @@ class CalibrationResult:
                     f"entry for {joint}: {travel!r}\033[0m"
                 )
 
+        current_raw = calibration.get("drive_current_measured", {}) or {}
+        drive_current_measured_dict = {}
+        for joint, per_direction in current_raw.items():
+            if not isinstance(per_direction, dict):
+                print(
+                    f"\033[93mWarning: dropping malformed drive_current_measured "
+                    f"entry for {joint}: {per_direction!r}\033[0m"
+                )
+                continue
+            parsed = {}
+            for direction, value in per_direction.items():
+                try:
+                    parsed[str(direction)] = float(value)
+                except (TypeError, ValueError):
+                    print(
+                        f"\033[93mWarning: dropping malformed drive_current_measured "
+                        f"value for {joint} {direction}: {value!r}\033[0m"
+                    )
+            if parsed:
+                drive_current_measured_dict[joint] = parsed
+
         return cls(
             motor_limits_dict=motor_limits_dict,
             joint_to_motor_ratios_dict=joint_to_motor_ratios_dict,
@@ -146,6 +194,7 @@ class CalibrationResult:
             joint_encoder_calibration_dict=joint_encoder_calibration_dict,
             joint_roms_measured_dict=joint_roms_measured_dict,
             motor_travel_measured_dict=motor_travel_measured_dict,
+            drive_current_measured_dict=drive_current_measured_dict,
         )
 
 

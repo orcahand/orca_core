@@ -11,7 +11,9 @@ class HLS:
     SECONDARY_ID = 7
     MAX_TEMPERATURE = 13
     BAUD_RATE = 6
+    UNLOAD_CONDITIONS = 19    # which Status (65) bits unload the motor; same bit layout
     PROTECTION_CURRENT = 28   # 6.5 mA/unit, 0..2047; copied into GOAL_CURRENT at power-up
+    OVERCURRENT_TIME = 38     # 10 ms/unit; how long current may exceed PROTECTION_CURRENT
     MODE = 33                 # 0 position under current limit, 1 speed, 2 current, 3 PWM
 
     # SRAM, read-write

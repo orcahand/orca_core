@@ -269,7 +269,13 @@ class protocol_packet_handler(object):
 
         if result == COMM_SUCCESS:
             data_read, result, error = self.readTxRx(scs_id, 3, 2)  # Address 3 : Model Number
-            if result == COMM_SUCCESS:
+            # A reply can arrive short - a motor part way through a reboot
+            # answers the ping and then has nothing to say about its model
+            # number. Indexing it blindly raises instead of reporting no
+            # answer, which turns every liveness check into a crash. The ping
+            # itself succeeded, so the result is left alone and only the
+            # model number goes unknown.
+            if result == COMM_SUCCESS and data_read is not None and len(data_read) >= 2:
                 model_number = self.scs_makeword(data_read[0], data_read[1])
 
         return model_number, result, error
@@ -547,6 +553,25 @@ class protocol_packet_handler(object):
         rxpacket, result, error = self.txRxPacket(txpacket)
 
         return result, error
+
+    def reBoot(self, scs_id):
+        """Restart one servo (instruction 0x08).
+
+        The servo sends no status packet for this instruction, so only the
+        transmit result is returned. It takes roughly 800 ms to come back.
+        """
+        txpacket = [0] * 6
+
+        if scs_id > BROADCAST_ID:
+            return COMM_NOT_AVAILABLE
+
+        txpacket[PKT_ID] = scs_id
+        txpacket[PKT_LENGTH] = 2
+        txpacket[PKT_INSTRUCTION] = INST_REBOOT
+
+        result = self.txPacket(txpacket)
+        self.portHandler.is_using = False
+        return result
 
     def reSet(self, scs_id):
         error = 0

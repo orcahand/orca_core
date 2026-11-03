@@ -9,7 +9,7 @@ from orca_core.maintenance import calibration_routine
 from orca_core.utils.cli import print_calibration_progress
 
 EMITTED = sorted(set(re.findall(
-    r'_emit\(\s*progress_callback,\s*"(\w+)"', inspect.getsource(calibration_routine)
+    r'(?:_emit|_report)\(\s*progress_callback,\s*"(\w+)"', inspect.getsource(calibration_routine)
 )))
 
 SAMPLE = dict(

@@ -14,6 +14,7 @@ import pytest
 import orca_core
 from orca_core import (
     BaseHand,
+    CalibrationResult,
     OrcaHand,
     OrcaHandFull,
     OrcaHandJointFeedback,
@@ -26,6 +27,7 @@ PACKAGE_EXPORTS = frozenset({
     "BaseHandConfig",
     "CalibrationResult",
     "EncodersNotAvailableError",
+    "FingertipHealth",
     "HandConfigValidationError",
     "HandDetection",
     "HandKinematics",
@@ -45,6 +47,7 @@ PACKAGE_EXPORTS = frozenset({
     "OrcaHandTouch",
     "OrcaHandTouchConfig",
     "OrcaJointPositions",
+    "TactileBoardError",
     "TaxelData",
     "Transform",
     "canonical_joint_ids",
@@ -83,7 +86,10 @@ ORCA_HAND = BASE_HAND | {
     "get_motor_pos",
     "get_motor_state",
     "get_motor_temp",
+    "clear_fault_record",
+    "fault_records",
     "init_joints",
+    "poll_faults",
     "is_calibrated",
     "last_read_ok",
     "is_connected",
@@ -111,6 +117,7 @@ TACTILE_SURFACE = frozenset({
     "clear_tactile_zero",
     "connect_sensors_only",
     "get_base_pose",
+    "get_fingertip_health",
     "get_sensor_transforms",
     "get_tactile_configuration",
     "get_tactile_data",
@@ -121,6 +128,7 @@ TACTILE_SURFACE = frozenset({
     "get_taxel_data",
     "get_taxel_geometry",
     "kinematics",
+    "reboot_tactile_board",
     "set_base_pose",
     "start_tactile_stream",
     "stop_tactile_stream",
@@ -148,6 +156,11 @@ JOINT_POSITIONS = frozenset({
     "register_joint_names",
 })
 
+CALIBRATION_RESULT = frozenset({
+    "empty",
+    "from_calibration_path",
+})
+
 
 def public_names(cls) -> frozenset:
     return frozenset(name for name, _ in inspect.getmembers(cls) if not name.startswith("_"))
@@ -166,6 +179,7 @@ def test_package_exports_are_pinned():
         (OrcaHandJointFeedback, ORCA_HAND | JOINT_FEEDBACK_SURFACE),
         (OrcaHandFull, ORCA_HAND | TACTILE_SURFACE | JOINT_FEEDBACK_SURFACE),
         (OrcaJointPositions, JOINT_POSITIONS),
+        (CalibrationResult, CALIBRATION_RESULT),
     ],
     ids=lambda value: getattr(value, "__name__", ""),
 )

@@ -28,6 +28,7 @@ from orca_core.hardware.sensing.constants import (
     REGISTER_ENABLE,
     REGISTER_DISABLE,
     FORCE_ROUND_DECIMALS,
+    RESULTANT_FZ_CEILING_N,
     NOISE_GATE_MARGIN_N,
     NOISE_GATE_SCALE,
     LINK_DEFAULT_RESPONSE_TIMEOUT_S,
@@ -39,10 +40,29 @@ from orca_core.hardware.sensing.constants import (
     TACTILE_FIRST_FRAME_TIMEOUT_S,
     TACTILE_STREAM_REARM_MIN_INTERVAL_S,
     TACTILE_STREAM_STALE_REARM_S,
+    ADDR_VERSION,
+    VERSION_LENGTH,
+    ADDR_RESET,
+    ADDR_MODULE_ERRORS,
+    MODULE_ERRORS_LENGTH,
+    ADDR_SLOT_COUNTERS,
+    SLOT_COUNTER_STRIDE,
+    ADDR_NUMBERING_COMMAND,
+    ADDR_NUMBERING_STATUS,
+    NUMBERING_STATUS_LENGTH,
+    NUMBERING_OP_ZERO,
+    ZERO_KEY,
+    CONNECTOR_FIRMWARE_1_0,
+    BOARD_REBOOT_TIMEOUT_S,
+    BOARD_REBOOT_SETTLE_S,
+    ADDR_BOARD_STATS,
+    ADDR_BOARD_STATS_LEGACY,
 )
 from orca_core.hardware.sensing.taxel_geometry import TaxelGeometry, load_taxel_geometry
 from orca_core.hardware.sensing.types import (
+    FingertipHealth,
     ResultantForces,
+    SensingBoardVersion,
     ResultantReading,
     TactileReading,
     TaxelReading,
@@ -55,14 +75,13 @@ from orca_core.hardware.sensing.tactile_protocol import (
     unpack_auto_payload,
     compute_expected_payload_size,
     compute_distal_module_index,
-    decode_resultant_auto,
-    decode_taxels_auto,
-    decode_combined_auto,
+    decode_auto_payload,
     decode_resultant_register,
     decode_connected_sensors,
     decode_num_taxels,
-    decode_auto_data_type,
     encode_auto_data_type,
+    decode_fingertip_health,
+    parse_board_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +89,22 @@ logger = logging.getLogger(__name__)
 
 class NoSensorsAvailableError(Exception):
     pass
+
+
+class TactileBoardError(RuntimeError):
+    """The sensing board refused or didn't finish a command; ``result`` names why."""
+
+    def __init__(self, result: str, message: str):
+        super().__init__(message)
+        self.result = result
+
+
+BOARD_STATE_BUSY = 1
+BOARD_STATE_DONE = 2
+BOARD_COMMAND_TIMEOUT_S = 2.0
+BOARD_COMMAND_POLL_S = 0.02
+BOARD_RESULT_ZERO_OK = 3
+BOARD_RESULT_ZERO_FAILED = 19
 
 
 @dataclass
@@ -80,23 +115,24 @@ class TactileStreamStats:
     frames_bad_payload: int = 0
     last_error_code: int = 0  # most recent sensor-reported error code (0 = no error)
     stream_rearms: int = 0  # re-arm attempts after mid-stream silence (device reset)
+    layout_changes: int = 0  # fingertip sets adopted mid-stream after a re-read
 
 
 @dataclass
 class TactileSensorConfiguration:
     """Snapshot of connected sensors and their properties.
 
-    Captured at stream start and treated as immutable for the stream. The
-    connector board can drop and re-add fingertips mid-stream. Frames carry no
-    slot IDs, so a frame whose size no longer matches is dropped, but one that
-    keeps the size is decoded under this snapshot's labels until the stream
-    restarts.
+    Captured at stream start and replaced, never mutated, when the connector
+    board adds or drops a fingertip mid-stream: a frame whose size no longer
+    matches triggers a re-read. Frames carry no slot IDs, so a change that
+    keeps the frame size (one 51-taxel fingertip swapped for another) goes
+    unnoticed until the stream restarts or the watchdog re-arms it.
     """
     connected: dict[str, bool] = field(default_factory=dict)  # {finger: is_connected}
     num_taxels: dict[str, int] = field(default_factory=dict)  # {finger: taxel_count}
     module_indices: dict[str, int] = field(default_factory=dict)  # {finger: module_idx}
     finger_to_sensor_id: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FINGER_TO_SENSOR_ID))
-    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions}
+    taxel_geometry: dict[str, TaxelGeometry] = field(default_factory=dict)  # {finger: static positions + axes}
 
     @property
     def active_sensors(self) -> list[str]:
@@ -114,6 +150,20 @@ class TactileSensorConfiguration:
         return f"TactileSensorConfiguration({self.num_active_sensors} active: {active})"
 
 
+def _layout(config: TactileSensorConfiguration) -> list[tuple[str, int]]:
+    """What decides a frame's layout: the active fingers and their taxel counts."""
+    return [(f, config.num_taxels.get(f, 0)) for f in config.active_sensors]
+
+
+def _subtract_offset(force: list[float], offset: list[float]) -> list[float]:
+    """Return ``force - offset``, rounded, with fz clamped at zero."""
+    return [
+        round(force[0] - offset[0], FORCE_ROUND_DECIMALS),
+        round(force[1] - offset[1], FORCE_ROUND_DECIMALS),
+        round(max(0, force[2] - offset[2]), FORCE_ROUND_DECIMALS),
+    ]
+
+
 def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
     """Per-taxel dither about its own mean, as ``{finger: [gate_n, ...]}``.
 
@@ -123,10 +173,8 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
     since a few seconds of frames will not have caught its rarest excursion.
     The scale is what separates a noisy taxel's gate from a quiet one's.
 
-    Applies the offsets exactly the way :meth:`_apply_taxel_offsets` does,
-    same rounding and same fz clamp, so a gate is expressed in the units it
-    will be compared against. Deriving it any other way leaves the gate
-    subtly off from the values actually reported.
+    Offsets go through ``_subtract_offset``, as in :meth:`_apply_taxel_offsets`, so
+    a gate is in the same units as the values it is compared against.
     """
     gates = {}
     for finger, finger_offsets in offsets.items():
@@ -135,9 +183,7 @@ def _measure_taxel_noise(frames: list[dict], offsets: dict) -> dict:
             worst = 0.0
             for frame in frames:
                 taxel = frame[finger][t_idx]
-                dx = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
-                dy = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
-                dz = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                dx, dy, dz = _subtract_offset(taxel, off)
                 squared = dx * dx + dy * dy + dz * dz
                 if squared > worst:
                     worst = squared
@@ -196,14 +242,15 @@ class TactileClient:
         self._sensor_id_to_finger = {v: k for k, v in self._finger_to_sensor_id.items()}
 
         self._tactile_config: TactileSensorConfiguration | None = None
+        self._board_version: SensingBoardVersion | None = None
 
         self._auto_lock = threading.Lock()
         self._auto_running = False
         self._auto_mode_resultant = True
         self._auto_mode_taxels = False
-        self._auto_latest = None
-        self._auto_latest_taxels = None
+        self._auto_reading: TactileReading | None = None
         self._auto_latest_ts = None
+        self._auto_frames_received = 0
         self._auto_started_ts: float | None = None
         self._auto_stats = TactileStreamStats()
         self._first_frame_event = threading.Event()
@@ -214,6 +261,8 @@ class TactileClient:
         self._rearm_thread: threading.Thread | None = None
         self._stream_ctrl_lock = threading.Lock()
         self._stream_generation = 0
+        self._reread_thread: threading.Thread | None = None
+        self._last_idle_reread_ts = 0.0
 
         # {finger: [[fx, fy, fz], ...], ...} per-taxel zeroing offsets.
         self._taxel_offsets: dict | None = None
@@ -241,6 +290,11 @@ class TactileClient:
             logger.info(f"Tactile client connected, initial configuration: {self._tactile_config}")
         except IOError as e:
             logger.warning(f"Tactile client connected but failed to get initial configuration: {e}")
+        try:
+            self._board_version = parse_board_version(self._read_register(ADDR_VERSION, VERSION_LENGTH))
+            logger.info(f"Sensing board: {self._board_version}")
+        except IOError as e:
+            logger.warning(f"Could not read the sensing board's version, using no firmware features: {e}")
 
     def disconnect(self) -> None:
         if not self._connected:
@@ -318,10 +372,106 @@ class TactileClient:
         data = self._read_register(ADDR_NUM_TAXELS_START, ADDR_NUM_TAXELS_LENGTH)
         return decode_num_taxels(data, self._sensor_id_to_finger)
 
-    def read_auto_data_type(self) -> dict:
-        """Return the decoded auto-stream data-type register."""
-        data = self._read_register(ADDR_AUTO_DATA_TYPE, 1)
-        return decode_auto_data_type(data)
+    # ----- Board firmware features (gated on the version string) ----------
+
+    @property
+    def board_version(self) -> SensingBoardVersion | None:
+        """The board's version register as read at ``connect()``; ``None`` if unread."""
+        return self._board_version
+
+    def firmware_at_least(self, release: tuple[int, int]) -> bool:
+        """True on ORCA connector firmware of ``release`` or newer."""
+        return self._board_version is not None and self._board_version.at_least(release)
+
+    @property
+    def supports_sensor_zero(self) -> bool:
+        """True when the board can zero the fingertips themselves (connector firmware 1.0+)."""
+        return self.firmware_at_least(CONNECTOR_FIRMWARE_1_0)
+
+    def zero_sensors(self, fingers: list[str] | None = None) -> dict[str, int]:
+        """Zero the fingertips themselves, which must be unloaded; returns ``{finger: status}``.
+
+        Status 0 means the fingertip took the zero; anything else is its refusal or
+        ``ZERO_NO_REPLY`` / ``ZERO_BAD_REPLY``. Only connected fingertips are sent the
+        command (``fingers`` narrows them). The zero lasts until the fingertip powers
+        off, and a zero taken under load leaves a phantom after release that only an
+        unloaded zero or a power cycle removes.
+        """
+        if not self.supports_sensor_zero:
+            raise TactileBoardError("unsupported", "This sensing board can't zero the fingertips itself.")
+        connected = self.read_connected_sensors()
+        targets = [f for f in (fingers if fingers is not None else FINGER_NAMES) if connected.get(f)]
+        if not targets:
+            return {}
+        mask = sum(1 << self._finger_to_sensor_id[f] for f in targets)
+        status = self._run_board_command(bytes([NUMBERING_OP_ZERO, *ZERO_KEY, mask]))
+        if status[1] not in (BOARD_RESULT_ZERO_OK, BOARD_RESULT_ZERO_FAILED):
+            raise TactileBoardError(f"code_{status[1]}", "The board stopped the sensor zero part-way (bus busy).")
+        return {f: status[11 + self._finger_to_sensor_id[f]] for f in targets}
+
+    def read_fingertip_health(self) -> dict[str, FingertipHealth] | None:
+        """Each fingertip's error report and counters, or ``None`` before connector firmware 1.0."""
+        if not self.firmware_at_least(CONNECTOR_FIRMWARE_1_0):
+            return None
+        errors = self._read_register(ADDR_MODULE_ERRORS, MODULE_ERRORS_LENGTH)
+        counters = self._read_register(ADDR_SLOT_COUNTERS, SLOT_COUNTER_STRIDE * len(self._sensor_id_to_finger))
+        return decode_fingertip_health(errors, counters, self._sensor_id_to_finger)
+
+    def reboot_board(self) -> None:
+        """Reboot the connector board and wait until it answers again.
+
+        Fingertip power stays on, so the fingertips keep their zero. The encoder
+        stream on the same board pauses for about 20 ms; a running tactile stream is
+        re-armed here, since the reboot clears its enable register. Raises
+        ``TactileBoardError`` on any other board, or when its counters show no reboot.
+        """
+        kind = self._board_version.kind if self._board_version is not None else None
+        if kind not in ("connector", "connector_legacy"):
+            raise TactileBoardError("unsupported", "Only an ORCA connector board can be rebooted from the host.")
+        stats = ADDR_BOARD_STATS if self.firmware_at_least(CONNECTOR_FIRMWARE_1_0) else ADDR_BOARD_STATS_LEGACY
+        frames_before = self._read_frames_received(stats)
+        try:
+            self._write_register(ADDR_RESET, REGISTER_ENABLE, attempts=1)
+        except IOError:
+            pass  # the board reboots after taking the write even if its ACK is lost; the counters below decide
+        deadline = time.monotonic() + BOARD_REBOOT_TIMEOUT_S
+        time.sleep(BOARD_REBOOT_SETTLE_S)
+        while True:
+            try:
+                frames_after = self._read_frames_received(stats)
+                break
+            except IOError:
+                if time.monotonic() >= deadline:
+                    raise
+        if frames_after >= frames_before:
+            raise TactileBoardError("not_rebooted", "The board didn't reboot: its counters weren't cleared.")
+        with self._auto_lock:
+            running, resultant, taxels = self._auto_running, self._auto_mode_resultant, self._auto_mode_taxels
+        if running:
+            self.set_auto_data_type(resultant=resultant, taxels=taxels)
+            self.enable_auto_data_transmission()
+
+    def _read_frames_received(self, stats_address: int) -> int:
+        return int.from_bytes(self._read_register(stats_address, 4), "little")
+
+    def _run_board_command(self, command: bytes, timeout_s: float = BOARD_COMMAND_TIMEOUT_S) -> bytes:
+        """Send a command to the board's command register and return its status block when done."""
+        seq_before = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)[2]
+        try:
+            self._write_register(ADDR_NUMBERING_COMMAND, command, attempts=1)
+        except IOError as e:
+            # A lost ACK fails the write too; the board marks a command it took busy before acking it.
+            st = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
+            if st[0] != BOARD_STATE_BUSY and st[2] == seq_before:
+                raise TactileBoardError("rejected", f"The board didn't take the command: {e}") from e
+        deadline = time.monotonic() + timeout_s
+        while True:
+            st = self._read_register(ADDR_NUMBERING_STATUS, NUMBERING_STATUS_LENGTH)
+            if st[0] == BOARD_STATE_DONE and st[2] != seq_before:
+                return bytes(st)
+            if time.monotonic() >= deadline:
+                raise TactileBoardError("timeout", "The board didn't finish the command.")
+            time.sleep(BOARD_COMMAND_POLL_S)
 
     def read_resultant_force(self) -> ResultantForces:
         """Read resultant force from all connected fingertip sensors, applying offsets."""
@@ -346,12 +496,11 @@ class TactileClient:
         return self._tactile_config
 
     def get_taxel_geometry(self) -> dict[str, TaxelGeometry]:
-        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+        """Return static per-taxel geometry ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry in the sensor frame (meters), read
-        once at connect. Row ``i`` of ``geometry[finger].positions`` aligns
-        with taxel ``i`` in the force stream. Empty until the configuration is
-        read.
+        Positions (meters) and per-taxel force axes are fixed sensor geometry in
+        the sensor frame, read once at connect. Row ``i`` aligns with taxel ``i``
+        in the force stream. Empty until the configuration is read.
         """
         if self._tactile_config is None:
             return {}
@@ -466,13 +615,14 @@ class TactileClient:
         self.enable_auto_data_transmission()
 
         with self._auto_lock:
-            self._auto_latest = None
-            self._auto_latest_taxels = None
+            self._auto_reading = None
             self._auto_latest_ts = None
+            self._auto_frames_received = 0
             self._auto_started_ts = time.monotonic()
             self._auto_stats = TactileStreamStats()
             self._auto_running = True
             self._last_rearm_ts = 0.0
+            self._last_idle_reread_ts = 0.0
 
     def stop_stream(self) -> None:
         """Disable the AA 56 stream on the device and clear the latest cache."""
@@ -491,8 +641,7 @@ class TactileClient:
                     logger.debug(f"Disabling stream during stop failed, continuing: {e}")
 
         with self._auto_lock:
-            self._auto_latest = None
-            self._auto_latest_taxels = None
+            self._auto_reading = None
             self._auto_latest_ts = None
             self._first_frame_event.clear()
 
@@ -557,40 +706,78 @@ class TactileClient:
                 self.enable_auto_data_transmission(attempts=1)
             except Exception as e:
                 logger.warning("tactile stream re-arm failed: %s", e)
+                return
+        self._reread_configuration(generation)
+
+    def _maybe_reread_configuration(self, generation: int) -> None:
+        """Re-read the fingertip set off the demuxer thread, which must stay
+        free to deliver the register replies."""
+        now = time.monotonic()
+        with self._auto_lock:
+            if self._reread_thread is not None and self._reread_thread.is_alive():
+                return
+            # A re-read that failed or found nothing new must not turn every
+            # mismatched frame into a board poll.
+            if now - self._last_idle_reread_ts < TACTILE_STREAM_REARM_MIN_INTERVAL_S:
+                return
+            self._reread_thread = threading.Thread(
+                target=self._reread_configuration,
+                args=(generation, True),
+                name="TactileConfigReread",
+                daemon=True,
+            )
+        self._reread_thread.start()
+
+    def _reread_configuration(self, generation: int, backoff: bool = False) -> None:
+        """Adopt the board's current fingertip set for a still-running stream."""
+        try:
+            config = self._get_configuration()
+        except (OSError, RuntimeError) as e:
+            logger.debug("tactile configuration re-read failed: %s", e)
+            if backoff:
+                with self._auto_lock:
+                    self._last_idle_reread_ts = time.monotonic()
+            return
+        with self._auto_lock:
+            if not self._auto_running or generation != self._stream_generation:
+                return
+            old = self._tactile_config
+            changed = old is None or _layout(old) != _layout(config)
+            self._tactile_config = config
+            if changed:
+                self._auto_stats.layout_changes += 1
+            elif backoff:
+                self._last_idle_reread_ts = time.monotonic()
+        if changed:
+            logger.warning(
+                "tactile fingertips changed mid-stream: %s -> %s; frames in "
+                "between were dropped", old, config,
+            )
 
     def get_latest_forces(self) -> ResultantReading | None:
-        """Return the most recent resultant reading, or ``None`` if none yet."""
+        """Return the most recent resultant reading, or ``None`` if none yet.
+
+        fz tops out at 25.5 N; check ``saturated`` before trusting a value there.
+        """
         self._maybe_rearm_stream()
-        with self._auto_lock:
-            if self._auto_latest is None:
-                return None
-            return ResultantReading(forces=self._auto_latest, timestamp=self._auto_latest_ts)
+        reading = self.get_latest()
+        return reading.forces if reading else None
 
     def get_latest_taxels(self) -> TaxelReading | None:
         """Return the most recent per-taxel reading, or ``None`` if none yet."""
         self._maybe_rearm_stream()
-        with self._auto_lock:
-            if self._auto_latest_taxels is None:
-                return None
-            return TaxelReading(taxels=self._auto_latest_taxels, timestamp=self._auto_latest_ts)
+        reading = self.get_latest()
+        return reading.taxels if reading else None
 
     def get_latest(self) -> TactileReading | None:
         """Return resultant and per-taxel forces from the same frame, or ``None`` if none yet.
 
-        Single locked snapshot, so ``forces`` and ``taxels`` share one
-        timestamp. Either field is ``None`` if its stream mode is disabled.
+        One reading per frame, shared by every caller: ``forces`` and
+        ``taxels`` share one timestamp and ``seq``. Either field is ``None``
+        if its stream mode is disabled.
         """
         with self._auto_lock:
-            forces = self._auto_latest
-            taxels = self._auto_latest_taxels
-            timestamp = self._auto_latest_ts
-        if forces is None and taxels is None:
-            return None
-        return TactileReading(
-            forces=ResultantReading(forces=forces, timestamp=timestamp) if forces is not None else None,
-            taxels=TaxelReading(taxels=taxels, timestamp=timestamp) if taxels is not None else None,
-            timestamp=timestamp,
-        )
+            return self._auto_reading
 
     def get_stats(self):
         """Return a snapshot copy of ``TactileStreamStats`` for the current loop."""
@@ -711,6 +898,10 @@ class TactileClient:
                     and reading.taxels is not None
                     and reading.taxels.taxels is not last_taxels
                 ):
+                    if frames and reading.taxels.taxels.keys() != frames[0].keys():
+                        # A fingertip joined or left: average one layout only.
+                        frames.clear()
+                        resultant_frames.clear()
                     frames.append(reading.taxels.taxels)
                     # Same locked snapshot, so this resultant belongs to the
                     # frame whose taxels were just recorded.
@@ -780,9 +971,7 @@ class TactileClient:
                 if i >= len(finger_offsets):
                     break
                 off = finger_offsets[i]
-                taxel[0] = round(taxel[0] - off[0], FORCE_ROUND_DECIMALS)
-                taxel[1] = round(taxel[1] - off[1], FORCE_ROUND_DECIMALS)
-                taxel[2] = round(max(0, taxel[2] - off[2]), FORCE_ROUND_DECIMALS)
+                taxel[:] = _subtract_offset(taxel, off)
                 # Below this taxel's own measured dither, the reading is noise,
                 # not force — squared compare to keep the sqrt out of a path
                 # that runs on every taxel of every frame.
@@ -800,9 +989,7 @@ class TactileClient:
             off = offsets.get(finger)
             if not off:
                 continue
-            fvec[0] = round(fvec[0] - off[0], FORCE_ROUND_DECIMALS)
-            fvec[1] = round(fvec[1] - off[1], FORCE_ROUND_DECIMALS)
-            fvec[2] = round(max(0, fvec[2] - off[2]), FORCE_ROUND_DECIMALS)
+            fvec[:] = _subtract_offset(fvec, off)
 
     def _apply_stream_offsets(self, parsed_resultant: dict | None, parsed_taxels: dict | None) -> None:
         # Snapshot the references once so a concurrent clear/set on the main
@@ -831,6 +1018,9 @@ class TactileClient:
             mode_resultant = self._auto_mode_resultant
             mode_taxels = self._auto_mode_taxels
             config = self._tactile_config
+            generation = self._stream_generation
+            self._auto_frames_received += 1
+            seq = self._auto_frames_received
 
         # AA 56 (2) + reserved (1) + effective_length (2) + payload + LRC (1).
         payload = frame_bytes[2 + AUTO_FRAME_META_SIZE:-1]
@@ -850,34 +1040,39 @@ class TactileClient:
         if expected_size == 0 or len(valid) != expected_size:
             with self._auto_lock:
                 self._auto_stats.frames_bad_payload_size += 1
+            if len(valid) != expected_size:
+                # Size alone can't tell which fingertip joined or left.
+                self._maybe_reread_configuration(generation)
             return
 
-        if mode_resultant and mode_taxels:
-            parsed_resultant, parsed_taxels = decode_combined_auto(
-                valid, config.active_sensors, config.num_taxels,
-            )
-        elif mode_resultant:
-            parsed_resultant = decode_resultant_auto(valid, config.active_sensors)
-            parsed_taxels = None
-        elif mode_taxels:
-            parsed_resultant = None
-            parsed_taxels = decode_taxels_auto(valid, config.active_sensors, config.num_taxels)
-        else:
-            return
+        parsed_resultant, parsed_taxels = decode_auto_payload(
+            valid, config.active_sensors, config.num_taxels, mode_resultant, mode_taxels,
+        )
 
+        # Judged before zeroing, which would move a clipped 25.5 N off the ceiling.
+        saturated = frozenset(
+            finger for finger, force in (parsed_resultant or {}).items()
+            if force[2] >= RESULTANT_FZ_CEILING_N
+        )
         self._apply_stream_offsets(parsed_resultant, parsed_taxels)
 
+        # Monotonic, matching EncoderReading.timestamp, so staleness
+        # logic and cross-stream correlation survive wall-clock steps.
+        timestamp = time.monotonic()
+        reading = TactileReading(
+            forces=ResultantReading(parsed_resultant, timestamp, seq, saturated)
+            if parsed_resultant is not None else None,
+            taxels=TaxelReading(parsed_taxels, timestamp, seq)
+            if parsed_taxels is not None else None,
+            timestamp=timestamp,
+            seq=seq,
+        )
         with self._auto_lock:
             # Re-check under the lock: stop_stream may have flipped
             # the flag and cleared the cache while we were decoding.
-            if not self._auto_running:
+            if not self._auto_running or generation != self._stream_generation:
                 return
-            if mode_resultant and parsed_resultant is not None:
-                self._auto_latest = parsed_resultant
-            if mode_taxels and parsed_taxels is not None:
-                self._auto_latest_taxels = parsed_taxels
-            # Monotonic, matching EncoderReading.timestamp, so staleness
-            # logic and cross-stream correlation survive wall-clock steps.
-            self._auto_latest_ts = time.monotonic()
+            self._auto_reading = reading
+            self._auto_latest_ts = timestamp
             self._auto_stats.frames_ok += 1
             self._first_frame_event.set()

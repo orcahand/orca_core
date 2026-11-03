@@ -17,32 +17,17 @@ import types
 import numpy as np
 import pytest
 
-import orca_core.hardware.mock_dynamixel_client as mock_dynamixel_client_module
-import orca_core.hardware.mock_feetech_client as mock_feetech_client_module
+import orca_core.hardware.mock_motor_client as mock_motor_client_module
 from orca_core.hardware.dynamixel_client import DynamixelClient
 from orca_core.hardware.feetech_client import FeetechClient
-from orca_core.hardware.mock_dynamixel_client import (
-    MockDynamixelClient,
-    dynamixel_cleanup_handler as mock_cleanup_handler,
-)
-from orca_core.hardware.mock_feetech_client import (
-    MockFeetechClient,
-    feetech_cleanup_handler as mock_feetech_cleanup_handler,
-)
+from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+from orca_core.hardware.mock_feetech_client import MockFeetechClient
 from orca_core.hardware.motor_client import MotorClient, ServoGains
 
-# (mock class, its module, its atexit cleanup handler) for every family.
-MOCK_FAMILIES = [
-    pytest.param(
-        (MockDynamixelClient, mock_dynamixel_client_module, mock_cleanup_handler),
-        id="dynamixel",
-    ),
-    pytest.param(
-        (MockFeetechClient, mock_feetech_client_module, mock_feetech_cleanup_handler),
-        id="feetech",
-    ),
+MOCK_CLASSES = [
+    pytest.param(MockDynamixelClient, id="dynamixel"),
+    pytest.param(MockFeetechClient, id="feetech"),
 ]
-MOCK_CLASSES = [pytest.param(p.values[0][0], id=p.id) for p in MOCK_FAMILIES]
 
 
 @pytest.fixture(params=MOCK_CLASSES)
@@ -69,9 +54,7 @@ def connected_mock(request):
         pytest.param(lambda c: c.set_operating_mode([1], 3), id="set_operating_mode"),
         pytest.param(lambda c: c.write_desired_pos([1], np.zeros(1)), id="write_desired_pos"),
         pytest.param(lambda c: c.write_desired_current([1], np.zeros(1)), id="write_desired_current"),
-        pytest.param(lambda c: c.write_profile_velocity([1], np.zeros(1)), id="write_profile_velocity"),
         pytest.param(lambda c: c.read_temperature(), id="read_temperature"),
-        pytest.param(lambda c: c.read_status_is_done_moving(), id="read_status_is_done_moving"),
     ],
 )
 def test_mock_bus_methods_raise_when_disconnected(disconnected_mock, call):
@@ -124,25 +107,12 @@ def test_mock_writes_skip_unknown_ids(connected_mock):
 # ----- OPEN_CLIENTS registry lifecycle --------------------------------------
 
 
-class _RankOrderedSet(set):
-    """Set whose iteration yields clients in ``_cleanup_rank`` order, so the
-    cleanup-handler test deterministically hits the failing client first."""
-
-    def __iter__(self):
-        return iter(
-            sorted(set.__iter__(self), key=lambda c: getattr(c, "_cleanup_rank", 1))
-        )
-
-
-@pytest.fixture(params=MOCK_FAMILIES)
+@pytest.fixture(params=MOCK_CLASSES)
 def mock_family(request, monkeypatch):
-    """A mock class with an isolated registry, plus its module and handler."""
-    cls, module, cleanup_handler = request.param
-    registry = _RankOrderedSet()
-    monkeypatch.setattr(cls, "OPEN_CLIENTS", registry)
-    return types.SimpleNamespace(
-        cls=cls, module=module, cleanup=cleanup_handler, registry=registry
-    )
+    """A mock class, with the shared exit-cleanup registry swapped for an empty one."""
+    registry = set()
+    monkeypatch.setattr(MotorClient, "OPEN_CLIENTS", registry)
+    return types.SimpleNamespace(cls=request.param, registry=registry)
 
 
 def test_mock_construction_does_not_register(mock_family):
@@ -168,7 +138,7 @@ def test_mock_failed_connect_leaves_registry_empty(mock_family, monkeypatch):
     # Registration must be the last step of connect(): a failure anywhere
     # earlier (here, the first thing connect does) leaves the registry empty.
     monkeypatch.setattr(
-        mock_family.module, "logging", types.SimpleNamespace(info=boom)
+        mock_motor_client_module, "logging", types.SimpleNamespace(info=boom)
     )
     with pytest.raises(OSError):
         client.connect()
@@ -191,24 +161,11 @@ def test_mock_disconnect_deregisters_even_when_torque_off_raises(
     assert mock_family.registry == set()
 
 
-def test_mock_cleanup_handler_survives_a_failing_client(mock_family):
-    bad = mock_family.cls([1], port="bad")
-    good = mock_family.cls([1], port="good")
-    bad.connect()
-    good.connect()
-    bad._cleanup_rank, good._cleanup_rank = 0, 1
-
-    def boom():
-        raise OSError("port died")
-
-    bad.disconnect = boom
-    try:
-        mock_family.cleanup()
-    finally:
-        del bad.disconnect  # restore the real method for __del__
-
-    assert not good.is_connected, "good client must still be disconnected"
-    assert good not in mock_family.registry
+def test_wait_for_motion_complete_signature_is_uniform_across_family():
+    for cls in (MotorClient, DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        params = inspect.signature(cls.wait_for_motion_complete).parameters
+        assert list(params)[1:] == ["timeout", "poll_interval"], cls.__name__
 
 
 def test_set_torque_enabled_signature_is_uniform_across_family():
@@ -368,3 +325,133 @@ def test_dynamixel_return_delay_is_written_in_two_us_units(delay_us, register):
 def test_dynamixel_rejects_an_unencodable_return_delay(delay_us):
     stub = types.SimpleNamespace(write_byte=lambda *a: pytest.fail("wrote an invalid delay"))
     assert DynamixelClient.change_return_delay_time(stub, 5, delay_us) is False
+
+
+def test_reboot_is_declared_uniformly_across_family():
+    """Clearing a latched fault in band is the same call on every client.
+
+    A caller offering recovery has to know whether the family can do it at
+    all before promising the operator anything, so the capability is declared
+    rather than discovered by catching an exception.
+    """
+    for cls in (DynamixelClient, FeetechClient, MockDynamixelClient,
+                MockFeetechClient):
+        assert cls.supports_reboot is True, cls.__name__
+        assert callable(getattr(cls, "reboot_motor", None)), cls.__name__
+
+    # A family without the instruction says so instead of silently no-opping:
+    # a caller that believed a fault was cleared would drive a dead motor.
+    assert MotorClient.supports_reboot is False
+    with pytest.raises(NotImplementedError, match="power-cycled"):
+        MotorClient.reboot_motor(types.SimpleNamespace(), 1)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: MockDynamixelClient([1, 2], port="mock", baudrate=1000000),
+    lambda: MockFeetechClient([1, 2], port="mock", baudrate=1000000),
+])
+def test_a_reboot_clears_that_motors_latch_and_leaves_the_others(make):
+    client = make()
+    client.connect()
+    try:
+        client.latched_errors = {1: 0x20, 2: 0x04}
+
+        client.reboot_motor(1)
+
+        assert client.read_hardware_error(1) == 0
+        assert client.read_hardware_error(2) == 0x04, "rebooted the wrong motor"
+        assert client.reboot_count[1] == 1
+    finally:
+        client.disconnect()
+
+
+def test_feetech_records_the_status_byte_it_already_receives():
+    """Every reply on that family carries the byte, so noticing a fault is
+    free - but logging it is not reporting it. A fault raised while the hand
+    is being driven must not be lost because nothing happened to be polling
+    the error register.
+    """
+    # The real client, unconnected: recording is bookkeeping on a byte the
+    # caller already has, so it needs no bus.
+    client = FeetechClient([1, 2], port="/dev/null", baudrate=1000000)
+    # Only the log line needs the handler; the recording is pure bookkeeping.
+    client.packet_handler = types.SimpleNamespace(
+        getRxPacketError=lambda error: f"status 0x{error:02X}")
+    assert client.take_hardware_alerts() == {}
+
+    client._log_status_error(1, 0x04, "sync read")
+    client._log_status_error(1, 0x04, "sync read")  # log throttled, still recorded
+    client._log_status_error(2, 0x20, "sync read")
+
+    assert client.take_hardware_alerts() == {1: 0x04, 2: 0x20}
+    assert client.take_hardware_alerts() == {}, "draining clears"
+
+
+def test_a_short_ping_reply_is_not_a_crash():
+    """A motor part way through a reboot answers the ping and then has nothing
+    to say about its model number. Indexing that blindly turned every
+    liveness check into an IndexError, which aborted a reboot before its RAM
+    was restored and left the motor at its protection current."""
+    from orca_core.hardware.feetech.protocol_packet_handler import (
+        protocol_packet_handler,
+    )
+
+    handler = protocol_packet_handler(portHandler=None, protocol_end=0)
+    handler.txRxPacket = lambda packet: ([], 0, 0)
+
+    for short in ([], [7], None):
+        handler.readTxRx = lambda scs_id, address, length: (short, 0, 0)
+        model, result, error = handler.ping(1)
+        assert model == 0, short
+        assert result == 0, "the ping itself answered; only the model is unknown"
+
+    # A full reply still reports the model.
+    handler.readTxRx = lambda scs_id, address, length: ([0x34, 0x12], 0, 0)
+    model, result, _ = handler.ping(1)
+    assert model == 0x1234
+
+
+# Methods the fault policy calls on a live client. Checked against the real
+# classes, not the mocks: a mock cannot catch a real client calling a helper
+# that no longer exists, which is how a renamed connection check shipped a
+# policy that died on its first poll and recovered nothing.
+_FAULT_POLICY_METHODS = (
+    "read_stop_mask",
+    "read_temperature_limits",
+    "hold_motor_off",
+    "release_motor",
+    "reboot_motor",
+    "read_hardware_error",
+    "take_hardware_alerts",
+)
+
+
+@pytest.mark.parametrize("cls", [DynamixelClient, FeetechClient])
+def test_the_fault_policy_methods_only_call_helpers_that_exist(cls):
+    """Every ``self.x`` these methods reach for must be on the class.
+
+    This is the one bug a mock cannot find: the method is never executed
+    against a real client in the suite, so a helper renamed underneath it
+    only shows up as an AttributeError on hardware.
+    """
+    import inspect
+    import re
+
+    # An unconnected instance, so attributes set in __init__ count as real.
+    # Nothing here is called; only the names are checked.
+    client = cls([1, 2], port="/dev/null", baudrate=1000000)
+
+    missing = []
+    for name in _FAULT_POLICY_METHODS:
+        method = getattr(cls, name, None)
+        if method is None or not callable(method):
+            continue
+        try:
+            source = inspect.getsource(method)
+        except (OSError, TypeError):
+            continue
+        for attribute in sorted(set(re.findall(r"self\.([A-Za-z_][A-Za-z0-9_]*)",
+                                               source))):
+            if not hasattr(client, attribute):
+                missing.append(f"{cls.__name__}.{name} -> self.{attribute}")
+    assert not missing, "calls that do not exist: " + ", ".join(missing)

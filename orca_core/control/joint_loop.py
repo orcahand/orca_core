@@ -393,11 +393,9 @@ class JointLoopThread:
             raise RuntimeError("no encoder-backed joints to control")
         # A zero ratio makes the joint→motor map a constant (silent no-op) and
         # a None limit becomes NaN motor targets; fail loudly instead.
+        calibration = self._hand.calibration
         uncalibrated = [
-            j for j in joints
-            if motor_limits.get(joint_to_motor[j]) is None
-            or any(limit is None for limit in motor_limits[joint_to_motor[j]])
-            or not ratios.get(joint_to_motor[j])
+            j for j in joints if not calibration._motor_ready(joint_to_motor[j])
         ]
         if uncalibrated:
             raise RuntimeError(

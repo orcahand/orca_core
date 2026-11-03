@@ -1,3 +1,5 @@
+import dataclasses as dc
+import logging
 import os
 import shutil
 
@@ -1048,3 +1050,45 @@ def test_calibration_result_drops_malformed_measured_rom_entries(tmp_path):
     )
     result = CalibrationResult.from_calibration_path(str(path), motor_ids=[1])
     assert result.joint_roms_measured_dict == {"index_pip": [-12.0, 107.0]}
+
+
+# ---------------------------------------------------------------------------
+# an unusable calibration entry on the read path
+# ---------------------------------------------------------------------------
+
+_DROPPED = object()
+
+
+@pytest.mark.parametrize(
+    "field, value, missing",
+    [
+        ("joint_to_motor_ratios_dict", None, "joint-to-motor ratio"),
+        ("joint_to_motor_ratios_dict", _DROPPED, "joint-to-motor ratio"),
+        ("motor_limits_dict", [], "motor limits"),
+    ],
+    ids=["ratio-none", "ratio-missing", "limits-empty"],
+)
+def test_an_unusable_entry_reads_as_uncalibrated_instead_of_raising(
+    calib_dir, caplog, field, value, missing
+):
+    hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
+    success, msg = hand.connect()
+    assert success, msg
+    try:
+        motor_id = hand.config.motor_ids[0]
+        joint = hand.config.motor_to_joint_dict[motor_id]
+        entries = dict(getattr(hand.calibration, field))
+        if value is _DROPPED:
+            del entries[motor_id]
+        else:
+            entries[motor_id] = value
+        hand.calibration = dc.replace(hand.calibration, **{field: entries})
+
+        with caplog.at_level(logging.WARNING, logger="orca_core.hardware_hand"):
+            positions = hand._motor_to_joint_pos(np.zeros(len(hand.config.motor_ids)))
+
+        assert positions[joint] is None
+        (record,) = caplog.records
+        assert f"(missing {missing})" in record.getMessage()
+    finally:
+        hand.disconnect()

@@ -28,10 +28,7 @@ def normalize_hardware_version(version: int | None) -> int | None:
         return None
     return version * 100 if version < 10 else version * 10 if version < 100 else version
 JOINT_ROM_DICT = "joint_roms"
-JOINT_INVERSION_DICT = "joint_inversion"
 MOTOR_LIMITS_DICT = "motor_limits"
-MOTOR_TO_JOINT_DICT = "motor_to_joint"
-MOTOR_TO_JOINT_RATIOS_DICT = "motor_to_joint_ratios"
 
 DYNAMIXEL = "dynamixel"
 FEETECH = "feetech"
@@ -53,6 +50,7 @@ DEFAULT_GUIDED_TENSION_CURRENTS = {
     "feetech": {"hold": {"abd": 380, "mcp": 320, "pip": 280}, "tension": 580},
 }
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
+DRIVE_CURRENT_MEASURED = "drive_current_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
 
 # Current the calibration routine retries a short-travel joint at, as a
@@ -113,6 +111,11 @@ KNOWN_VIDS: dict[str, list[int]] = {
         0x2F5D,  # ORCA Dexterity hand controller board (dual-CDC; PID 0x2202)
     ],
 }
+
+def motor_family_vids() -> "set[int]":
+    """USB vendor IDs of every supported motor family's adapters."""
+    return {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}
+
 
 # The hand's controller board exposes two CDCs sharing VID/PID; ORCA_ID_QUERY
 # lets the host distinguish motor vs sensor.

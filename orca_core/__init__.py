@@ -26,7 +26,8 @@ from .hardware_hand_sensing import (
 from .hand_factory import HandDetection, detect_hand, load_hand
 from .hardware.joint_encoder_client import EncodersNotAvailableError
 from .hardware.motor_client import MotorRead
-from .hardware.sensing.types import LinkHealth, TaxelData
+from .hardware.sensing.types import FingertipHealth, LinkHealth, TaxelData
+from .hardware.tactile_client import TactileBoardError
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform, frames
 from .version import LATEST_VERSION
@@ -50,6 +51,8 @@ __all__ = [
     "JointFeedbackConnectError",
     "EncodersNotAvailableError",
     "LinkHealth",
+    "FingertipHealth",
+    "TactileBoardError",
     "MotorRead",
     "load_hand",
     "detect_hand",

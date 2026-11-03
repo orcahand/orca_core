@@ -14,7 +14,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from ...constants import (
     KNOWN_VIDS,
@@ -29,6 +29,7 @@ from ...constants import (
     normalize_hardware_version,
 )
 from .constants import (
+    AUTO_ENC_FRAME_SIZE,
     AUTO_FRAME_META_SIZE,
     DEFAULT_ENCODER_BAUDRATE,
     DEFAULT_SENSOR_BAUDRATE,
@@ -36,6 +37,7 @@ from .constants import (
     MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     PROTOCOL_HEADER_AUTO_ENC,
 )
+from .encoder_protocol import parse_encoder_frame
 from .framing import calculate_checksum
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,42 @@ motor family.
 """
 
 
+def _query_link(
+    link,
+    timeout: float,
+    query: bytes,
+    is_complete: "Callable[[bytearray], bool]",
+) -> Optional[bytes]:
+    """Send ``query`` on an open ``link`` and return the reply once ``is_complete`` accepts it, else ``None`` at the timeout."""
+    link.reset_input_buffer()
+    link.write(query)
+    link.flush()
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = link.read(256)
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if is_complete(buf):
+            return bytes(buf)
+    return None
+
+
+def _query_until(
+    port: str,
+    baudrate: int,
+    timeout: float,
+    query: bytes,
+    is_complete: "Callable[[bytearray], bool]",
+) -> Optional[bytes]:
+    """Open ``port`` exclusively and query it with :func:`_query_link`."""
+    import serial
+
+    with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
+        return _query_link(link, timeout, query, is_complete)
+
+
 def motor_baud_rates_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
     """Rates the transport behind an already-open ``link`` can carry.
 
@@ -136,23 +174,33 @@ def motor_baud_rates_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
     the answer.
     """
     try:
-        link.reset_input_buffer()
-        link.write(ORCA_ID_QUERY)
-        link.flush()
-        deadline = time.monotonic() + timeout
-        buf = bytearray()
-        while time.monotonic() < deadline:
-            chunk = link.read(256)
-            if not chunk:
-                continue
-            buf.extend(chunk)
-            if ORCA_ID_RESP_MOTOR in buf:
-                return OH_BOARD_MOTOR_BAUD_RATES
-            if ORCA_ID_RESP_SENSOR in buf:
-                return None  # the motor bus is not behind this port at all
+        reply = _query_link(
+            link, timeout, ORCA_ID_QUERY,
+            lambda buf: ORCA_ID_RESP_MOTOR in buf or ORCA_ID_RESP_SENSOR in buf)
     except Exception as exc:
         logger.debug("in-band transport probe failed: %s", exc)
+        return None
+    # A sensor reply means the motor bus is not behind this port at all.
+    if reply is not None and ORCA_ID_RESP_MOTOR in reply:
+        return OH_BOARD_MOTOR_BAUD_RATES
     return None
+
+
+def _info_line(buf: "bytes | bytearray") -> Optional[bytes]:
+    """The first complete ``ORCA:<role>...`` line in ``buf``, or ``None``."""
+    for marker in (ORCA_INFO_MARKER_MOTOR, ORCA_INFO_MARKER_SENSOR):
+        start = buf.find(marker)
+        if start < 0:
+            continue
+        end = buf.find(b"\n", start)
+        if end < 0:
+            return None  # line still incomplete; keep reading
+        return bytes(buf[start:end])
+    return None
+
+
+def _info_line_ready(buf: bytearray) -> bool:
+    return _info_line(buf) is not None
 
 
 def probe_orca_info(
@@ -171,28 +219,12 @@ def probe_orca_info(
     import serial
 
     try:
-        with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
-            link.reset_input_buffer()
-            link.write(ORCA_INFO_QUERY)
-            link.flush()
-            deadline = time.monotonic() + timeout
-            buf = bytearray()
-            while time.monotonic() < deadline:
-                chunk = link.read(256)
-                if not chunk:
-                    continue
-                buf.extend(chunk)
-                for marker in (ORCA_INFO_MARKER_MOTOR, ORCA_INFO_MARKER_SENSOR):
-                    start = buf.find(marker)
-                    if start < 0:
-                        continue
-                    end = buf.find(b"\n", start)
-                    if end < 0:
-                        break  # line still incomplete; keep reading
-                    return parse_orca_info(bytes(buf[start:end]))
+        reply = _query_until(port, baudrate, timeout, ORCA_INFO_QUERY, _info_line_ready)
     except (OSError, serial.SerialException) as exc:
         logger.debug("ORCA_INFO? probe on %s failed: %s", port, exc)
         return None
+    if reply is not None:
+        return parse_orca_info(_info_line(reply))
 
     resp = _probe_orca_id(port, baudrate=baudrate, timeout=timeout)
     if resp == ORCA_ID_RESP_MOTOR:
@@ -234,26 +266,16 @@ def _probe_orca_id(
     import serial
 
     try:
-        # exclusive=True: skip a port another client already holds instead of
-        # writing onto its live bus.
-        with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
-            link.reset_input_buffer()
-            link.write(ORCA_ID_QUERY)
-            link.flush()
-            deadline = time.monotonic() + timeout
-            buf = bytearray()
-            while time.monotonic() < deadline:
-                chunk = link.read(256)
-                if chunk:
-                    buf.extend(chunk)
-                    if ORCA_ID_RESP_MOTOR in buf:
-                        return ORCA_ID_RESP_MOTOR
-                    if ORCA_ID_RESP_SENSOR in buf:
-                        return ORCA_ID_RESP_SENSOR
-            return None
+        reply = _query_until(
+            port, baudrate, timeout, ORCA_ID_QUERY,
+            lambda buf: ORCA_ID_RESP_MOTOR in buf or ORCA_ID_RESP_SENSOR in buf,
+        )
     except (OSError, serial.SerialException) as exc:
         logger.debug("ORCA_ID? probe on %s failed: %s", port, exc)
         return None
+    if reply is None:
+        return None
+    return ORCA_ID_RESP_MOTOR if ORCA_ID_RESP_MOTOR in reply else ORCA_ID_RESP_SENSOR
 
 
 # EACCES is deliberately absent on POSIX: there it means missing device
@@ -362,7 +384,7 @@ def baud_for_port(port: str) -> int:
 def _tactile_responds_at(port: str, baud: int) -> bool:
     """True if a tactile register read succeeds on ``port`` at ``baud``.
 
-    The port is opened exclusively (see :func:`_probe_orca_id`); a busy port
+    The port is opened exclusively (see :func:`_query_until`); a busy port
     is quietly treated as "does not respond".
     """
     # Imported here to avoid a circular import at module load.
@@ -387,25 +409,19 @@ def _tactile_responds_at(port: str, baud: int) -> bool:
 
 
 ORCA_ID_PROBE_ATTEMPTS = 3
-"""Passes over the controller-board CDCs when probing ORCA_ID?. The probe is
-racy on macOS composite CDC devices (an occasional empty read), so a few
-passes make detection reliable without masking a genuinely absent or
-silent board."""
+"""Passes over the controller-board CDCs when probing ORCA_ID?, and the passes
+``detect_hand`` makes with ORCA_INFO?. The probe is racy on macOS composite CDC
+devices (an occasional empty read), so a few passes make detection reliable
+without masking a genuinely absent or silent board."""
 
 
 def _find_oh_board_port(expected_resp: bytes) -> Optional[str]:
     """Return the controller-board CDC whose ``ORCA_ID?`` reply matches
     ``expected_resp``."""
-    import serial.tools.list_ports
-
-    oh_candidates = [
-        p for p in serial.tools.list_ports.comports()
-        if p.vid in KNOWN_VIDS["oh_board"]
-    ]
     for _ in range(ORCA_ID_PROBE_ATTEMPTS):
-        for candidate in oh_candidates:
-            if _probe_orca_id(candidate.device) == expected_resp:
-                return candidate.device
+        for device in oh_board_ports():
+            if _probe_orca_id(device) == expected_resp:
+                return device
     return None
 
 
@@ -428,8 +444,10 @@ def detect_encoder_stream(
     baudrate: int = DEFAULT_ENCODER_BAUDRATE,
     timeout: float = 0.3,
 ) -> bool:
-    """True iff an LRC-valid AA A9 encoder frame arrives on ``port``.
+    """True iff an AA A9 frame on ``port`` carries at least one live encoder.
 
+    Connector boards stream AA A9 even with no encoders wired; there every
+    slot reads 0xFFFF with the error flag, so frames alone prove nothing.
     Passive (nothing is written) and opened exclusively; a busy or
     unopenable port returns False.
     """
@@ -445,16 +463,27 @@ def detect_encoder_stream(
                 if not chunk:
                     continue
                 buf.extend(chunk)
-                if _contains_valid_encoder_frame(buf):
+                if _contains_live_encoder_frame(buf):
                     return True
+                # Every complete frame has been judged; only a partial one can remain.
+                del buf[:-(AUTO_ENC_FRAME_SIZE - 1)]
             return False
     except (OSError, serial.SerialException) as exc:
         logger.debug("encoder-stream probe on %s failed: %s", port, exc)
         return False
 
 
-def _contains_valid_encoder_frame(data: bytes) -> bool:
-    """Scan ``data`` for one complete, LRC-valid AA A9 frame (mirrors the ``HandSerialLink`` demuxer)."""
+def _has_live_slot(frame: bytes) -> bool:
+    """True if any slot reads a valid angle: even parity and no error flag."""
+    try:
+        reading = parse_encoder_frame(frame)
+    except IOError:
+        return False
+    return bool((reading.parity_ok & ~reading.angle_error).any())
+
+
+def _contains_live_encoder_frame(data: bytes) -> bool:
+    """Scan ``data`` for a complete, LRC-valid AA A9 frame with a live slot (resyncs like the ``HandSerialLink`` demuxer)."""
     start = 0
     while True:
         start = data.find(PROTOCOL_HEADER_AUTO_ENC, start)
@@ -471,7 +500,7 @@ def _contains_valid_encoder_frame(data: bytes) -> bool:
             and len(data) >= frame_end
         ):
             frame = data[start:frame_end]
-            if calculate_checksum(frame[:-1]) == frame[-1]:
+            if calculate_checksum(frame[:-1]) == frame[-1] and _has_live_slot(frame):
                 return True
         start += 1  # resync one byte forward, like the demuxer
 

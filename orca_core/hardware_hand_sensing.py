@@ -46,18 +46,20 @@ from .hardware.hand_serial_link import HandSerialLink
 from .hardware.joint_encoder_client import JointEncoderClient, JointFeedbackConnectError
 from .hardware.sensing.constants import (
     JOINT_ENCODER_POLARITY_BY_SIDE,
+    SENSOR_ZERO_SETTLE_S,
     TACTILE_PORT_OPEN_SETTLE_S,
 )
 from .hardware.sensing.serial_discovery import baud_for_port, resolve_sensing_ports
 from .hardware.sensing.taxel_geometry import TaxelGeometry
 from .hardware.sensing.types import (
+    FingertipHealth,
     LinkHealth,
     ResultantReading,
     TactileReading,
     TaxelData,
     TaxelReading,
 )
-from .hardware.tactile_client import TactileStreamStats, TactileClient, TactileSensorConfiguration
+from .hardware.tactile_client import TactileBoardError, TactileStreamStats, TactileClient, TactileSensorConfiguration
 from .hardware_hand import MockMotorResolutionMixin, OrcaHand
 from .joint_position import OrcaJointPositions
 from .kinematics import HandKinematics, Transform
@@ -96,6 +98,8 @@ class OrcaHandTouch(OrcaHand):
     # Wait after opening the sensor port, before the first register request.
     # Mock classes zero it: an in-memory link asserts no DTR and never resets.
     _tactile_port_open_settle_s = TACTILE_PORT_OPEN_SETTLE_S
+    # Wait after a sensor zero before the host baseline; mock classes zero it.
+    _sensor_zero_settle_s = SENSOR_ZERO_SETTLE_S
 
     def __init__(
         self,
@@ -272,7 +276,11 @@ class OrcaHandTouch(OrcaHand):
 
     def get_tactile_taxels(self) -> TaxelReading | None:
         """Return the latest per-taxel ``TaxelReading``, or ``None`` if no
-        sensor is connected or no frame has arrived yet."""
+        sensor is connected or no frame has arrived yet.
+
+        Each taxel's force is in that taxel's own local axes (fz along its
+        surface normal); :meth:`get_taxel_data` rotates them into a common frame.
+        """
         if self._tactile_client is None:
             return None
         return self._tactile_client.get_latest_taxels()
@@ -296,17 +304,47 @@ class OrcaHandTouch(OrcaHand):
 
     def zero_tactile_sensors(
         self, num_samples: int = 100, timeout_s: float | None = None,
-        gate_noise: bool = True,
+        gate_noise: bool = True, sensor_zero: bool = True,
     ) -> dict:
         """Capture current readings as zero baseline and return offsets.
 
         ``timeout_s`` bounds the wait for stream frames; ``None`` derives a
         deadline from ``num_samples``. ``gate_noise`` also measures each
         taxel's dither from the same frames and gates readings below it.
+
+        With ``sensor_zero`` and a board that supports it (connector firmware
+        1.0+), the fingertips first zero themselves, which also clears a phantom
+        left by powering up under load; the host baseline then captures what
+        remains. The fingertips must be unloaded: a sensor zero under load leaves
+        a phantom after release that ``clear_tactile_zero`` can't remove (zero
+        again unloaded, or power-cycle the hand).
         """
-        return self._require_tactile_client().capture_taxel_offsets(
+        client = self._require_tactile_client()
+        if sensor_zero and client.supports_sensor_zero:
+            try:
+                refused = {f: s for f, s in client.zero_sensors().items() if s != 0}
+                if refused:
+                    logger.warning(f"Fingertips that didn't confirm the sensor zero (status by finger): {refused}")
+            except TactileBoardError as e:
+                logger.warning(f"Sensor zero failed, using the host baseline only: {e}")
+            time.sleep(self._sensor_zero_settle_s)
+        return client.capture_taxel_offsets(
             num_samples=num_samples, timeout_s=timeout_s, gate_noise=gate_noise,
         )
+
+    def get_fingertip_health(self) -> Dict[str, FingertipHealth] | None:
+        """Each fingertip's error report and bus counters, or ``None`` when the
+        sensing board can't report them (connector firmware before 1.0, Paxini boards)."""
+        return self._require_tactile_client().read_fingertip_health()
+
+    def reboot_tactile_board(self) -> None:
+        """Reboot the connector board that carries the tactile stream.
+
+        The fingertips stay powered and keep their zero; a running tactile stream
+        resumes. Refused on a hand whose joint-feedback loop runs, since the
+        encoder stream on the same board stops for about 20 ms.
+        """
+        self._require_tactile_client().reboot_board()
 
     def clear_tactile_zero(self) -> None:
         self._require_tactile_client().clear_taxel_offsets()
@@ -327,15 +365,16 @@ class OrcaHandTouch(OrcaHand):
         return _link_health(self._tactile_link)
 
     def get_taxel_geometry(self) -> Dict[str, TaxelGeometry]:
-        """Return static per-taxel positions ``{finger: TaxelGeometry}`` for connected fingers.
+        """Return static per-taxel geometry ``{finger: TaxelGeometry}`` for connected fingers.
 
-        Positions are fixed sensor geometry in the sensor frame (meters) and
-        row ``i`` aligns with taxel ``i`` from :meth:`get_tactile_taxels`, so
-        the two join by index::
+        Positions (meters) and per-taxel force axes are fixed sensor geometry in
+        the sensor frame, and row ``i`` aligns with taxel ``i`` from
+        :meth:`get_tactile_taxels`, so the two join by index::
 
-            geom = hand.get_taxel_geometry()["index"].positions   # (n, 3)
-            forces = hand.get_tactile_taxels().as_array("index")  # (n, 3)
-            combined = np.hstack([geom, forces])                  # (n, 6)
+            geom = hand.get_taxel_geometry()["index"]
+            local = hand.get_tactile_taxels().as_array("index")  # (n, 3), taxel axes
+            forces = geom.rotate_forces(local)                    # (n, 3), sensor frame
+            combined = np.hstack([geom.positions, forces])        # (n, 6)
 
         Empty if the tactile sensor is not connected/configured.
         """
@@ -416,8 +455,10 @@ class OrcaHandTouch(OrcaHand):
 
         Positions (meters) come from the static sensor geometry and forces
         (Newtons) from the latest tactile stream frame; row ``i`` of both
-        describes the same taxel. Positions get the full rigid transform into
-        ``frame``; forces, being free vectors, are only rotated. See
+        describes the same taxel. Each force is first rotated out of its
+        taxel's local axes into the sensor frame. Positions then get the full
+        rigid transform into ``frame``; forces, being free vectors, are only
+        rotated. See
         :meth:`get_sensor_transforms` for the available frames and how joint
         angles are sourced. Returns ``None`` if no stream frame has arrived
         yet; fingers whose geometry does not match the streamed taxel count
@@ -444,6 +485,7 @@ class OrcaHandTouch(OrcaHand):
             forces = reading.as_array(finger)
             if len(positions) != len(forces):
                 continue
+            forces = geometry[finger].rotate_forces(forces)
             if is_sensor_frame:
                 transformed_positions, transformed_forces = positions, forces
             else:
@@ -599,19 +641,11 @@ class OrcaHandJointFeedback(OrcaHand):
         """Encoder-backed joints calibrated well enough to close the loop on:
         motor limits + nonzero joint-to-motor ratio + an encoder anchor."""
         encoder_cal = self.calibration.joint_encoder_calibration_dict
-        ratios = self.calibration.joint_to_motor_ratios_dict
-        ready: List[str] = []
-        for joint in self._encoder_backed_joints():
-            if joint not in encoder_cal:
-                continue
-            motor_id = self.config.joint_to_motor_map.get(joint)
-            limits = self.motor_limits_dict.get(motor_id)
-            if not limits or any(limit is None for limit in limits):
-                continue
-            if not ratios.get(motor_id):
-                continue
-            ready.append(joint)
-        return ready
+        return [
+            joint for joint in self._encoder_backed_joints()
+            if joint in encoder_cal
+            and self.calibration._motor_ready(self.config.joint_to_motor_map.get(joint))
+        ]
 
     @property
     def loop_joint_names(self) -> Optional[List[str]]:
@@ -658,15 +692,8 @@ class OrcaHandJointFeedback(OrcaHand):
                 tactile_override="disabled",
                 encoder_override=self.config.encoder_serial_port,
             )
-            if ports.encoder is None:
-                raise JointFeedbackConnectError(
-                    "No encoder serial port resolved "
-                    f"(encoder_serial_port={self.config.encoder_serial_port!r})."
-                )
-
-            self._encoder_link = self._create_encoder_link(ports.encoder)
-            self._encoder_link.connect()
-            self._attach_encoders(self._encoder_link)
+            self._require_encoder_port(ports)
+            self._open_encoder_link(ports.encoder)
         except Exception:
             self._teardown_joint_feedback()
             # Roll back the motor bus super().connect() opened so the caller
@@ -677,10 +704,26 @@ class OrcaHandJointFeedback(OrcaHand):
                 logger.exception("super().disconnect() failed during connect rollback")
             raise
 
-        return True, f"{msg} | Joint feedback loop running on {ports.encoder}" + (
-            f" (motor-only: {', '.join(self._loop_skipped_joints)})"
-            if self._loop_skipped_joints else ""
-        )
+        return True, f"{msg} | Joint feedback loop running on {ports.encoder}{self._loop_note()}"
+
+    def _require_encoder_port(self, ports) -> None:
+        if ports.encoder is None:
+            raise JointFeedbackConnectError(
+                "No encoder serial port resolved "
+                f"(encoder_serial_port={self.config.encoder_serial_port!r})."
+            )
+
+    def _open_encoder_link(self, port: str) -> None:
+        """Open the encoder link on ``port`` and attach the encoder stream and loop to it."""
+        self._encoder_link = self._create_encoder_link(port)
+        self._encoder_link.connect()
+        self._attach_encoders(self._encoder_link)
+
+    def _loop_note(self) -> str:
+        """Connect-message suffix naming the joints that run without the loop."""
+        if not self._loop_skipped_joints:
+            return ""
+        return f" (motor-only: {', '.join(self._loop_skipped_joints)})"
 
     def disconnect(self) -> tuple[bool, str]:
         self._teardown_joint_feedback()
@@ -899,8 +942,7 @@ class OrcaHandJointFeedback(OrcaHand):
         Raises :class:`RuntimeError` when the joint loop isn't active and
         :class:`ValueError` on a joint the loop isn't controlling.
         """
-        if self._controller is None:
-            raise RuntimeError("joint loop not running; call connect() first")
+        self._require_loop()
         current = self._controller.get_gains()
         self._controller.set_gains(
             Kp=self._resolve_gain(Kp, current["Kp"], "Kp"),
@@ -946,8 +988,7 @@ class OrcaHandJointFeedback(OrcaHand):
 
         Raises :class:`RuntimeError` when the joint loop isn't active.
         """
-        if self._controller is None:
-            raise RuntimeError("joint loop not running; call connect() first")
+        self._require_loop()
         gains = self._controller.get_gains()
         return {
             joint: JointGains(
@@ -963,13 +1004,15 @@ class OrcaHandJointFeedback(OrcaHand):
         fresh feed-forward bias, integral reset). Call after the motors have
         moved out from under the loop — e.g. torque was disabled to hand-pose
         the hand — so re-enabling torque doesn't lurch."""
-        if self._loop is None:
-            raise RuntimeError("joint loop not running; call connect() first")
+        self._require_loop()
         self._loop.rebase()
 
-    def _require_live_loop(self) -> None:
+    def _require_loop(self) -> None:
         if self._loop is None:
             raise RuntimeError("joint loop not running; call connect() first")
+
+    def _require_live_loop(self) -> None:
+        self._require_loop()
         if self._loop.get_stats()["fallback_active"]:
             raise RuntimeError(
                 "joint loop e-stopped; its measurements are frozen. Use "
@@ -1004,8 +1047,7 @@ class OrcaHandJointFeedback(OrcaHand):
     def get_loop_stats(self) -> Dict[str, float]:
         """Diagnostic counters from the joint-loop thread (cycles_ok,
         cycles_overrun, e_stops, last_dt_s, fallback_active, …)."""
-        if self._loop is None:
-            raise RuntimeError("joint loop not running; call connect() first")
+        self._require_loop()
         return self._loop.get_stats()
 
 
@@ -1023,6 +1065,14 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
     """
 
     config_cls = OrcaHandTouchConfig
+
+    def reboot_tactile_board(self) -> None:
+        if self._loop is not None:
+            raise RuntimeError(
+                "reboot_tactile_board() while the joint-feedback loop is running is not "
+                "supported: the encoder stream on the same board stops for about 20 ms."
+            )
+        super().reboot_tactile_board()
 
     def connect(
         self, interactive: bool = True, engage_feedback: bool = True
@@ -1064,20 +1114,14 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
                 encoder_override=self.config.encoder_serial_port,
                 tactile_baud_override=self.config.sensor_baudrate,
             )
-            if ports.encoder is None:
-                raise JointFeedbackConnectError(
-                    "No encoder serial port resolved "
-                    f"(encoder_serial_port={self.config.encoder_serial_port!r})."
-                )
+            self._require_encoder_port(ports)
             if ports.tactile is None:
                 raise RuntimeError(
                     "No tactile sensor port resolved "
                     f"(sensors.port={self.config.sensor_port!r})."
                 )
 
-            self._encoder_link = self._create_encoder_link(ports.encoder)
-            self._encoder_link.connect()
-            self._attach_encoders(self._encoder_link)
+            self._open_encoder_link(ports.encoder)
 
             if ports.shared:
                 # One link carries both streams: attach tactile onto the encoder
@@ -1101,12 +1145,8 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
                 logger.exception("motor disconnect failed during connect rollback")
             raise
 
-        loop_note = (
-            f" (motor-only: {', '.join(self._loop_skipped_joints)})"
-            if self._loop_skipped_joints else ""
-        )
         return True, (
-            f"{msg} | Joint feedback loop running on {ports.encoder}{loop_note} "
+            f"{msg} | Joint feedback loop running on {ports.encoder}{self._loop_note()} "
             f"| Tactile on {tactile_where}"
         )
 
@@ -1137,9 +1177,13 @@ class OrcaHandFull(OrcaHandTouch, OrcaHandJointFeedback):
     def get_tactile_link_health(self) -> LinkHealth | None:
         """Health of the link carrying the tactile stream — the shared
         encoder link when both streams ride one port."""
-        if self._tactile_link is None and self._tactile_client is not None:
-            return _link_health(self._encoder_link)
-        return super().get_tactile_link_health()
+        if self._tactile_client is None:
+            return super().get_tactile_link_health()
+        return _link_health(self._tactile_stream_link())
+
+    def _tactile_stream_link(self):
+        """The link carrying the tactile stream: the encoder link when tactile has none of its own."""
+        return self._encoder_link if self._tactile_link is None else self._tactile_link
 
     def disconnect(self) -> tuple[bool, str]:
         """Tear down in dependency order: tactile first (its ``stop_stream()``
@@ -1186,6 +1230,7 @@ class MockOrcaHandTouch(MockMotorResolutionMixin, OrcaHandTouch):
     """
 
     _tactile_port_open_settle_s = 0.0
+    _sensor_zero_settle_s = 0.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1319,6 +1364,5 @@ class MockOrcaHandFull(MockOrcaHandTouch, MockOrcaHandJointFeedback, OrcaHandFul
     def tactile_mock_link(self) -> "MockHandSerialLink":
         """The mock link carrying the tactile stream — the shared encoder
         link when both streams ride one port."""
-        if self._tactile_link is None and self._encoder_link is not None:
-            return self._encoder_link
-        return super().tactile_mock_link
+        link = self._tactile_stream_link()
+        return link if link is not None else super().tactile_mock_link

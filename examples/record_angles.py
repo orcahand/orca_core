@@ -1,27 +1,21 @@
 
 
 import argparse
-import time
-from pathlib import Path
 
 import yaml
 
 from orca_core.utils.cli import (
     add_hand_arguments,
+    build_recording_path,
     connect_hand,
     create_hand_from_args,
     prepare_output_dir,
+    recording_metadata,
     shutdown_hand,
 )
 
 # Fraction of dropped captures above which the recording is not worth saving.
 MAX_STALE_FRACTION = 0.1
-
-
-def _build_output_path(output_dir: Path, prefix: str) -> Path:
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    stem = f"{prefix}_replay_sequence_{timestamp}" if prefix else f"replay_sequence_{timestamp}"
-    return output_dir / f"{stem}.yaml"
 
 
 def main() -> int:
@@ -47,7 +41,7 @@ def main() -> int:
         "Enter an optional filename prefix "
         "(for example 'pinch_demo'). Press Enter to skip: "
     ).strip()
-    output_path = _build_output_path(output_dir, prefix)
+    output_path = build_recording_path(output_dir, "replay_sequence", prefix)
 
     # Recording backdrives the hand with torque off, which a running joint
     # loop would fight and wind its integrator up against.
@@ -90,12 +84,7 @@ def main() -> int:
             )
         elif replay_buffer:
             payload = {
-                "metadata": {
-                    "type": "discrete_waypoints",
-                    "created_at": time.strftime("%Y%m%d_%H%M%S"),
-                    "joint_ids": hand.config.joint_ids,
-                    "hand_type": hand.config.type,
-                },
+                "metadata": recording_metadata("discrete_waypoints", hand),
                 "waypoints": replay_buffer,
             }
             output_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

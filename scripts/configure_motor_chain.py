@@ -37,6 +37,7 @@ from orca_core.maintenance import (
     set_all_return_delays,
     valid_baudrates,
 )
+from orca_core.maintenance.motor_chain import OTHER_RATES_AFTER_S, reset_motor_to_factory, survey_bus
 from orca_core.utils import (
     enable_ansi_escapes,
     get_and_choose_port,
@@ -97,7 +98,8 @@ def on_progress(event: dict) -> None:
     if name == "probing_motor_type":
         print(f"  Probing {event['motor_type']} (ID {event['motor_id']} @ {event['baudrate']})...")
     elif name == "motor_type_detected":
-        print(f"{GREEN}✓ Detected {event['motor_type']} motors.{RESET}\n")
+        how = " (from the configured chain)" if event.get("configured") else ""
+        print(f"{GREEN}✓ Detected {event['motor_type']} motors{how}.{RESET}\n")
     elif name == "probe_failed":
         print(f"{YELLOW}  probe of {event['motor_type']} failed: {event['error']}{RESET}")
     elif name == "chain_started":
@@ -131,12 +133,70 @@ def on_progress(event: dict) -> None:
     elif name == "duplicate_default_motor":
         print(f"{RED}❌ A factory-default motor still answers (at {event['baudrate']:,} bps) "
               f"after programming ID {event['target_id']}.{RESET}")
+    elif name == "still_waiting":
+        checked = "; ".join(event.get("checked") or ["the factory defaults"])
+        soon = ("" if event.get("other_rates")
+                else f" Other baud rates join after {OTHER_RATES_AFTER_S:.0f}s.")
+        print(f"{YELLOW}   … still waiting for a factory-default {event['expected_model']} "
+              f"({event['elapsed_s']}s). Nothing at the factory defaults; nothing else this run "
+              f"could take (checked {checked}).{soon}{RESET}")
+        if event.get("escalated"):
+            print(f"{YELLOW}     Every survey is now the widest. If a motor is connected, it may "
+                  f"be at an ID and baud outside what is checked: Ctrl+C and run this script "
+                  f"with --scan to list everything on the bus.{RESET}")
+    elif name == "survey_progress":
+        found = ", ".join(f"ID {m['id']} {m['model_name']}" for m in event["motors"]) or "—"
+        print(f"   {event['motor_type']:<10} @ {event['baudrate']:>9,} bps: {found}")
+    elif name == "half_programmed_motor_adopted":
+        print(f"{GREEN}✓ Found a motor left at the default ID but already at the target baud "
+              f"(an interrupted run) — finishing it as ID {event['target_id']}.{RESET}")
+    elif name == "stray_motor_reset":
+        m = event["motor"]
+        print(f"{YELLOW}↺ Motor ID {m['id']} ({m['model_name']} @ {m['baud_rate']:,} bps) is not "
+              f"part of this chain — reset to factory defaults; it will be programmed next.{RESET}")
+    elif name == "stray_motor_reset_failed":
+        m = event["motor"]
+        print(f"{RED}❌ Could not reset motor ID {m['id']} @ {m['baud_rate']:,} bps: "
+              f"{event['error']} — unplug it.{RESET}")
+    elif name == "configured_motor_missing":
+        print(f"{RED}⚠ Configured motor(s) {event['missing']} stopped answering — check their "
+              f"connectors and power.{RESET}")
+    elif name == "configured_motors_back":
+        print(f"{GREEN}✓ Motor(s) {event['motor_ids']} answer again.{RESET}")
+    elif name == "chain_shortened":
+        behind = (f" Motor(s) {event['stranded']} behind the gap rejoin once it closes."
+                  if event["stranded"] else "")
+        print(f"{YELLOW}↩ Chain is now {sorted(event['configured_ids'], reverse=True)}: "
+              f"motor(s) {event['missing']} dropped off. Reconnect them, or plug a fresh motor "
+              f"into that slot.{behind}{RESET}")
+    elif name == "configured_motor_returned":
+        print(f"{GREEN}✓ Motor {event['target_id']} answers again — carrying on.{RESET}")
+    elif name == "port_lost":
+        print(f"{RED}⚠ {event['port']} disappeared — check the USB cable and board power. "
+              f"Waiting for it to come back…{RESET}")
+    elif name == "write_retry":
+        what = "ID" if event["setting"] == "id" else "baud rate"
+        print(f"{YELLOW}   The motor did not take the {what} write (attempt {event['attempt']}); "
+              f"retrying…{RESET}")
+    elif name == "verify_retry":
+        print(f"{YELLOW}   Chain check missed {event['missing']}; scanning again…{RESET}")
+    elif name == "bus_error":
+        print(f"{RED}⚠ Bus error while scanning (attempt {event['attempt']}): {event['error']}"
+              f" — trying again.{RESET}")
+    elif name == "verify_failed":
+        print(f"{RED}⚠ {event['error']}{RESET}")
+        print(f"{YELLOW}   Re-reading the chain from the bus…{RESET}")
+    elif name == "phantom_baud":
+        print(f"{YELLOW}   The bus does not switch to {event['baudrate']:,} bps (the chain's own "
+              f"motors {event['motor_ids']} answered there); that rate is skipped from now on.{RESET}")
     elif name == "motor_configured":
         print(f"{GREEN}✓ Configured motor → ID={event['target_id']}, "
               f"baudrate={event['baudrate']:,}{RESET}")
         play_success_beep()
     elif name == "motor_updated":
-        _print_motor_row(event["motor"])
+        m = event["motor"]
+        print(f"{GREEN}   ↺ ID {m['id']:2d} ({m['model_name']} @ {m['baud_rate']:,} bps) → "
+              f"factory defaults{RESET}")
     elif name == "motor_update_failed":
         print(f"{RED}❌ Motor {event['motor']['id']}: {event['error']}{RESET}")
     elif name == "chain_done":
@@ -177,15 +237,17 @@ def _resolve_motor_type(explicit: str | None, config: dict, port: str) -> str:
     """--motor-type wins, then whichever family answers at its factory defaults,
     then the config's pinned family.
 
-    The bus decides for a fresh chain: a config names the family the model was
-    written for, not the one this hand was built from. Only a resumed run —
-    whose motors have already moved off the factory defaults, so nothing answers
-    the probe — falls back to what the config declares.
+    The bus decides: a config names the family the model was written for, not
+    the one this hand was built from. A fresh chain answers at a family's
+    factory defaults; a resumed one, whose motors have all moved off them,
+    answers as the chain the config describes. Only a silent bus falls back to
+    what the config declares.
     """
     if explicit is not None:
         return explicit
     print(f"\n{BOLD}Auto-detecting motor family on {port}...{RESET}")
-    detected = detect_motor_type(port, progress_callback=on_progress)
+    print("   (factory defaults first, then the chain this config describes)")
+    detected = detect_motor_type(port, progress_callback=on_progress, chain_config=config)
     configured = config.get('motor_type')
     if detected is not None:
         if configured is not None and configured != detected:
@@ -197,9 +259,10 @@ def _resolve_motor_type(explicit: str | None, config: dict, port: str) -> str:
               f"family: {configured}{RESET}")
         return configured
     raise SystemExit(
-        f"\n{RED}❌ No motors responded at either family's factory defaults.{RESET}\n"
-        "   Check power, wiring, and that motors are still at factory defaults\n"
-        "   (re-runs of this script change them). Or pass --motor-type explicitly."
+        f"\n{RED}❌ No motors responded at either family's factory defaults, nor as the "
+        f"chain this config describes.{RESET}\n"
+        "   Check power and wiring. To see what is on the bus at any ID and baud, run\n"
+        "   this script with --scan. Or pass --motor-type explicitly."
     )
 
 
@@ -237,6 +300,47 @@ def _loop_until_interrupt(label: str, once) -> int:
     return 0
 
 
+def _reset_until_interrupt(plan) -> int:
+    """Reset every motor on the bus, then keep sweeping for more until Ctrl+C.
+
+    Each pass sweeps IDs 1-40 at the chain's rate and the factory rate; the
+    other rates join once nothing has turned up for a while.
+    """
+    print(f"\n🔍 Resetting every motor on the bus to ID {plan.default_id} @ "
+          f"{plan.default_baud:,} bps — connect more at any time; {BOLD}Ctrl+C{RESET} when done.")
+    last_line = None
+    last_found = time.monotonic()
+    widened = False
+    try:
+        while True:
+            all_rates = time.monotonic() - last_found >= OTHER_RATES_AFTER_S
+            if all_rates and not widened:
+                print(f"{YELLOW}   Nothing new for {OTHER_RATES_AFTER_S:.0f}s — also sweeping the "
+                      f"other baud rates from now on.{RESET}")
+            widened = all_rates
+            acted = reset_all_motors(plan, progress_callback=on_progress, prompt_callback=on_prompt,
+                                     all_rates=all_rates)
+            if acted:
+                last_found = time.monotonic()
+            at_default = [m for m in acted
+                          if m["id"] == plan.default_id and m["baud_rate"] == plan.default_baud]
+            if not acted:
+                line = f"{YELLOW}   No motors on the bus. Connect one (and check its power).{RESET}"
+            elif len(at_default) == len(acted):
+                line = (f"{GREEN}   {len(at_default)} motor(s) at factory defaults"
+                        f"{' (duplicates answer as one)' if len(at_default) == 1 else ''}."
+                        f" Connect the next, or Ctrl+C.{RESET}")
+            else:
+                line = None   # something was just reset and printed above; show the tally next pass
+            if line and line != last_line:
+                print(line)
+            last_line = line
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f"\n\n{GREEN}Stopped.{RESET}\n")
+    return 0
+
+
 def main() -> int:
     enable_ansi_escapes()
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
@@ -253,12 +357,24 @@ def main() -> int:
                         help="Set the Return Delay Time on every motor on the bus, leaving IDs "
                              "and baud alone (DYNAMIXEL; for hands assembled before chain "
                              "configuration set it).")
+    parser.add_argument("--scan", action="store_true",
+                        help="List every motor on the bus (both families, every rate, IDs 1-40) "
+                             "and exit. A diagnostic for a bus that does not behave.")
     parser.add_argument("--motor-type", choices=SUPPORTED_MOTOR_TYPES,
                         help="Override motor family. Auto-detected from factory defaults when omitted.")
     args = parser.parse_args()
 
     config = _load_config(args.config_path)
     port = _resolve_port(config.get('port', 'auto'), args.motor_type)
+    if args.scan:
+        _banner("🔎 BUS SURVEY 🔎")
+        print(f"   Pinging IDs 1-40 at every rate on {port} — about a minute.")
+        found = survey_bus(port, progress_callback=on_progress)
+        if not found:
+            print(f"\n{YELLOW}Nothing answered. Check power and wiring.{RESET}")
+            return 1
+        print(f"\n{GREEN}{len(found)} motor(s) on the bus.{RESET}")
+        return 0
     motor_type = _resolve_motor_type(args.motor_type, config, port)
     try:
         plan = plan_motor_chain(_config_for_family(config, motor_type), port, motor_type)
@@ -269,11 +385,7 @@ def main() -> int:
 
     if args.reset:
         _banner(f"🔄 ORCAHAND {label.upper()} CHAIN RESET 🔄")
-        return _loop_until_interrupt(
-            f"Resetting motors to defaults (ID={plan.default_id}, baud={plan.default_baud:,})",
-            lambda: reset_all_motors(plan, progress_callback=on_progress,
-                                     prompt_callback=on_prompt),
-        )
+        return _reset_until_interrupt(plan)
 
     if args.baudrate is not None:
         if args.baudrate not in valid_baudrates(motor_type):
@@ -312,15 +424,40 @@ def main() -> int:
     if plan.wrist_id is not None:
         print(f"   • 1 {PURPLE}{plan.wrist_model}{RESET}: {BOLD}ID {plan.wrist_id}{RESET}")
 
-    try:
-        configure_motor_chain(plan, progress_callback=on_progress, prompt_callback=on_prompt)
-    except MotorChainAborted as exc:
-        print(f"{RED}\n🚫 {exc}{RESET}")
-        return 1
-    except MotorChainError as exc:
-        print(f"{RED}\n❌ {exc}{RESET}")
-        return 1
-    return 0
+    while True:
+        try:
+            configure_motor_chain(plan, progress_callback=on_progress, prompt_callback=on_prompt)
+            return 0
+        except MotorChainAborted as exc:
+            print(f"{RED}\n🚫 {exc}{RESET}")
+            if not _offer_reset(plan, exc.invalid_motors):
+                return 1
+        except MotorChainError as exc:
+            print(f"{RED}\n❌ {exc}{RESET}")
+            return 1
+
+
+def _offer_reset(plan, motors: list) -> bool:
+    """Ask whether to reset the motors a run could not place, and do it.
+
+    Returns True when the chain should be configured again.
+    """
+    if not motors:
+        return False
+    ids = [m["id"] for m in motors]
+    answer = input(f"\n   Reset motor(s) {ids} to factory defaults now and continue? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        print(f"{YELLOW}   Left as they are. If a motor before them is loose, fix it and rerun.{RESET}")
+        return False
+    for m in motors:
+        try:
+            reset_motor_to_factory(plan, m["id"], m["baud_rate"])
+            print(f"{GREEN}✓ Reset ID {m['id']} ({m['model_name']}) → "
+                  f"ID {plan.default_id} @ {plan.default_baud:,} bps{RESET}")
+        except MotorChainError as exc:
+            print(f"{RED}❌ Motor {m['id']}: {exc}{RESET}")
+            return False
+    return True
 
 
 if __name__ == '__main__':

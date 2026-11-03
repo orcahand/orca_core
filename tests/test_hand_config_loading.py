@@ -165,3 +165,21 @@ def test_non_positive_currents_are_rejected(tmp_path, field, value):
     path = _right_config_with(tmp_path, **{field: value})
     with pytest.raises(HandConfigValidationError, match="positive number of mA"):
         OrcaHandConfig.from_config_path(config_path=path)
+
+
+@pytest.mark.parametrize(
+    "overrides, error, match",
+    [
+        ({"control_mode": "nonsense"}, HandConfigValidationError, r"^Invalid control mode\.$"),
+        ({}, ValueError, "invalid literal for int"),
+    ],
+    ids=["base-error-first", "sensors-error-alone"],
+)
+def test_a_bad_sensors_baudrate_is_reported_after_any_base_field_error(tmp_path, overrides, error, match):
+    config_path = _touch_config_with_baudrate(tmp_path, "slow")
+    doc = yaml.safe_load(config_path.read_text())
+    doc.update(overrides)
+    config_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    with pytest.raises(error, match=match):
+        OrcaHandTouchConfig.from_config_path(config_path=str(config_path))

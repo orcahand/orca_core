@@ -528,3 +528,47 @@ def test_encoder_backed_joints_public_accessor(tmp_path):
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     assert hand.encoder_backed_joints, "joint model should expose encoder-backed joints"
     assert hand.encoder_backed_joints == hand._encoder_backed_joints()
+
+
+# ---------------------------------------------------------------------------
+# _set_motor_pos input normalisation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def written(mock_hand, monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        mock_hand._motor_client,
+        "write_desired_pos",
+        lambda ids, positions: writes.append((list(ids), list(positions))),
+    )
+    return writes
+
+
+def test_set_motor_pos_writes_only_known_motors_with_a_finite_target(mock_hand, written):
+    ids = mock_hand.config.motor_ids
+    as_list = [None] * len(ids)
+    as_list[1], as_list[2], as_list[3] = 0.5, float("nan"), -1.25
+
+    mock_hand._set_motor_pos(as_list)
+    mock_hand._set_motor_pos({ids[1]: 0.5, ids[2]: float("nan"), ids[3]: -1.25, ids[4]: None, 9999: 1.0})
+
+    assert written == [([ids[1], ids[3]], [0.5, -1.25])] * 2
+
+
+def test_set_motor_pos_rejects_a_wrong_length_list_and_other_types(mock_hand, written):
+    with pytest.raises(ValueError, match="must match the number of configured motor_ids"):
+        mock_hand._set_motor_pos([0.0])
+    with pytest.raises(ValueError, match="must be a dict, np.ndarray, or list"):
+        mock_hand._set_motor_pos("nope")
+    assert written == []
+
+
+def test_a_blocking_task_starts_with_the_stop_flag_cleared(mock_hand):
+    mock_hand._task_stop_event.set()
+    seen = []
+
+    mock_hand._dispatch_task(True, lambda: seen.append(mock_hand._task_stop_event.is_set()))
+
+    assert seen == [False]

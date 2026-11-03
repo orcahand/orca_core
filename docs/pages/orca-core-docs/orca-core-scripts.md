@@ -68,32 +68,19 @@ python scripts/check_motor.py --motor_id 5 --port /dev/ttyUSB0
 <details>
 <summary><strong>main_demo.py</strong></summary>
 
-Runs a demonstration of the ORCA Hand, making the fingers perform a wave-like motion. It initializes the hand, defines joint ranges, and then continuously updates joint positions to create the animation.
+Plays a packaged demo sequence on the ORCA Hand: it initializes the hand, then cycles through the demo's poses and returns to neutral after each cycle.
 
 <br><strong>Args:</strong><br>
 <ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the connected hand is autodetected.</li><br>
+    <li><strong>--demo</strong> (<strong>str</strong>, optional): Packaged demo to play, `main` (open, power grasp, pinch; the default) or `abduction` (fan out, fan in, spread grasp).</li><br>
+    <li><strong>--cycles</strong>, <strong>--num-steps</strong>, <strong>--step-size</strong> (optional): Number of cycles and the interpolation steps and step time for each move.</li>
 </ul>
 
 <strong>Example:</strong>
 ```bash
 python examples/main_demo.py
-```
-</details>
-
-<details>
-<summary><strong>main_demo_abduction.py</strong></summary>
-
-Runs a demonstration of the ORCA Hand, similar to `main_demo.py`, but with a focus on abduction movements. It initializes the hand, defines joint ranges, and then continuously updates joint positions.
-
-<br><strong>Args:</strong><br>
-<ul>
-    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file (e.g., `/path/to/orcahand-right/config.yaml`). If not provided, the script will use the default config path.</li>
-</ul>
-
-<strong>Example:</strong>
-```bash
-python examples/main_demo_abduction.py
+python examples/main_demo.py --demo abduction
 ```
 </details>
 
