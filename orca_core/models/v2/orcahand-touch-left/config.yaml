@@ -167,17 +167,7 @@ calibration_current_v21:
 guided_tension_currents:
   dynamixel:
     hold:
-      abd: 200
-      mcp: 140
-      pip: 100
       thumb_mcp: 100
-    tension: 400
-  feetech:
-    hold:
-      abd: 380
-      mcp: 320
-      pip: 280
-    tension: 580
 
 calibration_step_size: 0.15
 

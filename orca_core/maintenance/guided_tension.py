@@ -904,8 +904,9 @@ def run_guided_tension(
     counterclockwise under that current, loading the bottom spools (0 holds still);
     each pull emits ``pulled`` with ``total_deg``.
 
-    ``hold_current`` and ``tension_current`` default to the config's
-    ``guided_tension_currents``; a joint named there keeps its own hold current.
+    ``hold_current`` defaults to the config's ``guided_tension_currents``, where a
+    named joint keeps its own hold current, and ``tension_current`` to
+    ``config.tension_current``.
     ``hold_current`` may be a callable of the joint name, and ``tension_current``,
     ``tension_offset_deg`` and ``tension_extra_deg`` callables of nothing; each
     is read when its step starts, so a front-end

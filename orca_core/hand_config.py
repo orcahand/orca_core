@@ -647,14 +647,24 @@ class OrcaHandConfig(BaseHandConfig):
 
     def guided_tension_currents_for(self, family: Optional[str] = None) -> dict:
         """``{"hold": {group or joint: mA}, "tension": mA}`` for ``family`` (default: this
-        hand's), the config's entries over the package defaults."""
+        hand's), the config's entries over the defaults. An unset ``tension`` follows
+        ``max_current``."""
         family = family or self.motor_type
         if family not in DEFAULT_GUIDED_TENSION_CURRENTS:
             family = DYNAMIXEL
         base = DEFAULT_GUIDED_TENSION_CURRENTS[family]
         own = self.guided_tension_currents_dict.get(family, {})
         return {"hold": {**base["hold"], **own.get("hold", {})},
-                "tension": own.get("tension", base["tension"])}
+                "tension": own.get("tension", self._family_max_current(family))}
+
+    def _family_max_current(self, family: str) -> int:
+        """This hand's ``max_current`` when it applies to ``family``, else that family's own."""
+        if self.max_current != _FAMILY_DEFAULT and self.motor_type in (None, family):
+            return self.max_current
+
+        from .hardware.motor_factory import motor_client_class
+
+        return int(motor_client_class(family).default_max_current_ma)
 
     def tension_hold_current_for(self, joint: str) -> int:
         """Range-check hold current (mA) for ``joint``: its own entry, else its group's."""
@@ -669,7 +679,7 @@ class OrcaHandConfig(BaseHandConfig):
 
     @property
     def tension_current(self) -> int:
-        """Guided tensioning's hold (mA) while the spools are ratcheted."""
+        """Guided tensioning's limit (mA) for the pull and for fingers frozen during a range check."""
         return self.guided_tension_currents_for()["tension"]
 
     def calibration_retry_current_for(self, joint: Optional[str] = None) -> int:

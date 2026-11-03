@@ -101,7 +101,8 @@ def main() -> int:
                         help="One range-check hold current for every joint, mA (default: the config's "
                              "guided_tension_currents per group; joints it names keep theirs).")
     parser.add_argument("--tension-current", type=float,
-                        help="Tensioning pull current, mA (default: the config's guided_tension_currents).")
+                        help="Tensioning pull current, mA (default: the config's guided_tension_currents "
+                             "tension, else the hand's max_current).")
     parser.add_argument("--tension-offset", type=float, default=TENSION_OFFSET_DEG,
                         help=f"Degrees the finger motors turn counterclockwise while tensioning (default {TENSION_OFFSET_DEG:g}).")
     parser.add_argument("--scoring", choices=SCORINGS, default="fraction",

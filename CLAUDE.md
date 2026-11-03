@@ -282,10 +282,12 @@ All hand-specific settings are in `config.yaml`:
   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
   The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
-- `guided_tension_currents:` - guided tensioning currents per motor family (CLI and console):
-  `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
-  `--hold-current`), and `tension`. Read through `config.tension_hold_current_for(joint)` and
-  `config.tension_current`; a family left out falls back to `DEFAULT_GUIDED_TENSION_CURRENTS`.
+- `guided_tension_currents:` - **overrides only** for guided tensioning, per motor family (CLI and
+  console): `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
+  `--hold-current`), and `tension`, the limit for the pull and for fingers frozen during a range
+  check. Read through `config.tension_hold_current_for(joint)` and `config.tension_current`. Holds
+  default to `DEFAULT_GUIDED_TENSION_CURRENTS` and `tension` follows `max_current`; never restate
+  either here. The ratcheting hold runs at each motor's own ceiling.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2

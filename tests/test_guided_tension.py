@@ -6,11 +6,17 @@ slack scoring counts only settled, twice-reached ends, in degrees, and carries
 nothing over between rounds."""
 
 import dataclasses
+import glob
 import math
+import os
 import threading
 
 import pytest
 
+import orca_core
+from orca_core.constants import SUPPORTED_MOTOR_TYPES
+from orca_core.hand_config import OrcaHandConfig
+from orca_core.hardware.motor_factory import motor_client_class
 from orca_core.maintenance import guided_tension
 from orca_core.maintenance.guided_tension import (
     DONE,
@@ -27,6 +33,7 @@ from orca_core.maintenance.guided_tension import (
     tension_targets,
 )
 from orca_core.constants import HARDWARE_VERSION_V21
+from orca_core.maintenance.tensioning import uncapped_currents
 
 
 @pytest.fixture
@@ -399,6 +406,69 @@ def test_hold_currents_come_from_the_config_and_a_named_joint_keeps_its_own(
         140,
     )
     assert from_config["index_pip"] == 100 and config.tension_current == 420
+
+
+V2_MODELS = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2")
+
+
+def _packaged_config(model):
+    return OrcaHandConfig.from_config_path(
+        config_path=os.path.join(V2_MODELS, model, "config.yaml")
+    )
+
+
+def test_the_tension_current_follows_max_current_until_a_family_sets_one(connected_mock_hand):
+    config = dataclasses.replace(connected_mock_hand.config, max_current=500)
+    assert config.tension_current == 500
+    pinned = dataclasses.replace(
+        config, guided_tension_currents_dict={"dynamixel": {"hold": {}, "tension": 420}}
+    )
+    assert pinned.tension_current == 420
+
+
+@pytest.mark.parametrize("family", SUPPORTED_MOTOR_TYPES)
+def test_before_connecting_the_tension_current_is_the_familys_own(family):
+    config = _packaged_config("orcahand-left")
+    assert (
+        config.guided_tension_currents_for(family)["tension"]
+        == motor_client_class(family).default_max_current_ma
+    )
+
+
+def test_packaged_configs_list_only_what_differs_from_the_defaults():
+    paths = sorted(glob.glob(os.path.join(V2_MODELS, "*", "config.yaml")))
+    assert paths
+    for path in paths:
+        config = OrcaHandConfig.from_config_path(config_path=path)
+        expected = (
+            {"dynamixel": {"hold": {"thumb_mcp": 100}}} if "orcahand-touch-" in path else {}
+        )
+        assert config.guided_tension_currents_dict == expected, path
+
+
+def test_the_tension_step_pulls_at_the_tension_current_then_holds_at_the_ceiling(
+    connected_mock_hand, monkeypatch
+):
+    hand = connected_mock_hand
+    hand.motor_client.current_ceilings_ma = {m: 700.0 + m for m in hand.config.motor_ids}
+    written, seen = [], []
+    write = hand.set_max_current
+
+    def record_write(current):
+        written.append(current)
+        return write(current)
+
+    monkeypatch.setattr(hand, "set_max_current", record_write)
+    answers = ["goto:tension", "Done", "goto:score", FINISH_ANYWAY]
+
+    def prompt(p):
+        if p["action"] == "tension":
+            seen.append((p["tension_current"], written[-2:]))
+        return answers.pop(0)
+
+    run_guided_tension(hand, prompt_callback=prompt, persist=False, resume=False)
+    tension_ma = float(hand.config.max_current)
+    assert seen == [(tension_ma, [tension_ma, uncapped_currents(hand)])]
 
 
 # ----- slack scoring ----------------------------------------------------------

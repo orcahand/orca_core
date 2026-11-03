@@ -1341,9 +1341,7 @@ def _drive_calibration(
             # must not commit the bound it recorded the first time.
             for joint, direction in previous[JOINTS].items():
                 motor_id = hand.config.joint_to_motor_map[joint]
-                sign = 1 if direction == FLEX else -1
-                if hand.config.joint_inversion_dict.get(joint, False):
-                    sign = -sign
+                sign = _direction_sign(hand, joint, direction)
                 pending_limits[motor_id][1 if sign == 1 else 0] = None
                 motor_travel_measured.pop(joint, None)
             _emit(
