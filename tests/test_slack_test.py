@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+from orca_core import OrcaHandFull
 from orca_core.maintenance import slack_test
 from orca_core.maintenance.slack_test import SlackTestSettings, run_slack_test
 
@@ -199,3 +200,10 @@ def test_a_spool_that_breaks_away_late_is_still_measured(spooled, monkeypatch):
     (r,) = run_slack_test(hand, joints=["index_pip"], clock=clock)["results"]
     assert r["plus_deg"] == pytest.approx(12.0, abs=0.1)
     assert r["minus_deg"] == pytest.approx(12.0, abs=0.1)
+
+
+def test_a_running_joint_loop_refuses_the_slack_test():
+    hand = OrcaHandFull.__new__(OrcaHandFull)
+    hand._loop = object()
+    with pytest.raises(RuntimeError, match="joint-feedback loop"):
+        run_slack_test(hand)

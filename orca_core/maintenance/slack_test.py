@@ -169,8 +169,10 @@ def run_slack_test(
 
     Raises:
         ValueError: On inconsistent settings or no finger motor to test.
+        RuntimeError: While a joint-feedback loop is running.
         InterruptedError: If ``should_stop`` fires.
     """
+    hand._refuse_routine_while_loop_runs("run_slack_test")
     settings = settings.with_family_currents(hand.motor_client)
     settings.validate()
     if should_stop is None:

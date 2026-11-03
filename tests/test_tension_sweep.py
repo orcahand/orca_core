@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+from orca_core import OrcaHandFull
 from orca_core.maintenance import tension_sweep
 from orca_core.maintenance.tension_sweep import SweepSettings, run_tension_sweep, summarize
 
@@ -204,3 +205,10 @@ def test_the_thumb_and_the_fingers_are_parked_out_of_each_others_way(swept):
     assert seen["index_pip"][motor["thumb_dip"]] == pytest.approx(straight("thumb_dip"), abs=0.02)
     # Each sweep starts at the extend-side turnaround and flexes first.
     assert seen["index_pip"][motor["index_pip"]] == pytest.approx(-0.5 + math.radians(2.0) if flex["index_pip"] > 0 else 1.5 - math.radians(2.0), abs=0.02)
+
+
+def test_a_running_joint_loop_refuses_the_sweep():
+    hand = OrcaHandFull.__new__(OrcaHandFull)
+    hand._loop = object()
+    with pytest.raises(RuntimeError, match="joint-feedback loop"):
+        run_tension_sweep(hand)

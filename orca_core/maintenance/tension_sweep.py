@@ -230,8 +230,10 @@ def run_tension_sweep(
     Raises:
         ValueError: On inconsistent settings, no joint to sweep, or an
             uncalibrated hand.
+        RuntimeError: While a joint-feedback loop is running.
         InterruptedError: If ``should_stop`` fires.
     """
+    hand._refuse_routine_while_loop_runs("run_tension_sweep")
     settings = settings.with_family_currents(hand.motor_client)
     settings.validate()
     if repeats < 1:
