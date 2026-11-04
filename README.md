@@ -10,6 +10,45 @@
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space. While working directly with core will let you interact with your ORCA Hand on a deep level, the Orca Ui repository (found at: https://github.com/orcahand/orca_ui) can let users get started right away, helping you setup/maintain your hand, tune its performance, and better understand its capabilities. 
 
+## Experimental branch: `feature/improve-calibration`
+
+This branch holds unreleased tensioning and calibration work, and will be merged into `main` in a later release. It reports
+version 0.12.0, but it isn't the published 0.12.0.
+
+**With the console:** you don't need this clone. The `merge/assembly-calibration-with-main` branch of
+[orca_ui](https://github.com/orcahand/orca_ui/tree/merge/assembly-calibration-with-main#using-this-experimental-branch) installs
+the matching commit by itself.
+
+**From the terminal:**
+
+```sh
+git clone --branch feature/improve-calibration https://github.com/orcahand/orca_core.git
+cd orca_core
+uv sync --group dev
+uv run python scripts/detect.py    # read-only: which model, serial and motor type is plugged in
+```
+
+Give each hand its own copy of its model's config, because calibration and tensioning records are saved beside the config you load:
+
+```sh
+mkdir -p ~/orca_bench/ser-0000/orcahand-right
+cp orca_core/models/v2/orcahand-right/config.yaml ~/orca_bench/ser-0000/orcahand-right/
+uv run python scripts/guided_tension.py ~/orca_bench/ser-0000/orcahand-right/config.yaml
+uv run python scripts/calibrate.py ~/orca_bench/ser-0000/orcahand-right/config.yaml
+```
+
+Replace `ser-0000` and `orcahand-right` with what `detect.py` shows. Point everything else at that same `config.yaml`, including
+teleoperation's `--model_path`. Tension first and calibrate last.
+
+**What's different from `main`:**
+
+- **Guided tensioning:** motors pull at `max_current`, settle where they stopped, then hold at each motor's ceiling while you ratchet.
+  Avoid hard pushes on a finger while the motors hold, because they may loosen the tendon.
+- **Records:** tensioning records live in `setup.yaml` beside the config. Older `last_tension.yaml` and `tension_progress.yaml` are still read.
+- **Slack test and tension sweep:** these are new routines, with currents per motor type. Feetech values are provisional, and on Feetech
+  a slack test pass can miss small slack.
+- **Joint loop:** the slack test and sweep refuse to run while a joint-feedback loop is running.
+
 ## Get Started
 
 To get started with Orca Core, follow these steps:

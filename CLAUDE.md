@@ -206,6 +206,14 @@ Assert on durations via the `virtual_clock` fixture, read on the thread that ran
 the routine, never on real elapsed time; to hold a background task mid-flight,
 block it on an event rather than sleeping and hoping.
 
+### Experimental branch
+
+`feature/improve-calibration` is unreleased, and users run it through orca_ui's
+`merge/assembly-calibration-with-main`. That branch fixes one commit of this one in
+its `uv.lock`, so a push here reaches them only after a lock update there. It
+reports version 0.12.0, which isn't the published 0.12.0. Setup and what differs from
+`main` are in the README: keep them current until this branch is merged.
+
 ### Downstream consumers
 
 `orca_core` is published on PyPI and imported by sibling repos checked out beside it

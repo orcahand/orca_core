@@ -1,5 +1,7 @@
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioning and to control the hand with simple high-level control methods in joint space.
 
+> **Experimental branch:** `feature/improve-calibration` has unreleased tensioning and calibration behaviour. Its setup and differences are in the [README](https://github.com/orcahand/orca_core/tree/feature/improve-calibration#experimental-branch-featureimprove-calibration).
+
 ## Get Started
 
 To get started with Orca Core, follow these steps:

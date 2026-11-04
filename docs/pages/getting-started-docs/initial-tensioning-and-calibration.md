@@ -1,5 +1,7 @@
 # Calibration and Tensioning
 
+> **Experimental branch:** `feature/improve-calibration` has unreleased tensioning and calibration behaviour. Its setup and differences are in the [README](https://github.com/orcahand/orca_core/tree/feature/improve-calibration#experimental-branch-featureimprove-calibration).
+
 ## Calibration
 
 Calibration ensures the hand operates with high accuracy and precision. It should be performed regularly, especially:
