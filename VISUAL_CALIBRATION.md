@@ -3,8 +3,11 @@
 Goal: measure the hand's 17 joint angles from photos, then correct the motors
 until the hand matches a target pose.
 
-Branched from Diego's `feature/improve-calibration` (2026-11-06). Plan only so
-far: no code yet.
+Branched from Diego's `feature/improve-calibration` (2026-11-06). So far: this
+plan and the rig's config, `orca_core/rigs/v1/camera-rig/config.yaml` (hard stop,
+travel, stops, solver search bounds and priors per direction) +
+`calibration.yaml` (the solver's results, with a history of runs), loaded by
+`orca_core/rig_config.py`.
 
 ## Setup (decided)
 

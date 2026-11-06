@@ -41,11 +41,13 @@ orca_core/
 │   ├── utils.py                      # Model-path resolution, YAML I/O (atomic writes), interpolation
 │   └── cli.py                        # Shared argparse/lifecycle helpers for scripts and examples
 ├── models/                        # Hand configurations (YAML), versioned v1/ and v2/
+├── rigs/                          # Camera rig for visual calibration: <version>/camera-rig/{config,calibration}.yaml
 ├── base_hand.py                   # BaseHand: shared joint-space interface (ABC)
 ├── hardware_hand.py                # OrcaHand: the motor-only hand (+ MockOrcaHand)
 ├── hardware_hand_sensing.py        # Sensing variants: OrcaHandTouch / OrcaHandJointFeedback / OrcaHandFull (+ mocks)
 ├── hand_factory.py                 # load_hand()/detect_hand(): autodetect the hand, pick class + model
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
+├── rig_config.py                   # RigConfig: loads/validates the rig, saves the solver's calibration
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
 ├── joint_position.py               # OrcaJointPositions: typed joint-position container
 ├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
@@ -219,7 +221,9 @@ reports version 0.12.0, which isn't the published 0.12.0. Setup and what differs
 `visual-calibration` (from `feature/improve-calibration`, 2026-11-06): measure the
 17 joint angles from photos of one fixed camera while the hand turns on a motor,
 using the tower as the reference and letting the solver fit small rig errors.
-Plan, decisions and their reasons: `VISUAL_CALIBRATION.md`. Read it before
+Plan, decisions and their reasons: `VISUAL_CALIBRATION.md`. The rig's config
+(hard stop, travel, stops, solver search bounds) and the solver's results:
+`orca_core/rigs/v1/camera-rig/`, loaded by `rig_config.py`. Read it before
 working on cameras, the rig or the pose solver, and keep it current.
 
 ### Downstream consumers

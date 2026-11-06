@@ -1,0 +1,81 @@
+# Camera rig for visual calibration: one fixed camera, the hand turns on a
+# motor around a vertical axis. Design values and solver settings; what the
+# solver finds goes to calibration.yaml. Plan: VISUAL_CALIBRATION.md.
+# Angles in degrees, lengths in mm. The rig frame: z up along the turntable
+# axis, origin on the plate's top face at the axis.
+
+turntable:
+  motor:
+    port: auto
+    id: auto
+    gear_ratio: 1.0          # motor turns per plate turn
+
+  # One one-way hard stop. 0° = the fin pressed against the arm.
+  hard_stop:
+    arm:                     # fixed on the base: 125..145°
+      stop_center_angle: 135.0
+      stop_arm_half_angle: 10.0
+    fin:                     # turns with the plate
+      fin_angle: 20.0        # sector width
+      fin_contact_angle: 145.0
+
+  # 360 - fin_angle - 2 * stop_arm_half_angle: every extra degree of fin or
+  # arm width costs one degree of travel. Checked against the hard stop.
+  travel: 320.0
+
+  # The sweep: photos at start, start + step, ... (count stops), all within
+  # the travel. Always approached from the hard stop side.
+  stops:
+    start: 0.0
+    step: 15.0
+    count: 22                # 0..315°
+    settle_s: 0.5            # wait after each move before the photo
+    home_each_sweep: true    # drive into the hard stop before every sweep
+
+camera:
+  resolution: [3840, 2160]
+  autofocus: false
+  stabilization: false
+  # Rough start for the solver, from the CAD (null: from the tower fit alone).
+  nominal_pose:
+    translation: null        # [x, y, z] of the camera in the rig frame
+    rotation: null           # [roll, pitch, yaw]
+
+lens_calibration:            # a loose board, only for the lens
+  board: charuco
+  squares: [11, 8]
+  square_size: 20.0
+  marker_size: 15.0
+  dictionary: DICT_5X5_100
+  max_reprojection_px: 0.5   # on images left out of the fit
+
+reference:
+  # The tower is the reference: printed fiducials at their CAD positions.
+  fiducials: []              # [{id, position: [x, y, z]}] in the hand frame
+  # The hand on the plate (dowel pins), from the CAD.
+  hand_mount:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [0.0, 0.0, 0.0]
+
+# How far the solver may move each value from its start, per direction
+# (bound), and how strongly it is held there (sigma, the prior).
+solver:
+  search:
+    camera:
+      translation: {bound: [20.0, 20.0, 20.0], sigma: [10.0, 10.0, 10.0]}
+      rotation: {bound: [5.0, 5.0, 5.0], sigma: [2.0, 2.0, 2.0]}
+    axis:
+      tilt: {bound: [1.0, 1.0], sigma: [0.3, 0.3]}         # about x, y
+      offset: {bound: [2.0, 2.0], sigma: [0.5, 0.5]}       # in x, y
+    stop_angle: {bound: 0.5, sigma: 0.1}                   # per stop; 0° pinned
+    hand_mount:
+      translation: {bound: [0.5, 0.5, 0.5], sigma: [0.2, 0.2, 0.2]}
+      rotation: {bound: [0.5, 0.5, 0.5], sigma: [0.2, 0.2, 0.2]}
+    joints: {bound: 10.0, sigma: 5.0, grid_step: 1.0}      # around the motor angles
+  loss: soft_l1
+  loss_scale_px: 1.0
+
+checks:
+  max_fit_px: 1.0            # per photo
+  max_axis_wobble: 0.1       # circle residual of the tower
+  max_hold_px: 1.0           # first stop repeated at the end of a sweep
