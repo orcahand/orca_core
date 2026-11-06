@@ -214,6 +214,14 @@ its `uv.lock`, so a push here reaches them only after a lock update there. It
 reports version 0.12.0, which isn't the published 0.12.0. Setup and what differs from
 `main` are in the README: keep them current until this branch is merged.
 
+### Visual calibration branch
+
+`visual-calibration` (from `feature/improve-calibration`, 2026-11-06): measure the
+17 joint angles from photos of one fixed camera while the hand turns on a motor,
+using the tower as the reference and letting the solver fit small rig errors.
+Plan, decisions and their reasons: `VISUAL_CALIBRATION.md`. Read it before
+working on cameras, the rig or the pose solver, and keep it current.
+
 ### Downstream consumers
 
 `orca_core` is published on PyPI and imported by sibling repos checked out beside it
