@@ -238,3 +238,29 @@ async function tickReport() {
 tickProgress(); tickReport()
 setInterval(tickProgress, 5000)
 setInterval(tickReport, 30000)
+
+async function tickNight() {
+  const N = await getJSON('/api/night')
+  if (!N) return
+  $('night').hidden = false
+  const J = report ? report.joints : Object.keys(N.stops)
+  const all = (a) => (a && a.all ? `${f2(a.all.rms)} / ${f1(a.all.max)}` : '—')
+  let h = `<p class="cap">Calibration runs ${N.runs.A} (before the recalibration) and ${N.runs.B} (after). Errors in degrees, RMS / max over all joints, true (vision) − map. a = old config, b = new hard stops (orca_core's linear map, only the config's joint_roms changed), c = lookup table with couplings (fitted on the dense block)${N.sac ? ', b_sac = new stops refitted with the touch contacts' : ''}.</p>`
+  h += '<h3>New hard stops (config joint_roms, old → new)</h3><table><thead><tr><th>joint</th><th>old</th><th>new</th><th>fit rms °</th></tr></thead><tbody>'
+  for (const j of J) { const s = N.stops[j]; if (s) h += `<tr><td>${j}</td><td>${s.old.join(' … ')}</td><td>${s.new.join(' … ')}</td><td>${f1(s.rms)}</td></tr>` }
+  h += '</tbody></table><h3>Accuracy</h3><table><thead><tr><th>set</th><th>a old</th><th>b new stops</th><th>c LUT</th>' + (N.sac ? '<th>b_sac</th>' : '') + '<th>closed loop</th></tr></thead><tbody>'
+  const sets = [['dense (train)', N.accuracy.train_dense], ...Object.entries(N.drift)]
+  for (const [n, d] of sets) if (d) h += `<tr><td>${n}</td><td>${all(d.a_old)}</td><td>${all(d.b_new_stops)}</td><td>${all(d.c_lut)}</td>` + (N.sac ? `<td>${all(d.b_sac)}</td>` : '') + `<td>${all(d.closed_loop_vs_wanted)}</td></tr>`
+  h += '</tbody></table><p class="cap">V0 is held out (same hand state as the dense block). V1, V2 after 30 / 60 min of open-close cycling, V3 after 1 h loaded work, V4 after orca_core\'s recalibration, V5 after the short visual calibration, V6 = the closed loop: commanded through the new stops, compared with the wanted angles.</p>'
+  if (N.kapandji) {
+    h += '<h3>Kapandji</h3><table><thead><tr><th>finger</th><th>map</th><th>distance mm</th><th>touch</th><th>force thumb</th><th>force finger</th><th>photo</th></tr></thead><tbody>'
+    for (const k of N.kapandji) h += `<tr><td>${k.finger}</td><td>${k.map}</td><td>${f1(k.distance_mm)}</td><td>${k.touch ? 'yes' : 'no'}</td><td>${f2(k.force_thumb)}</td><td>${f2(k.force_finger)}</td><td><a href="/report/${k.photo}" target="_blank">photo</a></td></tr>`
+    h += '</tbody></table><p class="cap">Distance: thumb tip to fingertip on the URDF at the solved joint angles (5 views); touch: a fingertip or thumb pad above 0.12 (tactile units).</p>'
+  }
+  if (N.sac) {
+    h += `<h3>Super Advanced Calibration</h3><p class="cap">${N.sac.contacts} touch contacts. Model gap at the contact onset (mm), new stops → SAC stops: ${N.sac.gap_before_mm.map(f1).join(', ')} → ${N.sac.gap_after_mm.map(f1).join(', ')}.</p>`
+    if (N.sac.loo) h += '<p class="cap">Leave-one-out gaps (mm, without SAC → SAC fitted without that contact): ' + N.sac.loo.map((l) => `${l.finger} ${f1(l.gap_no_sac)}→${f1(l.gap_loo)}`).join(', ') + '</p>'
+  }
+  $('night-body').innerHTML = h
+}
+tickNight(); setInterval(tickNight, 60000)

@@ -184,6 +184,21 @@ def fingertip_errors(Q_true: np.ndarray, Q_pred: np.ndarray) -> dict[str, float]
     return {f: float(np.sqrt(np.mean(np.square(v)))) for f, v in out.items()}
 
 
+def fit_rows(train: list[dict]) -> Lut:
+    """A LUT fitted on the rows given (commanded -> measured), couplings from their t values."""
+    from hand_study import analysis
+    deps = analysis.dependencies(train)
+    sig = {(deps["joints"][a], deps["joints"][b]) for a, row in enumerate(deps["t"]) for b, t in enumerate(row)
+           if t is not None and abs(t) >= analysis.T_SIGNIFICANT}
+    C = {j: np.array([r["commanded"][j] for r in train]) for j in JOINTS}
+    tables = {}
+    for j in JOINTS:
+        t = JointTable(j, partners_of(j, sig))
+        t.fit(C, np.array([r["measured"][j] for r in train]))
+        tables[j] = t
+    return Lut(tables)
+
+
 def main() -> dict:
     from hand_study import analysis
     R = analysis.rows()

@@ -76,7 +76,7 @@ class SacFit:
 
 
 def main(dense: list[Path], sac: Path, run: str, run_c: str, loo: bool = False) -> dict:
-    R = analysis.rows(dense)
+    R = hardstops.good(analysis.rows(dense))
     stops = hardstops.fit(R, run)
     C = contacts(sac)
     if len(C) < 4:

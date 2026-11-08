@@ -25,6 +25,13 @@ from hand_study.mapping import LinearMap
 
 STUDY = analysis.STUDY
 OUT = STUDY / "proposed"
+RMS_MAX_PX = 9.5            # poses fitting worse than this (typ. 8-8.5 px) are vision blunders: left out
+TRIM_DEG = 6.0              # per joint, residuals beyond max(this, 3 robust sigma) are dropped and refitted
+MIN_SPAN = 0.4              # the motor must have covered this share of its range, else the old stops stay
+
+
+def good(R: list[dict]) -> list[dict]:
+    return [r for r in R if r["rms_px"] <= RMS_MAX_PX]
 
 
 def t_of(L: LinearMap, j: str, m: float) -> float:
@@ -35,16 +42,24 @@ def t_of(L: LinearMap, j: str, m: float) -> float:
 def fit(R: list[dict], run: str) -> dict[str, dict]:
     L = LinearMap(STUDY / f"calib_{run}")
     out = {}
+    rr = [r for r in good(R) if r["run"] == run]
     for j in JOINTS:
-        rr = [r for r in R if r["run"] == run]
         t = np.array([t_of(L, j, r["motor"][j]) for r in rr])
         y = np.array([r["measured"][j] for r in rr])
         A = np.c_[t, 1 - t] if L.inverted[j] else np.c_[1 - t, t]
-        (lo, hi), *_ = np.linalg.lstsq(A, y, rcond=None)
-        res = y - A @ [lo, hi]
-        out[j] = {"old": list(L.rom[j]), "new": [round(float(lo), 1), round(float(hi), 1)], "n": len(rr),
-                  "t_span": [round(float(t.min()), 2), round(float(t.max()), 2)],
-                  "rms": round(float(np.sqrt(np.mean(res ** 2))), 2)}
+        keep = np.ones(len(y), bool)
+        for _ in range(3):
+            (lo, hi), *_ = np.linalg.lstsq(A[keep], y[keep], rcond=None)
+            res = y - A @ [lo, hi]
+            mad = 1.4826 * np.median(np.abs(res[keep] - np.median(res[keep])))
+            keep = np.abs(res) <= max(TRIM_DEG, 3 * mad)
+        span = float(np.ptp(t[keep])) if keep.any() else 0.0
+        identifiable = span >= MIN_SPAN
+        new = [round(float(lo), 1), round(float(hi), 1)] if identifiable else list(L.rom[j])
+        out[j] = {"old": list(L.rom[j]), "new": new, "n": int(keep.sum()), "dropped": int((~keep).sum()),
+                  "t_span": [round(float(t.min()), 2), round(float(t.max()), 2)] if len(t) else None,
+                  "identifiable": identifiable, "fit": [round(float(lo), 1), round(float(hi), 1)],
+                  "rms": round(float(np.sqrt(np.mean(res[keep] ** 2))), 2)}
     return out
 
 

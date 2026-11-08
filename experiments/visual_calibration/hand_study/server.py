@@ -278,6 +278,13 @@ class Handler(BaseHTTPRequestHandler):
                 import cv2
                 img = STATE.contact(p.split("/")[2].removesuffix(".jpg"))
                 return self.send(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(), "image/jpeg")
+            if p == "/api/night":
+                f = STUDY / "report" / "results.json"
+                return self.send(f.read_bytes() if f.exists() else b"null", "application/json")
+            if p.startswith("/report/") and ".." not in p:
+                f = STUDY / p.lstrip("/")
+                ctype = {".jpg": "image/jpeg", ".csv": "text/csv", ".json": "application/json"}.get(f.suffix, "text/plain")
+                return self.send(f.read_bytes(), ctype)
             if p.startswith("/api/solved/"):
                 session = p.split("/")[3]
                 cfg = STUDY / "sessions" / session / "configs"
