@@ -19,7 +19,7 @@ import traceback
 from pathlib import Path
 
 from hand_study import collect, hw, wear
-from hand_study.hw import Abort, Hand, Stream, Turntable, beat, call
+from hand_study.hw import Abort, FaultLog, Hand, MotorFault, Stream, Turntable, beat, call, recover
 
 STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 NIGHT = STUDY / "night"
@@ -38,6 +38,7 @@ class Night:
             {"tag": tag, "started": time.time(), "done": {}, "errors": []}
         self.deadline = self.state.setdefault("deadline", self.state["started"] + hours * 3600)
         hw.HEARTBEAT = NIGHT / f"{tag}.heartbeat"
+        hw.FAULTS = FaultLog(NIGHT / f"{tag}-faults.jsonl")
 
     def log(self, msg: str) -> None:
         line = f"{time.strftime('%H:%M:%S')} {msg}"
@@ -296,6 +297,11 @@ class Night:
                         break
                     except Abort:
                         raise
+                    except MotorFault as e:
+                        recover(Hand(self.stream), e, st["name"], self.log)
+                        self.state["errors"].append({"step": st["name"], "error": repr(e), "t": time.time()})
+                        if attempt == RETRIES:
+                            raise Abort(f"{st['name']}: motor faults kept coming") from e
                     except Exception as e:
                         self.safe_off()
                         self.state["errors"].append({"step": st["name"], "error": repr(e), "t": time.time()})

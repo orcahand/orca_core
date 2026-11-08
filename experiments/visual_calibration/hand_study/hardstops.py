@@ -27,6 +27,7 @@ STUDY = analysis.STUDY
 OUT = STUDY / "proposed"
 RMS_MAX_PX = 9.5            # poses fitting worse than this (typ. 8-8.5 px) are vision blunders: left out
 TRIM_DEG = 6.0              # per joint, residuals beyond max(this, 3 robust sigma) are dropped and refitted
+SPLIT_MAX_DEG = 12.0        # a joint whose two half-view solves disagree this much is not seen: left out
 MIN_SPAN = 0.4              # the motor must have covered this share of its range, else the old stops stay
 
 
@@ -86,7 +87,7 @@ def accuracy(R: list[dict], predict) -> dict:
     """Per joint and overall RMS and max |true - predicted| (deg)."""
     out, allerr = {}, []
     for j in JOINTS:
-        e = np.array([r["measured"][j] - predict(r, j) for r in R])
+        e = np.array([r["measured"][j] - predict(r, j) for r in R if (r.get("split") or {}).get(j, 0.0) <= SPLIT_MAX_DEG])
         allerr.append(e)
         out[j] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2),
                   "mean": round(float(e.mean()), 2)} if len(e) else None

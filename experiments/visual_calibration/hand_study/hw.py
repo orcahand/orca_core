@@ -25,7 +25,67 @@ HEARTBEAT = None             # set by the night runner: a file touched on every 
 
 
 class Abort(RuntimeError):
-    """A safety stop: never retried (e-stop, overheating, motor error, disk full)."""
+    """A safety stop: never retried (e-stop, overheating, disk full, a motor that does not recover)."""
+
+
+class MotorFault(RuntimeError):
+    """A motor hardware error (overload, ...) or a joint stuck far from its target under load:
+    recovered by a reboot (recover()), the pose retried once, then skipped."""
+
+    def __init__(self, msg: str, motors: list[dict]):
+        super().__init__(msg)
+        self.motors = motors
+
+
+TRACK_DEG = 12.0             # a joint this far from its target ...
+TRACK_MA = 400.0             # ... while its motor pulls this hard is stuck
+FAULT_WINDOW_S = 600.0
+FAULT_LIMIT = 3              # more faults than this per motor in the window: back off
+
+
+class FaultLog:
+    """Every motor fault, with time, motor, pose, temperature and load (night/<tag>-faults.jsonl)."""
+
+    def __init__(self, path: Path | None = None):
+        self.path, self.events, self.banned = path, [], set()
+
+    def add(self, ev: dict) -> None:
+        self.events.append(ev)
+        if self.path is not None:
+            with self.path.open("a") as f:
+                f.write(json.dumps(ev) + "\n")
+        n = sum(1 for e in self.events if e["joint"] == ev["joint"] and ev["t"] - e["t"] <= FAULT_WINDOW_S)
+        if n > FAULT_LIMIT:
+            self.banned.add(ev["joint"])
+
+
+FAULTS = FaultLog()
+
+
+def recover(hand: "Hand", fault: MotorFault, where: str, log=print) -> None:
+    """Torque off, reboot the faulted motors (Dynamixel reboot via orca-ui), check they are back."""
+    for m in fault.motors:
+        FAULTS.add({"t": time.time(), "where": where, "why": str(fault), **m})
+    log(f"MOTOR FAULT at {where}: {fault}; torque off, reboot {[m['joint'] for m in fault.motors]}")
+    try:
+        hand.torque(False)
+    except Exception as e:
+        log(f"torque off failed: {e}")
+    ids = sorted({m["id"] for m in fault.motors})
+    for attempt in range(3):
+        for i in ids:
+            try:
+                call(f"/motors/{i}/reboot", {}, timeout=30)
+            except Exception as e:
+                log(f"reboot motor {i}: {e}")
+        time.sleep(1.5)
+        left = [x["id"] for x in hand.motors()["motors"] if x["hw_error"]]
+        if not left:
+            log(f"motors {ids} back (attempt {attempt + 1})")
+            beat("recovered")
+            return
+        ids = left
+    raise Abort(f"motors {ids} still in error after 3 reboots")
 
 
 def beat(note: str = "") -> None:
@@ -114,19 +174,42 @@ class Hand:
         """Abort when the torque went off behind our back (e-stop), a motor reports an error,
         or a motor is too hot; the disk is checked too."""
         import shutil
+        m = self.motors()["motors"]
+        bad = [x for x in m if x["hw_error"]]
+        if bad:
+            raise MotorFault(f"hardware error {[(x['joint'], x['hw_error'], x.get('hw_error_flags')) for x in bad]}",
+                             [self._fault_info(x) for x in bad])
         st = self.status()
         if self.target is not None and not st.get("torque_enabled"):
             raise Abort("torque went off (e-stop?)")
-        m = self.motors()["motors"]
-        bad = [(x["joint"], x["hw_error"], x.get("hw_error_flags")) for x in m if x["hw_error"]]
-        if bad:
-            raise Abort(f"motor hardware error: {bad}")
         hot = max(x["temp_c"] for x in m)
         if hot >= ABORT_TEMP_C:
             raise Abort(f"motor at {hot:.0f} °C")
         if shutil.disk_usage(Path.home()).free / 1e9 < MIN_FREE_GB:
             raise Abort("disk almost full")
         beat("guard")
+
+    @staticmethod
+    def _fault_info(x: dict) -> dict:
+        return {"id": x["id"], "joint": x["joint"], "hw_error": x["hw_error"], "flags": x.get("hw_error_flags"),
+                "temp_c": x["temp_c"], "current_ma": x["current_ma"], "position": x["position"]}
+
+    def check_tracking(self, sample: dict, assumed: dict[str, float], skip: set[str] = frozenset()) -> None:
+        """A joint far from its target while its motor pulls hard: stuck (a jam), not just slow."""
+        if self.target is None:
+            return
+        stuck = []
+        for k, j in enumerate(sample["motor_joint"]):
+            if j in skip or j not in self.target or j not in assumed:
+                continue
+            err = abs(assumed[j] - self.target[j])
+            if err > TRACK_DEG and (abs(sample["current_ma"][k]) > TRACK_MA or err > 2 * TRACK_DEG):
+                stuck.append({"id": sample["motor_ids"][k], "joint": j, "hw_error": 0, "flags": ["stuck"],
+                              "temp_c": sample["temp_c"][k], "current_ma": sample["current_ma"][k],
+                              "position": sample["motor_pos"][k], "target_deg": self.target[j],
+                              "assumed_deg": round(assumed[j], 1)})
+        if stuck:
+            raise MotorFault(f"stuck {[(s['joint'], s['assumed_deg'], s['target_deg']) for s in stuck]}", stuck)
 
     def hottest(self) -> float:
         return max(x["temp_c"] for x in self.motors()["motors"])

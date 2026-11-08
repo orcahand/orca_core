@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from hand_study.configs import REST, ROM
-from hand_study.hw import Abort, Hand, beat, call
+from hand_study.hw import Abort, Hand, MotorFault, beat, call, recover
 
 K_SIGMA = 6.0
 MIN_RISE = 0.12            # sensor units (N) above the zeroed mean, at least (readings come in 0.1 steps)
@@ -108,6 +108,10 @@ def run(session: Path, hand: Hand, log=print, fingers: list[str] | None = None) 
                 hit = creep(hand, {**REST, **start}, {**REST, **end}, ["thumb", f], thr)
                 hand.move({**REST, **start}, 15.0)
                 hand.move(dict(REST))
+                hand.guard()
+            except MotorFault as e:
+                recover(hand, e, f"sac {f} #{i}", log)
+                hit = None
             finally:
                 hand.torque(False)
             rec = {"t": time.time(), "finger": f, "variant": i, "target": target, "end": end, "start": start,

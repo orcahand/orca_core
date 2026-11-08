@@ -174,8 +174,8 @@ class State:
         tiles = [self.tile(d) for d in sorted(cfg.glob("*")) if (d / "est.json").exists()]
         if not tiles:
             return np.full((60, 400, 3), 255, np.uint8)
-        w = max(t.shape[1] for t in tiles)
-        tiles = [np.pad(t, ((0, 6), (0, w - t.shape[1] + 6), (0, 0)), constant_values=255) for t in tiles]
+        w, h = max(t.shape[1] for t in tiles), max(t.shape[0] for t in tiles)
+        tiles = [np.pad(t, ((0, h - t.shape[0] + 6), (0, w - t.shape[1] + 6), (0, 0)), constant_values=255) for t in tiles]
         rows = [np.hstack(tiles[i:i + cols] + [np.full_like(tiles[0], 255)] * (cols - len(tiles[i:i + cols])))
                 for i in range(0, len(tiles), cols)]
         legend = np.full((30, rows[0].shape[1], 3), 255, np.uint8)
