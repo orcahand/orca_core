@@ -1,0 +1,171 @@
+# Camera rig for visual calibration: one fixed camera, the hand turns on a
+# motor around a vertical axis. Two steps: 1. the calibration object instead of
+# the hand (lens, camera, axis, stops); 2. the hand (its mount, then joints). Design values and solver settings; what the
+# solver finds goes to calibration.yaml. Plan: README.md.
+# Angles in degrees, lengths in mm. The rig frame: z up along the turntable
+# axis, origin on the plate's top face at the axis.
+
+# The turntable (its own board and motor, hard stop, travel, stops): turntable.yaml;
+# its motor calibration: turntable_calibration.yaml.
+
+camera:
+  resolution: [3840, 2160]
+  diagonal_fov_deg: 90.0     # the BRIO mode (Logi Tune: 65 / 78 / 90): the nominal lens until 1a has run (1a: fx 2272 px = 88°)
+  autofocus: false
+  stabilization: false
+  # The mount (calibration_rig, Shea 2026-11-06; lowered 30 mm, re-tilted). Set distance and height to the
+  # holes the camera is bolted in; the CAD pose below follows from them.
+  mount:
+    distance: 240.0          # lens slider on cam_rail: axis to camera, mm
+    height: 270.0            # camera_height on cam_mast, above the plate, mm (the first rig: the 270 hole)
+    tilt: 3.12               # down, deg; printed into cam_platform (not adjustable): centres the tile column
+    options:                 # what the holes allow (10 mm pitch, 11 positions each)
+      distance: {min: 190.0, max: 290.0, step: 10.0}
+      height: {min: 250.0, max: 350.0, step: 10.0}
+    lens_offset: [6.5, -0.75]  # lens from the mount point at this tilt: +x (away from the axis), z (27.5 mm webcam); x from 3 rig runs (+5.7..6.5 mm), CAD 0.02
+  # The CAD pose, from the mount: lens at (distance + lens_offset x, 0, height + lens_offset z) in the
+  # rig frame (plate at 0°), looking along (-cos tilt, 0, -sin tilt). The camera
+  # found in the photos must be within solver.search.camera of it, and the fit is
+  # held near it by its sigma. null: computed; a value here overrides.
+  nominal_pose: null
+  # The camera's UVC controls (uvcc names and units: exposure in 100 µs; auto_exposure_mode
+  # 1 = manual). A sweep sets and reads them back before the motor moves (visual_calibration/uvc.py).
+  # Tuned 2026-11-07 on the rig: 10 ms, gain 0 (20 ms clips the lit tile margins);
+  # focus 60 balances the bottom row (A, D) with the upper tiles; the lens has some
+  # hysteresis, the corners do not care within 55..70. In-camera sharpening hardly matters.
+  uvc:
+    device: {vendor: 1133, product: 2142}   # Logitech BRIO (046d:085e)
+    auto_focus: 0
+    absolute_focus: 60                      # 0 far .. 255 near
+    auto_exposure_mode: 1
+    absolute_exposure_time: 100             # 10 ms: a multiple of the 100 Hz light flicker
+    auto_exposure_priority: 0               # fixed frame rate
+    gain: 0
+    auto_white_balance_temperature: 0
+    white_balance_temperature: 5000
+    power_line_frequency: 1                 # 50 Hz (UVC: 1 = 50 Hz, 2 = 60 Hz)
+    backlight_compensation: 1
+    brightness: 128
+    contrast: 122
+    saturation: 128
+    sharpness: 64                           # in-camera sharpening, 0..255 (128 = Logi Tune's default)
+    absolute_zoom: 100
+    absolute_pan_tilt: [0, 0]
+
+# Step 1 (no hand): the calibration object stands on the hand's dowels and the
+# motor turns the plate through every stop. 1a camera: the lens and each tile's
+# pose on the object. 1b rotation: the camera pose, the axis, every stop's angle.
+calibration_object:
+  # Square tube on the hand's connector, one ChArUco tile per seat.
+  # 8 tiles: sides 0 and 2 full (a whole column always faces the camera), sides 1
+  # and 3 only the middle row. Generator: make_board.py --set 4 3 --only ...
+  # (calibration_object_8/set.yaml); ids are those of the full 12-seat set.
+  sides: 4                   # counter-clockwise from above
+  side0_stop: 180.0          # CAD only: the stop at which side 0 faces the camera with the seats below
+  # How the tower may sit on the plate, turned from the seats below (deg about z): the
+  # Franka connector bolts on four ways. Nothing is assumed: the photos tell
+  # (visual_calibration/mounting.py) and calibration.yaml records it (mounting: yaw,
+  # side0_stop); a yaw within 15° of one of these snaps to it, any other is used as
+  # found, with a warning.
+  mountings: [0.0, 90.0, 180.0, 270.0]
+  face_distance: 46.0        # axis to a vertical tile's front face
+  rows:                      # tile centre heights above the plate; lean > 0: top leans out, face tilts down
+    - {height: 150.0, lean: 0.0, sides: [0, 2]}
+    - {height: 239.0, lean: 0.0, sides: [0, 1, 2, 3]}
+    - {height: 320.0, lean: 25.0, sides: [0, 2]}
+  tile:
+    dictionary: DICT_4X4_250
+    squares: [5, 5]
+    square_size: 14.0
+    marker_size: 10.5
+    size: [78.0, 78.0, 5.0]
+    margin: 4.0              # pattern origin = tile top-left corner + (margin, margin)
+  # Tile r<row> s<side> carries ids first_id + (row * sides + side) * markers_per_tile ...
+  first_id: 0
+  # Seats from the CAD (Shea), plate frame: top-left corner of the front face
+  # [x, y, z] mm and [roll, pitch, yaw] deg (R = Rz Ry Rx) of the tile frame
+  # (x right, y down, z into the tile). null: computed from the values above.
+  # From calibration_rig (Shea, 2026-11-06); rows 0/1 equal the computed seats,
+  # row 2's wedge puts it 2.5 mm further out.
+  tiles:
+    tile_r0_s0: {corner: [-46.00, 39.00, 189.00], rpy: [-90.0, 0.0, -90.0]}
+    tile_r1_s0: {corner: [-46.00, 39.00, 278.00], rpy: [-90.0, 0.0, -90.0]}
+    tile_r2_s0: {corner: [-81.45, 39.00, 355.35], rpy: [-65.0, 0.0, -90.0]}
+    tile_r0_s2: {corner: [46.00, -39.00, 189.00], rpy: [-90.0, 0.0, 90.0]}
+    tile_r1_s2: {corner: [46.00, -39.00, 278.00], rpy: [-90.0, 0.0, 90.0]}
+    tile_r2_s2: {corner: [81.45, -39.00, 355.35], rpy: [-65.0, 0.0, 90.0]}
+    tile_r1_s1: {corner: [-39.00, -46.00, 278.00], rpy: [-90.0, 0.0, 0.0]}
+    tile_r1_s3: {corner: [39.00, 46.00, 278.00], rpy: [-90.0, 0.0, 180.0]}
+  # The big letter on each tile's back and at its seat on the tower (sides carry digits).
+  letters: {tile_r0_s0: A, tile_r1_s0: B, tile_r2_s0: C, tile_r0_s2: D, tile_r1_s2: E, tile_r2_s2: F,
+            tile_r1_s1: G, tile_r1_s3: H}
+  # Held at its CAD pose: it defines the object frame (others are fitted).
+  reference_tile: tile_r1_s0
+
+lens_calibration:
+  source: calibration_object # fitted in step 1a (camera)
+  fallback:                  # a loose board waved in front of the camera
+    board: charuco
+    squares: [11, 8]
+    square_size: 20.0
+    marker_size: 15.0
+    dictionary: DICT_5X5_100
+  model: [k1, k2, p1, p2, k3]
+  max_reprojection_px: 0.5   # on stops left out of the fit
+
+reference:
+  # Step 2: the hand on the same dowels. Its mount is fitted from the tower
+  # (CAD + small correction), once per mounting.
+  fiducials: []              # [{id, position: [x, y, z]}] in the hand frame
+  # The URDF base frame in the plate frame (mm, rpy deg): the CAD mount until
+  # step 2 fits it. From the real hand's STEP (orca_v2/base/Base_Right.step) fitted
+  # onto the same FrankaConnector + M4 rods (orca_files manual), URDF carpals fitted
+  # to it (Shea 2026-11-06, ±0.5 mm / ±0.5°). Forearm up, palm toward +y (sideways
+  # to the camera at plate 0°, facing it at 270°). The connector also takes it
+  # turned 180°: translation [-10.37, -0.58, 57.95], rotation [90, 0, 180].
+  hand_mount:
+    translation: [10.37, 0.57, 57.95]
+    rotation: [90.0, 0.0, 0.0]
+
+# How far the solver may move each value from its start, per direction
+# (bound), and how strongly it is held there (sigma, the prior).
+solver:
+  search:
+    camera:
+      translation: {bound: [20.0, 20.0, 20.0], sigma: [10.0, 10.0, 10.0]}
+      rotation: {bound: [5.0, 5.0, 5.0], sigma: [2.0, 2.0, 2.0]}
+    # Step 1b: the tower's pose on the turning axis, solved (the turn makes it observable).
+    # Its height stays at the CAD: it trades exactly with the camera height.
+    tower:
+      tilt: {bound: [5.0, 5.0], sigma: [2.0, 2.0]}         # about x, y
+      offset: {bound: [10.0, 10.0], sigma: [5.0, 5.0]}     # in x, y
+      yaw: {bound: 10.0, sigma: 1.0}                       # around the found mounting; trades with the camera's yaw about the axis, so the CAD camera splits them
+    stop_angle: {bound: 1.5, sigma: 0.5}                   # per photo, around the motor's read-back angle; the stop nearest 0° pinned
+    tile:                                                  # per tile on the object, but the reference tile
+      translation: {bound: [1.0, 1.0, 1.0], sigma: [0.3, 0.3, 0.3]}
+      rotation: {bound: [1.0, 1.0, 1.0], sigma: [0.3, 0.3, 0.3]}
+    # Step 2: the hand on the plate. Loose on purpose: 1b holds the tower's height at the CAD,
+    # so any error in how the tower or the hand seats (a few mm) shows up as one rigid offset
+    # of the hand against the camera. It belongs in the mount (6 DoF, one rigid body), not in
+    # the joints or a broken fit; z the most (the unobservable height), x/y and tilt a little.
+    hand_mount:
+      translation: {bound: [3.0, 3.0, 10.0], sigma: [1.0, 1.0, 5.0]}
+      rotation: {bound: [2.0, 2.0, 2.0], sigma: [1.0, 1.0, 1.0]}
+    joints: {bound: 10.0, sigma: 5.0, grid_step: 1.0}      # around the motor angles
+  loss: soft_l1
+  loss_scale_px: 1.0
+
+checks:                      # what the solves flag (visual_calibration/checks.py)
+  max_fit_px: 1.0            # 1b overall fit (RMS over all corners)
+  max_photo_median_px: 1.0   # 1b median of the per-photo RMS
+  warn_photo_px: 2.0         # a photo above this: a warning, not a fail
+  max_held_out_px: 1.0       # 1a, photos left out of the fit (approved 2026-11-07; the tiles' print/flatness floor ~0.8 px)
+  max_tower_tilt_deg: 0.5    # the tower to the turning axis
+  max_tower_offset_mm: 1.0
+  max_camera_off_mm: 5.0     # the solved camera from its CAD pose
+  max_camera_off_deg: 2.0
+  max_stop_correction_deg: 1.0   # the plate vs. its motor angle: the drive has backlash (approved 2026-11-07)
+  min_tile_corners: 8        # mean corners per sighting of a tile (of 16)
+  min_photo_corners: 24
+  max_axis_wobble: 0.1       # circle residual of the tower
+  max_hold_px: 1.0           # first stop repeated at the end of a sweep
