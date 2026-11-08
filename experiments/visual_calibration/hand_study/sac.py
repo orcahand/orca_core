@@ -20,7 +20,7 @@ from hand_study.configs import REST, ROM
 from hand_study.hw import Abort, Hand, beat, call
 
 K_SIGMA = 6.0
-MIN_RISE = 0.05            # sensor units (N) above the zeroed mean, at least
+MIN_RISE = 0.12            # sensor units (N) above the zeroed mean, at least (readings come in 0.1 steps)
 CREEP_DEG_S = 4.0
 HZ = 20.0
 OVERSHOOT_DEG = 12.0
