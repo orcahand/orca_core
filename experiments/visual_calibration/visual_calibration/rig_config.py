@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from orca_core.utils.utils import _version_sort_key, read_yaml, write_yaml_atomic
 
 DEFAULT_RIG_NAME = "camera-rig"
+DEFAULT_CAMERA = "a"            # the old single `camera:` block; holds the gauge (its CAD azimuth)
+DEFAULT_TOWER = "v1"            # the `calibration_object:` block as written
 ANGLE_TOLERANCE_DEG = 1e-6
 
 
@@ -111,17 +113,42 @@ class RigConfig:
         return os.path.basename(self.path)
 
     @property
-    def camera_nominal(self) -> dict | None:
-        """The CAD camera pose {position, look_at} (rig frame, mm) from camera.mount, or nominal_pose if set."""
-        cam = self.raw.get("camera") or {}
-        if cam.get("nominal_pose"):
-            return cam["nominal_pose"]
-        m = cam.get("mount")
+    def cameras(self) -> dict[str, dict]:
+        """Every camera's block by name (`cameras:`); the old single `camera:` block is camera "a"."""
+        return dict(self.raw.get("cameras") or {DEFAULT_CAMERA: self.raw.get("camera") or {}})
+
+    @property
+    def active_cameras(self) -> list[str]:
+        """The cameras a sweep grabs (`enabled: false` keeps one configured but unplugged)."""
+        return [k for k, c in self.cameras.items() if c.get("enabled", True)]
+
+    def nominal_of(self, cam: str = DEFAULT_CAMERA) -> dict | None:
+        """A camera's CAD pose {position, look_at} (rig frame, mm) from its mount, or its nominal_pose if set.
+        mount.azimuth (deg, default 0: +x) turns the mount about the axis."""
+        c = self.cameras.get(cam) or {}
+        if c.get("nominal_pose"):
+            return c["nominal_pose"]
+        m = c.get("mount")
         if not m:
             return None
         dx, dz = m.get("lens_offset", [0.0, 0.0])
         x, z, tilt = float(m["distance"]) + dx, float(m["height"]) + dz, math.radians(float(m["tilt"]))
-        return {"position": [round(x, 3), 0.0, round(z, 3)], "look_at": [0.0, 0.0, round(z - x * math.tan(tilt), 3)]}
+        az = float(m.get("azimuth", 0.0))
+        if not az:
+            return {"position": [round(x, 3), 0.0, round(z, 3)], "look_at": [0.0, 0.0, round(z - x * math.tan(tilt), 3)]}
+        a = math.radians(az)
+        return {"position": [round(x * math.cos(a), 3), round(x * math.sin(a), 3), round(z, 3)],
+                "look_at": [0.0, 0.0, round(z - x * math.tan(tilt), 3)]}
+
+    @property
+    def camera_nominal(self) -> dict | None:
+        """Camera "a"'s CAD pose (nominal_of)."""
+        return self.nominal_of(DEFAULT_CAMERA)
+
+    def camera_azimuth(self, cam: str = DEFAULT_CAMERA) -> float:
+        """The camera's CAD azimuth about the axis, deg (0 without a mount)."""
+        n = self.nominal_of(cam)
+        return float(math.degrees(math.atan2(n["position"][1], n["position"][0]))) if n else 0.0
 
     @property
     def search(self) -> dict:
@@ -133,6 +160,14 @@ class RigConfig:
         raw = read_yaml(os.path.join(path, "config.yaml"))
         if not raw:
             raise RigConfigError(f"{path}/config.yaml is missing or empty")
+        if raw.get("cameras") and "camera" not in raw:
+            raw["camera"] = raw["cameras"][DEFAULT_CAMERA]       # what single-camera readers use
+        tower = raw.get("tower", DEFAULT_TOWER)
+        if tower != DEFAULT_TOWER:
+            seats = (raw.get("towers") or {}).get(tower)
+            if seats is None:
+                raise RigConfigError(f"{path}/config.yaml: tower {tower!r} is not under towers:")
+            raw["calibration_object"] = {**raw["calibration_object"], **seats}
         if "turntable" not in raw:
             raw["turntable"] = read_yaml(os.path.join(path, "turntable.yaml"))
             if not raw["turntable"]:
@@ -162,12 +197,16 @@ class RigConfig:
             bounds, sigmas = _as_list(entry.get("bound")), _as_list(entry.get("sigma"))
             if not bounds or len(bounds) != len(sigmas) or min(bounds + sigmas) <= 0:
                 raise RigConfigError(f"{where}: bound and sigma must be positive, one per direction")
-        mount = (self.raw.get("camera") or {}).get("mount") or {}
-        for key, o in (mount.get("options") or {}).items():
-            v = float(mount[key])
-            k = (v - o["min"]) / o["step"]
-            if not o["min"] <= v <= o["max"] or abs(k - round(k)) > 1e-6:
-                raise RigConfigError(f"camera.mount.{key} {v:g} is not a hole: {o['min']:g}..{o['max']:g} in steps of {o['step']:g}")
+        if DEFAULT_CAMERA not in self.cameras:
+            raise RigConfigError(f"cameras: camera {DEFAULT_CAMERA!r} is missing (it holds the gauge)")
+        for name, cam in self.cameras.items():
+            mount = cam.get("mount") or {}
+            where = "camera" if "cameras" not in self.raw else f"cameras.{name}"
+            for key, o in (mount.get("options") or {}).items():
+                v = float(mount[key])
+                k = (v - o["min"]) / o["step"]
+                if not o["min"] <= v <= o["max"] or abs(k - round(k)) > 1e-6:
+                    raise RigConfigError(f"{where}.mount.{key} {v:g} is not a hole: {o['min']:g}..{o['max']:g} in steps of {o['step']:g}")
 
     @property
     def calibration_path(self) -> str:
@@ -187,6 +226,7 @@ class RigConfig:
             old = self.load_calibration()
             history = list(old.get("history") or [])
             if old.get("calibrated_at"):
-                history.append({k: old.get(k) for k in ("calibrated_at", "lens", "camera", "axis", "tower", "mounting", "stop_angle_corrections", "tile_poses", "fit")})
+                history.append({k: old.get(k) for k in ("calibrated_at", "lens", "camera", "axis", "tower", "mounting", "stop_angle_corrections", "tile_poses", "fit")}
+                               | ({"cameras": old["cameras"]} if "cameras" in old else {}))
             calibration["history"] = history
         write_yaml_atomic(self.calibration_path, calibration)

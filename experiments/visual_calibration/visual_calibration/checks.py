@@ -1,7 +1,9 @@
 """Structured warnings from the solves, for the UI: {code, severity, message, fix, values}.
 
 Severity: "info" (worth knowing), "warning" (the result is usable but something is
-off), "error" (do not apply it). Thresholds: config.yaml `checks`.
+off), "error" (do not apply it). Thresholds: config.yaml `checks`. Several cameras: the
+camera checks run per camera (values carry `camera` for any but "a"); `quick_check` is the
+per-session check of every camera's park-stop frame against the applied calibration.
 """
 from __future__ import annotations
 
@@ -12,12 +14,13 @@ from orca_core.kinematics.transforms import Transform
 
 from visual_calibration.calibration_object import CalibrationObject
 from visual_calibration.mounting import coverage
-from visual_calibration.rig_config import RigConfig
+from visual_calibration.rig_config import DEFAULT_CAMERA, RigConfig
 
 DEFAULT_CHECKS = {"max_fit_px": 1.0, "max_photo_median_px": 1.0, "warn_photo_px": 2.0, "max_held_out_px": 1.0,
                   "max_hold_px": 1.0, "max_tower_tilt_deg": 0.5, "max_tower_offset_mm": 2.0,
                   "max_camera_off_mm": 5.0, "max_camera_off_deg": 2.0, "min_tile_corners": 8,
-                  "max_stop_correction_deg": 1.0, "min_photo_corners": 24}
+                  "max_stop_correction_deg": 1.0, "min_photo_corners": 24, "max_quick_px": 1.0}
+QUICK_STOPS = 5                 # the re-check sweep when a camera moved: lens and tiles held
 
 
 def warning(code: str, severity: str, message: str, fix: str = "", **values) -> dict:
@@ -96,8 +99,11 @@ def solve_warnings(rig: RigConfig, step: str, result: Mapping, photos: Sequence)
         out.append(warning("stop_angle", "warning", f"Stop {worst:g}° is {corr[worst]:+.2f}° off its motor angle.",
                            "Check the motor holds the plate (PWM cap, backlash) and that the plate turns freely.",
                            worst_stop=worst, correction_deg=_r(corr[worst], 3)))
-    cam, nominal = result.get("camera"), rig.camera_nominal
-    if cam and cam.get("translation") is not None and nominal:
+    for k in [DEFAULT_CAMERA, *(result.get("cameras") or {})]:
+        cam, nominal = (result if k == DEFAULT_CAMERA else result["cameras"][k]).get("camera"), rig.nominal_of(k)
+        if not (cam and cam.get("translation") is not None and nominal):
+            continue
+        who, tag = ("The camera", {}) if k == DEFAULT_CAMERA else (f"Camera {k}", {"camera": k})
         d = np.array(cam["translation"], float) - np.array(nominal["position"], float)
         view = np.array(nominal["look_at"], float) - np.array(nominal["position"], float)
         z = Transform.from_xyz_rpy(cam["translation"], np.radians(cam["rotation"])).rotation[:, 2]
@@ -105,14 +111,15 @@ def solve_warnings(rig: RigConfig, step: str, result: Mapping, photos: Sequence)
         mm = float(np.linalg.norm(d))
         if mm > lim["max_camera_off_mm"] or deg > lim["max_camera_off_deg"]:
             out.append(warning("camera_off_cad", "warning",
-                               f"The camera is {mm:.0f} mm and {deg:.1f}° from where the mount setting puts it.",
-                               "Check camera.mount (distance, height) in config.yaml against the holes used. A camera "
+                               f"{who} is {mm:.0f} mm and {deg:.1f}° from where the mount setting puts it.",
+                               ("Check camera.mount (distance, height)" if k == DEFAULT_CAMERA else f"Check cameras.{k}.mount")
+                               + " in config.yaml against the holes used. A camera "
                                "found low by a few mm can also be the tower sitting high (the two cannot be told apart).",
-                               mm=_r(mm, 1), deg=_r(deg), delta_mm=_r(d, 1)))
+                               mm=_r(mm, 1), deg=_r(deg), delta_mm=_r(d, 1), **tag))
         elif abs(d[2]) > 2.0:
             out.append(warning("camera_height", "info",
-                               f"The camera comes out {d[2]:+.1f} mm from its CAD height: the camera, or the tower "
-                               "sitting that much the other way (held at the CAD height).", delta_mm=_r(d, 1)))
+                               f"{who} comes out {d[2]:+.1f} mm from its CAD height: the camera, or the tower "
+                               "sitting that much the other way (held at the CAD height).", delta_mm=_r(d, 1), **tag))
 
     sightings: dict[str, list[int]] = {}
     weak_photos = []
@@ -133,11 +140,18 @@ def solve_warnings(rig: RigConfig, step: str, result: Mapping, photos: Sequence)
     seen = {obj.tiles[t].side for t in sightings}
     missing = [s for s in (0, 2) if s not in seen] + ([] if seen & {1, 3} else ["1 or 3"])
     stops = sorted({p.stop_deg for p in photos})
-    plan = coverage(obj, stops, [float(m["yaw"])] if m else rig.raw["calibration_object"].get("mountings", [0.0]))
-    if missing or plan["warnings"]:
+    yaws = [float(m["yaw"])] if m else rig.raw["calibration_object"].get("mountings", [0.0])
+    by_cam: dict[str, list[float]] = {}
+    for p in photos:
+        by_cam.setdefault(getattr(p, "camera", DEFAULT_CAMERA), []).append(p.stop_deg)
+    notes = []
+    for k in sorted(by_cam, key=lambda c: (c != DEFAULT_CAMERA, c)) or [DEFAULT_CAMERA]:
+        plan = coverage(obj, sorted(set(by_cam[k])) if len(by_cam) > 1 else stops, yaws, rig.camera_azimuth(k))
+        notes += [w if k == DEFAULT_CAMERA else f"camera {k}: {w}" for w in plan["warnings"]]
+    if missing or notes:
         out.append(warning("stop_coverage", "warning",
                            (f"No photo shows side(s) {', '.join(map(str, missing))}. " if missing else "") +
-                           " ".join(plan["warnings"]),
+                           " ".join(notes),
                            "Add stops so every side faces the camera at least once.",
                            missing_sides=missing, stops=_r(stops, 1)))
     return out
@@ -149,9 +163,9 @@ def as_structured(warnings) -> list[dict]:
 
 
 
-def camera_off(rig: RigConfig, cam: Mapping) -> tuple[float, float]:
+def camera_off(rig: RigConfig, cam: Mapping, name: str = DEFAULT_CAMERA) -> tuple[float, float]:
     """The solved camera from its CAD pose: mm, deg."""
-    n = rig.camera_nominal
+    n = rig.nominal_of(name)
     view = np.array(n["look_at"], float) - np.array(n["position"], float)
     z = Transform.from_xyz_rpy(cam["translation"], np.radians(cam["rotation"])).rotation[:, 2]
     return (float(np.linalg.norm(np.array(cam["translation"], float) - n["position"])),
@@ -177,5 +191,40 @@ def verdict(rig: RigConfig, rotation: Mapping, held_out_px: float | None, hold_p
         "camera vs CAD mm": (mm, lim["max_camera_off_mm"]),
         "camera vs CAD deg": (deg, lim["max_camera_off_deg"]),
     }
+    for k, c in (rotation.get("cameras") or {}).items():
+        if c.get("camera") and rig.nominal_of(k):
+            mm, deg = camera_off(rig, c["camera"], k)
+            rows[f"camera {k} vs CAD mm"] = (mm, lim["max_camera_off_mm"])
+            rows[f"camera {k} vs CAD deg"] = (deg, lim["max_camera_off_deg"])
+        rows[f"1b fit px camera {k}"] = ((c.get("fit") or {}).get("reprojection_px"), lim["max_fit_px"])
     return {k: {"value": None if v is None else round(float(v), 3), "limit": float(lim_),
                 "ok": v is not None and v <= lim_} for k, (v, lim_) in rows.items()}
+
+
+def quick_check(rig: RigConfig, detections: Mapping[str, Sequence], angle_deg: float) -> dict:
+    """The per-session check: every camera's frame at the park stop against the applied calibration
+    (lens, camera pose, tower, stop correction, tiles): the RMS (px) between the detected corners and
+    where the calibration puts them. Over `checks.max_quick_px` a camera (or the tower) has moved:
+    a QUICK_STOPS sweep with the lens and the tiles held (a rotation session with hold=True)
+    solves the poses again, a full 1a + 1b is not needed."""
+    from visual_calibration.overlay import camera_model, object_in_plate, plate_in_rig
+    from visual_calibration.rig_calibration import tile_poses_from_calibration
+    lim, obj = limits(rig)["max_quick_px"], CalibrationObject.from_config(rig.raw["calibration_object"])
+    tiles = tile_poses_from_calibration(rig.load_calibration())
+    plate = plate_in_rig(rig, angle_deg) @ object_in_plate(rig)
+    cams = {}
+    for k, dets in detections.items():
+        lens, pose, source = camera_model(rig, cam=k)
+        if source["camera"] != "calibrated" or not dets:
+            cams[k] = {"px": None, "corners": sum(len(d.ids) for d in dets), "ok": False,
+                       "why": "not calibrated" if dets else "no tiles found"}
+            continue
+        X = np.vstack([tiles.get(d.tile, obj.tiles[d.tile].pose).apply_to_points(obj.spec.corners[d.ids]) for d in dets])
+        uv = lens.project((pose.inverse() @ plate).apply_to_points(X))
+        px = float(np.sqrt(((uv - np.vstack([d.uv for d in dets])) ** 2).sum(1).mean()))
+        cams[k] = {"px": round(px, 3), "corners": len(X), "ok": px <= lim}
+    moved = [k for k, v in cams.items() if not v["ok"]]
+    return {"angle": round(float(angle_deg), 2), "limit_px": lim, "cameras": cams, "ok": not moved,
+            "advice": None if not moved else
+            f"camera {', '.join(moved)} off the calibration (> {lim:g} px): run a {QUICK_STOPS}-stop sweep with the "
+            "lens and tiles held (rotation session, hold=True) before the hand session"}

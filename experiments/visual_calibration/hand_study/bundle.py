@@ -1,6 +1,7 @@
 """The hand's mount on the plate, solved once over every pose together (each pose's joints
 held at their current estimate), instead of from the baseline pose alone. Alternate with a
-re-solve of every pose's joints (worker) until the mount stops moving.
+re-solve of every pose's joints (worker) until the mount stops moving. Every camera's views
+(meta.json `camera`, estimate.load_frames) join the one mount fit.
 
     python -m hand_study.bundle            # writes mount_bundle.json, sets each plan's mount
 """
@@ -39,7 +40,12 @@ def main(iters: int = 8) -> dict:
         x = np.array(est["x"], float)
         f.x = x.copy()
         items.append((d, x[6:], f.views_of(load_frames(d))))
-    print(f"{len(items)} poses, {sum(len(v) for *_, v in items)} views prepared in {time.time() - t0:.0f} s", flush=True)
+    per_cam = {}
+    for *_, views in items:
+        for v in views:
+            per_cam[v.camera] = per_cam.get(v.camera, 0) + 1
+    print(f"{len(items)} poses, {sum(len(v) for *_, v in items)} views prepared in {time.time() - t0:.0f} s"
+          + (f" (per camera {per_cam})" if len(per_cam) > 1 else ""), flush=True)
     x0 = np.array(json.loads((BASELINE / "est_w960.json").read_text())["mount"], float)
 
     def per_pose(mount):

@@ -4,11 +4,16 @@ config.yaml camera.uvc, then one frame against the stored reference.
 
 OpenCV on macOS cannot read or set these; uvcc (node, ``npx uvcc``) talks UVC
 over USB. Units are uvcc's: exposure in 100 µs, auto_exposure_mode 1 = manual.
+
+Two cameras of one model (two BRIOs): uvcc tells them apart by USB address only, and that
+changes on every replug, so config.yaml names each by its serial number (or USB location,
+the port); the address is looked up in the IORegistry (`usb_devices`) before each call.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from collections.abc import Callable, Mapping
@@ -27,16 +32,71 @@ class CameraSettingsError(RuntimeError):
     pass
 
 
+def usb_devices(run: Callable = subprocess.run) -> list[dict]:
+    """Every USB device in the IORegistry: {name, vendor, product, serial, location, address}
+    (macOS; location = locationID, the port; address = the USB address uvcc selects by)."""
+    p = run(["ioreg", "-p", "IOUSB", "-l", "-w0"], capture_output=True, text=True, timeout=20)
+    out, cur = [], None
+    for line in p.stdout.splitlines():
+        m = re.search(r"\+-o (.+?)@[0-9a-fA-F]+\s+<class IOUSBHostDevice", line)
+        if m:
+            cur = {"name": m.group(1)}
+            out.append(cur)
+            continue
+        if "+-o " in line:
+            cur = None
+            continue
+        m = re.search(r'"(idVendor|idProduct|USB Serial Number|locationID|USB Address)" = (.+)$', line)
+        if cur is not None and m:
+            key = {"idVendor": "vendor", "idProduct": "product", "USB Serial Number": "serial",
+                   "locationID": "location", "USB Address": "address"}[m.group(1)]
+            v = m.group(2).strip().strip('"')
+            cur[key] = v if key == "serial" else int(v)
+    return out
+
+
+def find_device(vendor: int, product: int, serial: str | None = None, location: int | str | None = None,
+                devices: list[dict] | None = None) -> dict:
+    """The one device of this model with that serial / location; one of the model without either."""
+    devs = [d for d in (usb_devices() if devices is None else devices)
+            if d.get("vendor") == int(vendor) and d.get("product") == int(product)]
+    if serial is not None:
+        devs = [d for d in devs if str(d.get("serial")) == str(serial)]
+    if location is not None:
+        loc = int(location, 0) if isinstance(location, str) else int(location)
+        devs = [d for d in devs if d.get("location") == loc]
+    if len(devs) != 1:
+        want = f"{vendor:04x}:{product:04x}" + (f" serial {serial}" if serial is not None else "") + \
+            (f" location {location}" if location is not None else "")
+        raise CameraSettingsError(f"{len(devs)} USB cameras match {want}" +
+                                  ("; set device.serial per camera in config.yaml" if len(devs) > 1 else ""))
+    return devs[0]
+
+
 class Uvcc:
-    def __init__(self, vendor: int, product: int, tool: str = TOOL, run: Callable = subprocess.run):
+    def __init__(self, vendor: int, product: int, tool: str = TOOL, run: Callable = subprocess.run,
+                 serial: str | None = None, location: int | str | None = None, address: int | None = None,
+                 devices: Callable[[], list[dict]] | None = None):
         self.vendor, self.product, self.tool, self.run = int(vendor), int(product), tool, run
+        self.serial, self.location, self.address = serial, location, address
+        self.devices = devices or (lambda: usb_devices(run))
 
     @classmethod
     def from_config(cls, uvc: Mapping, **kw) -> Uvcc:
-        return cls(uvc["device"]["vendor"], uvc["device"]["product"], **kw)
+        d = uvc["device"]
+        return cls(d["vendor"], d["product"], serial=d.get("serial"), location=d.get("location"),
+                   address=d.get("address"), **kw)
+
+    def _address(self) -> int | None:
+        """The USB address to select by: given, or looked up from the serial / location (a replug changes it)."""
+        if self.address is not None or (self.serial is None and self.location is None):
+            return self.address
+        return find_device(self.vendor, self.product, self.serial, self.location, self.devices())["address"]
 
     def _call(self, *args) -> str:
-        cmd = [*shlex.split(self.tool), "--vendor", str(self.vendor), "--product", str(self.product), *map(str, args)]
+        address = self._address()
+        cmd = [*shlex.split(self.tool), "--vendor", str(self.vendor), "--product", str(self.product),
+               *(["--address", str(address)] if address is not None else []), *map(str, args)]
         p = self.run(cmd, capture_output=True, text=True, timeout=60)
         if p.returncode:
             raise CameraSettingsError(f"uvcc {' '.join(map(str, args))}: {(p.stderr or p.stdout).strip()[-300:]}")

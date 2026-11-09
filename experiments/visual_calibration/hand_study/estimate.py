@@ -1,5 +1,8 @@
 """Joint angles of one configuration from its multi-view photos (the mount held fixed, or
-solved with it), with per-joint uncertainty and a view-split consistency check."""
+solved with it), with per-joint uncertainty and a view-split consistency check.
+
+Frames are (plate angle, image) of camera "a", or (plate angle, image, camera) of any camera;
+meta.json views carry `camera` (missing: "a"). Every camera's views join the one fit."""
 
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from hand_study import segment
 from visual_calibration import live_fit as lf
 from visual_calibration.live_fit import LiveHandFit, scaled
 from visual_calibration import overlay as _overlay
-from visual_calibration.rig_config import RigConfig
+from visual_calibration.rig_config import DEFAULT_CAMERA, RigConfig
 from visual_calibration.solve import least_squares
 
 WIDTH = 960
@@ -47,6 +50,21 @@ MIN_LINK_SAMPLES = 10
 
 
 _PLATE: dict = {}
+
+
+def frame(f) -> tuple:
+    """(angle, image, camera) of a frame (angle, image) or (angle, image, camera)."""
+    return (f[0], f[1], f[2] if len(f) > 2 else DEFAULT_CAMERA)
+
+
+def frame_key(f):
+    """A frame's key: its angle for camera "a" (as single-camera results always had), else (camera, angle)."""
+    a, _, c = frame(f)
+    return a if c == DEFAULT_CAMERA else (c, a)
+
+
+def key_name(k) -> str:
+    return f"{k:g}" if not isinstance(k, tuple) else f"{k[0]}:{k[1]:g}"
 
 
 def plate_in_rig(rig, angle: float):
@@ -125,7 +143,7 @@ class StudyFit(LiveHandFit):
         if self.mode == "area" and not DROP_LINKS or not len(view.fg_px):
             return None
         cv2 = lf._cv2()
-        lab = self.label(self.x, view.angle, self.lens_s, view.fg.shape, view.offset)
+        lab = self.label(self.x, view.angle, self.lens_s, view.fg.shape, view.offset, view.camera)
         k = np.ones((3, 3), np.uint8)
         for _ in range(int(lf.CAP_PX)):               # the nearest link within the distance cap
             empty = lab == 0
@@ -177,29 +195,36 @@ class StudyFit(LiveHandFit):
         seg = segment.masker()                   # None: GrabCut (the default)
         self._prob = {}
         out = []
-        for angle, img in frames:
-            keep = self.keep(self.x, angle, self.lens, img.shape[:2])      # crop -> segment -> _clip:
+        for f in self.usable(frames):
+            angle, img, cam = frame(f)
+            keep = self.keep(self.x, angle, self.lens, img.shape[:2], cam)  # crop -> segment -> _clip:
             if keep is not None:                                            # no segmenter sees floor or cables
                 img = img.copy()
                 img[~keep] = 0
             if seg is not None:                  # cached per (cropped) photo
-                p = seg.prob(img, self.label(self.x, angle, self.lens, img.shape[:2]), self.ids) if seg.prompted else seg.prob(img)
-                self._prob[angle] = cv2.resize(p, (self.width, round(p.shape[0] * self.width / p.shape[1])),
-                                               interpolation=cv2.INTER_AREA)
+                p = seg.prob(img, self.label(self.x, angle, self.lens, img.shape[:2], cam=cam), self.ids) if seg.prompted else seg.prob(img)
+                self._prob[frame_key(f)] = cv2.resize(p, (self.width, round(p.shape[0] * self.width / p.shape[1])),
+                                                      interpolation=cv2.INTER_AREA)
             if img.shape[1] != self.width:
                 img = cv2.resize(img, (self.width, round(img.shape[0] * self.width / img.shape[1])),
                                  interpolation=cv2.INTER_AREA)
-            v = self.prepare(img, angle, self.lens_s)
+            v = self.prepare(img, angle, self.lens_s, cam)
             v.w_fg = self.fg_weights(v)
             out.append(v)
         return out
 
-    def keep(self, x: np.ndarray, angle: float, lens, shape) -> np.ndarray | None:
+    def usable(self, frames) -> list:
+        """The frames of cameras the rig calibration has (a camera not yet solved would only mislead)."""
+        return [f for f in frames if frame(f)[2] in self.cameras]
+
+    def keep(self, x: np.ndarray, angle: float, lens, shape, cam: str = DEFAULT_CAMERA) -> np.ndarray | None:
         """The pixels the fit may use: within KEEP_PAD_PX (at the fit scale) of the model above Z_CUT_MM."""
         if Z_CUT_MM <= 0:
             return None
         cv2 = lf._cv2()
-        hand, to_cam = self.hand_in_plate(x), self.cam.inverse() @ plate_in_rig(self.rig, angle)
+        pose = self.cam if cam == DEFAULT_CAMERA else self.cameras[cam][1]
+        lens = self.lens_of(cam, lens)
+        hand, to_cam = self.hand_in_plate(x), pose.inverse() @ plate_in_rig(self.rig, angle)
         pts = []
         for l, p in self.model.link_poses(self.q_of(x)).items():
             if l in self.cloud:
@@ -221,9 +246,9 @@ class StudyFit(LiveHandFit):
             m = cv2.resize(m, (ws * f, hs * f), interpolation=cv2.INTER_NEAREST)[:h, :w]
         return m > 0
 
-    def prepare(self, img: np.ndarray, angle: float, lens) -> "lf.View":
-        view = self._prepare(img, angle, lens)
-        keep = self.keep(self.x, angle, lens, img.shape[:2])
+    def prepare(self, img: np.ndarray, angle: float, lens, cam: str = DEFAULT_CAMERA) -> "lf.View":
+        view = self._prepare(img, angle, lens, cam)
+        keep = self.keep(self.x, angle, lens, img.shape[:2], cam)
         return view if keep is None else self._clip(view, keep)
 
     def _clip(self, view: "lf.View", keep: np.ndarray) -> "lf.View":
@@ -237,17 +262,17 @@ class StudyFit(LiveHandFit):
         fy, fx = np.nonzero(fg)
         ey, ex = np.nonzero(e)
         return lf.View(view.angle, view.offset, fg, e, to_fg,
-                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE))
+                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE), view.camera)
 
-    def _prepare(self, img: np.ndarray, angle: float, lens) -> "lf.View":
-        prob = getattr(self, "_prob", {}).get(angle)
+    def _prepare(self, img: np.ndarray, angle: float, lens, cam: str = DEFAULT_CAMERA) -> "lf.View":
+        prob = getattr(self, "_prob", {}).get(frame_key((angle, None, cam)))
         if prob is not None:
-            return self._prepare_learned(img, angle, lens, prob)
+            return self._prepare_learned(img, angle, lens, prob, cam)
         if WHITE is None:
-            return super().prepare(img, angle, lens)
+            return super().prepare(img, angle, lens, cam)
         cv2 = lf._cv2()
         h, w = img.shape[:2]
-        est = self.label(self.x, angle, lens, (h, w))
+        est = self.label(self.x, angle, lens, (h, w), cam=cam)
         ys, xs = np.nonzero(est)
         if not len(xs):
             raise ValueError("the hand model is outside the image at this angle")
@@ -279,14 +304,15 @@ class StudyFit(LiveHandFit):
         fy, fx = np.nonzero(fg)
         ey, ex = np.nonzero(e)
         return lf.View(angle, np.array([u0, v0]), fg, e, to_fg,
-                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE))
+                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE), cam)
 
-    def _prepare_learned(self, img: np.ndarray, angle: float, lens, prob: np.ndarray) -> "lf.View":
+    def _prepare_learned(self, img: np.ndarray, angle: float, lens, prob: np.ndarray,
+                         cam: str = DEFAULT_CAMERA) -> "lf.View":
         """prepare() with the learned mask (segment.py, STUDY_SEGMENTER) in GrabCut's place, kept within
         GrabCut's band around the model; crop, edges and samples as in live_fit.prepare."""
         cv2 = lf._cv2()
         h, w = img.shape[:2]
-        est = self.label(self.x, angle, lens, (h, w))
+        est = self.label(self.x, angle, lens, (h, w), cam=cam)
         ys, xs = np.nonzero(est)
         if not len(xs):
             raise ValueError("the hand model is outside the image at this angle")
@@ -304,7 +330,7 @@ class StudyFit(LiveHandFit):
         fy, fx = np.nonzero(fg)
         ey, ex = np.nonzero(e)
         return lf.View(angle, np.array([u0, v0]), fg, e, to_fg,
-                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE))
+                       lf._even(np.c_[fx, fy], lf.N_FG), lf._even(np.c_[ex, ey], lf.N_EDGE), cam)
 
     def fit(self, views, free_mount: bool, iters: int = ITERS):
         free = np.arange(self.x.size) if free_mount else np.arange(6, self.x.size)
@@ -328,11 +354,12 @@ class StudyFit(LiveHandFit):
         std[free] = f.std * lf.SIGMA_PX / max(f.rms, 1e-6)
         return f, std
 
-    def margins(self, x: np.ndarray, angle: float) -> dict[str, float]:
+    def margins(self, x: np.ndarray, angle: float, cam: str = DEFAULT_CAMERA) -> dict[str, float]:
         """Per link, how far (fit px) its projection stays inside the image (< 0: cut off)."""
         h, w = round(self.lens.size[1] * self.s), self.width
+        lens = self.lens_of(cam, self.lens_s)
         out = {}
-        for l, T in self.cam_poses(x, angle).items():
+        for l, T in self.cam_poses(x, angle, cam).items():
             if l in EXEMPT:
                 continue
             c = T.apply_to_points(self.cloud[l])
@@ -340,18 +367,19 @@ class StudyFit(LiveHandFit):
             if not len(c):
                 out[l] = -np.inf
                 continue
-            uv = self.lens_s.project(c)
+            uv = lens.project(c)
             out[l] = float(min(uv[:, 0].min(), uv[:, 1].min(), w - 1 - uv[:, 0].max(), h - 1 - uv[:, 1].max()))
         return out
 
-    def cut(self, x: np.ndarray, frames) -> dict[float, list]:
-        """The frames whose hand is not wholly inside the image: angle -> [worst link, margin px]."""
+    def cut(self, x: np.ndarray, frames) -> dict:
+        """The frames whose hand is not wholly inside the image: frame_key -> [worst link, margin px]."""
         out = {}
-        for a, _ in frames:
-            m = self.margins(x, a)
+        for f in frames:
+            a, _, c = frame(f)
+            m = self.margins(x, a, c)
             worst = min(m, key=m.get)
             if m[worst] < FULL_MARGIN_PX:
-                out[a] = [worst, round(m[worst], 1)]
+                out[frame_key(f)] = [worst, round(m[worst], 1)]
         return out
 
     def per_view_rms(self, views) -> list[float]:
@@ -362,26 +390,27 @@ class StudyFit(LiveHandFit):
         from the first round's pose. FULL_ONLY: only the views showing the whole hand (checked
         at the start pose, then again at the solution, re-solved once if that changes the set);
         fewer than MIN_FULL_VIEWS left: the pose is suspect (left out of every analysis)."""
+        frames = self.usable(frames)
         if not FULL_ONLY:
             return self._solve(frames, q0, mount, rounds, split)
         x0 = np.r_[np.zeros(6) if mount is None else mount,
                    np.clip([float(q0.get(j, 0.0)) for j in self.joints], self.lo, self.hi)]
         cut = self.cut(x0, frames)
-        use = [f for f in frames if f[0] not in cut] if len(frames) - len(cut) >= MIN_FULL_VIEWS else frames
+        use = [f for f in frames if frame_key(f) not in cut] if len(frames) - len(cut) >= MIN_FULL_VIEWS else frames
         out = self._solve(use, q0, mount, rounds, split)
         for _ in range(2):
             cut = self.cut(self.x, frames)
-            now = [f for f in frames if f[0] not in cut]
-            if [a for a, _ in now] == [a for a, _ in use] or len(now) < MIN_FULL_VIEWS:
+            now = [f for f in frames if frame_key(f) not in cut]
+            if [frame_key(f) for f in now] == [frame_key(f) for f in use] or len(now) < MIN_FULL_VIEWS:
                 break
             use = now
             out = self._solve(use, q0, mount, rounds, split)
-        out["cut_views"] = {f"{a:g}": v for a, v in cut.items()}
+        out["cut_views"] = {key_name(k): v for k, v in cut.items()}
         out["n_views_all"] = len(frames)
-        full = [a for a, _ in frames if a not in cut]
+        full = [frame_key(f) for f in frames if frame_key(f) not in cut]
         if len(full) < MIN_FULL_VIEWS:
             out["suspect"] = [*out["suspect"], f"only {len(full)} views show the whole hand"]
-        elif [a for a, _ in use] != full:
+        elif [frame_key(f) for f in use] != full:
             out["suspect"] = [*out["suspect"], "the full-view set did not settle"]
         return out
 
@@ -398,14 +427,16 @@ class StudyFit(LiveHandFit):
         rms = self.per_view_rms(views)
         self.last_views = views
         quality = self.quality(views)
+        cams = [frame(f)[2] for f in frames]
         out = {"x": self.x.tolist(), "joints": dict(zip(self.joints, self.x[6:].round(3).tolist())),
                "std": dict(zip(self.joints, np.nan_to_num(std[6:], nan=-1).round(3).tolist())),
                "mount": self.x[:6].round(3).tolist(), "mount_std": np.nan_to_num(std[:6], nan=-1).round(3).tolist(),
                "spread": {k: round(v, 1) for k, v in self.spread.items()},
-               "rms_px": float(np.mean(rms)), "view_rms_px": rms, "angles": [a for a, _ in frames],
+               "rms_px": float(np.mean(rms)), "view_rms_px": rms, "angles": [frame(f)[0] for f in frames],
+               **({"cameras": cams} if set(cams) != {DEFAULT_CAMERA} else {}),
                "quality": quality, "suspect": suspect(quality),
-               "obs": self.observability([a for a, _ in frames], self.lens_s,
-                                         (round(self.lens.size[1] * self.s), self.width)).max(0).round(3).tolist()}
+               "obs": self.observability([frame(f)[0] for f in frames], self.lens_s,
+                                         (round(self.lens.size[1] * self.s), self.width), cams).max(0).round(3).tolist()}
         if split and len(frames) >= 4:
             halves = {}
             x_full = self.x.copy()
@@ -430,10 +461,10 @@ class StudyFit(LiveHandFit):
         out = []
         fingers = {self.ids[l] for l in self.cloud if lf.group_of(l) >= 2}
         for v in views:
-            lab = self.label(self.x, v.angle, self.lens_s, v.fg.shape, v.offset)
+            lab = self.label(self.x, v.angle, self.lens_s, v.fg.shape, v.offset, v.camera)
             model, fg = lab > 0, v.fg > 0
             fin = np.isin(lab, list(fingers))
-            out.append({"angle": round(float(v.angle), 1),
+            out.append({"angle": round(float(v.angle), 1), **({"camera": v.camera} if v.camera != DEFAULT_CAMERA else {}),
                         "mask_only": round(float((fg & ~model).sum() / max(fg.sum(), 1)), 3),
                         "model_only": round(float((model & ~fg).sum() / max(model.sum(), 1)), 3),
                         "finger_missed": round(float((fin & ~fg).sum() / max(fin.sum(), 1)), 3)})
@@ -441,7 +472,8 @@ class StudyFit(LiveHandFit):
 
     def save_views(self, path: Path) -> None:
         v = self.last_views
-        np.savez_compressed(path, angle=[x.angle for x in v], offset=np.array([x.offset for x in v]),
+        cams = {"camera": [x.camera for x in v]} if any(x.camera != DEFAULT_CAMERA for x in v) else {}
+        np.savez_compressed(path, angle=[x.angle for x in v], offset=np.array([x.offset for x in v]), **cams,
                             **{f"fg{k}": x.fg.astype(bool) for k, x in enumerate(v)},
                             **{f"edges{k}": x.edges.astype(bool) for k, x in enumerate(v)})
 
@@ -454,17 +486,24 @@ def suspect(quality: list[dict]) -> list[str]:
     """Why the masks of a pose are not to be trusted (empty: fine)."""
     why = []
     for q in quality:
+        at = f"{q['angle']:.0f}°" + (f" (camera {q['camera']})" if q.get("camera") else "")
         if q["mask_only"] > MASK_ONLY_MAX:
-            why.append(f"{q['angle']:.0f}°: {q['mask_only']:.0%} of the mask not hand (rods, cables, shadow?)")
+            why.append(f"{at}: {q['mask_only']:.0%} of the mask not hand (rods, cables, shadow?)")
         if q["finger_missed"] > FINGER_MISSED_MAX:
-            why.append(f"{q['angle']:.0f}°: mask misses {q['finger_missed']:.0%} of the fingers")
+            why.append(f"{at}: mask misses {q['finger_missed']:.0%} of the fingers")
     return why
 
 
-def load_frames(cfg_dir: Path, stops: list[float] | None = None) -> list[tuple[float, np.ndarray]]:
+def load_frames(cfg_dir: Path, stops: list[float] | None = None, cameras: list[str] | None = None) -> list[tuple]:
+    """(angle, image) per view of camera "a", (angle, image, camera) of any other (meta.json `camera`).
+    cameras: only these (default: all; the fit skips cameras it has no calibration for)."""
     cv2 = lf._cv2()
     meta = json.loads((cfg_dir / "meta.json").read_text())
-    views = sorted(meta["views"], key=lambda v: v["stop"])
+    views = sorted(meta["views"], key=lambda v: (v["stop"], v.get("camera", DEFAULT_CAMERA) != DEFAULT_CAMERA,
+                                                 v.get("camera", DEFAULT_CAMERA)))
     if stops is not None:
         views = [v for v in views if v["stop"] in stops]
-    return [(float(v["angle"]), cv2.imread(str(cfg_dir / v["file"]))) for v in views]
+    if cameras is not None:
+        views = [v for v in views if v.get("camera", DEFAULT_CAMERA) in cameras]
+    return [(float(v["angle"]), cv2.imread(str(cfg_dir / v["file"])),
+             *([v["camera"]] if v.get("camera", DEFAULT_CAMERA) != DEFAULT_CAMERA else [])) for v in views]

@@ -17,8 +17,15 @@ from orca_core.kinematics.transforms import Transform
 
 from visual_calibration.calibration_object import CalibrationObject
 from visual_calibration.camera import Lens, look_at, nominal_lens
-from visual_calibration.rig_calibration import _rot, _rz, lens_from_calibration, tile_poses_from_calibration
-from visual_calibration.rig_config import RigConfig
+from visual_calibration.rig_calibration import (
+    _rot,
+    _rz,
+    camera_block,
+    camera_from_calibration,
+    lens_from_calibration,
+    tile_poses_from_calibration,
+)
+from visual_calibration.rig_config import DEFAULT_CAMERA, RigConfig
 
 
 def _roll(eye: np.ndarray, target: np.ndarray, lens: Lens, display_rotation: float) -> Transform:
@@ -38,20 +45,18 @@ def _roll(eye: np.ndarray, target: np.ndarray, lens: Lens, display_rotation: flo
     return best
 
 
-def camera_model(rig: RigConfig, display_rotation: float = 90.0) -> tuple[Lens, Transform, dict]:
-    """Lens and camera pose (in the rig frame), solved where calibration.yaml has them."""
+def camera_model(rig: RigConfig, display_rotation: float = 90.0, cam: str = DEFAULT_CAMERA) -> tuple[Lens, Transform, dict]:
+    """Camera `cam`'s lens and pose (in the rig frame), solved where calibration.yaml has them."""
     cal = rig.load_calibration()
-    cam_cfg = rig.raw["camera"]
+    cam_cfg = rig.cameras[cam]
     size = tuple(cam_cfg.get("resolution", (3840, 2160)))
-    calibrated_lens = bool((cal.get("lens") or {}).get("fx"))
-    lens = lens_from_calibration(cal) if calibrated_lens else \
+    calibrated_lens = bool((camera_block(cal, cam).get("lens") or {}).get("fx"))
+    lens = lens_from_calibration(cal, cam) if calibrated_lens else \
         nominal_lens(size, float(cam_cfg.get("diagonal_fov_deg", 78.0)))
-    c = cal.get("camera") or {}
-    calibrated_pose = c.get("translation") is not None and c.get("rotation") is not None
-    if calibrated_pose:
-        pose = Transform.from_xyz_rpy(c["translation"], np.deg2rad(c["rotation"]))
-    else:
-        n = rig.camera_nominal
+    pose = camera_from_calibration(cal, cam)
+    calibrated_pose = pose is not None
+    if not calibrated_pose:
+        n = rig.nominal_of(cam)
         pose = _roll(np.array(n["position"], float), np.array(n["look_at"], float), lens, display_rotation)
     return lens, pose, {"lens": "calibrated" if calibrated_lens else "nominal",
                         "camera": "calibrated" if calibrated_pose else "nominal"}
@@ -91,8 +96,8 @@ def object_in_plate(rig: RigConfig) -> Transform:
     return Transform.from_rotation_translation(_rz(np.array([yaw]))[0], np.zeros(3))
 
 
-def overlay(rig: RigConfig, angle_deg: float, display_rotation: float = 90.0) -> dict:
-    lens, cam, source = camera_model(rig, display_rotation)
+def overlay(rig: RigConfig, angle_deg: float, display_rotation: float = 90.0, camera: str = DEFAULT_CAMERA) -> dict:
+    lens, cam, source = camera_model(rig, display_rotation, camera)
     plate = plate_in_rig(rig, angle_deg)
     cam_from_plate = cam.inverse() @ plate
     cam_from_object = cam_from_plate @ object_in_plate(rig)
@@ -118,7 +123,7 @@ def overlay(rig: RigConfig, angle_deg: float, display_rotation: float = 90.0) ->
             continue
         tiles.append({"tile": name, "facing": facing, "outline": outline,
                       "grid": [px(to3(seg)) for seg in lines]})
-    return {"angle": angle_deg, "mounting": mounting(rig),
+    return {"angle": angle_deg, **({"camera": camera} if camera != DEFAULT_CAMERA else {}), "mounting": mounting(rig),
             "source": {**source, "tiles": "calibrated" if solved else "cad",
                        "mounting": "photos" if mounting(rig) else "cad",
                                           "axis": "calibrated" if rig.load_calibration().get("stop_angle_corrections") else "nominal"},

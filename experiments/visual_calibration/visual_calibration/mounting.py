@@ -144,5 +144,19 @@ def coverage(obj: CalibrationObject, stops: Sequence[float], mountings: Sequence
     return out
 
 
+def coverage_cameras(obj: CalibrationObject, stops: Mapping[str, Sequence[float]], azimuths: Mapping[str, float],
+                     mountings: Sequence[float] = MOUNTINGS, max_view_deg: float = MAX_VIEW_DEG) -> dict:
+    """coverage() per camera (its stops, its azimuth) and for them together (`all`: the object
+    is shared, so a side one camera never shows the other may)."""
+    out = {c: coverage(obj, stops[c], mountings, azimuths.get(c, 0.0), max_view_deg) for c in stops}
+
+    def missing(yaw):
+        seen = {k for c in stops for ks in facing(obj, stops[c], yaw, azimuths.get(c, 0.0), max_view_deg).values() for k in ks}
+        return [k for k in (0, 2) if k not in seen] + ([] if seen & {1, 3} else ["1 or 3"])
+    bad = [y for y in range(360) if missing(float(y))]
+    out["all"] = {"mountings": {float(m): missing(m) for m in mountings}, "any": {"ok": not bad, "bad_yaws": bad[:10]}}
+    return out
+
+
 def config_mountings(cfg: Mapping) -> list[float]:
     return [float(m) for m in cfg.get("mountings", MOUNTINGS)]

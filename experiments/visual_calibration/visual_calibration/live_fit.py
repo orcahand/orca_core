@@ -21,6 +21,10 @@ about as well (searched every few frames; a better cell is jumped to). Seen
 palm-on, bent and over-stretched look alike, and a base joint trades against the
 middle one; finger bending needs views from two plate angles. For joints the view
 can't pin, the plate angle that shows them best.
+
+Several cameras: each View carries its camera (View.camera, "a" by default); its residual
+uses that camera's pose and lens (at the fit's scale), so kept views of every camera add up
+in one fit. `lens` arguments are camera "a"'s at the fit scale; other cameras' follow from it.
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ from visual_calibration.camera import Lens
 from visual_calibration.hand_model import HandModel
 from visual_calibration.overlay import camera_model, hand_in_plate, plate_in_rig
 from visual_calibration.rig_calibration import _rot
+from visual_calibration.rig_config import DEFAULT_CAMERA
 from visual_calibration.solve import least_squares
 
 BOUND = np.full(6, 10.0)                     # mount: rot deg x3, trans mm x3
@@ -137,12 +142,19 @@ class View:
     to_fg: np.ndarray           # distance to the segmented hand (px, capped)
     fg_px: np.ndarray           # samples of the segmented hand (u, v), crop px
     edge_px: np.ndarray         # samples of its edges
+    camera: str = DEFAULT_CAMERA
 
 
 class LiveHandFit:
     def __init__(self, rig, model: HandModel | None = None, side: str = "right", spacing: float = SPACING_MM):
         self.rig, self.model = rig, model or HandModel.load(side)
         self.lens, self.cam, self.source = camera_model(rig, 270)
+        self.cameras = {DEFAULT_CAMERA: (self.lens, self.cam)}
+        for c in rig.cameras:
+            if c != DEFAULT_CAMERA and rig.cameras[c].get("enabled", True):
+                lens, pose, src = camera_model(rig, 270, c)
+                if src["camera"] == "calibrated":           # an uncalibrated camera's views would only mislead
+                    self.cameras[c] = (lens, pose)
         self.base = hand_in_plate(rig)
         self.joints = list(self.model.movable)
         lim = [self.model.joints[j].limits_deg or (-180.0, 180.0) for j in self.joints]
@@ -184,10 +196,15 @@ class LiveHandFit:
         R, t = delta(x)
         return Transform.from_rotation_translation(R @ self.base.rotation, self.base.translation + t)
 
-    def cam_poses(self, x: np.ndarray, angle: float) -> dict[str, Transform]:
+    def lens_of(self, cam: str, lens: Lens) -> Lens:
+        """Camera `cam`'s lens at the scale `lens` (camera "a"'s) is at."""
+        return lens if cam == DEFAULT_CAMERA else scaled(self.cameras[cam][0], lens.fx / self.lens.fx)
+
+    def cam_poses(self, x: np.ndarray, angle: float, cam: str = DEFAULT_CAMERA) -> dict[str, Transform]:
         """Every visual link in the camera frame (mm)."""
         hand = self.hand_in_plate(x)
-        to_cam = self.cam.inverse() @ plate_in_rig(self.rig, angle) @ hand
+        pose = self.cam if cam == DEFAULT_CAMERA else self.cameras[cam][1]
+        to_cam = pose.inverse() @ plate_in_rig(self.rig, angle) @ hand
         return {l: to_cam @ Transform.from_rotation_translation(p.rotation, p.translation * 1000.0)
                 for l, p in self.model.link_poses(self.q_of(x)).items() if l in self.cloud}
 
@@ -229,8 +246,9 @@ class LiveHandFit:
     def paint(self, poses: dict[str, Transform], lens: Lens, shape, offset=(0, 0)) -> np.ndarray:
         return self.composite(self.parts(poses, lens, shape, offset), shape)
 
-    def label(self, x: np.ndarray, angle: float, lens: Lens, shape, offset=(0, 0)) -> np.ndarray:
-        return self.paint(self.cam_poses(x, angle), lens, shape, offset)
+    def label(self, x: np.ndarray, angle: float, lens: Lens, shape, offset=(0, 0), cam: str = DEFAULT_CAMERA) -> np.ndarray:
+        """`lens`: camera "a"'s at the image's scale."""
+        return self.paint(self.cam_poses(x, angle, cam), self.lens_of(cam, lens), shape, offset)
 
     @staticmethod
     def outlines(lab: np.ndarray) -> np.ndarray:
@@ -241,11 +259,11 @@ class LiveHandFit:
         return b
 
     # -- the frame -----------------------------------------------------------
-    def prepare(self, img: np.ndarray, angle: float, lens: Lens) -> View:
+    def prepare(self, img: np.ndarray, angle: float, lens: Lens, cam: str = DEFAULT_CAMERA) -> View:
         """Crop around the estimate, segment the hand (GrabCut seeded by the model), find its edges."""
         cv2 = _cv2()
         h, w = img.shape[:2]
-        est = self.label(self.x, angle, lens, (h, w))
+        est = self.label(self.x, angle, lens, (h, w), cam=cam)
         ys, xs = np.nonzero(est)
         if not len(xs):
             raise ValueError("the hand model is outside the image at this angle")
@@ -272,11 +290,12 @@ class LiveHandFit:
         fy, fx = np.nonzero(fg)
         ey, ex = np.nonzero(e)
         return View(angle, np.array([u0, v0]), fg, e, to_fg,
-                    _even(np.c_[fx, fy], N_FG), _even(np.c_[ex, ey], N_EDGE))
+                    _even(np.c_[fx, fy], N_FG), _even(np.c_[ex, ey], N_EDGE), cam)
 
     # -- the fit -------------------------------------------------------------
     def residual_view(self, x: np.ndarray, view: View, lens: Lens) -> np.ndarray:
-        poses = self.cam_poses(x, view.angle)
+        poses = self.cam_poses(x, view.angle, view.camera)
+        lens = self.lens_of(view.camera, lens)
         uv = np.vstack([lens.project(T.apply_to_points(self.anchor[l])) for l, T in poses.items()]) - view.offset
         return self._terms(uv, self.paint(poses, lens, view.fg.shape, view.offset), view)
 
@@ -308,8 +327,8 @@ class LiveHandFit:
         return float(r @ r)
 
     def step(self, img: np.ndarray, angle: float, q: Mapping[str, float] | None = None, iters: int = 2,
-             solve_joints: bool = False, search: bool = False) -> dict:
-        """One frame (gray or BGR, any size): a few iterations from the last estimate."""
+             solve_joints: bool = False, search: bool = False, cam: str = DEFAULT_CAMERA) -> dict:
+        """One frame (gray or BGR, any size) of camera `cam`: a few iterations from the last estimate."""
         t0 = time.perf_counter()
         cv2 = _cv2()
         if img.shape[1] != FIT_WIDTH:
@@ -319,7 +338,7 @@ class LiveHandFit:
         lens = scaled(self.lens, s)
         if not solve_joints:
             self.x[6:] = np.clip([float((q or {}).get(j, 0.0)) for j in self.joints], self.lo, self.hi)
-        view = self.prepare(img, angle, lens)
+        view = self.prepare(img, angle, lens, cam)
         views = [view, *self.views]
         free = np.arange(self.x.size if solve_joints else 6)
         lo, hi = np.r_[-BOUND, self.lo][free], np.r_[BOUND, self.hi][free]
@@ -345,22 +364,23 @@ class LiveHandFit:
         self.std[free] = fit.std * SIGMA_PX / max(fit.rms, 1e-6)
         self._view = view
         if solve_joints:
-            self.obs = self.observability([angle], lens, img.shape[:2])[0]
-        fit_lab = self.label(self.x, angle, lens, view.fg.shape, view.offset)
+            self.obs = self.observability([angle], lens, img.shape[:2], [cam])[0]
+        fit_lab = self.label(self.x, angle, lens, view.fg.shape, view.offset, cam)
         self.last = {
             "delta": {"rotation_deg": self.x[:3].round(2).tolist(), "translation_mm": self.x[3:6].round(2).tolist()},
             "mount_std": self.std[:6].round(2).tolist(),
             "cost_px": {"cad": round(cad_cost / s, 2), "fit": round(self._rms(self.x, view, lens) / s, 2)},
             "iterations": fit.iterations, "angle": float(angle), "scale": s, "source": self.source,
-            "outlines": {"cad": self._polys(self.label(x_cad, angle, lens, view.fg.shape, view.offset) > 0,
+            "outlines": {"cad": self._polys(self.label(x_cad, angle, lens, view.fg.shape, view.offset, cam) > 0,
                                             view, s, whole=True),
                          "fit": self._polys(fit_lab, view, s, whole=False)},
             "size": list(self.lens.size), "views": [v.angle for v in self.views],
+            **({"camera": cam, "view_cameras": [v.camera for v in self.views]} if len(self.cameras) > 1 else {}),
             "solve_joints": solve_joints,
             "plate_from_hand": self.hand_in_plate(self.x).matrix.round(6).tolist(),
             "joints_deg": {j: round(float(v), 2) for j, v in zip(self.joints, self.x[6:])},
             "joint_table": self.joint_table() if solve_joints else [],
-            "suggest": self.suggest(angle, lens, img.shape[:2]) if solve_joints else None,
+            "suggest": self.suggest(angle, lens, img.shape[:2], cam) if solve_joints else None,
             "segmentation": self.segmentation(view, s),
         }
         self.last["solve_s"] = round(time.perf_counter() - t0, 3)
@@ -373,16 +393,17 @@ class LiveHandFit:
         self.spread = {}
         rest_cache = []
         for v in views:
-            poses = self.cam_poses(self.x, v.angle)
+            poses = self.cam_poses(self.x, v.angle, v.camera)
             rest_cache.append(poses)
         for finger, names in FLEX.items():
             idx = [6 + self.joints.index(n) for n in names]
             links = [l for l in self.cloud if group_of(l) == GROUPS.index(finger)]
             fixed = []
             for v, poses in zip(views, rest_cache):
+                vl = self.lens_of(v.camera, lens)
                 others = {l: T for l, T in poses.items() if l not in links}
-                uv = np.vstack([lens.project(T.apply_to_points(self.anchor[l])) for l, T in others.items()])
-                fixed.append((self.parts(others, lens, v.fg.shape, v.offset), uv - v.offset))
+                uv = np.vstack([vl.project(T.apply_to_points(self.anchor[l])) for l, T in others.items()])
+                fixed.append((self.parts(others, vl, v.fg.shape, v.offset), uv - v.offset))
             grid = [(a, b) for a in GRID[names[0].split("_")[1]] for b in GRID[names[1].split("_")[1]]]
             grid.append(tuple(self.x[idx]))
             costs = []
@@ -391,10 +412,11 @@ class LiveHandFit:
                 x[idx] = np.clip([a, b], self.lo[np.array(idx) - 6], self.hi[np.array(idx) - 6])
                 r = []
                 for v, (rest, uv_rest) in zip(views, fixed):
-                    mine = {l: T for l, T in self.cam_poses(x, v.angle).items() if l in links}
-                    uv = np.vstack([uv_rest] + [lens.project(T.apply_to_points(self.anchor[l])) - v.offset
+                    vl = self.lens_of(v.camera, lens)
+                    mine = {l: T for l, T in self.cam_poses(x, v.angle, v.camera).items() if l in links}
+                    uv = np.vstack([uv_rest] + [vl.project(T.apply_to_points(self.anchor[l])) - v.offset
                                                 for l, T in mine.items()])
-                    lab = self.composite(rest + self.parts(mine, lens, v.fg.shape, v.offset), v.fg.shape)
+                    lab = self.composite(rest + self.parts(mine, vl, v.fg.shape, v.offset), v.fg.shape)
                     r.append(self._terms(uv, lab, v))
                 r.append(self._prior(x, sum(len(q) for q in r)))
                 r = np.concatenate(r)
@@ -413,15 +435,16 @@ class LiveHandFit:
         r = self.residual_view(x, view, lens)[: self.n_anchor + N_FG]
         return float(np.sqrt((r ** 2).mean()))
 
-    def observability(self, angles: list[float], lens: Lens, shape) -> np.ndarray:
+    def observability(self, angles: list[float], lens: Lens, shape, cams: list[str] | None = None) -> np.ndarray:
         """Per plate angle and joint, 0..1: how much of the joint's motion the camera sees.
         First order: the share of its links' motion (a x r) across the line of sight (palm-on, a
         finger bending moves along it: unseen, and bent and over-stretched look alike), times
         the share of those links not hidden behind others."""
         out = np.zeros((len(angles), len(self.joints)))
         for k, angle in enumerate(angles):
-            poses = self.cam_poses(self.x, angle)
-            parts = self.parts(poses, lens, shape)
+            cam = cams[k] if cams else DEFAULT_CAMERA
+            poses = self.cam_poses(self.x, angle, cam)
+            parts = self.parts(poses, self.lens_of(cam, lens), shape)
             lab = self.composite(parts, shape)
             seen = np.bincount(lab.ravel(), minlength=len(self.ids) + 1)
             alone = np.zeros(len(self.ids) + 1)
@@ -468,7 +491,7 @@ class LiveHandFit:
                         "at_limit": bool(min(v - self.lo[i], self.hi[i] - v) < 0.5)})
         return out
 
-    def suggest(self, angle: float, lens: Lens, shape) -> dict | None:
+    def suggest(self, angle: float, lens: Lens, shape, cam: str = DEFAULT_CAMERA) -> dict | None:
         """For joints this view can't pin: the plate angle that shows them best (throttled)."""
         poor = [i for i, r in enumerate(self.joint_table()) if r["confidence"] == "poor"]
         if not poor:
@@ -479,7 +502,7 @@ class LiveHandFit:
         if last is not None and time.monotonic() - t < SUGGEST_EVERY_S and last["joints"] == names:
             return last
         candidates = list(np.arange(PLATE_RANGE[0], PLATE_RANGE[1] + 1, 15.0))
-        ob = self.observability(candidates, lens, shape)[:, poor]
+        ob = self.observability(candidates, lens, shape, [cam] * len(candidates))[:, poor]
         score = np.minimum(ob, GOOD_OBS).mean(axis=1)        # enough of each beats a lot of a few
         here = float(np.minimum(self.obs[poor], GOOD_OBS).mean()) if self.obs is not None else 0.0
         best = int(np.argmax(score))
@@ -491,7 +514,7 @@ class LiveHandFit:
         """Keep the last frame as an extra view (same pose, another plate angle)."""
         if self._view is None:
             raise ValueError("no frame yet")
-        self.views = [v for v in self.views if abs(v.angle - self._view.angle) > 5.0] + [self._view]
+        self.views = [v for v in self.views if abs(v.angle - self._view.angle) > 5.0 or v.camera != self._view.camera] + [self._view]
         return len(self.views)
 
     def clear_views(self) -> None:
