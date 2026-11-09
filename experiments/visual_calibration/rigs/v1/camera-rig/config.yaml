@@ -154,7 +154,7 @@ towers:
   # bottom z 136) for cam B looking down; row 1 vertical on all 4 sides; row 2 the 25° down
   # wedges on sides 0/2 for cam A and a 45° gable roof on sides 1/3 (eaves r 55 at z 300,
   # ridge on the axis at z 355). Seats from those numbers (front face, top-left corner);
-  # replace with the CAD once Shea has modelled it.
+  # Matches the CAD (calibration_rig_330 v17, calibration_tower_v2); gable tiles slid 5.71 mm down the roof.
   v2:
     tiles:
       tile_r0_s0: {corner: [-46.00, 39.00, 198.00], rpy: [-127.5, 0.0, -90.0]}
@@ -166,9 +166,9 @@ towers:
       tile_r1_s2: {corner: [46.00, -39.00, 278.00], rpy: [-90.0, 0.0, 90.0]}
       tile_r1_s3: {corner: [39.00, 46.00, 278.00], rpy: [-90.0, 0.0, 180.0]}
       tile_r2_s0: {corner: [-81.45, 39.00, 355.35], rpy: [-65.0, 0.0, -90.0]}
-      tile_r2_s1: {corner: [-39.00, 0.00, 355.20], rpy: [-135.0, 0.0, 0.0]}
+      tile_r2_s1: {corner: [-39.00, -4.04, 351.16], rpy: [-135.0, 0.0, 0.0]}
       tile_r2_s2: {corner: [81.45, -39.00, 355.35], rpy: [-65.0, 0.0, 90.0]}
-      tile_r2_s3: {corner: [39.00, 0.00, 355.20], rpy: [-135.0, 0.0, 180.0]}
+      tile_r2_s3: {corner: [39.00, 4.04, 351.16], rpy: [-135.0, 0.0, 180.0]}
     letters: {tile_r0_s0: A, tile_r1_s0: B, tile_r2_s0: C, tile_r0_s2: D, tile_r1_s2: E, tile_r2_s2: F,
               tile_r1_s1: G, tile_r1_s3: H, tile_r0_s1: I, tile_r0_s3: J, tile_r2_s1: K, tile_r2_s3: L}
 
