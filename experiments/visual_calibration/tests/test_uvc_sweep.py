@@ -166,3 +166,29 @@ def test_hand_sweep_checks_the_controls_only(rig, tmp_path):
     _, log, saved = _sweep(rig, tmp_path, empty, FakeUvcc(camera_as_found()), hand=True)
     assert len(saved) == 4 and "frame" not in log["camera"] and log["camera"]["uvc"]["after"]["gain"] == 0
     assert all(s["motion_px"] is None for s in log["stops"].values())
+
+
+def test_two_camera_sweep_grabs_both_with_a_reference_each(rig, tmp_path):
+    from visual_calibration import sweep
+    from visual_calibration.detect import TileDetector
+    from visual_calibration.turntable import Turntable
+    _, page = _page()
+    t = Turntable.open(rig.raw["turntable"], mock=True)
+    t.home()
+    t.move(90.0)
+    obj, _ = _page()
+    saved, grabbed = [], []
+    fakes = {"a": FakeUvcc(camera_as_found()), "b": FakeUvcc(camera_as_found())}
+    grab = lambda c: (lambda: (grabbed.append(c), page)[1])
+    try:
+        log = sweep.run(rig, t, {"a": grab("a"), "b": grab("b")}, TileDetector(obj), tmp_path / "out", [0.0, 45.0],
+                        {c: Uvcc(1133, 2142, tool="uvcc", run=f) for c, f in fakes.items()}, settle_s=0.0,
+                        imwrite=lambda p, im: saved.append(p.name), save_ref=True)
+    finally:
+        t.close()
+    assert saved == ["stop_0000.00.png", "stop_0000.00_b.png", "stop_0045.00.png", "stop_0045.00_b.png",
+                     "repeat_0000.00.png", "repeat_0000.00_b.png"]
+    assert log["camera"]["uvc"]["after"]["gain"] == 0 and log["cameras"]["b"]["uvc"]["after"]["gain"] == 0
+    assert log["stops"]["stop_0045.00_b"]["camera"] == "b" and log["stops"]["stop_0045.00_b"]["angle"] == log["stops"]["stop_0045.00"]["angle"]
+    assert (tmp_path / "v1" / "camera-rig" / "camera_reference_b.yaml").exists() and sweep.reference_path(rig).exists()
+    assert "b" in grabbed and fakes["b"].sets
