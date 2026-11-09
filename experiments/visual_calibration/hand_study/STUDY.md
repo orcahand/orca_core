@@ -108,16 +108,110 @@ and V poses with via, wear bursts, closed loop, Kapandji, SAC, temperature guard
 
 ## Results
 
-_(filled in the morning)_
+Numbers: `report/results.json`, `report/findings.md`, CSVs in `report/` (`python -m hand_study.report
+20261108-night --loo`). 660 poses solved; 10 vision blunders (fit > 9.5 px) and 3 suspect masks left
+out; a joint whose half-view solves differ > 12° is not counted. Errors are true (vision) − predicted,
+all joints pooled: RMS / max, and median / p95 where the max is a vision failure.
+
+**Run as executed.** 02:05–06:50 as planned up to N04-V2; a wrist overload at 06:50 (after
+v-stop-flex-lo) aborted the runner; resumed 09:12. At 10:30 the wrist jammed again in N05-V3; its
+reboot lost a turn (extended position mode, the motor sat past 2π), so the poses after it were taken
+in a broken frame: moved to `faulted/20261108-night-N05-V3-wrap/` and left out. The Mac then rebooted
+(10:34, Jetsam: the macOS video decoder at 81 GB, see the camera note below). Restarted 10:49 with the
+recalibration (run3) *before* finishing V3, so V3 is split: **V3-pre** (20 poses, run2, after all
+wear) and **V3-post** (5 poses, run3). v-stop-flex-lo (wrist −65° with every finger at its extension
+stop) jammed the wrist in 5 of 5 V blocks and was dropped from V4–V6. N10-extra was stopped at
+130/150 poses by request. 6 motor faults, all wrist, all on that pose or right after it.
 
 ### New hard stops (old → new)
 
+Fitted on N01-dense (`proposed/config.yaml`, `config.diff.txt`); 14 of 17 joints move ≥ 1°:
+thumb_cmc [−45, 33]→[−46.0, 33.0], thumb_abd [−18, 55]→[−17.1, 59.7], thumb_mcp [−25, 100]→[−21.5, 102.1],
+thumb_dip [−15, 107]→[−11.2, 108.2], index_abd [−25, 30]→[−21.3, 27.0], index_mcp [−25, 100]→[−35.9, 103.8],
+index_pip [−15, 107]→[−18.8, 113.9], middle_mcp [−25, 100]→[−27.8, 103.8], ring_abd [−27, 27]→[−28.5, 26.6],
+ring_mcp [−25, 100]→[−22.4, 102.1], ring_pip [−15, 107]→[−16.3, 108.3], pinky_abd [−30, 30]→[−34.1, 29.6],
+pinky_mcp [−25, 100]→[−19.9, 106.1], pinky_pip [−15, 107]→[−14.3, 103.3].
+Fitted on the 50 min short block instead (4 points per joint, after the recalibration) most ends
+agree within 3°; the flexion ends differ most (middle_mcp 5.3°, thumb_mcp 5.0°, index_pip 4.6°,
+pinky_mcp 4.5°) — yet on V5 the short stops are as accurate (2.76 vs 2.88).
+
 ### Accuracy a / b / c
+
+| set | a) old config | b) new stops | c) LUT | b + SAC |
+|---|---|---|---|---|
+| N01-dense (train) | 3.22 / 17.9 | 1.73 / 16.4 | 1.38 / 10.7 | 1.72 |
+| N02-V0 (held out) | 3.90 | 2.96 | 2.49 | 2.93 |
+| V0 median / p95 | 2.18 / 8.4 | 1.06 / 6.7 | 0.99 / 5.5 | 1.06 / 6.3 |
+| N10-extra, 124 random poses | 4.22 / 28.9 | 3.84 / 29.0 | 3.93 / 36.0 | 3.78 |
+| N10-extra, maps fitted on N07-short | | 3.61 | 3.41 | |
+| N09-V6 closed loop (true vs wanted) | | 3.43 (median 1.57) | | |
+
+- **The new stops are the deliverable**: −24 % RMS and half the median error on held-out poses,
+  in every block, before and after recalibration. Biggest gains pinky_mcp (−4.0°), thumb_mcp (−2.6°),
+  index/ring_mcp (−1.5°); no joint gets worse by more than 0.25° (index_pip).
+- **Closed loop** (orca_core with the new config, emulated): 3.43° RMS from the wanted angle, vs
+  3.79 for the old map on the same poses; the 0.5° beyond b's prediction is the motor not reaching
+  its target under load.
+- **The LUT is tied to its calibration run**: best while run2 holds (V0–V3 2.5–2.8), worse than the
+  stops after orca_core's recalibration (V4–V6 3.2–3.4) because it maps commanded angles. Refitted on
+  the short block (same run) it is best again (V5 2.59, N10 3.41). A LUT is only worth shipping if it
+  is refit with every calibration, or rewritten in motor space.
+- **Random poses (N10-extra) are harder for every map** (3.6–4.2): combined flexion with occlusion;
+  92 of 2108 joint observations are unseen and a few mcp/pip swaps of the vision fit cause the maxima.
 
 ### Drift V0 … V6
 
+RMS (b, new stops): V0 2.96 → V1 3.06 → V2 3.02 (two 30 min cycling phases) → **V3-pre 3.42** (after
+1 h loaded) → recalibration → V3-post 2.35, V4 2.96, V5 2.88, V6 2.95. a) old: 3.90, 3.95, 3.92, 4.25 →
+3.15, 3.71, 3.64.
+- Cycling: no measurable drift (±0.1°). Loaded holds at the stops: +0.45° RMS.
+- orca_core's standard recalibration (22 s) restores it fully; the new stops keep their gain after it.
+- Customer advice: recalibrate after heavy loaded use; the stops need no refit after a recalibration.
+- Short (72 poses, ~50 min) vs long (263 poses) on V5: stops 2.76 vs 2.88, LUT 2.59 vs 3.38 (the long
+  LUT is from the other calibration run). The short calibration is enough.
+
 ### Kapandji
+
+Thumb tip to each fingertip, 5°/s final approach, 4 maps. Vision distance (mm) / tactile contact:
+
+| finger | old | new stops | LUT | SAC |
+|---|---|---|---|---|
+| index | 0.09 / yes | 0.76 / yes | 0.26 / yes | 0.67 / yes |
+| middle | 0.42 / yes | 0.31 / yes | 0.23 / yes | 0.11 / yes |
+| ring | 0.49 / yes | 0.12 / yes | 0.18 / yes | 0.20 / yes |
+| pinky | 0.88 / no | 0.26 / no | 4.02 / no | 0.24 / no |
+
+Index, middle and ring touch under every map. The pinky never registers on the tactile sensors,
+even at 0.24 mm vision distance: the contact lands outside the taxels (or below the 0.12 threshold).
+The old map presses hardest (middle: tactile force 2.08 vs 1.09 with the new stops).
 
 ### Super Advanced Calibration
 
+16 contacts (pinky 1 of 5). Mean closure gap 0.26 mm with the new stops; the SAC refit gives 0.31 mm,
+leave-one-out 0.32 mm; on the V blocks it changes RMS by ≤ 0.06°. **Not worth it at this precision**:
+the new stops already close the thumb–finger loops to a quarter millimetre.
+
+### Couplings, hysteresis, visibility
+
+- Couplings (partial correlation of a joint's error with another joint): the wrist drives the abd
+  joints (thumb_abd, ring_abd, index_abd, pinky_abd; t 10–13) and the mcp's (−); index mcp↔pip and
+  middle abd↔mcp within a finger. The LUT captures these; the linear map cannot.
+- Hysteresis (3 references, from below / above, 3 visits): median 0.24°, worst thumb_dip 6.0° (pinch)
+  and middle_pip 4.4° (mid); repeat SD median 0.87°.
+- Hardest for vision (median half-view split): thumb_mcp 3.3°, index_abd 3.2°, thumb_dip 2.8°.
+
 ### Rig / vision / URDF recommendations
+
+- Camera (root cause of the 10:34 crash): the overnight decoder ran 24 % CPU for 9.7 h, i.e. a client
+  decoded all night, most likely the browser page left streaming; browser clients asking for other
+  resolutions also switched the shared camera under the runner (the 10:51 "no 4K frame" failures).
+  Fixed: one shared capture per process (`visual_calibration/capture.py`), browser streams stop in
+  hidden tabs and request the rig's 4K mode, no access probe once granted, reopen when another
+  client switches the mode. Soak 45 min, 837 stills alongside a 4K browser stream: our process and
+  the decoder flat (203 / 105 MB), decoder back to 4 MB on close.
+- Wrist: never command wrist −65° with the fingers at their extension stops (jams, 5/5); a reboot of
+  a motor that sits past 2π in extended position mode loses a turn — the study now detects the jump,
+  never reboots past a boundary and recalibrates (worth an orca_core issue; orca_core untouched here).
+- Vision: add a view for the thumb mcp / index abd; random poses with deep flexion need a
+  finger-level consistency check (an unseen mcp makes its pip suspect).
+- Tactile: pinky–thumb contacts are not sensed; check taxel coverage at the pinky tip.

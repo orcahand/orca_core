@@ -109,6 +109,39 @@ class State:
         model = f.label(x, float(v["angle"]), f.lens_s, (h, w)) > 0
         return fg, edges, model, remade
 
+    def live(self, tag: str):
+        """The Study tab's corner view: the night's newest solved pose, one side view at a time
+        (cycling), with the mask the fit used (cyan), outlines (solved green, assumed orange) and
+        the crop the fit measures in (blue box); before any solve, the newest photo. Files only:
+        the camera stays the runner's."""
+        import cv2
+        cfgs = [c for c in (STUDY / "sessions").glob(f"{tag}-*/configs/*") if (c / "meta.json").exists()]
+        if not cfgs:
+            return None
+        solved = [c for c in cfgs if (c / "est.json").exists() and (c / "views.npz").exists()]
+        d = max(solved or cfgs, key=lambda c: (c / ("est.json" if c in solved else "meta.json")).stat().st_mtime)
+        views = sorted(json.loads((d / "meta.json").read_text())["views"], key=lambda v: v["stop"])
+        stop = views[int(time.time() // 6) % len(views)]["stop"]
+        img, _ = self.overlay_img(d, stop)
+        text = f"{d.parent.parent.name.removeprefix(tag + '-')} / {d.name}  {stop:.0f} deg"
+        if d in solved:
+            fg, edges, _, _ = self.inputs(d, stop)
+            img[fg] = (0.55 * img[fg] + 0.45 * np.array([230, 200, 40])).astype(np.uint8)
+            z = np.load(d / "views.npz")
+            v = min(views, key=lambda v: abs(v["stop"] - stop))
+            k = int(np.argmin(np.abs(np.array(z["angle"]) - v["angle"])))
+            (u0, v0), (h, w) = z["offset"][k], z[f"fg{k}"].shape
+            cv2.rectangle(img, (int(u0), int(v0)), (int(u0 + w), int(v0 + h)), (235, 110, 30), 2)
+            pad = 30
+            img = img[max(0, v0 - pad):v0 + h + pad, max(0, u0 - pad):u0 + w + pad]
+            text += f"  fit {json.loads((d / 'est.json').read_text())['rms_px']:.1f} px"
+        else:
+            text += "  not solved yet"
+        img = cv2.resize(img, (480, round(img.shape[0] * 480 / img.shape[1])), interpolation=cv2.INTER_AREA)
+        bar = np.full((22, img.shape[1], 3), 255, np.uint8)
+        cv2.putText(bar, text, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20, 20, 20), 1, cv2.LINE_AA)
+        return np.vstack([bar, img])
+
     def tile(self, d: Path):
         """Per side view, three panels cropped around the hand: the photo with the outlines
         (solved green, assumed orange), the mask the solver used (cyan) with its edges (yellow),
@@ -175,6 +208,7 @@ class State:
         if not tiles:
             return np.full((60, 400, 3), 255, np.uint8)
         w, h = max(t.shape[1] for t in tiles), max(t.shape[0] for t in tiles)
+        cols = max(cols, -(-len(tiles) * (h + 6) // 60000))      # JPEG's 65500 px limit (the dense block)
         tiles = [np.pad(t, ((0, h - t.shape[0] + 6), (0, w - t.shape[1] + 6), (0, 0)), constant_values=255) for t in tiles]
         rows = [np.hstack(tiles[i:i + cols] + [np.full_like(tiles[0], 255)] * (cols - len(tiles[i:i + cols])))
                 for i in range(0, len(tiles), cols)]
@@ -228,6 +262,133 @@ def progress() -> dict:
     return out
 
 
+def protocols() -> list[str]:
+    out = []
+    for f in sorted((STUDY / "night").glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        if f.name.count(".") == 1:
+            try:
+                if json.loads(f.read_text()).get("mode") == "protocol":
+                    out.append(f.stem)
+            except Exception:
+                pass
+    return out
+
+
+def _alive(pid) -> bool:
+    import os
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def protocol_status(tag: str) -> dict:
+    """Every phase and step of a protocol night: status, poses shot / solved, ETA; the runner's
+    liveness, faults and log tail; the offline results."""
+    night = STUDY / "night"
+    spec = json.loads((night / f"{tag}.json").read_text())
+    st = json.loads((night / f"{tag}.state.json").read_text()) if (night / f"{tag}.state.json").exists() else {}
+    hb = json.loads((night / f"{tag}.heartbeat").read_text()) if (night / f"{tag}.heartbeat").exists() else {}
+    now = time.time()
+    running = st.get("state") == "running" and _alive(st.get("pid"))
+    done = st.get("done", {})
+    rates = []
+    steps = []
+    for s in spec["steps"]:
+        d = {k: s.get(k) for k in ("phase", "name", "kind", "label", "minutes", "poses")}
+        if s.get("session") and s["kind"] in ("collision", "slack"):
+            c = Path(s["session"]) / "configs"
+            if s["kind"] == "collision":
+                ids = set(s.get("pairs") or [])
+                fs = [f for f in c.glob("*/contact.json")] if c.exists() else []
+                d["shot"] = sum(1 for f in fs if not ids or f.parent.name.rsplit("-r", 1)[0] in ids)
+            else:
+                d["shot"] = len(list(c.glob("*/slack.json"))) if c.exists() else 0
+            d["skipped"], d["solved"], d["solved_by"] = 0, None, {}
+        elif s.get("session"):
+            c = Path(s["session"]) / "configs"
+            metas = sorted(c.glob("*/meta.json")) if c.exists() else []
+            d["shot"] = len(metas)
+            try:
+                n = len(json.loads((Path(s["session"]) / "plan.json").read_text())["configs"])
+                if n or s["kind"] == "collect":
+                    d["poses"] = n                  # adaptive steps change their plans as the night runs
+            except Exception:
+                pass
+            d["skipped"] = len(list(c.glob("*/skipped.json"))) if c.exists() else 0
+            d["solved"] = len(list(c.glob("*/est.json"))) if c.exists() else 0
+            d["solved_by"] = {k: len(list(c.glob(f"*/{v}"))) for k, v in
+                              (("grabcut", "est_grabcut.json"), ("hqsam", "est_hqsam.json"))} if c.exists() else {}
+            prog = json.loads((Path(s["session"]) / "progress.json").read_text()) if (Path(s["session"]) / "progress.json").exists() else {}
+            if prog.get("last_s"):
+                rates.append(prog["last_s"])
+            d["current"] = prog.get("current")
+        if s["name"] in done:
+            d["status"] = "failed" if done[s["name"]].get("failed") else "done"
+            d["t0"], d["t1"] = done[s["name"]]["t0"], done[s["name"]]["t1"]
+            if done[s["name"]].get("failed"):
+                d["error"] = done[s["name"]]["failed"]
+        elif st.get("step") == s["name"]:
+            note = (hb.get("note") or "")
+            fault = any(w in note for w in ("cool", "recover", "retry", "reboot", "resting", "error")) or \
+                (st.get("errors") and now - st["errors"][-1]["t"] < 300 and st["errors"][-1]["step"] == s["name"])
+            d["status"] = ("fault" if fault else "running") if running else ("stopped" if st.get("state") else "waiting")
+            d["note"] = note
+        else:
+            d["status"] = "waiting"
+        steps.append(d)
+    spp = float(np.median(rates)) if rates else 40.0
+    t = now
+    deadline = st.get("deadline") or (now + spec.get("hours", 8) * 3600)
+    for d in steps:
+        if d["status"] in ("done", "failed"):
+            continue
+        if d.get("poses") is not None and d.get("shot") is not None and d["kind"] in ("collect", "adaptive", "free"):
+            left = max(d["poses"] - d["shot"] - d.get("skipped", 0), 0)
+            mins = left * spp / 60
+        elif d.get("poses") and d.get("shot") is not None and d["minutes"]:
+            mins = d["minutes"] * max(d["poses"] - d["shot"], 0) / d["poses"]
+        else:
+            mins = d["minutes"] or 0
+        if d["minutes"] is None:                    # the filler runs to the deadline
+            mins = max((deadline - t) / 60, 0)
+        if d["status"] in ("running", "fault") and d.get("kind") != "collect" and st.get("step_t0"):
+            mins = max(mins - (now - st["step_t0"]) / 60, 0.5)
+        d["eta_start"], d["eta_end"] = t, t + mins * 60
+        t = d["eta_end"]
+    phases = []
+    for k, name in spec.get("phases", {}).items():
+        ss = [d for d in steps if d["phase"] == k]
+        stat = ("done" if all(d["status"] == "done" for d in ss) else "failed" if any(d["status"] == "failed" for d in ss)
+                else "fault" if any(d["status"] == "fault" for d in ss) else "running" if any(d["status"] == "running" for d in ss)
+                else "waiting")
+        phases.append({"key": k, "name": name, "status": stat, "steps": [d["name"] for d in ss],
+                       "eta_end": max((d.get("eta_end") or d.get("t1") or 0) for d in ss) if ss else None})
+    log = (night / f"{tag}.log").read_text().splitlines()[-25:] if (night / f"{tag}.log").exists() else []
+    faults = []
+    if (night / f"{tag}-faults.jsonl").exists():
+        faults = [json.loads(x) for x in (night / f"{tag}-faults.jsonl").read_text().splitlines()[-20:] if x.strip()]
+        for f in faults:
+            f["msg"] = f"{f.get('joint') or ''} (id {f.get('id')}): {f.get('why') or ''}, {f.get('temp_c', 0):.0f} °C".strip()
+    res_p = STUDY / "protocol" / tag / "results.json"
+    return {"tag": tag, "hand": spec.get("hand"), "state": st.get("state") or "not started", "running": running,
+            "started": st.get("started"), "deadline": st.get("deadline"), "now": now, "s_per_pose": round(spp, 1),
+            "heartbeat": {"age_s": round(now - hb["t"], 1), "note": hb.get("note")} if hb else None,
+            "eta_end": t, "phases": phases, "steps": steps, "log": log, "faults": faults,
+            "errors": st.get("errors", [])[-10:],
+            "results": json.loads(res_p.read_text()) if res_p.exists() else None,
+            "skin": spec.get("skin"), "registry": _registry()}
+
+
+def _registry() -> dict | None:
+    try:
+        from hand_study import registry
+        return registry.load()
+    except Exception:
+        return None
+
+
 def config_detail(session: str, cid: str) -> dict:
     d = STUDY / "sessions" / session / "configs" / cid
     meta = json.loads((d / "meta.json").read_text())
@@ -274,10 +435,29 @@ class Handler(BaseHTTPRequestHandler):
                 _, _, session, cid = p.split("/")
                 img = STATE.tile(STUDY / "sessions" / session / "configs" / cid.removesuffix(".jpg"))
                 return self.send(cv2.imencode(".jpg", img)[1].tobytes(), "image/jpeg")
+            if p.startswith("/live/") and ".." not in p:
+                import cv2
+                img = STATE.live(p.split("/")[2].removesuffix(".jpg"))
+                if img is None:
+                    return self.send(b"", "text/plain", 404)
+                return self.send(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), "image/jpeg")
             if p.startswith("/contact/"):
                 import cv2
                 img = STATE.contact(p.split("/")[2].removesuffix(".jpg"))
                 return self.send(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(), "image/jpeg")
+            if p == "/api/registry":
+                from hand_study import registry
+                return self.send(json.dumps(registry.load()).encode(), "application/json")
+            if p == "/api/protocols":
+                return self.send(json.dumps(protocols()).encode(), "application/json")
+            if p.startswith("/api/protocol/") and ".." not in p:
+                return self.send(json.dumps(_clean(protocol_status(p.split("/")[3]))).encode(), "application/json")
+            if p.startswith("/api/advanced/") and ".." not in p:
+                f = STUDY / "report-advanced" / f"{p.split('/')[3]}.json"
+                return self.send(f.read_bytes() if f.exists() else b"null", "application/json")
+            if p.startswith("/api/hand/") and ".." not in p:
+                f = STUDY / "maps" / p.split("/")[3] / "eval.json"
+                return self.send(f.read_bytes() if f.exists() else b"null", "application/json")
             if p == "/api/night":
                 f = STUDY / "report" / "results.json"
                 return self.send(f.read_bytes() if f.exists() else b"null", "application/json")

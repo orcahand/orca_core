@@ -13,7 +13,7 @@ board:
 motor:
   type: dynamixel
   id: auto                   # or the motor's id
-  model: XC430-T240BB-T
+  model: XC330-T288-T
   operating_mode: 4          # multi-turn position: the plate turns 320°, more than the in-turn range allows around 0
   gear_ratio: 1.0            # motor turns per plate turn; -1.0 if the motor turns the other way
   # Slow and soft on purpose: the XC430-T240BB-T has no current control, the PWM cap is
@@ -21,10 +21,10 @@ motor:
   # Any error or Ctrl-C releases the torque.
   speed_deg_s: 10.0          # plate speed of a move
   homing_speed_deg_s: 5.0    # plate speed into the hard stop
-  pwm: 0.2                   # output cap (fraction of the PWM limit): pushes the stop, not the rig apart
-  stall_lag_deg: 2.0         # goal ahead of the plate by this much: blocked (homing: the stop)
+  pwm: 0.3                   # output cap (fraction of the PWM limit): pushes the stop, not the rig apart
+  stall_lag_deg: 3.5         # goal ahead of the plate by this much: blocked (homing: the stop)
   search_margin_deg: 20.0    # homing gives up after travel + this without a stop (no endless pushing)
-  position_p_gain: 400       # the factory 700 hunts ±0.2° through the backlash while holding (1-2 px in the photos)
+  position_p_gain: 1200       # XC330-T288-T (2026-11-09): 400 left 1.5° droop; XC430 hunted at 700
   hold_after_move: false     # torque off whenever the plate stops (only a sweep holds between its stops)
 
 # Where the plate parks to swap the object for the hand (torque off after): the

@@ -113,7 +113,22 @@ def main(tag: str, loo: bool = False) -> dict:
             res["drift"][name] = {k: hardstops.accuracy(R, f) for k, f in P.items()} if R else None
             if name == "N09-V6" and R:
                 res["drift"][name]["closed_loop_vs_wanted"] = hardstops.accuracy(R, lambda r, j: r["commanded"][j])
+    if vrows.get("N05-V3"):
+        # V3 was cut by the 10:30 wrap: before it under run A, after the recalibration under run B.
+        for part, run in (("N05-V3-pre", spec["runs"]["A"]), ("N05-V3-post", spec["runs"]["B"])):
+            R = [r for r in vrows["N05-V3"] if r["run"] == run]
+            res["drift"][part] = {k: hardstops.accuracy(R, f) for k, f in P.items()} if R else None
     res["accuracy"]["heldout_V0"] = res["drift"].get("N02-V0")
+    if "N10-extra" in B:
+        Rall = analysis.rows([B["N10-extra"]])
+        res["excluded"] += list(analysis.EXCLUDED)
+        R = hardstops.good(Rall)
+        blunders += [{"session": r["session"], "id": r["id"], "rms_px": r["rms_px"]} for r in Rall if r not in R]
+        res["accuracy"]["heldout_extra"] = {k: hardstops.accuracy(R, f) for k, f in P.items()} if R else None
+        res["accuracy"]["heldout_extra_n"] = len(R)
+        xrows = R
+    else:
+        xrows = []
     if "N07-short" in B:
         short = hardstops.good(analysis.rows([B["N07-short"]]))
         if short and vrows.get("N08-V5"):
@@ -123,6 +138,10 @@ def main(tag: str, loo: bool = False) -> dict:
             res["short_vs_long_on_V5"] = {"long": res["drift"]["N08-V5"],
                                           "short": {k: hardstops.accuracy(vrows["N08-V5"], f) for k, f in Ps.items()},
                                           "short_stops": s_stops}
+            if xrows:
+                # N10-extra was taken under run B like the short block: the fair test of a LUT
+                # (commanded -> true), which is tied to the calibration it was fitted under.
+                res["short_on_extra"] = {k: hardstops.accuracy(xrows, f) for k, f in Ps.items()}
     res["vision_blunders"] = blunders
     res["couplings"] = analysis.dependencies(dense)
     res["hysteresis"] = analysis.repeatability(dense)
@@ -130,6 +149,7 @@ def main(tag: str, loo: bool = False) -> dict:
     if "N11-kapandji" in B:
         res["kapandji"] = kapandji(B["N11-kapandji"])
     res["sac"] = sac
+    res["faults"] = faults(tag, B)
     if sac and vrows:
         res["sac_on_V"] = {n: {"b_new_stops": res["drift"][n]["b_new_stops"]["all"], "b_sac": res["drift"][n]["b_sac"]["all"]}
                            for n in vrows if res["drift"].get(n)}
@@ -138,7 +158,7 @@ def main(tag: str, loo: bool = False) -> dict:
     with (OUT / "joint_series.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["session", "id", "kind", "joint", "run", "motor_rad", "commanded", "true", "old_linear", "new_linear", "lut"])
-        for name, R in [("N01-dense", dense), *vrows.items()]:
+        for name, R in [("N01-dense", dense), *vrows.items(), ("N10-extra", xrows)]:
             for r in R:
                 for j in JOINTS:
                     w.writerow([name, r["id"], r["kind"], j, r["run"], round(r["motor"][j], 5), round(r["commanded"][j], 2),
@@ -176,13 +196,27 @@ def photos(B: dict[str, Path], res: dict) -> None:
             h, w = im.shape[:2]
             im = cv2.resize(im[h // 6: 5 * h // 6, w // 4: 3 * w // 4], None, fx=0.5, fy=0.5)
             cv2.imwrite(str(OUT / k["photo"]), im, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    try:
-        import urllib.request
-        for name in ("N01-dense", "N02-V0", "N09-V6", "N11-kapandji"):
-            if name in B:
+    import urllib.request
+    for name in ("N01-dense", "N02-V0", "N09-V6", "N11-kapandji"):
+        if name in B:
+            try:
                 urllib.request.urlretrieve(f"http://127.0.0.1:5010/contact/{B[name].name}.jpg", OUT / f"contact_{name}.jpg")
-    except Exception as e:
-        print("contact sheets: needs the :5010 server", e)
+            except Exception as e:
+                print(f"contact sheet {name}: needs the :5010 server", e)
+
+
+def faults(tag: str, B: dict) -> dict:
+    """Robustness data: every motor fault (time, motor, pose, temperature, load), and the poses
+    skipped after a failed retry or by the back-off."""
+    from collections import Counter
+    path = STUDY / "night" / f"{tag}-faults.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+    skipped = []
+    for name, d in B.items():
+        for f in sorted((d / "configs").glob("*/skipped.json")) if (d / "configs").is_dir() else []:
+            skipped.append({"block": name, "id": f.parent.name, **json.loads(f.read_text())})
+    return {"events": events, "per_joint": dict(Counter(e.get("joint") for e in events)),
+            "skipped_poses": skipped}
 
 
 def findings(res: dict) -> None:
@@ -190,6 +224,18 @@ def findings(res: dict) -> None:
     tr = res["accuracy"]["train_dense"]
     L.append("Accuracy on the dense block (all joints, RMS / max deg): " +
              ", ".join(f"{k} {v['all']['rms']} / {v['all']['max']}" for k, v in tr.items() if v.get("all")))
+    hx = res["accuracy"].get("heldout_extra")
+    if hx:
+        L.append(f"N10-extra held out ({res['accuracy']['heldout_extra_n']} poses): " +
+                 ", ".join(f"{k} {v['all']['rms']} / {v['all']['max']}" for k, v in hx.items() if v and v.get("all")))
+    sx = res.get("short_on_extra")
+    if sx:
+        L.append("N10-extra with the maps fitted on N07-short (same calibration run): " +
+                 ", ".join(f"{k} {v['all']['rms']} / {v['all']['max']}" for k, v in sx.items() if v and v.get("all")))
+    L.append("Robust (all joints, median / p95 |error| deg): " + "; ".join(
+        f"{n}: " + ", ".join(f"{k} {v['all']['p50']}/{v['all']['p95']}" for k, v in d.items() if v and v.get("all"))
+        for n, d in [("dense", tr), ("V0", res["drift"].get("N02-V0")), ("V5", res["drift"].get("N08-V5")),
+                     ("extra", hx)] if d))
     for n, d in res["drift"].items():
         if d:
             L.append(f"{n}: " + ", ".join(f"{k} {v['all']['rms']}" for k, v in d.items() if v and v.get("all")))
@@ -203,6 +249,13 @@ def findings(res: dict) -> None:
         for k in res["kapandji"]:
             L.append(f"| {k['finger']} | {k['map']} | {k['distance_mm']} | {'yes' if k['touch'] else 'no'} | "
                      f"{k['force_thumb']} | {k['force_finger']} |")
+    fl = res.get("faults") or {}
+    if fl.get("events") or fl.get("skipped_poses"):
+        L.append("")
+        L.append(f"Motor faults: {len(fl['events'])} ({fl['per_joint']}); poses skipped: {len(fl['skipped_poses'])}")
+        for e in fl["events"]:
+            L.append(f"- {e.get('joint')} id {e.get('id')} {e.get('flags')} at {e.get('where')}, "
+                     f"{e.get('temp_c')} °C, {e.get('current_ma')} mA")
     (OUT / "findings.md").write_text("\n".join(L) + "\n")
 
 

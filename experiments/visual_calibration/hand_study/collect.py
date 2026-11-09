@@ -15,6 +15,8 @@ from pathlib import Path
 
 import shutil
 
+import numpy as np
+
 from hand_study import hw
 from hand_study.hw import Camera, Hand, MotorFault, Stream, Turntable, beat, call, recover
 from hand_study.mapping import LinearMap
@@ -22,6 +24,7 @@ from hand_study.mapping import LinearMap
 STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 
 SETTLE_S = 1.0
+HOLD_STUCK = os.environ.get("STUDY_HOLD_STUCK", "0") == "1"
 PLATE_SETTLE_S = 0.6
 
 
@@ -82,22 +85,25 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
             hand.move(c["q"], c.get("speed", 30.0))
             time.sleep(SETTLE_S)
             before = hand.sample()
-            if L is not None and not contact:
+            if L is not None and not contact and not c.get("loaded"):
                 hand.check_tracking(before, L.joints_of(before["motor_ids"], before["motor_pos"]))
             hand.guard()
             views = []
-            for a in (angles if forward else angles[::-1]):
-                st = plate.move(a)
+            mine = c.get("angles") or angles
+            for a in (mine if forward else mine[::-1]):
+                st = plate.move(a, log)
                 time.sleep(PLATE_SETTLE_S)
                 st = plate.state()
                 img = cam.grab()
                 name = f"v{int(round(a)):03d}.jpg"
-                cv2.imwrite(str(out / name), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                cv2.imwrite(str(out / name), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 views.append({"stop": a, "angle": st["angle"], "file": name, "t": time.time()})
+                if plan.get("current_each_view"):
+                    views[-1]["current_ma"] = [x["current_ma"] for x in hand.motors()["motors"]]
             forward = not forward
             after = hand.sample()
             hand.guard()
-            if L is not None and not contact:
+            if L is not None and not contact and not c.get("loaded"):
                 hand.check_tracking(after, L.joints_of(after["motor_ids"], after["motor_pos"]))
             if plan.get("torque_off_each"):
                 hand.torque(False)
@@ -109,19 +115,38 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
             out.mkdir(parents=True, exist_ok=True)
             progress.update(current=c["id"], index=k)
             write_json(session / "progress.json", progress)
+            if c.get("skip"):
+                log(f"{c['id']} skipped: {c['skip']}")
+                write_json(out / "skipped.json", {"why": "views", "detail": c["skip"], "t": time.time()})
+                continue
+            dead = [j for j in hw.DEAD if c.get("joint") == j or abs(c["q"].get(j, 0.0)) > 5.0
+                    or any(abs(v.get(j, 0.0)) > 5.0 for v in c.get("via") or [])]
+            if dead:
+                log(f"{c['id']} left for later: motor of {dead} dead")       # no skipped.json: a revisit retries it
+                continue
             if near_stop(c):
                 log(f"{c['id']} skipped: {sorted(hw.FAULTS.banned)} faulted too often, pose near its stop")
                 write_json(out / "skipped.json", {"why": "backoff", "joints": sorted(hw.FAULTS.banned), "t": time.time()})
                 continue
             meta = None
+            cmd = c
             for attempt in (0, 1):
                 try:
-                    meta = shoot(c, out)
+                    meta = shoot(cmd, out)
                     break
                 except MotorFault as e:
                     for f in out.glob("v*.jpg"):
                         f.unlink()
                     recover(hand, e, f"{session.name}/{c['id']}#{attempt}", log)
+                    if HOLD_STUCK and all(m.get("flags") == ["stuck"] for m in e.motors):
+                        # the motor-to-joint map holds wherever the joint stops: retry with the stuck
+                        # joints commanded to where they stopped (2° back), so they hold unloaded
+                        held = {m["joint"]: round(m["assumed_deg"] - 2.0 * np.sign(m["target_deg"] - m["assumed_deg"]), 1)
+                                for m in e.motors}
+                        cmd = {**c, "q": {**c["q"], **held}, "q_planned": c["q"], "held": held,
+                               "via": [{**v, **{j: min(v.get(j, 0.0), a) if c["q"][j] > a else max(v.get(j, 0.0), a)
+                                                for j, a in held.items()}} for v in c.get("via") or []]}
+                        log(f"{c['id']}: retrying with {held} held where they stopped")
             if meta is None:
                 log(f"{c['id']} skipped after a motor fault and one retry")
                 write_json(out / "skipped.json", {"why": "fault", "t": time.time()})

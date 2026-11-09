@@ -46,14 +46,15 @@ def rows(paths: list[Path] | None = None, est_name: str | None = None) -> list[d
             motor = {j: b["motor_pos"][b["motor_joint"].index(j)] for j in JOINTS}
             current = {j: b["current_ma"][b["motor_joint"].index(j)] for j in JOINTS}
             split = est.get("split") or {}
-            out.append({
-                "id": d.name, "session": s.name, "run": plan["calibration"], "kind": meta.get("kind"),
+            out.append({     # run per pose: V3 changed calibration mid-block
+                "id": d.name, "session": s.name, "run": meta.get("calibration") or plan["calibration"], "kind": meta.get("kind"),
                 "joint": meta.get("joint"), "dir": meta.get("dir"), "ref": meta.get("ref"), "side": meta.get("side"),
                 "visit": meta.get("visit"), "t": meta.get("t0"),
                 "commanded": meta["q"], "assumed": est["assumed"], "measured": est["joints"], "std": est["std"],
                 "split": {j: abs(split["even"][j] - split["odd"][j]) for j in JOINTS} if split else {},
                 "spread": est.get("spread", {}), "rms_px": est["rms_px"], "view_rms_px": est["view_rms_px"],
                 "angles": est["angles"], "quality": est.get("quality", []), "motor": motor, "current": current,
+                "via": meta.get("via"), "loaded": bool(meta.get("loaded")),
                 "drift": max(abs(x - y) for x, y in zip(meta["after"]["motor_pos"], b["motor_pos"])),
             })
     return out

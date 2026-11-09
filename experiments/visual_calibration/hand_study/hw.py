@@ -28,6 +28,33 @@ class Abort(RuntimeError):
     """A safety stop: never retried (e-stop, overheating, disk full, a motor that does not recover)."""
 
 
+class Safety(Abort):
+    """The only stop of a resilient night: smoke-level heat after cooling, or the hand and plate moving together."""
+
+
+class TorqueLost(RuntimeError):
+    """The torque went off behind the runner's back: a resilient night recovers and resumes."""
+
+
+class BusStuck(RuntimeError):
+    """orca-ui's bus is stuck ("Port is in use", sync reads failing) for longer than BUS_STUCK_S:
+    telemetry is stale. The ladder reconnects the hand, else restarts orca-ui."""
+
+
+class Wrapped(RuntimeError):
+    """A reboot moved a motor's reading by a whole turn (its position was past a turn boundary,
+    so the Dynamixel lost its turn count): every command in that frame drives the joint into
+    its stop. Not retried: the runner reconnects/recalibrates the hand first (night.py)."""
+
+    def __init__(self, msg: str, ids: list[int]):
+        super().__init__(msg)
+        self.ids = ids
+
+
+TURN = 2 * 3.141592653589793
+WRAP_RAD = 3.0         # a reading that jumps this much across a reboot lost a turn
+
+
 class MotorFault(RuntimeError):
     """A motor hardware error (overload, ...) or a joint stuck far from its target under load:
     recovered by a reboot (recover()), the pose retried once, then skipped."""
@@ -37,8 +64,23 @@ class MotorFault(RuntimeError):
         self.motors = motors
 
 
+class Hot(MotorFault):
+    """A motor at ABORT_TEMP_C in a resilient night: torque off, cool to COOL_TO_C, the pose retried."""
+
+
 TRACK_DEG = 12.0             # a joint this far from its target ...
-TRACK_MA = 400.0             # ... while its motor pulls this hard is stuck
+TRACK_MA = float(os.environ.get("STUDY_TRACK_MA", 400.0))  # ... while its motor pulls this hard is stuck
+MOTORS = os.environ.get("STUDY_MOTORS", "dynamixel")      # "feetech": no reboot, no turn to lose
+RESILIENT = False            # night spec "resilient": cool and resume instead of aborting on heat
+COOL_TO_C = 45.0
+SAFETY_C = 70.0              # still this hot after cooling: the night's only thermal stop
+DEAD: dict[str, dict] = {}   # joint -> {"id", "since", "tried"}: a motor the whole ladder could not bring back
+DEAD_RETRY_S = 900.0
+HAND_SETTLE_S = 0.6
+HAND_MOVED = [0.0]           # the last hand target's time, and until when the plate may still be moving:
+PLATE_MOVING = [0.0]         # the hand and the plate never move together (a breach is the other hard stop)
+BUS_STUCK_S = 10.0
+BUS_STUCK = [0.0]            # since when orca-ui's log has been reporting a stuck bus (0: healthy)
 FAULT_WINDOW_S = 600.0
 FAULT_LIMIT = 3              # more faults than this per motor in the window: back off
 
@@ -66,26 +108,131 @@ def recover(hand: "Hand", fault: MotorFault, where: str, log=print) -> None:
     """Torque off, reboot the faulted motors (Dynamixel reboot via orca-ui), check they are back."""
     for m in fault.motors:
         FAULTS.add({"t": time.time(), "where": where, "why": str(fault), **m})
+    fault.motors = [m for m in fault.motors if m.get("joint") not in DEAD]
+    if not fault.motors:
+        return
+    if isinstance(fault, Hot):
+        log(f"HOT at {where}: {fault}; torque off, cooling to {COOL_TO_C:.0f} °C")
+        hand.torque(False)
+        t0 = time.time()
+        while hand.hottest() > COOL_TO_C:
+            if time.time() - t0 > 3600:
+                if hand.hottest() >= SAFETY_C:
+                    raise Safety(f"SAFETY: still {hand.hottest():.0f} °C after an hour of cooling")
+                log(f"still {hand.hottest():.0f} °C after an hour of cooling: going on (below {SAFETY_C:.0f} °C)")
+                break
+            beat("cooling")
+            time.sleep(10)
+        log(f"cooled to {hand.hottest():.0f} °C after {time.time() - t0:.0f} s")
+        return
+    if MOTORS == "feetech":
+        return recover_feetech(hand, fault, where, log)
     log(f"MOTOR FAULT at {where}: {fault}; torque off, reboot {[m['joint'] for m in fault.motors]}")
     try:
         hand.torque(False)
     except Exception as e:
         log(f"torque off failed: {e}")
     ids = sorted({m["id"] for m in fault.motors})
-    for attempt in range(3):
+    before = {x["id"]: float(x["position"]) for x in hand.motors()["motors"]}
+    past = [i for i in ids if not 0.0 <= before.get(i, 1.0) < TURN]
+    if past:
+        log(f"motors {past} sit past a turn boundary {[round(before[i], 3) for i in past]}: "
+            "the reboot will lose the turn, recalibrating after it")
+    for attempt in range(6 if RESILIENT else 3):
+        if attempt == 3:
+            log(f"motors {ids} still in error after 3 reboots: torque off, 2 min rest, 3 more")
+            hand.torque(False)
+            for _ in range(12):
+                beat("resting before more reboots")
+                time.sleep(10)
         for i in ids:
             try:
                 call(f"/motors/{i}/reboot", {}, timeout=30)
             except Exception as e:
                 log(f"reboot motor {i}: {e}")
         time.sleep(1.5)
-        left = [x["id"] for x in hand.motors()["motors"] if x["hw_error"]]
+        now = hand.motors()["motors"]
+        wrapped = sorted({x["id"] for x in now if x["id"] in before and abs(float(x["position"]) - before[x["id"]]) > WRAP_RAD}
+                         | set(past))
+        if wrapped:
+            hand.torque(False)
+            for i in wrapped:
+                FAULTS.add({"t": time.time(), "where": where, "why": "reboot lost a turn", "id": i,
+                            "joint": next((x["joint"] for x in now if x["id"] == i), None),
+                            "before": before.get(i), "after": next((x["position"] for x in now if x["id"] == i), None)})
+            log(f"WRAP: motors {wrapped} lost a turn in the reboot ({ {i: round(before[i], 3) for i in wrapped} } -> "
+                f"{ {x['id']: round(float(x['position']), 3) for x in now if x['id'] in wrapped} })")
+            raise Wrapped(f"motors {wrapped} lost a turn in the reboot", wrapped)
+        left = [x["id"] for x in now if x["hw_error"]]
         if not left:
             log(f"motors {ids} back (attempt {attempt + 1})")
             beat("recovered")
             return
         ids = left
+    if RESILIENT:
+        joints = {x["id"]: x["joint"] for x in now}
+        for i in ids:
+            DEAD[joints.get(i) or str(i)] = {"id": i, "since": time.time(), "tried": time.time()}
+        log(f"DEAD: motors {ids} ({[joints.get(i) for i in ids]}) still in error after 6 reboots: skipping the poses "
+            f"that need them, retrying every {DEAD_RETRY_S / 60:.0f} min")
+        return
     raise Abort(f"motors {ids} still in error after 3 reboots")
+
+
+def retry_dead(hand: "Hand", log=print) -> None:
+    """Every DEAD_RETRY_S: torque off, reboot the dead motors, back in if their error cleared."""
+    due = [j for j, d in DEAD.items() if time.time() - d["tried"] > DEAD_RETRY_S]
+    if not due:
+        return
+    held = hand.target is not None
+    hand.torque(False)
+    for j in due:
+        DEAD[j]["tried"] = time.time()
+        try:
+            call(f"/motors/{DEAD[j]['id']}/reboot", {}, timeout=30)
+        except Exception as e:
+            log(f"dead motor {j}: reboot failed: {e}")
+    time.sleep(1.5)
+    m = {x["joint"]: x for x in hand.motors()["motors"]}
+    for j in due:
+        if j in m and not m[j]["hw_error"]:
+            d = DEAD.pop(j)
+            log(f"motors {j} back after {time.time() - d['since']:.0f} s dead")
+        else:
+            log(f"dead motor {j} still in error, next try in {DEAD_RETRY_S / 60:.0f} min")
+    if held:
+        hand.torque(True)
+
+
+def recover_feetech(hand: "Hand", fault: MotorFault, where: str, log=print) -> None:
+    """Feetech: no reboot. Torque off clears an overload; wait until the motors report no error
+    and have not jumped (a jump means the reading is wrong: recalibrate, as for a lost turn)."""
+    log(f"MOTOR FAULT at {where}: {fault}; torque off, no reboot (Feetech) {[m['joint'] for m in fault.motors]}")
+    try:
+        hand.torque(False)
+    except Exception as e:
+        log(f"torque off failed: {e}")
+    ids = sorted({m["id"] for m in fault.motors})
+    before = {m["id"]: float(m["position"]) for m in fault.motors}
+    for attempt in range(6):
+        time.sleep(2.0 + 3.0 * attempt)
+        now = hand.motors()["motors"]
+        jumped = [x["id"] for x in now if x["id"] in before and abs(float(x["position"]) - before[x["id"]]) > WRAP_RAD]
+        if jumped:
+            raise Wrapped(f"motors {jumped} jumped by more than {WRAP_RAD} rad with the torque off", jumped)
+        left = [x["id"] for x in now if x["hw_error"]]
+        if not left:
+            log(f"motors {ids} clear after {attempt + 1} checks")
+            beat("recovered")
+            return
+        beat("waiting for the motor error to clear")
+    if RESILIENT:
+        for x in hand.motors()["motors"]:
+            if x["id"] in left:
+                DEAD[x["joint"]] = {"id": x["id"], "since": time.time(), "tried": time.time()}
+        log(f"DEAD: motors {left} still in error with the torque off: skipping the poses that need them")
+        return
+    raise Abort(f"motors {left} still in error with the torque off")
 
 
 def beat(note: str = "") -> None:
@@ -107,9 +254,129 @@ def call(path: str, body: dict | None = None, timeout: float = 120.0):
         return json.load(urllib.request.urlopen(req, timeout=timeout))
     except urllib.error.HTTPError as e:
         msg = f"{path}: {e.code} {e.read().decode()}"
-        if path == "/joints/target" and e.code == 409:
+        if path == "/joints/target" and e.code == 409 and not RESILIENT:
             raise Abort(msg) from None          # torque gone or control taken: stop, never retry
         raise ApiError(msg) from None
+
+
+class Telemetry:
+    """The whole night at full rate, for reuse: every websocket message of orca-ui's motor telemetry,
+    joint estimate and target, status and control state (no extra bus traffic), and the turntable's
+    state at 2 Hz; gzip JSON lines, one file per hour (night/<tag>-telemetry/<YYYYmmdd-HH>.jsonl.gz)."""
+
+    TOPICS = ["motors.telemetry", "joints.estimate", "joints.target", "status", "control.state"]
+
+    def __init__(self, out: Path):
+        self.out = out
+        out.mkdir(parents=True, exist_ok=True)
+        self.buf: list[str] = []
+        self.lock = threading.Lock()
+        self._stop = threading.Event()
+        self.n = 0
+        for f in (self._ws, self._plate, self._flush):
+            threading.Thread(target=f, daemon=True).start()
+
+    def _add(self, kind: str, data) -> None:
+        with self.lock:
+            self.buf.append(json.dumps({"t": round(time.time(), 4), "k": kind, "d": data}, separators=(",", ":")))
+            self.n += 1
+
+    def _ws(self):
+        from websockets.sync.client import connect
+        while not self._stop.is_set():
+            try:
+                with connect(WS, max_size=None) as ws:
+                    ws.send(json.dumps({"type": "subscribe", "data": {"topics": self.TOPICS}}))
+                    while not self._stop.is_set():
+                        try:
+                            m = json.loads(ws.recv(timeout=1.0))
+                        except TimeoutError:
+                            continue
+                        self._add(m.get("type"), m.get("data"))
+            except Exception:
+                time.sleep(1.0)
+
+    def _plate(self):
+        while not self._stop.is_set():
+            try:
+                self._add("turntable", call(TT, timeout=2))
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    def _flush(self):
+        import gzip
+        while not self._stop.wait(30):
+            self.flush(gzip)
+
+    def flush(self, gzip=None) -> None:
+        import gzip as gz
+        with self.lock:
+            rows, self.buf = self.buf, []
+        if rows:
+            with gz.open(self.out / f"{time.strftime('%Y%m%d-%H')}.jsonl.gz", "at") as f:
+                f.write("\n".join(rows) + "\n")
+
+    def close(self) -> None:
+        self._stop.set()
+        self.flush()
+
+
+class BusWatch:
+    """Tails the log of the orca-ui listening on hw.UI's port (its stdout, found again after a
+    restart) and sets BUS_STUCK while bus errors keep coming: a line of BAD within the last 3 s."""
+
+    BAD = ("Port is in use", "Sync read failed", "Device not configured", "Port handler in use")
+
+    def __init__(self, log=print):
+        self.log = log
+        self._stop = threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    @staticmethod
+    def _logfile() -> str | None:
+        import subprocess
+        port = UI.rsplit(":", 1)[1].split("/")[0]
+        pid = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.split()
+        if not pid:
+            return None
+        out = subprocess.run(["lsof", "-a", "-p", pid[0], "-d", "1", "-Fn"], capture_output=True, text=True).stdout.split("\n")
+        return next((l[1:] for l in out if l.startswith("n/")), None)
+
+    def _run(self):
+        path, f, last_bad, t_path = None, None, 0.0, 0.0
+        while not self._stop.is_set():
+            now = time.time()
+            if now - t_path > 15:
+                t_path = now
+                try:
+                    p = self._logfile()
+                except Exception:
+                    p = None
+                if p and p != path:
+                    if f:
+                        f.close()
+                    path, f = p, open(p, errors="replace")
+                    f.seek(0, 2)
+            hit = False
+            if f:
+                for line in f.readlines():
+                    if any(b in line for b in self.BAD):
+                        hit = True
+            if hit:
+                last_bad = now
+                if not BUS_STUCK[0]:
+                    BUS_STUCK[0] = now
+            elif BUS_STUCK[0] and now - last_bad > 3:
+                self.log(f"bus healthy again after {now - BUS_STUCK[0]:.0f} s of errors")
+                BUS_STUCK[0] = 0.0
+            time.sleep(0.5)
+
+    def stuck(self) -> bool:
+        return bool(BUS_STUCK[0]) and time.time() - BUS_STUCK[0] > BUS_STUCK_S
+
+    def close(self):
+        self._stop.set()
 
 
 class Stream:
@@ -174,16 +441,24 @@ class Hand:
         """Abort when the torque went off behind our back (e-stop), a motor reports an error,
         or a motor is too hot; the disk is checked too."""
         import shutil
+        if DEAD:
+            retry_dead(self)
+        if BUS_STUCK[0] and time.time() - BUS_STUCK[0] > BUS_STUCK_S:
+            raise BusStuck(f"orca-ui bus stuck for {time.time() - BUS_STUCK[0]:.0f} s (Port is in use / sync read failed)")
         m = self.motors()["motors"]
-        bad = [x for x in m if x["hw_error"]]
+        bad = [x for x in m if x["hw_error"] and x["joint"] not in DEAD]
         if bad:
             raise MotorFault(f"hardware error {[(x['joint'], x['hw_error'], x.get('hw_error_flags')) for x in bad]}",
                              [self._fault_info(x) for x in bad])
         st = self.status()
         if self.target is not None and not st.get("torque_enabled"):
+            if RESILIENT:
+                raise TorqueLost("torque went off behind the runner's back")
             raise Abort("torque went off (e-stop?)")
-        hot = max(x["temp_c"] for x in m)
+        hot = max([x["temp_c"] for x in m if x["joint"] not in DEAD] or [0.0])
         if hot >= ABORT_TEMP_C:
+            if RESILIENT:
+                raise Hot(f"motor at {hot:.0f} °C", [self._fault_info(x) for x in m if x["temp_c"] >= ABORT_TEMP_C])
             raise Abort(f"motor at {hot:.0f} °C")
         if shutil.disk_usage(Path.home()).free / 1e9 < MIN_FREE_GB:
             raise Abort("disk almost full")
@@ -225,7 +500,10 @@ class Hand:
         t0 = time.time()
         while self.hottest() > cool_to:
             if time.time() - t0 > max_wait_s:
-                raise Abort(f"still {self.hottest():.0f} °C after {max_wait_s / 60:.0f} min of cooling")
+                if not RESILIENT or self.hottest() >= SAFETY_C:
+                    raise Safety(f"SAFETY: still {self.hottest():.0f} °C after {max_wait_s / 60:.0f} min of cooling")
+                log(f"still {self.hottest():.0f} °C after {max_wait_s / 60:.0f} min of cooling: going on")
+                break
             beat("cooling")
             time.sleep(10)
         log(f"cooled to {self.hottest():.0f} °C after {time.time() - t0:.0f} s")
@@ -242,7 +520,10 @@ class Hand:
         n = max(1, int(np.ceil(span / speed * RAMP_HZ)))
         for k in range(1, n + 1):
             f = k / n
-            call("/joints/target", {"angles": {j: start[j] + f * (goal[j] - start[j]) for j in goal}})
+            if PLATE_MOVING[0] > time.time():
+                raise Safety("SAFETY: hand target while the plate moves")
+            HAND_MOVED[0] = time.time()
+            call("/joints/target", {"angles": {j: start[j] + f * (goal[j] - start[j]) for j in goal if j not in DEAD}})
             time.sleep(1.0 / RAMP_HZ)
         self.target = goal
 
@@ -278,10 +559,41 @@ class Turntable:
     def state(self) -> dict:
         return call(TT)
 
-    def move(self, angle: float) -> dict:
+    STEP_DEG = 15.0
+    RETRY_STEPS = (5.0, 2.5)
+    MISS_DEG = 1.5            # the photo keeps the measured angle; only a real miss matters
+
+    def _go(self, angle: float, step: float) -> None:
+        cur = float(self.state()["angle"])
+        n = max(1, int(np.ceil(abs(angle - cur) / step - 1e-6)))
+        for k in range(1, n + 1):
+            wait = HAND_SETTLE_S - (time.time() - HAND_MOVED[0])
+            if wait > 0:                       # the hand's last target is fresh: let it settle first
+                time.sleep(wait)
+            PLATE_MOVING[0] = time.time() + 30.0
+            try:
+                call(TT + "/move", {"angle": round(cur + (angle - cur) * k / n, 3)})
+            finally:
+                PLATE_MOVING[0] = 0.0
+        got = float(self.state()["angle"])
+        if abs(got - angle) > self.MISS_DEG:
+            raise ApiError(f"turntable missed the stop: at {got:.2f}, wanted {angle:.2f}")
+
+    def move(self, angle: float, log=print) -> dict:
+        """In <= STEP_DEG moves (the heavier hand's plate stalled on a long one); a stall, lag or
+        missed stop: torque off, then again in smaller steps; still failing there: an error."""
         beat(f"plate {angle:.0f}")
-        call(TT + "/move", {"angle": float(angle)})
-        return self.state()
+        for step in (self.STEP_DEG, *self.RETRY_STEPS):
+            try:
+                self._go(float(angle), step)
+                return self.state()
+            except ApiError as e:
+                at = self.state().get("angle")
+                log(f"turntable to {angle:g} (steps {step:g}): {e}; at {at}, torque off, retrying smaller")
+                self.off()
+                time.sleep(2.0)
+                last = e
+        raise ApiError(f"turntable kept failing near {at} on the way to {angle:g}: {last}")
 
     def off(self) -> None:
         try:
@@ -292,11 +604,17 @@ class Turntable:
 
 class Camera:
     def __init__(self, size=(3840, 2160)):
+        self.fake = os.environ.get("STUDY_FAKE_CAMERA")          # a dry run: this photo, no camera
+        if self.fake:
+            import cv2
+            self.img = cv2.imread(self.fake)
+            return
         from visual_calibration.sweep import Webcam
         self.cam = Webcam(0, size)
 
     def grab(self) -> np.ndarray:
-        return self.cam.grab()
+        return self.img.copy() if self.fake else self.cam.grab()
 
     def close(self):
-        self.cam.cap.release()
+        """Kept open: one capture for the runner's whole life (a reopen per block is what the
+        decoder must not see); released at exit (capture.SharedCamera)."""

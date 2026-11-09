@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from hand_study.mapping import LinearMap
 
 STUDY = analysis.STUDY
 OUT = STUDY / "proposed"
-RMS_MAX_PX = 9.5            # poses fitting worse than this (typ. 8-8.5 px) are vision blunders: left out
+RMS_MAX_PX = float(os.environ.get("STUDY_RMS_MAX_PX", "9.5"))  # worse fits (typ. 8-8.5 px; rig 330 + crop: 9.7) are vision blunders: left out
 TRIM_DEG = 6.0              # per joint, residuals beyond max(this, 3 robust sigma) are dropped and refitted
 SPLIT_MAX_DEG = 12.0        # a joint whose two half-view solves disagree this much is not seen: left out
 MIN_SPAN = 0.4              # the motor must have covered this share of its range, else the old stops stay
@@ -92,7 +93,9 @@ def accuracy(R: list[dict], predict) -> dict:
         out[j] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2),
                   "mean": round(float(e.mean()), 2)} if len(e) else None
     e = np.concatenate(allerr) if allerr else np.zeros(0)
-    out["all"] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2)} if len(e) else None
+    out["all"] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2),
+                  "p50": round(float(np.percentile(np.abs(e), 50)), 2),
+                  "p95": round(float(np.percentile(np.abs(e), 95)), 2), "n": int(len(e))} if len(e) else None
     return out
 
 

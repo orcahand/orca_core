@@ -34,33 +34,20 @@ ZERO_TOL_DEG = 0.5
 
 
 class Webcam:
-    """The rig camera through OpenCV (AVFoundation on macOS), at full resolution."""
+    """The rig camera through OpenCV (AVFoundation on macOS), at full resolution: the process's
+    one shared capture (visual_calibration.capture), never reopened per still."""
 
     def __init__(self, index: int = 0, size: tuple[int, int] = (3840, 2160)):
+        from visual_calibration.capture import SharedCamera
         self.index, self.size = index, tuple(size)
-        self._open()
-
-    def _open(self) -> None:
-        import cv2
-        self.cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.size[0])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.size[1])
-        for _ in range(30):
-            self.cap.read()
+        self.shared = SharedCamera.get(index, self.size)
 
     def grab(self) -> np.ndarray:
-        for _ in range(3):
-            for _ in range(4):
-                self.cap.read()
-            ok, img = self.cap.read()
-            if ok and img.shape[1::-1] == self.size:
-                return img
-            self.cap.release()
-            self._open()
-        raise RuntimeError(f"no {self.size[0]}x{self.size[1]} frame from camera {self.index}")
+        """A frame captured after this call (nothing buffered before it)."""
+        return self.shared.still()
 
     def close(self) -> None:
-        self.cap.release()
+        self.shared.close()
 
 
 def _gray(img: np.ndarray) -> np.ndarray:

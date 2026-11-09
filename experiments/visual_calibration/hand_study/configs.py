@@ -5,6 +5,7 @@ meshes with a margin (no finger contact)."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,11 @@ ROM = {"wrist": (-65, 35), "thumb_cmc": (-45, 33), "thumb_abd": (-18, 55), "thum
        "thumb_dip": (-15, 107), "index_abd": (-25, 30), "middle_abd": (-27, 27), "ring_abd": (-27, 27),
        "pinky_abd": (-30, 30), **{f"{f}_mcp": (-25, 100) for f in ("index", "middle", "ring", "pinky")},
        **{f"{f}_pip": (-15, 107) for f in ("index", "middle", "ring", "pinky")}}
+if os.environ.get("STUDY_ROM_CONFIG"):     # another hand: plan and fit over its config's ROM
+    import yaml
+    ROM.update({j: tuple(map(float, r)) for j, r in
+                yaml.safe_load(Path(os.environ["STUDY_ROM_CONFIG"]).expanduser().read_text())["joint_roms"].items()
+                if j in ROM})
 FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 MARGIN_MM = 6.0
 NEED = {"ap": 1.5, "tp": 1.5, "pp": 3.0, "dp": 5.0}

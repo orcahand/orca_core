@@ -76,9 +76,10 @@ def dense() -> Builder:
     return b
 
 
-def validation() -> Builder:
+def validation(wrist_lo: bool = True) -> Builder:
     """The fixed validation set (identical in every V block): 2x open, 12 random, 10 at the
-    stops, 3 references."""
+    stops, 3 references. wrist_lo False: the flexors-low stop pose without the wrist (it
+    jammed ser-4485's wrist)."""
     b = Builder()
     b.add("v-open-a", {}, kind="val", group="open")
     b.random(12, JOINTS, seed=99, tag="v-random")
@@ -88,7 +89,8 @@ def validation() -> Builder:
             b.add(f"v-stop-{j}-{'hi' if side else 'lo'}", q, kind="val", group="stop")
     for j in ("index_mcp", "middle_pip", "ring_mcp", "pinky_pip"):
         b.add(f"v-stop-{j}-hi", {j: float(ROM[j][1])}, kind="val", group="stop")
-    b.add("v-stop-flex-lo", {j: float(ROM[j][0]) for j in FLEXORS + ["wrist"]}, kind="val", group="stop")
+    b.add("v-stop-flex-lo" if wrist_lo else "v-stop-flex-lo-nowrist",
+          {j: float(ROM[j][0]) for j in FLEXORS + ["wrist"] * wrist_lo}, kind="val", group="stop")
     b.add("v-stop-thumb", {"thumb_cmc": float(ROM["thumb_cmc"][0]), "thumb_abd": float(ROM["thumb_abd"][1]),
                            "thumb_mcp": 50.0, "thumb_dip": float(ROM["thumb_dip"][1]) - 7}, kind="val", group="stop")
     for name, q in REFS_A.items():

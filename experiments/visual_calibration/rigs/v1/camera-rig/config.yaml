@@ -16,9 +16,9 @@ camera:
   # The mount (calibration_rig, Shea 2026-11-06; lowered 30 mm, re-tilted). Set distance and height to the
   # holes the camera is bolted in; the CAD pose below follows from them.
   mount:
-    distance: 240.0          # lens slider on cam_rail: axis to camera, mm
-    height: 270.0            # camera_height on cam_mast, above the plate, mm (the first rig: the 270 hole)
-    tilt: 3.12               # down, deg; printed into cam_platform (not adjustable): centres the tile column
+    distance: 200.0          # lens slider on cam_rail: axis to camera, mm (rig330 2026-11-09: closest hole; PnP lens r 208 -> 200 + lens_offset)
+    height: 250.0            # camera_height on cam_mast, above the plate, mm (rig330 2026-11-09: PnP lens z 249)
+    tilt: 0.6                # down, deg; rig330: free on the 1/4" screw, set almost straight (PnP 0.6)
     options:                 # what the holes allow (10 mm pitch, 11 positions each)
       distance: {min: 190.0, max: 290.0, step: 10.0}
       height: {min: 250.0, max: 350.0, step: 10.0}
@@ -36,7 +36,7 @@ camera:
   uvc:
     device: {vendor: 1133, product: 2142}   # Logitech BRIO (046d:085e)
     auto_focus: 0
-    absolute_focus: 60                      # 0 far .. 255 near
+    absolute_focus: 70                      # 0 far .. 255 near (rig330 at 190 mm, 2026-11-09: 70 balances A/B/C; was 60 at 240 mm)
     auto_exposure_mode: 1
     absolute_exposure_time: 100             # 10 ms: a multiple of the 100 Hz light flicker
     auto_exposure_priority: 0               # fixed frame rate
@@ -140,7 +140,7 @@ solver:
       tilt: {bound: [5.0, 5.0], sigma: [2.0, 2.0]}         # about x, y
       offset: {bound: [10.0, 10.0], sigma: [5.0, 5.0]}     # in x, y
       yaw: {bound: 10.0, sigma: 1.0}                       # around the found mounting; trades with the camera's yaw about the axis, so the CAD camera splits them
-    stop_angle: {bound: 1.5, sigma: 0.5}                   # per photo, around the motor's read-back angle; the stop nearest 0° pinned
+    stop_angle: {bound: 2.5, sigma: 0.5}                   # per photo, around the motor read-back; the stop nearest 0° pinned (rig330 XC330: -1.45° at 90°, repeats within 0.4°)
     tile:                                                  # per tile on the object, but the reference tile
       translation: {bound: [1.0, 1.0, 1.0], sigma: [0.3, 0.3, 0.3]}
       rotation: {bound: [1.0, 1.0, 1.0], sigma: [0.3, 0.3, 0.3]}

@@ -10,12 +10,22 @@
 <header>
   <div>
     <h1>Hand calibration study</h1>
-    <p class="sub">ORCA hand ser-4485 (orcahand-touch-right) on the camera rig. Joint angles are measured from 8 photos per pose (plate stops 0–315°) and compared with what orca_core's linear motor calibration assumes.</p>
+    <p class="sub">ORCA hands on the camera rig. Joint angles are measured from photos of every pose (several plate stops) and compared with what orca_core's motor calibration assumes.</p>
   </div>
   <div id="chips" class="chips"></div>
 </header>
 <nav id="toc"></nav>
 <main>
+  <section id="protocol" hidden>
+    <h2>Protocol: night run</h2>
+    <div class="sel-row"><label>night <select id="pr-tag"></select></label> <span id="pr-upd" class="cap"></span></div>
+    <div id="pr-answer"></div>
+    <div id="pr-head" class="pr-head"></div>
+    <div id="pr-phases"></div>
+    <div id="pr-numbers"></div>
+    <h3>Runner log</h3>
+    <pre id="pr-log" class="log"></pre>
+  </section>
   <section id="live">
     <h2>Live</h2>
     <p class="cap" id="live-cap">The newest solved pose. Outlines: <span class="key k-meas">measured (vision)</span> and <span class="key k-ass">assumed by orca_core</span>, drawn on each photo.</p>
@@ -23,6 +33,20 @@
       <div><img id="live-big" alt="newest pose with model outlines"><div id="thumbs" class="thumbs"></div></div>
       <div id="live-table"></div>
     </div>
+  </section>
+  <section id="hand" hidden>
+    <h2>ser-7577 · per-joint curve and coupled table</h2>
+    <p class="cap" id="hand-cap"></p>
+    <div id="hand-table"></div>
+    <div id="hand-bars" class="chart"></div>
+    <p class="cap">Per joint: the angle <span class="key k-meas">measured</span> from the photos (filled = training poses, hollow = held-out poses) against what orca_core's standard linear map estimates with the hand's current config and calibration. Dashed: <span class="key k-ass">linear</span> (true = estimate, the standard map). Purple line: the regularised <b>per-joint curve</b> (true = estimate + a smooth correction, shrunk to the linear map where data is thin). Dashed horizontals: the configured joint limits.</p>
+    <div id="hand-grid" class="grid"></div>
+  </section>
+  <section id="advanced" hidden>
+    <h2>Advanced calibration: physical model vs the other maps</h2>
+    <p class="cap">The advanced model (ADVANCED_CALIBRATION.md, <code>advanced.py</code>) adds to the hand's standard map x, per joint: a smooth curve (Legendre P0–P3 over the ROM), tendon coupling to the joints its tendon crosses (seeded, then fitted), tendon stretch with the motor current, and backlash by the approach direction. Fitted by regularised least squares, evaluated on held-out poses only. Errors in degrees, true (vision) − map.</p>
+    <div class="sel-row"><label>hand <select id="adv-hand"><option>ser-7577</option><option>ser-4485</option></select></label></div>
+    <div id="adv-body"></div>
   </section>
   <section id="solver">
     <h2>Solver results and inputs</h2>

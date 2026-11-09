@@ -264,3 +264,183 @@ async function tickNight() {
   $('night-body').innerHTML = h
 }
 tickNight(); setInterval(tickNight, 60000)
+
+async function tickHand() {
+  const E = await getJSON('/api/hand/ser-7577')
+  if (!E) return
+  $('hand').hidden = false
+  const names = { 'packaged config': 'packaged config (out of the box)', 'standard (current config)': 'own refit stops (current standard)', curve: 'per-joint curve', lut: 'coupled table (LUT)' }
+  const keys = Object.keys(E.heldout)
+  const J = Object.keys(E.rom)
+  $('hand-cap').innerHTML = `Fitted on ${E.n_train} poses (${E.train.join(', ')}), tested on ${E.n_test} held-out poses (${E.test.join(', ')}), ${E.heldout[keys[0]].all.n} joint values. Errors in degrees, true (vision) − map. The maps the dashboard runs (orca-ui :5001, "Visual calibration (study)") are refitted on all ${E.n_train + E.n_test} poses. Created ${E.created}.`
+  let h = '<table><thead><tr><th>map (held out)</th><th>RMS</th><th>median</th><th>p95</th><th>max</th><th>params</th></tr></thead><tbody>'
+  for (const k of keys) { const a = E.heldout[k].all; h += `<tr><td>${names[k] || k}</td><td>${f2(a.rms)}</td><td>${f2(a.p50)}</td><td>${f1(a.p95)}</td><td>${f1(a.max)}</td><td>${E.params[k]}</td></tr>` }
+  $('hand-table').innerHTML = h + '</tbody></table>'
+  const cols = [css('--muted'), css('--s2'), css('--s7'), css('--s3')]
+  $('hand-bars').innerHTML = ''
+  bars($('hand-bars'), {
+    cats: J, unit: '°', ylabel: 'held-out RMS °',
+    groups: keys.map((k, i) => ({ name: names[k] || k, color: cols[i % cols.length], values: J.map((j) => E.heldout[k][j] && E.heldout[k][j].rms) })),
+  })
+  const grid = $('hand-grid'); grid.innerHTML = ''
+  for (const j of J) {
+    const pts = E.points.filter((p) => p.x[j] != null && p.measured[j] != null)
+    const C = E.curves[j], rom = E.rom[j]
+    const tip = (p) => `${p.session.replace(/^.*-(N\d+.*)$/, '$1')} ${p.id}${p.test ? ' (held out)' : ''}<br>estimate ${f1(p.x[j])}° · measured ${f1(p.measured[j])}°<br>error ${sgn(p.measured[j] - p.x[j])}° · split ${f1(p.split[j])}°`
+    const div = document.createElement('div'); div.className = 'panel'
+    const rmsOf = (k) => E.heldout[k][j] ? f1(E.heldout[k][j].rms) : '—'
+    div.innerHTML = `<h3>${j}</h3>`
+    const xv = extent([...pts.map((p) => p.x[j]), ...rom]), yv = extent([...pts.map((p) => p.measured[j]), ...C.curve, ...rom])
+    plot(div, {
+      h: 200, x: xv, y: yv, xlabel: 'orca_core estimate °', ylabel: 'measured °', label: `${j} measured against estimate`,
+      hlines: [{ y: rom[0], label: `limit ${rom[0]}°` }, { y: rom[1], label: `limit ${rom[1]}°` }],
+      series: [
+        { type: 'line', data: [[rom[0], rom[0]], [rom[1], rom[1]]], color: css('--s2'), dash: '4 3' },
+        { type: 'line', data: C.x.map((x, i) => [x, C.curve[i]]), color: css('--s7') },
+        { data: pts.filter((p) => !p.test).map((p) => [p.x[j], p.measured[j], tip(p)]), color: css('--s1'), r: 2.6 },
+        { data: pts.filter((p) => p.test).map((p) => [p.x[j], p.measured[j], tip(p)]), color: css('--s1'), hollow: true, r: 3 },
+      ],
+    })
+    const p = document.createElement('p'); p.className = 'cap'
+    p.textContent = `held-out RMS: standard ${rmsOf('standard (current config)')}° · curve ${rmsOf('curve')}° · LUT ${rmsOf('lut')}°`
+    div.appendChild(p)
+    grid.appendChild(div)
+  }
+}
+tickHand(); setInterval(tickHand, 120000)
+
+async function tickAdvanced() {
+  const hand = $('adv-hand').value
+  const A = await getJSON(`/api/advanced/${hand}`)
+  if (!A) { $('adv-body').innerHTML = '<p class="cap">Not evaluated for this hand yet.</p>'; return }
+  $('advanced').hidden = false
+  const P = A.params, J = Object.keys(A.advanced)
+  let h = `<p class="cap">Trained on ${A.n_train} poses (${A.train_sessions.join(', ')}). Created ${A.created}.</p>`
+  for (const [t, T] of Object.entries(A.tests)) {
+    h += `<h3>Held out: ${t} · ${T.n} poses (${T.sessions.join(', ')})</h3><table><thead><tr><th>map</th><th>RMS</th><th>median</th><th>p95</th><th>max</th><th>params</th></tr></thead><tbody>`
+    for (const [k, v] of Object.entries(T.maps)) h += `<tr><td>${k}</td><td>${f2(v.all.rms)}</td><td>${f2(v.all.p50)}</td><td>${f1(v.all.p95)}</td><td>${f1(v.all.max)}</td><td>${P[k] ?? '—'}</td></tr>`
+    h += '</tbody></table>'
+  }
+  const [t0, T0] = Object.entries(A.tests)[0]
+  const maps = Object.keys(T0.maps)
+  h += `<h3>Per joint, held out ${t0}: RMS / median / max</h3><table><thead><tr><th>joint</th>${maps.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>`
+  for (const j of J) h += `<tr><td>${j}</td>${maps.map((m) => { const v = T0.maps[m][j]; return `<td>${v ? `${f1(v.rms)} / ${f1(v.p50)} / ${f1(v.max)}` : '—'}</td>` }).join('')}</tr>`
+  h += '</tbody></table>'
+  h += '<h3>Advanced model per joint</h3><table><thead><tr><th>joint</th><th>fit RMS</th><th>play °</th><th>directions seen</th><th>stretch °/A</th><th>current 5–95 % mA</th><th>coupling (° per ° of)</th></tr></thead><tbody>'
+  for (const j of J) {
+    const s = A.advanced[j], dirs = A.directions_seen[j]
+    h += `<tr><td>${j}</td><td>${f2(s.fit_rms)}</td><td>${dirs.length > 1 ? f1(s.play_deg) : '— (one side)'}</td><td>${dirs.map((d) => (d > 0 ? 'below' : 'above')).join(', ')}</td><td>${f1(s.k_deg_per_a)}</td><td>${A.current_range_ma[j].join(' … ')}</td><td>${Object.entries(s.coupling).map(([p, c]) => `${p} ${c >= 0 ? '+' : ''}${c.toFixed(3)}`).join(', ') || '—'}</td></tr>`
+  }
+  h += '</tbody></table><h3>Which terms help (held-out RMS with one term left out)</h3><table><thead><tr><th>variant</th>' + Object.keys(A.tests).map((t) => `<th>${t}</th>`).join('') + '</tr></thead><tbody>'
+  const full = Object.fromEntries(Object.entries(A.tests).map(([t, T]) => [t, T.maps.advanced.all]))
+  for (const [k, d] of [['full advanced model', full], ...Object.entries(A.ablation)]) h += `<tr><td>${k}</td>${Object.keys(A.tests).map((t) => `<td>${f2(d[t].rms)}</td>`).join('')}</tr>`
+  h += `</tbody></table><p class="cap">Play and stretch need poses approached from both sides and under load; with one approach side the backlash term is shrunk to 0 and folded into the offset. Inverse check (command → forward, worst on training poses): ${A.inverse_check_deg}°.</p>`
+  $('adv-body').innerHTML = h
+}
+$('adv-hand').addEventListener('change', tickAdvanced)
+tickAdvanced(); setInterval(tickAdvanced, 120000)
+
+// ---- protocol night ----
+const hm = (t) => (t ? new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—')
+const dur = (s) => (s == null ? '—' : s >= 3600 ? `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, '0')}` : `${Math.round(s / 60)} min`)
+const chip = (s) => `<span class="st ${s}">${s}</span>`
+const a4 = (a) => (a ? `${f2(a.rms)} / ${f2(a.p50)} / ${f1(a.p95)} / ${f1(a.max)}` : '—')
+let prTags = null
+
+async function tickProtocol() {
+  if (!prTags) {
+    prTags = await getJSON('/api/protocols')
+    if (!prTags.length) return
+    const sel = $('pr-tag')
+    sel.innerHTML = prTags.map((t) => `<option>${t}</option>`).join('')
+    const real = prTags.find((t) => !t.startsWith('dry'))
+    if (real) sel.value = real
+    const q = new URLSearchParams(location.search).get('night')
+    if (q && prTags.includes(q)) sel.value = q
+    sel.addEventListener('change', tickProtocol)
+  }
+  const P = await getJSON(`/api/protocol/${$('pr-tag').value}`)
+  $('protocol').hidden = false
+  const R = P.results
+  $('pr-upd').textContent = `${P.hand} · runner ${P.state}${P.running ? ' (alive)' : ''} · results ${R ? R.updated : 'not yet'}`
+  // headline
+  let h = ''
+  if (R && R.headline) {
+    const H = R.headline, best = H.maps[H.best], std = H.maps['own stops'] || H.maps.packaged
+    h += `<div class="answer"><b>Positional accuracy of ${P.hand}</b> on ${H.n} held-out poses (${H.set}).<br>
+      Joint angle error with orca_core's own stops: <span class="big">${f2(std.deg.all.rms)}°</span> RMS (median ${f2(std.deg.all.p50)}°, p95 ${f1(std.deg.all.p95)}°, max ${f1(std.deg.all.max)}°); fingertip <span class="big">${f1(std.mm.all && std.mm.all.rms)} mm</span> RMS (p95 ${f1(std.mm.all && std.mm.all.p95)} mm).<br>
+      Best map (${H.best}): <span class="big">${f2(best.deg.all.rms)}°</span> RMS, fingertip <span class="big">${f1(best.mm.all && best.mm.all.rms)} mm</span> (p95 ${f1(best.mm.all && best.mm.all.p95)} mm).</div>`
+    const maps = Object.keys(H.maps)
+    h += '<h3>Per joint (RMS / median / p95 / max °)</h3><div class="scroll"><table><thead><tr><th>joint</th>' + maps.map((m) => `<th>${m}</th>`).join('') + '</tr></thead><tbody>'
+    for (const j of [...Object.keys(H.maps[maps[0]].deg).filter((k) => k !== 'all'), 'all']) h += `<tr><td>${j}</td>${maps.map((m) => `<td>${a4(H.maps[m].deg[j])}</td>`).join('')}</tr>`
+    h += '</tbody></table></div><h3>Fingertip position error (RMS / median / p95 / max mm, forward kinematics)</h3><div class="scroll"><table><thead><tr><th>finger</th>' + maps.map((m) => `<th>${m}</th>`).join('') + '</tr></thead><tbody>'
+    for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky', 'all']) h += `<tr><td>${f}</td>${maps.map((m) => `<td>${a4(H.maps[m].mm[f])}</td>`).join('')}</tr>`
+    h += '</tbody></table></div>'
+  } else {
+    h += '<p class="cap">The headline answer (positional accuracy per joint and fingertip) appears once the deep calibration and the held-out sets after the recalibration are solved.</p>'
+  }
+  $('pr-answer').innerHTML = h
+  // status
+  const el = P.started ? P.now - P.started : null
+  $('pr-head').innerHTML = [
+    ['state', `${P.state}${P.running ? '' : P.state === 'running' ? ' (runner gone)' : ''}`],
+    ['started', hm(P.started)], ['elapsed', dur(el)], ['ETA end', hm(P.eta_end)],
+    ['deadline', hm(P.deadline)], ['s / pose', f1(P.s_per_pose)],
+    ['heartbeat', P.heartbeat ? `${Math.round(P.heartbeat.age_s)} s ago` : '—'], ['doing', P.heartbeat ? P.heartbeat.note : '—'],
+  ].map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')
+  // phases
+  h = ''
+  const steps = Object.fromEntries(P.steps.map((s) => [s.name, s]))
+  for (const ph of P.phases) {
+    h += `<div class="phase"><h3>${ph.key} · ${ph.name}</h3>${chip(ph.status)}<span class="cap">ends ~${hm(ph.eta_end)}</span></div>`
+    h += '<table><thead><tr><th>step</th><th>status</th><th>what</th><th>poses shot</th><th>solved (BiRefNet / GrabCut / HQ-SAM)</th><th>start</th><th>end</th><th>note</th></tr></thead><tbody>'
+    for (const n of ph.steps) {
+      const s = steps[n]
+      const poses = s.poses != null ? `${s.shot ?? 0}/${s.poses}${s.skipped ? ` (${s.skipped} skipped)` : ''}` : '—'
+      const solved = s.poses != null ? `${s.solved ?? 0} / ${(s.solved_by || {}).grabcut ?? 0} / ${(s.solved_by || {}).hqsam ?? 0}` : '—'
+      h += `<tr class="${s.status === 'running' || s.status === 'fault' ? 'cur' : ''}"><td>${s.name}</td><td>${chip(s.status)}</td><td>${s.label || ''}</td><td>${poses}</td><td>${solved}</td>
+        <td>${hm(s.t0 || s.eta_start)}</td><td>${s.t1 ? hm(s.t1) : '~' + hm(s.eta_end)}</td><td>${s.error || s.note || (s.current ? 'at ' + s.current : '')}</td></tr>`
+    }
+    h += '</tbody></table>'
+  }
+  $('pr-phases').innerHTML = h
+  // numbers
+  h = ''
+  if (R && R.as_run) {
+    h += '<h3>The hand as run, per held-out set (map in force; RMS / median / p95 / max °, fingertip RMS mm)</h3><table><thead><tr><th>set</th><th>joints °</th><th>fingertip mm</th><th>poses</th></tr></thead><tbody>'
+    for (const [k, v] of Object.entries(R.as_run)) h += `<tr><td>${k}</td><td>${a4(v.deg.all)}</td><td>${f1(v.mm.all && v.mm.all.rms)}</td><td>${R.n[k]}</td></tr>`
+    h += '</tbody></table>'
+  }
+  if (R && R.p1) {
+    h += '<h3>P1 · V1 scored offline with other hard stops (same photos; RMS / median / p95 / max °, fingertip RMS mm)</h3><table><thead><tr><th>stops</th><th>joints °</th><th>fingertip mm</th></tr></thead><tbody>'
+    for (const [k, v] of Object.entries(R.p1.maps)) h += `<tr><td>${k}</td><td>${a4(v.deg.all)}</td><td>${f1(v.mm.all && v.mm.all.rms)}</td></tr>`
+    h += '</tbody></table>'
+  }
+  if (R && R.ablation) {
+    const A = R.ablation, sets = Object.keys(A.tests)
+    h += `<h3>Map variants on the held-out sets (trained on ${A.train_n} poses of S1 + S2 + deep): joint RMS ° · fingertip RMS mm</h3><div class="scroll"><table><thead><tr><th>map</th><th>params</th>${sets.map((s) => `<th>${s}</th>`).join('')}</tr></thead><tbody>`
+    for (const m of A.maps) h += `<tr><td>${m}</td><td>${A.params[m]}</td>${sets.map((s) => { const v = A.tests[s][m]; return `<td>${f2(v.deg.all && v.deg.all.rms)} · ${f1(v.mm.all && v.mm.all.rms)}</td>` }).join('')}</tr>`
+    h += '</tbody></table></div>'
+  }
+  const Q = R && R.quality
+  if (Q && Q.noise_floor) {
+    const J = Object.keys(Q.noise_floor)
+    h += '<h3>Quality</h3><div class="scroll"><table><thead><tr><th>joint</th><th>noise floor (view split, median °)</th><th>repeatability (sd °, V repeats)</th>' + Object.keys(Q.drift || {}).map((k) => `<th>${k} mean °</th>`).join('') + Object.keys((Q.segmenters || {}).joints || {}).map((k) => `<th>${k} vs primary, median |Δ| °</th>`).join('') + '</tr></thead><tbody>'
+    for (const j of J) {
+      h += `<tr><td>${j}</td><td>${f2(Q.noise_floor[j])}</td><td>${Q.repeatability && Q.repeatability[j] ? f2(Q.repeatability[j].sd) : '—'}</td>`
+      h += Object.values(Q.drift || {}).map((d) => `<td>${d[j] ? sgn(d[j].mean) : '—'}</td>`).join('')
+      h += Object.values((Q.segmenters || {}).joints || {}).map((d) => `<td>${d[j] ? f2(d[j].p50) : '—'}</td>`).join('') + '</tr>'
+    }
+    h += '</tbody></table></div>'
+    const S = Q.segmenters || {}
+    h += `<p class="cap">Silhouette residual (median / p95 px at 960 wide): ${Object.entries(Q.silhouette_px || {}).map(([k, v]) => `${k} ${f2(v.p50)} / ${f1(v.p95)}`).join(' · ')}.<br>
+      Segmenters: primary ${S.primary} on ${S.n_primary} poses; residual px ${Object.entries(S.rms_px || {}).map(([k, v]) => `${k} ${f2(v)}`).join(', ')}; mask IoU with the primary ${Object.entries(S.iou || {}).map(([k, v]) => v ? `${k} ${v.p50} (5 % ${v.p05})` : `${k} —`).join(', ') || '—'}.</p>`
+  }
+  if (R && R.counts) {
+    h += '<p class="cap">Overlay sheets (URDF at the solution on the photos): ' + Object.keys(R.counts).map((k) => `<a href="/contact/${P.tag}-${k}.jpg" target="_blank">${k}</a>`).join(' · ') + '</p>'
+  }
+  if (P.faults && P.faults.length) h += '<h3>Faults</h3><pre class="log">' + P.faults.map((f) => `${hm(f.t)} ${f.where} ${f.joint || ''} ${f.why || ''}`).join('\n') + '</pre>'
+  $('pr-numbers').innerHTML = h
+  $('pr-log').textContent = P.log.join('\n')
+}
+tickProtocol(); setInterval(tickProtocol, 10000)
