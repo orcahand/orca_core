@@ -69,6 +69,22 @@ plan is checked to show sides 0, 2 and 1 or 3 for every mounting.
   `solver.search.camera` of it (else a clear error: the mount setting is wrong),
   and the fit is held near it by its sigma (10 mm: weak, does not drag it).
 
+## Two cameras (branch `two-camera`, 2026-11-09)
+
+Cam A is the camera above (back at the 260 hole, level); cam B is a second BRIO on a side rail
+(rig +y, r ~220, z ~470, 45° down, portrait, aimed at z 250), for every finger. config.yaml
+`cameras: {a, b}` (an old `camera:` block loads as a; b is `enabled: false` until plugged in),
+`tower: v1 | v2` picks the tile seats (v2: 12 tiles, row 0 37.5° up, gable roof on sides 1/3,
+same marker ids). Each photo has a camera (`Photo.camera`; session photos `stop_<deg>_b`);
+1a and 1b solve a lens and a pose per camera and share the object, axis, tower, stops and
+tiles; cam A holds the azimuth gauge. calibration.yaml keeps cam A at the top level (every
+single-camera reader unchanged), the others under `cameras:`. Sweeps grab every enabled
+camera at each stop (`camera_reference_b.yaml` for b); two BRIOs are told apart by serial
+(`uvc.device.serial`; `python -m visual_calibration.sweep --list-cameras`). Before a hand
+session `sweep --quick` checks one frame per camera at the park stop: over 1 px, a 5-stop
+rotation session with the lens and tiles held (`Session.create(..., "rotation", hold=True)`).
+The hand fit (live_fit, hand_study) adds every calibrated camera's views (meta.json `camera`).
+
 ## Hand model (starting point)
 
 The source of truth is **`orcahand_description`** (`../orcahand_description`,
