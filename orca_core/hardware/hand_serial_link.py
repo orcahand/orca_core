@@ -33,11 +33,11 @@ from orca_core.hardware.sensing.constants import (
     LINK_DEMUX_JOIN_TIMEOUT_S,
     LINK_DEMUX_READ_TIMEOUT_S,
     LINK_HANDLER_ERROR_LOG_INTERVAL_S,
+    LINK_READ_CHUNK_BYTES,
     LINK_RESPONSE_QUEUE_MAXSIZE,
     MAX_AUTO_FRAME_EFFECTIVE_LENGTH,
     MAX_RESPONSE_DATA_LEN,
     PROTOCOL_BYTE_RESPONSE,
-    PROTOCOL_HEADER_RESPONSE,
     RESPONSE_META_SIZE,
 )
 from orca_core.hardware.sensing.framing import calculate_checksum
@@ -45,6 +45,14 @@ from orca_core.hardware.sensing.framing import calculate_checksum
 logger = logging.getLogger(__name__)
 FrameHandler = Callable[[bytes], None]
 """Handler signature: receives the full frame including header + LRC."""
+
+# Requests (55 AA) and responses (AA 55) share the layout header(2), reserved(1),
+# func(1), address(2): a response answers the request whose func and address it echoes.
+_TRANSACTION_KEY = slice(3, 6)
+
+
+def _transaction_key(frame: bytes) -> bytes | None:
+    return bytes(frame[_TRANSACTION_KEY]) if len(frame) >= _TRANSACTION_KEY.stop else None
 
 
 @dataclass
@@ -63,6 +71,9 @@ class LinkStats:
     response_queue_dropped: int = 0
     responses_received: int = 0
     responses_implausible_length: int = 0
+    responses_stale: int = 0
+    """Responses skipped because they answer a different request than the one
+    waiting (a late reply to an earlier, timed-out request)."""
 
     def snapshot(self) -> "LinkStats":
         """Copy with independent Counters, so a reader sees a stable view while
@@ -76,6 +87,7 @@ class LinkStats:
             response_queue_dropped=self.response_queue_dropped,
             responses_received=self.responses_received,
             responses_implausible_length=self.responses_implausible_length,
+            responses_stale=self.responses_stale,
         )
 
 
@@ -214,9 +226,10 @@ class HandSerialLink:
     ) -> bytes:
         """Write a register request and return the matching AA 55 response.
 
-        The drain → write → wait is serialised under a single lock so a
-        late response from a previously-timed-out caller can't be handed
-        to the next caller.
+        The drain → write → wait is serialised under a single lock. A response
+        must echo the request's function code and register address; any other
+        is a late reply to an earlier, timed-out request and is skipped, so it
+        can never be handed to this caller.
         """
         if self._port_dead:
             raise IOError(f"hand serial link port failed: {self._port_error}")
@@ -225,27 +238,34 @@ class HandSerialLink:
                 "hand serial link not running (not connected or demuxer crashed)"
             )
 
+        expected = _transaction_key(request_bytes)
         with self._serial_write_lock:
             self._drain_response_queue()
             self._serial_write(request_bytes)
-            try:
-                response = self._response_queue.get(timeout=response_timeout_s)
-            except queue.Empty:
-                raise IOError(
-                    f"Timed out waiting for register response after {response_timeout_s}s"
-                )
-            if response is None:
-                # Re-post sentinel so any other blocked caller also wakes.
+            deadline = time.monotonic() + response_timeout_s
+            while True:
                 try:
-                    self._response_queue.put_nowait(None)
-                except queue.Full:
-                    pass
-                if self._port_dead:
-                    raise IOError(
-                        f"hand serial link port failed: {self._port_error}"
+                    response = self._response_queue.get(
+                        timeout=max(0.0, deadline - time.monotonic())
                     )
-                raise IOError("hand serial link closed")
-            return response
+                except queue.Empty:
+                    raise IOError(
+                        f"Timed out waiting for register response after {response_timeout_s}s"
+                    )
+                if response is None:
+                    # Re-post sentinel so any other blocked caller also wakes.
+                    try:
+                        self._response_queue.put_nowait(None)
+                    except queue.Full:
+                        pass
+                    if self._port_dead:
+                        raise IOError(
+                            f"hand serial link port failed: {self._port_error}"
+                        )
+                    raise IOError("hand serial link closed")
+                if expected is None or _transaction_key(response) == expected:
+                    return response
+                self._stats.responses_stale += 1
 
     def _drain_response_queue(self) -> None:
         while True:
@@ -297,13 +317,14 @@ class HandSerialLink:
         self._serial.write(data)
 
     def _serial_read(self, n: int) -> bytes:
-        """Read up to ``n`` bytes. Returns ``b""`` on read timeout. Returns at least one
-        byte when bytes are available. A hard port failure (the read raises rather
-        than timing out, e.g. after USB unplug) latches the port-dead state."""
+        """Read what has arrived, up to ``n`` bytes, waiting for at least one.
+        Returns ``b""`` on read timeout. A hard port failure (the read raises
+        rather than timing out, e.g. after USB unplug) latches the port-dead state."""
         if self._serial is None:
             return b""
         try:
-            return self._serial.read(n)
+            waiting = self._serial.in_waiting
+            return self._serial.read(min(n, waiting) if waiting else 1)
         except (serial.SerialException, OSError) as e:
             self._mark_port_dead(e)
             return b""
@@ -322,27 +343,16 @@ class HandSerialLink:
     # ----- Demuxer thread ---------------------------------------------------
 
     def _demux_loop(self) -> None:
+        buffer = bytearray()
         try:
             while self._demux_running:
-                # Resync: slide one byte at a time until we land on 0xAA.
-                first = self._serial_read(1)
+                chunk = self._serial_read(LINK_READ_CHUNK_BYTES)
                 if self._port_dead:
                     break
-                if not first:
+                if not chunk:
                     continue
-                if first[0] != 0xAA:
-                    self._stats.bad_header_resyncs += 1
-                    continue
-
-                second = self._read_exact(1)
-                if second is None:
-                    break
-                second_byte = second[0]
-
-                if second_byte == PROTOCOL_BYTE_RESPONSE:
-                    self._handle_response_frame()
-                else:
-                    self._handle_auto_frame(second_byte)
+                buffer += chunk
+                self._consume_frames(buffer)
         except Exception:
             logger.exception("Demuxer thread crashed; exiting")
         finally:
@@ -351,55 +361,72 @@ class HandSerialLink:
             except queue.Full:
                 pass
 
-    def _read_exact(self, n: int) -> bytes | None:
-        """Read exactly ``n`` bytes. Returns ``None`` if the demuxer is
-        asked to stop mid-read (shutdown or port death)."""
-        out = bytearray()
-        while len(out) < n:
-            if not self._demux_running or self._port_dead:
-                return None
-            chunk = self._serial_read(n - len(out))
-            if not chunk:
+    def _consume_frames(self, buffer: bytearray) -> None:
+        """Handle every complete frame at the front of ``buffer`` and remove it,
+        leaving a trailing partial frame in place for the next read."""
+        while buffer:
+            # Resync: skip anything before the next 0xAA header byte.
+            start = buffer.find(0xAA)
+            if start != 0:
+                skipped = len(buffer) if start < 0 else start
+                self._stats.bad_header_resyncs += skipped
+                del buffer[:skipped]
                 continue
-            out.extend(chunk)
-        return bytes(out)
+            if len(buffer) < 2:
+                return
+            if buffer[1] == PROTOCOL_BYTE_RESPONSE:
+                used = self._take_response_frame(buffer)
+            else:
+                used = self._take_auto_frame(buffer)
+            if used == 0:
+                return
+            del buffer[:used]
 
-    def _handle_response_frame(self) -> None:
-        meta = self._read_exact(RESPONSE_META_SIZE)
-        if meta is None:
-            return
-        count = int.from_bytes(meta[4:6], "little")
+    def _take_response_frame(self, buffer: bytearray) -> int:
+        """Handle the AA 55 frame at the front of ``buffer``; return the bytes it
+        used, or 0 while the frame is still incomplete."""
+        meta_end = 2 + RESPONSE_META_SIZE
+        if len(buffer) < meta_end:
+            return 0
+        count = int.from_bytes(buffer[6:8], "little")
         if count > MAX_RESPONSE_DATA_LEN:
             # Implausible payload size — treat as garbage rather than read it.
             self._stats.responses_implausible_length += 1
-            return
-        body = self._read_exact(count + 1)  # data + LRC
-        if body is None:
-            return
-        full_frame = PROTOCOL_HEADER_RESPONSE + meta + body
+            return meta_end
+        end = meta_end + count + 1  # data + LRC
+        if len(buffer) < end:
+            return 0
+        full_frame = bytes(buffer[:end])
         if calculate_checksum(full_frame[:-1]) != full_frame[-1]:
             self._stats.frames_bad_lrc[PROTOCOL_BYTE_RESPONSE] += 1
-            return
+            return end
         self._enqueue_response(full_frame)
+        return end
 
-    def _handle_auto_frame(self, second_byte: int) -> None:
-        meta = self._read_exact(AUTO_FRAME_META_SIZE)
-        if meta is None:
-            return
-        effective_length = int.from_bytes(meta[1:3], "little")
+    def _take_auto_frame(self, buffer: bytearray) -> int:
+        """Handle the AA XX broadcast at the front of ``buffer``; return the bytes
+        it used, or 0 while the frame is still incomplete."""
+        second_byte = buffer[1]
+        meta_end = 2 + AUTO_FRAME_META_SIZE
+        if len(buffer) < meta_end:
+            return 0
+        effective_length = int.from_bytes(buffer[3:5], "little")
         if effective_length == 0 or effective_length > MAX_AUTO_FRAME_EFFECTIVE_LENGTH:
             # effective_length is well outside any legal frame — treat as a bad header
-            # alignment and resync rather than read megabytes of garbage.
+            # alignment and resync rather than wait for megabytes of garbage.
             self._stats.bad_header_resyncs += 1
-            return
-        body = self._read_exact(effective_length + 1)  # payload + LRC
-        if body is None:
-            return
-        full_frame = bytes([0xAA, second_byte]) + meta + body
+            return meta_end
+        end = meta_end + effective_length + 1  # payload + LRC
+        if len(buffer) < end:
+            return 0
+        full_frame = bytes(buffer[:end])
         if calculate_checksum(full_frame[:-1]) != full_frame[-1]:
             self._stats.frames_bad_lrc[second_byte] += 1
-            return
+            return end
+        self._dispatch_auto_frame(second_byte, full_frame)
+        return end
 
+    def _dispatch_auto_frame(self, second_byte: int, full_frame: bytes) -> None:
         with self._handlers_lock:
             handler = self._handlers.get(second_byte)
         if handler is None:

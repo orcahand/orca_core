@@ -1456,6 +1456,9 @@ class OrcaHand(BaseHand):
                 list(to_write), np.array(list(to_write.values()), dtype=float)
             )
 
+    def _refuse_routine_while_loop_runs(self, routine: str) -> None:
+        """Maintenance routines check this first; only hands with a joint loop refuse."""
+
     def _warn_uncalibrated(self, motor_id: int, joint_name: str, missing: str) -> None:
         """Warn once per motor about missing calibration data (reads can run at loop rate)."""
         if motor_id in self._uncalibrated_warned:

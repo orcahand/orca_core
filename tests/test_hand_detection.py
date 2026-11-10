@@ -19,7 +19,7 @@ def test_parse_full_identity_line():
         b"ORCA:SENSOR;SIDE=L;HW=2;FW=1;SN=OH2-L-0000-0000;BID=0123456789ABCDEF"
     )
     assert info == OrcaBoardInfo(
-        role="sensor", side="left", hw_version=2, fw_version=1,
+        role="sensor", side="left", hw_version=200, fw_version=1,
         serial="OH2-L-0000-0000", board_id="0123456789ABCDEF",
     )
     assert info.hand_id == "OH2-L-0000-0000"

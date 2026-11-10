@@ -48,6 +48,10 @@ FAMILY_ATTRIBUTES = (
     "max_current_ma",
     "default_max_current_ma",
     "default_calibration_current_ma",
+    "slack_test_current_ma",
+    "sweep_hold_current_ma",
+    "sweep_pose_current_ma",
+    "sweep_current_ma",
 )
 
 
@@ -301,6 +305,13 @@ class MockMotorClient(MotorClient):
 
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
+
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        self.check_connected()
+        requested = list(self.motor_ids if motor_ids is None else motor_ids)
+        return {mid: self._cur.get(mid) for mid in requested}
 
     def read_servo_gains(self, motor_ids: Sequence[int]):
         self.check_connected()

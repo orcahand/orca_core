@@ -22,6 +22,8 @@ from .motor_travel import (
     write_joint_motor_travel,
 )
 from .tensioning import run_jitter, run_tension
+from .slack_test import SlackTestSettings, run_slack_test
+from .tension_sweep import SweepSettings, run_tension_sweep
 from .motor_chain import (
     ChainScan,
     MotorChainAborted,
@@ -56,6 +58,10 @@ __all__ = [
     "run_guided_tension",
     "run_jitter",
     "run_tension",
+    "run_slack_test",
+    "run_tension_sweep",
+    "SlackTestSettings",
+    "SweepSettings",
     "scan_configured_motors",
     "set_all_return_delays",
     "travel_deviation",

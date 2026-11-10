@@ -26,6 +26,7 @@ from ...constants import (
     ORCA_INFO_MARKER_MOTOR,
     ORCA_INFO_MARKER_SENSOR,
     ORCA_INFO_QUERY,
+    normalize_hardware_version,
 )
 from .constants import (
     AUTO_ENC_FRAME_SIZE,
@@ -97,7 +98,7 @@ def parse_orca_info(line: bytes) -> Optional[OrcaBoardInfo]:
     return OrcaBoardInfo(
         role=role,
         side=side,
-        hw_version=_int_or_none("HW"),
+        hw_version=normalize_hardware_version(_int_or_none("HW")),
         fw_version=_int_or_none("FW"),
         serial=fields.get("SN") or None,
         board_id=fields.get("BID") or None,

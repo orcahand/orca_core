@@ -401,7 +401,7 @@ def scripted_port(virtual_clock, monkeypatch):
 @pytest.mark.parametrize("line,expected", [
     pytest.param(
         b"ORCA:MOTOR;SIDE=L;HW=2;FW=7;SN=ser-0001;BID=0123456789ABCDEF;CFG=3\n",
-        OrcaBoardInfo(role="motor", side="left", hw_version=2, fw_version=7,
+        OrcaBoardInfo(role="motor", side="left", hw_version=200, fw_version=7,
                       serial="ser-0001", board_id="0123456789ABCDEF", config=3),
         id="motor",
     ),

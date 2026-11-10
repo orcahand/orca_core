@@ -97,7 +97,7 @@ def test_guided_tension_runs_the_present_fingers_only_and_reports_the_rest(parti
     result = run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=False)
 
     assert result.completed
-    assert seen["stages"] == ["thumb_index", "middle"], "ring and pinky have no motor; thumb+index keeps index"
+    assert seen["stages"] == ["index", "middle"], "thumb, ring and pinky have no motor"
     assert set(seen["absent"]) == set(hand.absent_joints)
     final = seen["scores"][-1]
     assert final["scored"] == 6 and final["passed"] == 6
@@ -227,7 +227,7 @@ def test_the_other_fingers_are_frozen_and_not_sampled_during_a_stage(connected_m
             seen["motors"] = {m["joint"]: m for m in event["motors"]}
 
     def prompt(p):
-        if p["action"] == "range_check" and p["stage"]["key"] == "thumb_index":
+        if p["action"] == "range_check" and p["stage"]["key"] == "thumb":
             seen["prompt"] = p
             seen["currents"] = dict(client._cur)
             # Shove a ring motor: it is not this stage's, so its spread must not move.
@@ -245,6 +245,6 @@ def test_the_other_fingers_are_frozen_and_not_sampled_during_a_stage(connected_m
     p = seen["prompt"]
     assert set(p["hold_current"]) == set(p["stage"]["joints"])
     assert p["freeze_current"] == 400
-    assert seen["currents"][motor_of["index_mcp"]] == pytest.approx(100)
+    assert seen["currents"][motor_of["thumb_mcp"]] == pytest.approx(100)
     assert seen["currents"][motor_of["ring_mcp"]] == pytest.approx(400)
     assert seen["motors"]["ring_mcp"]["spread_deg"] == 0.0

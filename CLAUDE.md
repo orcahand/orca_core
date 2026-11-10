@@ -235,8 +235,8 @@ Every script takes an optional positional `config_path` pointing at a model's `c
 # What is plugged in? Run this first on a new or misbehaving hand (read-only).
 uv run python scripts/detect.py
 
-# Calibration workflow
-uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
+# Calibration workflow (guided tensioning needs v2.1; on v2.0 use scripts/tension.py)
+uv run python scripts/guided_tension.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
 uv run python scripts/neutral.py orca_core/models/v2/orcahand-right/config.yaml
 
@@ -263,7 +263,9 @@ All hand-specific settings are in `config.yaml`:
   `default_max_current_ma` / `default_calibration_current_ma` class attributes on its client
   (Dynamixel 300/300, Feetech 900/900). A number pins an override for one hand. Resolution
   happens in `load_hand()` when the family is detected or pinned, otherwise at connect, so
-  read these fields after `connect()`.
+  read these fields after `connect()`. Finger calibration drives at each motor's own ceiling
+  whatever `calibration_current` says, so a lower number does not cap it; the field sets the
+  wrist's default and the re-drive ladder, which never drops below that ceiling.
 - `joint_motor_travel_v21:` / `joint_motor_travel:` - motor-shaft travel between each joint's
   hardstops, in degrees, **keyed by joint name**. **v2.1 hardware only**: on v2.0 or an unknown
   version `expected_motor_travel_deg()` is `None`, so calibration is one plain pass (no travel
@@ -275,18 +277,27 @@ All hand-specific settings are in `config.yaml`:
   (`calibration_travel_retries`, default 3). With nothing pinned each re-drive adds 50 mA
   (`CALIBRATION_RETRY_STEP_MA`; 300 → 350 → 400 → 450 on Dynamixel); pinning `calibration_max_current`
   and/or `calibration_retry_current` switches to an even ramp up to the retry current, capped at
-  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. The v2 models ship one shared v2.1 baseline (the spool
+  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. A re-drive runs at this ladder or the motor's ceiling, whichever is higher, so the ladder only matters above the ceiling. The v2 models ship one shared v2.1 baseline (the spool
   geometry is the same on every hand), measured with `scripts/measure_travel.py` on a freshly
   tensioned hand; guided tensioning (`scripts/guided_tension.py`) scores slack against it too.
 - `calibration_current_v21:` - **v2.1 only**: per motor family, a calibration current per joint
   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
   The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
+  These values only feed the re-drive ladder: they do not set the first pass's drive current.
+- `guided_tension_currents:` - **overrides only** for guided tensioning, per motor family (CLI and
+  console): `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
+  `--hold-current`), and `tension`, the limit for the pull and for fingers frozen during a range
+  check. Read through `config.tension_hold_current_for(joint)` and `config.tension_current`. Holds
+  default to `DEFAULT_GUIDED_TENSION_CURRENTS` and `tension` follows `max_current`; never restate
+  either here. The ratcheting hold runs at each motor's own ceiling.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
-  config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=21`; one
-  byte, `major*10 + minor`); a pinned integer is for a hand on a plain adapter with no board to
+  config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=210`; one
+  byte, `major*100 + minor*10 + patch`, so 210 = v2.1.0 and 211 = v2.1.1; boards provisioned earlier report
+  `21`/`2`, which `normalize_hardware_version()` reads as 210/200). Every v2.1.x counts as v2.1
+  (`config.is_v21`); a v2.1.1 hand also lays `joint_roms_v211:` over `joint_roms`; a pinned integer is for a hand on a plain adapter with no board to
   ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A pin written
   at runtime (the console's picker, `write_hardware_version()`) goes into the hand's
   `local_config.yaml` beside config.yaml, never into the packaged config; `from_config_path()`

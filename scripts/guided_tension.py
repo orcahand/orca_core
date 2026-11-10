@@ -1,44 +1,77 @@
 """Guided tendon tensioning: repeat centre → range check → tension until every
-finger motor follows its joint through most of its travel.
+finger motor follows its joint through most of its travel (fraction scoring),
+or to within a few degrees of it with both ends reached twice (--scoring slack).
 
 See ``orca_core/maintenance/guided_tension.py`` for the protocol.
 """
 
 import argparse
+import re
+import shutil
 import sys
 import threading
 
 from orca_core.maintenance.guided_tension import (
     GOTO,
-    HOLD_CURRENT_MA,
     PASS_FRACTION,
-    TENSION_CURRENT_MA,
+    PASS_SLACK_DEG,
+    SCORINGS,
     read_last_tension,
     run_guided_tension,
 )
 from orca_core.maintenance.tensioning import TENSION_OFFSET_DEG
 from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
 
-_COLOURS = {"pass": "\033[92m", "partial": "\033[93m", "low": "\033[91m", "unscored": "\033[90m"}
+_COLOURS = {"pass": "\033[92m", "unconfirmed": "\033[96m", "slack": "\033[91m", "partial": "\033[93m",
+            "low": "\033[91m", "unscored": "\033[90m", "fault": "\033[95m"}
+_ANSI_COLOUR = re.compile(r"\033\[\d+m")
 _live = threading.Event()
+_stage_joints: list[str] = []
 
 
 def _bar(motor: dict) -> str:
-    fraction = motor["fraction"]
-    pct = "  -" if fraction is None else f"{100 * fraction:3.0f}"
-    return f"{_COLOURS[motor['status']]}{motor['joint']}:{pct}%\033[0m"
+    if motor["scoring"] == "slack":
+        slack = motor["slack_deg"]
+        text = "  -" if slack is None else f"{max(0.0, slack):3.0f}°"
+        mark = "?" if motor["status"] == "unconfirmed" else ""
+    else:
+        fraction = motor["fraction"]
+        text = "  -" if fraction is None else f"{100 * fraction:3.0f}%"
+        mark = ""
+    return f"{_COLOURS[motor['status']]}{motor['joint']}:{text}{mark}\033[0m"
+
+
+def _live_line(event: dict, columns: int, joints: list[str]) -> str:
+    """The score and the joints being moved, on one terminal row: a line that
+    wraps cannot be rewritten in place."""
+    line = f"{event['passed']}/{event['scored']} "
+    width = len(line)
+    for motor in event["motors"]:
+        if motor["joint"] not in joints:
+            continue
+        bar = _bar(motor)
+        bar_width = len(_ANSI_COLOUR.sub("", bar)) + 1
+        if width + bar_width >= columns - 4:
+            return line + " ..."
+        line += f" {bar}"
+        width += bar_width
+    return line
 
 
 def _print_progress(event: dict) -> None:
     kind = event["event"]
     if kind == "spread" and _live.is_set():
-        line = " ".join(_bar(m) for m in event["motors"])
-        sys.stdout.write(f"\r\033[K{event['passed']}/{event['scored']}  {line}")
+        line = _live_line(event, shutil.get_terminal_size().columns, _stage_joints)
+        sys.stdout.write(f"\r\033[K{line}")
         sys.stdout.flush()
     elif kind == "score":
         print()
         for m in event["motors"]:
-            print(f"  motor {m['motor']:>2}  {_bar(m)}  ({m['spread_deg']:.0f} of {m['expected_deg']} deg)")
+            if m["scoring"] == "slack":
+                detail = f"tolerance {m['pass_slack_deg']:g}°, ends +{m['plus_hits']}/-{m['minus_hits']}"
+            else:
+                detail = f"pass at {100 * m['pass_fraction']:.0f}%"
+            print(f"  motor {m['motor']:>2}  {_bar(m)}  ({m['spread_deg']:.0f} of {m['expected_deg']} deg, {detail})")
         print(f"Score: {event['passed']}/{event['scored']} motors ({100 * event['fraction']:.0f}%)")
 
 
@@ -60,11 +93,14 @@ def _prompt(prompt: dict) -> str:
         held = f"{lo:.0f} mA" if lo == hi else f"{lo:.0f}-{hi:.0f} mA"
         print(f"The {prompt['stage']['title'].lower()} motors hold this pose at {held}; the other fingers are "
               f"frozen at {prompt['freeze_current']:.0f} mA. Drive {', '.join(prompt['stage']['joints'])} "
-              f"through their full range, then press Enter.")
+              f"through their full range"
+              + (", holding each end still for a moment and reaching it twice" if "pass_slack_deg" in prompt else "")
+              + ", then press Enter.")
+        _stage_joints[:] = prompt['stage']['joints']
         _live.set()
     elif action == "tension":
-        print(f"Motors hold at {prompt['tension_current']:.0f} mA. Take up the slack with the "
-              "ratchet tool. Tension carefully - do not overtension.")
+        print(f"Motors pulled at {prompt['tension_current']:.0f} mA and are now holding. Take up "
+              "the slack with the ratchet tool. Tension carefully - do not overtension.")
     if len(options) == 1:
         input(f"Press Enter to {options[0].lower()}... ")
         _live.clear()
@@ -83,13 +119,21 @@ def _prompt(prompt: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_hand_arguments(parser, feedback_flag=False)
-    parser.add_argument("--hold-current", type=float, default=HOLD_CURRENT_MA, help=f"Range-check hold current, mA (default {HOLD_CURRENT_MA}).")
-    parser.add_argument("--tension-current", type=float, default=TENSION_CURRENT_MA,
-                        help=f"Tensioning hold current, mA (default {TENSION_CURRENT_MA}).")
+    parser.add_argument("--hold-current", type=float,
+                        help="One range-check hold current for every joint, mA (default: the config's "
+                             "guided_tension_currents per group; joints it names keep theirs).")
+    parser.add_argument("--tension-current", type=float,
+                        help="Tensioning pull current, mA (default: the config's guided_tension_currents "
+                             "tension, else the hand's max_current).")
     parser.add_argument("--tension-offset", type=float, default=TENSION_OFFSET_DEG,
                         help=f"Degrees the finger motors turn counterclockwise while tensioning (default {TENSION_OFFSET_DEG:g}).")
+    parser.add_argument("--scoring", choices=SCORINGS, default="fraction",
+                        help="fraction: share of the expected travel, best kept across rounds (default); "
+                             "slack: expected minus a settled, twice-reached spread, in degrees.")
     parser.add_argument("--pass-fraction", type=float, default=PASS_FRACTION,
-                        help=f"Share of a joint's travel its motor must follow to pass (default {PASS_FRACTION}).")
+                        help=f"fraction scoring: share of a joint's travel its motor must follow to pass (default {PASS_FRACTION}).")
+    parser.add_argument("--pass-slack-deg", type=float, default=PASS_SLACK_DEG,
+                        help=f"slack scoring: slack a joint may keep and still pass, motor degrees (default {PASS_SLACK_DEG:g}).")
     parser.add_argument("--any-hardware", action="store_true",
                         help="Score a hand that is not v2.1 against the v2.1 baseline anyway.")
     args = parser.parse_args()
@@ -107,7 +151,9 @@ def main() -> int:
             hold_current=args.hold_current,
             tension_current=args.tension_current,
             tension_offset_deg=args.tension_offset,
+            scoring=args.scoring,
             pass_fraction=args.pass_fraction,
+            pass_slack_deg=args.pass_slack_deg,
             any_hardware=args.any_hardware,
         )
         print("Tensioning complete. Calibrate next." if result.completed

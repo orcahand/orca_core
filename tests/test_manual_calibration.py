@@ -166,3 +166,101 @@ def test_a_real_sweep_reports_no_motionless_step(hand):
     run_calibration(hand, joints=["index_mcp"], persist=False,
                     progress_callback=events.append)
     assert not _events(events, "sweep_no_motion")
+
+
+def test_one_answer_records_every_joint_of_a_manual_step(hand):
+    sequence = [{"step": 1, "joints": {"index_mcp": "flex", "middle_mcp": "flex"}},
+                {"step": 2, "joints": {"index_mcp": "extend"}},
+                {"step": 3, "joints": {"middle_mcp": "extend"}}]
+    object.__setattr__(hand.config, "manual_calibration_sequence", sequence)
+    asked, events = [], []
+    run_calibration(hand, joints=["index_mcp", "middle_mcp"], manual=True, persist=False,
+                    prompt_callback=lambda r: asked.append(dict(r["joints"])) or "record",
+                    progress_callback=events.append)
+    assert asked == [s["joints"] for s in sequence]
+    assert sorted(e["joint"] for e in _events(events, "limit_recorded")) == \
+        ["index_mcp", "index_mcp", "middle_mcp", "middle_mcp"]
+
+
+def test_a_manual_run_asks_for_the_wrist_even_when_it_is_calibrated(hand):
+    object.__setattr__(hand.calibration, "wrist_calibrated", True)
+    asked = []
+    run_calibration(hand, joints=["wrist"], manual=True, persist=False,
+                    prompt_callback=lambda r: asked.append(r["joint"]) or "skip")
+    assert asked == ["wrist", "wrist"]
+
+
+def test_back_re_asks_the_previous_step_and_its_new_capture_wins(hand):
+    """The operator records thumb_cmc flex at one pose, goes back from the next
+    step, and records it again elsewhere: the second position is the limit."""
+    asked = []
+    events = []
+    positions = iter([0.2, 0.9])  # first flex capture, then the re-capture
+
+    def prompt(request):
+        asked.append((request["joint"], request["direction"], request["can_back"]))
+        # Answer "back" exactly once, from the second step.
+        if len(asked) == 2:
+            return "back"
+        motor = abs(request["motor"])
+        if request["direction"] == "flex":
+            hand.motor_client._pos[motor] = next(positions)
+        else:
+            hand.motor_client._pos[motor] = -0.5
+        return "record"
+
+    run_calibration(hand, joints=["thumb_cmc"], manual=True, persist=False,
+                    prompt_callback=prompt, progress_callback=events.append)
+
+    assert asked[0] == ("thumb_cmc", "flex", False)      # no Back on the first step
+    assert asked[1] == ("thumb_cmc", "extend", True)
+    assert asked[2] == ("thumb_cmc", "flex", False)      # back: the first step again
+    assert asked[3] == ("thumb_cmc", "extend", True)
+    back = _events(events, "manual_capture_back")
+    assert back == [{"event": "manual_capture_back", "index": 0, "joints": {"thumb_cmc": "flex"}}]
+    recorded = [e for e in _events(events, "limit_recorded") if e["joint"] == "thumb_cmc"
+                and e["bound"] in ("lower", "upper")]
+    flex_limits = [e["limit"] for e in recorded if e["bound"] == recorded[0]["bound"]]
+    assert len(flex_limits) == 2 and flex_limits[-1] == pytest.approx(0.9)
+    motor = hand.config.joint_to_motor_map["thumb_cmc"]
+    assert 0.9 in [pytest.approx(v) for v in hand.calibration.motor_limits_dict[motor]]
+
+
+def test_back_then_skip_does_not_commit_the_forgotten_capture(hand):
+    """Record flex, Back from extend, Skip the re-asked flex, Record extend: the
+    joint must stay uncommitted — the first flex position is not a limit."""
+    motor = hand.config.joint_to_motor_map["thumb_cmc"]
+    before = list(hand.calibration.motor_limits_dict.get(motor, [None, None]))
+    answers = iter(["record", "back", "skip", "record"])
+
+    def prompt(request):
+        hand.motor_client._pos[abs(request["motor"])] = 0.4 if request["direction"] == "flex" else -0.4
+        return next(answers)
+
+    events = []
+    run_calibration(hand, joints=["thumb_cmc"], manual=True, persist=False,
+                    prompt_callback=prompt, progress_callback=events.append)
+    assert [e["joint"] for e in _events(events, "joint_calibrated")] == []
+    assert list(hand.calibration.motor_limits_dict.get(motor, [None, None])) == before
+
+
+def test_back_after_a_finished_pair_restores_that_joints_previous_limits(hand):
+    """thumb_cmc's pair completes on the second step; Back from the third step and
+    Skip must leave its limits and ratio as they were before the run."""
+    motor = hand.config.joint_to_motor_map["thumb_cmc"]
+    limits = hand.calibration.motor_limits_dict.get(motor)
+    ratio = hand.calibration.joint_to_motor_ratios_dict.get(motor)
+    limits = list(limits) if limits is not None else None
+    answers = iter(["record", "record", "back", "skip", "skip", "skip"])
+
+    def prompt(request):
+        hand.motor_client._pos[abs(request["motor"])] = 0.4 if request["direction"] == "flex" else -0.9
+        return next(answers)
+
+    events = []
+    run_calibration(hand, joints=["thumb_cmc", "thumb_abd"], manual=True, persist=False,
+                    prompt_callback=prompt, progress_callback=events.append)
+    assert _events(events, "manual_capture_back")
+    after = hand.calibration.motor_limits_dict.get(motor)
+    assert (list(after) if after is not None else None) == limits
+    assert hand.calibration.joint_to_motor_ratios_dict.get(motor) == ratio

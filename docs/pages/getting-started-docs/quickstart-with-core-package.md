@@ -37,11 +37,12 @@ To get started with Orca Core, follow these steps:
 4. **Run the tension and calibration scripts**:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
+    uv run python scripts/guided_tension.py orca_core/models/v2/orcahand-right/config.yaml
     uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
     ```
 
-    Replace the path with your specific `config.yaml` file if needed.
+    Replace the path with your specific `config.yaml` file if needed. Guided tensioning needs v2.1 hardware; on v2.0, use
+    `scripts/tension.py` instead.
 
 5. **Move the hand to the neutral position**:
 

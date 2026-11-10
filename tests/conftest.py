@@ -226,6 +226,22 @@ def mock_hand(mock_config_dir):
 
 
 @pytest.fixture
+def connected_feetech_mock_hand(mock_config_dir):
+    from orca_core.utils import update_yaml
+    from orca_core.utils.cli import create_hand
+
+    config_path = str(mock_config_dir / "config.yaml")
+    update_yaml(config_path, "motor_type", "feetech")
+    hand = create_hand(config_path, use_mock=True)
+    success, msg = hand.connect()
+    assert success, f"Failed to connect mock hand: {msg}"
+    try:
+        yield hand
+    finally:
+        hand.disconnect()
+
+
+@pytest.fixture
 def connected_mock_hand(mock_config_dir):
     from orca_core import MockOrcaHand
 
@@ -243,3 +259,17 @@ def connected_mock_hand(mock_config_dir):
 def initialized_mock_hand(connected_mock_hand):
     connected_mock_hand.init_joints(force_calibrate=True)
     return connected_mock_hand
+
+
+@pytest.fixture()
+def real_mode_change(monkeypatch):
+    """Like the real clients, writing an operating mode switches torque back on."""
+    from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+
+    original = MockDynamixelClient.set_operating_mode
+
+    def set_operating_mode(self, motor_ids, mode_value):
+        original(self, motor_ids, mode_value)
+        self.set_torque_enabled(list(motor_ids), True)
+
+    monkeypatch.setattr(MockDynamixelClient, "set_operating_mode", set_operating_mode)

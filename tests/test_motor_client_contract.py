@@ -231,6 +231,16 @@ def test_every_family_declares_its_current_defaults(real, mock, expected):
         real.default_max_current_ma, real.default_calibration_current_ma)
 
 
+@pytest.mark.parametrize("real, mock, expected", [
+    pytest.param(DynamixelClient, MockDynamixelClient, (60, 200, 350, 300), id="dynamixel"),
+    pytest.param(FeetechClient, MockFeetechClient, (120, 400, 600, 600), id="feetech"),
+])
+def test_every_family_declares_its_slack_test_and_sweep_currents(real, mock, expected):
+    for cls in (real, mock):
+        assert (cls.slack_test_current_ma, cls.sweep_hold_current_ma,
+                cls.sweep_pose_current_ma, cls.sweep_current_ma) == expected
+
+
 def test_read_hardware_errors_is_uniform_across_family():
     """Every client answers for a whole chain in one call.
 

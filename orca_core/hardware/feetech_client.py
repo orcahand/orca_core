@@ -240,6 +240,11 @@ class FeetechClient(MotorClient):
     # hand needs about 800 mA to reach its hardstops, and 900 leaves margin.
     default_max_current_ma = 900
     default_calibration_current_ma = 900
+    # Provisional: 60 mA often fails to start a spool, and 120 mA can still miss small slack.
+    slack_test_current_ma = 120
+    sweep_hold_current_ma = 400
+    sweep_pose_current_ma = 600
+    sweep_current_ma = 600
 
     @classmethod
     def supported_baudrates(cls) -> list[int]:
@@ -1239,6 +1244,18 @@ class FeetechClient(MotorClient):
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         ceiling_raw = self._current_ceiling_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
         return ceiling_raw * self.current_scale_ma
+
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        self.check_connected()
+        requested = list(self.motor_ids if motor_ids is None else motor_ids)
+        out: "dict[int, float | None]" = {}
+        with self._bus_lock:
+            for motor_id in requested:
+                raw = self._read_word(motor_id, HLS.GOAL_CURRENT, 'goal current')
+                out[motor_id] = None if raw is None else raw * self.current_scale_ma
+        return out
 
     def _write_profile_params(self, motor_ids: Sequence[int]) -> None:
         """Sync-write acceleration, goal current and goal speed for ``motor_ids``.

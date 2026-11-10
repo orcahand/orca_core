@@ -325,6 +325,18 @@ class MotorClient(ABC):
     default_calibration_current_ma: ClassVar[int]
     """Calibration drive current in mA for a config whose ``calibration_current`` is ``default``."""
 
+    slack_test_current_ma: ClassVar[int]
+    """Current in mA that winds a spool through its slack against a held joint in the slack test."""
+
+    sweep_hold_current_ma: ClassVar[int]
+    """Current limit in mA for the motors a tension sweep is not moving."""
+
+    sweep_pose_current_ma: ClassVar[int]
+    """Current limit in mA for driving joints into position before and between tension sweeps."""
+
+    sweep_current_ma: ClassVar[int]
+    """Current limit in mA for the motor a tension sweep is walking from limit to limit."""
+
     hardware_error_bits: ClassVar["tuple[tuple[int, str], ...]"] = (
         (0x01, "input_voltage"),
         (0x04, "overheating"),
@@ -885,6 +897,17 @@ class MotorClient(ABC):
         instead of calling this in a loop.
         """
         return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
+
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        """The goal-current limit each motor reports holding, in mA, read from the bus.
+
+        A sync write carries no acknowledgement, so this is the proof that a
+        :meth:`write_desired_current` landed. ``None`` marks a motor that did not
+        answer or has no current register. One round trip per motor.
+        """
+        raise NotImplementedError
 
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         """Cached ceiling for one motor: the family maximum unless a subclass knows better."""

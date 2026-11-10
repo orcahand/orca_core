@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from orca_core import BaseHand, load_hand
+from orca_core.constants import normalize_hardware_version
 from orca_core.hand_config import format_hardware_version, write_hardware_version
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import JointEncoderClient
@@ -57,7 +58,7 @@ def add_hand_arguments(
         type=int,
         default=None,
         metavar="N",
-        help="Pin the hand's hardware version (2 = v2.0, 21 = v2.1) for a hand whose "
+        help="Pin the hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1) for a hand whose "
              "controller board cannot report it; written to its local_config.yaml, "
              "as the console's picker does. Without it an interactive run asks.",
     )
@@ -141,7 +142,7 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
     )
     while True:
         try:
-            answer = ask("Enter 2 (v2.0), 21 (v2.1), or press Enter to continue as v2.0: ").strip()
+            answer = ask("Enter 200 (v2.0.0), 210 (v2.1.0), 211 (v2.1.1), or press Enter to continue as v2.0: ").strip()
         except (EOFError, OSError):
             answer = ""
         if answer == "":
@@ -149,8 +150,8 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
             return None
         if answer.isdigit():
             pin_hardware_version(hand, int(answer))
-            return int(answer)
-        print("Please enter a whole number (2 or 21) or press Enter.")
+            return hand.config.hardware_version
+        print("Please enter a whole number (200, 210 or 211) or press Enter.")
 
 
 def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
@@ -162,7 +163,7 @@ def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> Non
     detection, so the board is asked here). Only with no board at all is the
     operator asked, and only when a terminal can answer.
     """
-    pinned = getattr(hand.config, "hardware_version", None)
+    pinned = normalize_hardware_version(getattr(hand.config, "hardware_version", None))
     board = board_info_for_port(getattr(hand.config, "port", "") or "")
     reported = board.hw_version if board is not None else None
     if pinned is not None:
@@ -460,6 +461,9 @@ def print_calibration_progress(event: dict) -> None:
         )
     elif name == "manual_capture_skipped":
         print(f"  {event['joint']} {event['direction']} skipped; previous limit kept.")
+    elif name == "manual_capture_back":
+        joints = ", ".join(event.get("joints") or {}) or "the previous step"
+        print(f"  Back to {joints}: its limits are cleared and captured again.")
     elif name == "calibration_done":
         boosted = event.get("boosted_joints") or {}
         if boosted:
@@ -468,6 +472,8 @@ def print_calibration_progress(event: dict) -> None:
             )
             print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
+    elif name == "drive_currents_measured":
+        print(event["table"])
     elif name == "calibration_aborted":
         print("Calibration aborted.")
     elif name == "cleanup_failed":
