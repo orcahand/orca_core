@@ -10,46 +10,22 @@
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space. While working directly with core will let you interact with your ORCA Hand on a deep level, the Orca Ui repository (found at: https://github.com/orcahand/orca_ui) can let users get started right away, helping you setup/maintain your hand, tune its performance, and better understand its capabilities. 
 
-## Experimental branch: `feature/improve-calibration`
+## What's new in 0.13.0
 
-This branch holds unreleased tensioning and calibration work, and will be merged into `main` in a later release. It reports
-version 0.12.0, but it isn't the published 0.12.0.
-
-**With the console:** you don't need this clone. The `merge/assembly-calibration-with-main` branch of
-[orca_ui](https://github.com/orcahand/orca_ui/tree/merge/assembly-calibration-with-main#using-this-experimental-branch) installs
-the matching commit by itself.
-
-**From the terminal:**
-
-```sh
-git clone --branch feature/improve-calibration https://github.com/orcahand/orca_core.git
-cd orca_core
-uv sync --group dev
-uv run python scripts/detect.py    # read-only: which model, serial and motor type is plugged in
-```
-
-Give each hand its own copy of its model's config, because calibration and tensioning records are saved beside the config you load:
-
-```sh
-mkdir -p ~/orca_bench/ser-0000/orcahand-right
-cp orca_core/models/v2/orcahand-right/config.yaml ~/orca_bench/ser-0000/orcahand-right/
-uv run python scripts/guided_tension.py ~/orca_bench/ser-0000/orcahand-right/config.yaml
-uv run python scripts/calibrate.py ~/orca_bench/ser-0000/orcahand-right/config.yaml
-```
-
-Replace `ser-0000` and `orcahand-right` with what `detect.py` shows. Point everything else at that same `config.yaml`, including
-teleoperation's `--model_path`. Tension first and calibrate last.
-
-**What's different from `main`:**
-
-- **Guided tensioning:** motors pull at `max_current`, settle where they stopped, then hold at each motor's ceiling while you ratchet.
-  Avoid hard pushes on a finger while the motors hold, because they may loosen the tendon.
-- **Records:** tensioning records live in `setup.yaml` beside the config. Older `last_tension.yaml` and `tension_progress.yaml` are still read.
-- **Slack test and tension sweep:** these are new routines, with currents per motor type. Feetech values are provisional, and on Feetech
-  a slack test pass can miss small slack.
-- **Joint loop:** the slack test and sweep refuse to run while a joint-feedback loop is running.
+- **Guided tensioning** (`scripts/guided_tension.py`, v2.1 hands): motors pull at `max_current`, settle where they stopped, then
+  hold at each motor's ceiling while you ratchet. Avoid hard pushes on a finger while the motors hold, because they may loosen the
+  tendon. Its currents can be overridden per motor family under `guided_tension_currents:` in `config.yaml`.
+- **Slack test and tension sweep:** new routines in `orca_core.maintenance` (`run_slack_test`, `run_tension_sweep`), with currents
+  per motor family. They refuse to run while a joint-feedback loop is running. Feetech values are provisional, and on Feetech a
+  slack test pass can miss small slack.
+- **Manual calibration:** `run_calibration(manual=True)` asks you to move each joint to its stops by hand, following
+  `manual_calibration_sequence:` in `config.yaml`, and lets you step back to redo a stop.
+- **Hardware versions:** boards report three digits (`210` = v2.1.0, `211` = v2.1.1). Older boards that report `21` or `2` are still
+  understood, and a v2.1.1 hand also gets `joint_roms_v211:`.
+- **Records:** tensioning records live in `setup.yaml` beside the config. Older `last_tension.yaml` and `tension_progress.yaml` are
+  still read.
 - **Touch sensors:** the sensing link reads whatever bytes have arrived and ignores replies to earlier requests, so touch keeps
-  working while the program is busy. On `main`, a busy console could lose touch until it reconnected.
+  working while the program is busy. Before 0.13.0, a busy program could lose touch until it reconnected.
 
 ## Get Started
 
@@ -102,11 +78,17 @@ To get started with Orca Core, follow these steps:
 2. **Run the tension and calibration scripts**:
 
     ```sh
-    uv run python scripts/tension.py orca_core/models/v2/orcahand-right/config.yaml
+    uv run python scripts/detect.py
+    uv run python scripts/guided_tension.py orca_core/models/v2/orcahand-right/config.yaml
     uv run python scripts/calibrate.py orca_core/models/v2/orcahand-right/config.yaml
     ```
 
-    Replace the path with your specific hand model folder if needed.
+    `detect.py` only reads: it shows which model, motor type and hardware version is plugged in. Replace the path with that
+    model's folder. Guided tensioning needs v2.1 hardware; on v2.0, use `scripts/tension.py` instead. Tension first and
+    calibrate last.
+
+    Calibration and tensioning records are saved beside the `config.yaml` you load. With more than one hand of the same model,
+    give each hand its own copy of the config and point every script at it, including teleoperation's `--model_path`.
 
 3. **Move the hand to the neutral position**:
 

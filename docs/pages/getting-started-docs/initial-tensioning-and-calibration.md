@@ -1,7 +1,5 @@
 # Calibration and Tensioning
 
-> **Experimental branch:** `feature/improve-calibration` has unreleased tensioning and calibration behaviour. Its setup and differences are in the [README](https://github.com/orcahand/orca_core/tree/feature/improve-calibration#experimental-branch-featureimprove-calibration).
-
 ## Calibration
 
 Calibration ensures the hand operates with high accuracy and precision. It should be performed regularly, especially:
@@ -20,7 +18,7 @@ Tendons should be firm (not slack), but **not overtightened**. A small amount of
 
 To tension the hand:
 
-1. Run the `tension.py` script located in the `scripts` folder. By default it first winds the tendons taut, then locks the servos in place and secures the bottom spools. Pass `--no-move-motors` to skip the winding motion and only hold the current position (e.g., after moving the servos by hand).
+1. On v2.1 hardware, run `scripts/guided_tension.py`. You move each joint through its range by hand while the motors hold lightly; the script scores how taut each tendon is, then holds the motors while you ratchet the ones that fall short, round after round. On v2.0, run `scripts/tension.py`: by default it first winds the tendons taut, then locks the servos in place and secures the bottom spools. Pass `--no-move-motors` to skip the winding motion and only hold the current position (e.g., after moving the servos by hand).
 2. Using the included 3D-printed **ratchet** (found in the spools print file or included in the kit), rotate the **top spool of each servo clockwise** to tighten the tendons.
 3. As you turn, you should **hear or feel a "clicking" sound**, this confirms the ratchet is engaged and the tendon is being tensioned.
 
