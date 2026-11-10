@@ -152,10 +152,15 @@ def pull_tendons(
     Starts from ``start`` (the goals of an earlier pull, so a stalled motor still
     gains the full extra) or else from where the motors stand. Returns the goals.
     """
+    pos = read_motor_pos_checked(hand)
+    here = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
     if start is None:
-        pos = read_motor_pos_checked(hand)
-        start = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
+        start = here
         hand.write_motor_pos(motor_ids, start)
+    else:
+        # A reboot re-reports a multi-turn position within one turn: keep the
+        # earlier goals in the turn the motors now report.
+        start = start + np.round((here - start) / (2 * np.pi)) * 2 * np.pi
     hand.enable_torque(motor_ids)
     offset = math.radians(offset_deg)
     steps = max(1, math.ceil(abs(offset_deg) / (PULL_SPEED_DEG_S * PULL_STEP_S)))

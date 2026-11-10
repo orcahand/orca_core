@@ -59,6 +59,7 @@ from .setup_file import read_section, write_section
 from .tensioning import (
     TENSION_EXTRA_DEG,
     TENSION_OFFSET_DEG,
+    finger_motor_ids,
     pull_tendons,
     settle_at_rest,
     uncapped_currents,
@@ -466,6 +467,9 @@ def reboot_and_hold(hand: "OrcaHand", motor_id: int) -> Optional[List[str]]:
     if reboot is None:
         raise RuntimeError("this motor family has no reboot instruction")
     motor_id = int(motor_id)
+    # Anything else could be the wrist, a broadcast ID, or one the SDK cannot send.
+    if motor_id not in finger_motor_ids(hand.config):
+        raise ValueError(f"motor {motor_id} is not one of this hand's finger motors")
     reboot(motor_id)
     try:
         pos = read_motor_pos_checked(hand)
@@ -754,7 +758,8 @@ class _SpreadSampler(threading.Thread):
                     record_sample(
                         spread,
                         track,
-                        math.degrees(pos[idx] - self._centre[idx]),
+                        # Within one turn: a reboot re-reports a multi-turn position modulo 360°.
+                        math.degrees(math.remainder(pos[idx] - self._centre[idx], 2 * math.pi)),
                         self._settle,
                     )
                 _emit(
@@ -1034,9 +1039,10 @@ def run_guided_tension(
         )
 
     def _restore() -> None:
+        # A mode change leaves torque on, on every family: switch mode first.
+        hand.set_control_mode(control_mode)
         hand.disable_torque()
         hand.set_max_current(config.max_current)
-        hand.set_control_mode(control_mode)
 
     if scoring not in SCORINGS:
         raise ValueError(f"scoring must be one of {SCORINGS}, not {scoring!r}")
@@ -1096,8 +1102,8 @@ def run_guided_tension(
     result: dict = score(template, threshold, excluded, scoring)
     watch = _FaultWatch(hand, progress_callback)
     try:
-        hand.disable_torque()
         hand.set_control_mode(CURRENT_BASED_POSITION, motor_ids)
+        hand.disable_torque()
         while True:
             round_no += 1
             _drain_forget()
