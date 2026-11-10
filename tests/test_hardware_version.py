@@ -173,9 +173,22 @@ def test_the_local_config_ignores_keys_it_does_not_own(tmp_path, caplog):
     assert "ignoring ['max_current']" in caplog.text
 
 
-def test_the_packaged_configs_carry_no_local_config():
-    for path in LEFT + RIGHT:
-        assert not os.path.exists(os.path.join(os.path.dirname(path), "local_config.yaml")), path
+def test_the_packaged_configs_never_ship_a_local_config():
+    """A console run from a checkout pins a hand in a local_config.yaml beside the
+    packaged config. It must stay out of git, and so out of the wheel, which
+    hatchling builds from what git does not ignore."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None or not os.path.isdir(os.path.join(REPO_ROOT, ".git")):
+        pytest.skip("not a git checkout")
+    locals_ = [os.path.join(os.path.dirname(p), "local_config.yaml") for p in LEFT + RIGHT]
+    tracked = subprocess.run(["git", "ls-files", "--", *locals_], cwd=REPO_ROOT,
+                             capture_output=True, text=True, check=True).stdout.split()
+    assert tracked == []
+    ignored = subprocess.run(["git", "check-ignore", "--no-index", *locals_], cwd=REPO_ROOT,
+                             capture_output=True, text=True).stdout.split()
+    assert sorted(os.path.abspath(os.path.join(REPO_ROOT, p)) for p in ignored) == sorted(locals_)
 
 
 # --- selecting the map --------------------------------------------------
@@ -276,9 +289,11 @@ def test_auto_means_not_pinned(tmp_path, spelling):
     assert config.hardware_version is None
 
 
-def test_every_packaged_config_ships_on_auto():
+def test_every_packaged_config_ships_on_auto(tmp_path):
+    # A copy, so a hand pinned on this machine (its local_config.yaml) is not read.
     for path in LEFT + RIGHT:
-        assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None, path
+        copy = _config_with(tmp_path, path)
+        assert OrcaHandConfig.from_config_path(config_path=copy).hardware_version is None, path
 
 
 @pytest.mark.parametrize("value", [-1, "x", True, 2.5, [21]])
@@ -359,10 +374,10 @@ def test_load_hand_without_a_version_keeps_the_base_map():
 
 
 @pytest.mark.parametrize("path", LEFT + RIGHT)
-def test_only_a_v21_dynamixel_hand_calibrates_per_group(path):
+def test_only_a_v21_dynamixel_hand_calibrates_per_group(path, tmp_path):
     import dataclasses
 
-    base = OrcaHandConfig.from_config_path(config_path=path)
+    base = OrcaHandConfig.from_config_path(config_path=_config_with(tmp_path, path))
 
     def resolved(version, family):
         config = base.with_hardware_version(version)
