@@ -197,12 +197,15 @@ def test_the_packaged_configs_never_ship_a_local_config():
     if shutil.which("git") is None or not os.path.isdir(os.path.join(REPO_ROOT, ".git")):
         pytest.skip("not a git checkout")
     locals_ = [os.path.join(os.path.dirname(p), "local_config.yaml") for p in LEFT + RIGHT]
-    tracked = subprocess.run(["git", "ls-files", "--", *locals_], cwd=REPO_ROOT,
-                             capture_output=True, text=True, check=True).stdout.split()
-    assert tracked == []
-    ignored = subprocess.run(["git", "check-ignore", "--no-index", *locals_], cwd=REPO_ROOT,
-                             capture_output=True, text=True).stdout.split()
-    assert sorted(os.path.abspath(os.path.join(REPO_ROOT, p)) for p in ignored) == sorted(locals_)
+    # -z: git otherwise quotes paths with backslashes, which every Windows path has.
+    tracked = subprocess.run(["git", "ls-files", "-z", "--", *locals_], cwd=REPO_ROOT,
+                             capture_output=True, text=True, check=True).stdout.split("\0")
+    assert [p for p in tracked if p] == []
+    ignored = subprocess.run(["git", "check-ignore", "-z", "--stdin", "--no-index"], cwd=REPO_ROOT,
+                             input="\0".join(locals_) + "\0",
+                             capture_output=True, text=True).stdout.split("\0")
+    found = [os.path.normcase(os.path.abspath(os.path.join(REPO_ROOT, p))) for p in ignored if p]
+    assert sorted(found) == sorted(os.path.normcase(p) for p in locals_)
 
 
 # --- selecting the map --------------------------------------------------
