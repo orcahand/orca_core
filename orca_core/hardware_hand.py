@@ -2185,11 +2185,18 @@ class OrcaHand(BaseHand):
             motor_id, joint_name, missing,
         )
 
+    @property
+    def _joint_curves(self) -> dict:
+        """Per-joint curves from the hand's ``joint_map.yaml`` (orca_core.joint_map)."""
+        joint_map = self.config.joint_map
+        return joint_map.curves if joint_map is not None else {}
+
     def _motor_to_joint_pos(self, motor_pos: np.ndarray) -> dict:
         if self._wrap_offsets_dict is None:
             self._compute_wrap_offsets_dict()
 
         joint_roms = self.effective_joint_roms_dict
+        curves = self._joint_curves
         joint_pos = {}
         for idx, pos in enumerate(motor_pos):
             motor_id = self.config.motor_ids[idx]
@@ -2202,6 +2209,13 @@ class OrcaHand(BaseHand):
                 self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
             else:
                 wrapped_pos = pos - self._wrap_offsets_dict.get(motor_id, 0.0)
+                curve = curves.get(joint_name)
+                if curve is not None:
+                    lower, upper = self.motor_limits_dict[motor_id]
+                    t = (wrapped_pos - lower) / (upper - lower)
+                    inverted = self.config.joint_inversion_dict.get(joint_name, False)
+                    joint_pos[joint_name] = curve.forward(1.0 - t if inverted else t)
+                    continue
                 d = (
                     wrapped_pos - self.motor_limits_dict[motor_id][0]
                 ) / self.calibration.joint_to_motor_ratios_dict[motor_id]
@@ -2218,6 +2232,7 @@ class OrcaHand(BaseHand):
             self._compute_wrap_offsets_dict()
 
         joint_roms = self.effective_joint_roms_dict
+        curves = self._joint_curves
         motor_pos = [None] * len(self.config.motor_ids)
 
         for joint_name, pos in joint_pos.items():
@@ -2233,6 +2248,17 @@ class OrcaHand(BaseHand):
             if not self.calibration._motor_ready(motor_id):
                 motor_pos[idx] = None
                 self._warn_uncalibrated(motor_id, joint_name, "joint-to-motor ratio")
+                continue
+
+            curve = curves.get(joint_name)
+            if curve is not None:
+                lower, upper = self.motor_limits_dict[motor_id]
+                s = curve.inverse(pos)
+                t = 1.0 - s if self.config.joint_inversion_dict.get(joint_name, False) else s
+                motor_pos[idx] = (
+                    lower + t * (upper - lower)
+                    + self._wrap_offsets_dict.get(motor_id, 0.0)
+                )
                 continue
 
             lo, hi = joint_roms[joint_name]

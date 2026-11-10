@@ -237,6 +237,7 @@ ORCA_HAND_CONFIG = BASE_HAND_CONFIG | {
     "joint_gains_for",
     "joint_gains_overrides",
     "joint_inversion_dict",
+    "joint_map",
     "joint_motor_travel_dict",
     "joint_motor_travel_v21_dict",
     "joint_roms_v211_dict",

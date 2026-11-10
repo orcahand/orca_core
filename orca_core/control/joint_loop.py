@@ -39,6 +39,7 @@ from ..hardware.sensing.constants import (
     joint_encoder_polarity_for_side,
 )
 from ..hardware.sensing.encoder_protocol import encoder_to_joint_angle
+from ..joint_map import CurveBank
 from .joint_controller import JointController
 from .constants import (
     CLAMP_WARN_INTERVAL_S,
@@ -105,6 +106,8 @@ class JointLoopThread:
         self._joint_rom_lower = np.zeros(0, dtype=np.float64)
         self._joint_rom_upper = np.zeros(0, dtype=np.float64)
         self._wrap_offsets = np.zeros(0, dtype=np.float64)
+        # joint_map.yaml curves of the loop's joints (None = all linear).
+        self._curve_bank = None
 
         self._target_deg = np.zeros(0, dtype=np.float64)
         self._latest_measured = np.zeros(0, dtype=np.float64)
@@ -464,10 +467,33 @@ class JointLoopThread:
             motor_limits_upper + margin + self._wrap_offsets,
             np.inf,
         )
+        self._snapshot_curves(joints, motor_limits_upper)
         self._target_deg = np.zeros(len(joints), dtype=np.float64)
         self._latest_measured = np.zeros(len(joints), dtype=np.float64)
         self._last_correction = np.zeros(len(joints), dtype=np.float64)
         self._motor_bias = np.zeros(len(joints), dtype=np.float64)
+
+    def _snapshot_curves(self, joints: List[str], motor_limits_upper: np.ndarray) -> None:
+        """Stack the joint_map.yaml curves of the loop's joints, with every
+        per-cycle buffer preallocated."""
+        joint_map = self._hand.config.joint_map
+        curves = joint_map.curves if joint_map is not None else {}
+        rows = [i for i, j in enumerate(joints) if j in curves]
+        if not rows:
+            self._curve_bank = None
+            return
+        idx = np.array(rows, dtype=np.int64)
+        inverted = self._joint_inversion_mask[idx]
+        self._curve_idx = idx
+        self._curve_bank = CurveBank([curves[joints[i]] for i in rows])
+        # t = offset + sign * s: s on a forward joint, 1 - s on an inverted one.
+        self._curve_offset = np.where(inverted, 1.0, 0.0)
+        self._curve_sign = np.where(inverted, -1.0, 1.0)
+        self._curve_lower = self._motor_limits_lower[idx]
+        self._curve_travel = motor_limits_upper[idx] - self._curve_lower
+        self._curve_wrap = self._wrap_offsets[idx]
+        self._curve_deg = np.empty(len(rows))
+        self._curve_t = np.empty(len(rows))
 
     def _joint_to_motor_pos(self, joint_command_deg: np.ndarray) -> np.ndarray:
         """Vectorised joint→motor mapping for the snapshotted joint set.
@@ -486,7 +512,18 @@ class JointLoopThread:
             + (joint_command_deg - self._joint_rom_lower) * self._joint_to_motor_ratios
         )
         motor_pos = np.where(self._joint_inversion_mask, inverted_term, forward_term)
-        return motor_pos + self._wrap_offsets
+        motor_pos += self._wrap_offsets
+        if self._curve_bank is not None:
+            t = self._curve_t
+            np.take(joint_command_deg, self._curve_idx, out=self._curve_deg)
+            self._curve_bank.inverse(self._curve_deg, out=t)
+            t *= self._curve_sign
+            t += self._curve_offset
+            t *= self._curve_travel
+            t += self._curve_lower
+            t += self._curve_wrap
+            motor_pos[self._curve_idx] = t
+        return motor_pos
 
     def _write_motor_targets(self, motor_targets: np.ndarray) -> None:
         """Write motor targets, clamping joints with a bounded travel

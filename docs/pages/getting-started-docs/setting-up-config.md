@@ -300,3 +300,43 @@ A joint with no baseline has its travel measured and logged,
 but not checked, and is never re-driven.
 
 ---
+### 9. Per-Hand Joint Map (`joint_map.yaml`)
+
+A hand measured by ORCA (visual calibration) ships with a `joint_map.yaml`.
+Put it next to the hand's `config.yaml` and `calibration.yaml`. orca_core reads
+it at every load and never writes it, so recalibrating keeps it. Without the
+file every joint uses the standard linear map between its hard stops.
+
+```yaml
+format_version: 1
+hand_serial: ser-0000
+model: orcahand-touch-right
+created: 2026-11-09 17:13
+source: visual calibration 20261109-s0000q (16 poses, orca_core calibration run q0000p)
+base_joint_roms:            # stops the curves were fitted against (packaged config)
+  wrist: [-65.0, 35.0]
+joint_roms:                 # this hand's own hard stops
+  wrist: [-64.46, 38.51]
+curves:
+  wrist:
+    s:   [0.0, 0.1667, 0.3333, 0.5, 0.6667, 0.8333, 1.0]
+    deg: [-64.52, -47.32, -30.12, -12.95, 4.18, 21.27, 38.35]
+```
+
+- `curves`: per joint, `s` is the fraction of the motor's travel between its
+  calibrated limits (0 at the joint's lower stop, 1 at its upper, whichever way
+  the motor turns) and `deg` the joint angle there. Both strictly increasing,
+  2 to 64 knots, `s` from 0 to 1, angles within the stops (±3°). The map is
+  piecewise linear between knots and continues at the stop-to-stop slope
+  beyond them. Since `s` only depends on the motor limits, a curve stays valid
+  through every recalibration.
+- `joint_roms`: the hand's own stops. They decide the joint ROM in this order,
+  each overriding the one before: packaged `config.yaml` < the bench
+  `config.yaml` you pass as `config_path` < `joint_roms_v211` (v2.1.1 hands) <
+  `joint_map.yaml`. Calibration fits the motor ratios against the result; an
+  encoder hand's `joint_roms_measured` still overlays it for the linear map.
+- A malformed file, a rejected curve or a joint without a curve falls back to
+  the linear map with a warning in the log.
+
+Make one from a visual calibration result with
+`python -m orca_core.tools.joint_map_from_visual visual_calibration.json -o joint_map.yaml`.

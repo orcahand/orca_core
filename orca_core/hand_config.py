@@ -54,6 +54,7 @@ from .hardware.sensing.constants import (
     DEFAULT_SENSOR_PORT,
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
+from .joint_map import JointMap, joint_map_path, load_joint_map
 from .joint_position import OrcaJointPositions
 from .utils.utils import _get_models_dir, get_model_path, is_packaged_model_path, read_yaml, write_yaml_atomic
 from .version import LATEST_VERSION
@@ -658,6 +659,10 @@ class OrcaHandConfig(BaseHandConfig):
     # with_hardware_version so another version (or none) can be put in force later.
     base_joint_to_motor_map: Dict[str, int] = field(default_factory=dict, repr=False)
     base_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict, repr=False)
+    # The hand's joint_map.yaml (orca_core.joint_map): its own stops are
+    # already laid over joint_roms_dict, last, and its curves replace the
+    # linear joint<->motor map per joint. None = no usable file.
+    joint_map: Optional[JointMap] = field(default=None, compare=False, repr=False)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -963,6 +968,17 @@ class OrcaHandConfig(BaseHandConfig):
                 f"got {raw_roms_v211!r}"
             )
         kwargs["joint_roms_v211_dict"] = dict(raw_roms_v211)
+        joint_map = load_joint_map(
+            joint_map_path(resolved_config_path),
+            kwargs.get("joint_ids", ()),
+            kwargs.get("joint_roms_dict", {}),
+            model=os.path.basename(os.path.dirname(resolved_config_path)),
+        )
+        if joint_map is not None:
+            kwargs["joint_map"] = joint_map
+            kwargs["joint_roms_dict"] = {
+                **kwargs.get("joint_roms_dict", {}), **joint_map.joint_roms
+            }
         if "calibration_current" in config:
             kwargs["calibration_current"] = _current_setting(
                 config["calibration_current"], "calibration_current"
@@ -1294,7 +1310,8 @@ class OrcaHandConfig(BaseHandConfig):
             )
         if hardware_version == HARDWARE_VERSION_V211 and self.joint_roms_v211_dict:
             changes["joint_roms_dict"] = {
-                **base.joint_roms_dict, **self.joint_roms_v211_dict, **self.measured_joint_roms_dict
+                **base.joint_roms_dict, **self.joint_roms_v211_dict, **self.measured_joint_roms_dict,
+                **self._joint_map_stops(),
             }
         return dataclasses.replace(base, **changes)
 
@@ -1310,7 +1327,7 @@ class OrcaHandConfig(BaseHandConfig):
             joint_to_motor_map=joint_to_motor_map,
             joint_inversion_dict=joint_inversion_dict,
             joint_roms_dict={**{j: list(r) for j, r in recorded.base_joint_roms_dict.items()},
-                             **self.measured_joint_roms_dict},
+                             **self.measured_joint_roms_dict, **self._joint_map_stops()},
         )
 
     def _with_base_recorded(self) -> "OrcaHandConfig":
@@ -1363,6 +1380,10 @@ class OrcaHandConfig(BaseHandConfig):
             joint_roms_dict={**recorded.joint_roms_dict, **measured},
             measured_joint_roms_dict={**recorded.measured_joint_roms_dict, **measured},
         )
+
+    def _joint_map_stops(self) -> Dict[str, List[float]]:
+        """The hand's own joint_map.yaml stops, laid over every other range."""
+        return self.joint_map.joint_roms if self.joint_map is not None else {}
 
 
 def _valid_rom(rom) -> bool:

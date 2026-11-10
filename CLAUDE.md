@@ -49,6 +49,8 @@ orca_core/
 ├── hand_config.py                  # Config dataclasses (BaseHandConfig, OrcaHandConfig, ...)
 ├── rig_config.py                   # RigConfig: loads/validates the rig, saves the solver's calibration
 ├── calibration.py                  # Calibration result types + YAML (de)serialization
+├── joint_map.py                    # joint_map.yaml: a hand's own stops + nonlinear joint↔motor curves
+├── tools/                          # Shipped CLIs (joint_map_from_visual: visual calibration → joint_map.yaml)
 ├── joint_position.py               # OrcaJointPositions: typed joint-position container
 ├── demo_poses.py                   # load_demo_poses(): packaged demo pose data
 ├── version.py                      # LATEST_VERSION: default hand model version
