@@ -144,7 +144,8 @@ def test_a_written_pin_lives_beside_the_config_and_leaves_it_untouched(tmp_path,
     written = write_hardware_version(str(path), 210)
     assert written == str(tmp_path / "local_config.yaml")
     assert path.read_text(encoding="utf-8") == original
-    assert yaml.safe_load(open(written)) == {"hardware_version": 210}
+    # Written as 21, which orca_core 0.6-0.12 also read as v2.1; it loads as 210.
+    assert yaml.safe_load(open(written)) == {"hardware_version": 21}
     assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version == 210
 
     write_hardware_version(str(path), None)
@@ -159,7 +160,20 @@ def test_the_local_config_beats_an_explicit_yaml_value_and_says_so(tmp_path, cap
     with caplog.at_level("WARNING"):
         config = OrcaHandConfig.from_config_path(config_path=path)
     assert config.hardware_version == HARDWARE_VERSION_V21
-    assert "local_config.yaml sets hardware_version=210" in caplog.text
+    assert "local_config.yaml sets hardware_version=21," in caplog.text
+
+
+def test_a_v210_pin_reads_as_v21_and_a_matching_yaml_value_is_no_clash(tmp_path, caplog):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=210)
+    write_hardware_version(path, 210)
+    assert yaml.safe_load(open(tmp_path / "local_config.yaml")) == {"hardware_version": 21}
+    write_hardware_version(path, 211)
+    assert yaml.safe_load(open(tmp_path / "local_config.yaml")) == {"hardware_version": 211}
+    write_hardware_version(path, 210)
+    with caplog.at_level("WARNING"):
+        config = OrcaHandConfig.from_config_path(config_path=path)
+    assert config.hardware_version == 210 and config.is_v21
+    assert "local_config.yaml sets" not in caplog.text
 
 
 def test_the_local_config_ignores_keys_it_does_not_own(tmp_path, caplog):

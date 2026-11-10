@@ -40,7 +40,7 @@ def test_an_unknown_version_is_asked_for_and_the_answer_is_kept(tmp_path):
         assert _flipped(hand) == [not f for f in base], "the v2.1 left map is in force at once"
     finally:
         hand.disconnect()
-    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 210"
+    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 21"
     assert (tmp_path / "config.yaml").read_text() == open(LEFT, encoding="utf-8").read()
 
 
@@ -76,7 +76,7 @@ def test_the_flag_pins_for_the_run_and_for_the_next_one(tmp_path):
     hand = _mock_hand(tmp_path, hardware_version=210)
     hand.disconnect()
     assert hand.config.hardware_version == HARDWARE_VERSION_V21
-    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 210"
+    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 21"
     again = _mock_hand(tmp_path)   # no flag this time: the sidecar carries it
     try:
         assert again.config.hardware_version == HARDWARE_VERSION_V21

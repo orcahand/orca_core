@@ -252,6 +252,12 @@ def read_local_config(config_path: str) -> Dict:
     return {k: raw[k] for k in LOCAL_CONFIG_KEYS if k in raw}
 
 
+def _same_local_value(key: str, current, value) -> bool:
+    if key == HARDWARE_VERSION and all(isinstance(v, int) and not isinstance(v, bool) for v in (current, value)):
+        return normalize_hardware_version(current) == normalize_hardware_version(value)
+    return current == value
+
+
 def _with_local_overrides(config: Dict, config_path: str) -> Dict:
     """``config`` with the hand's local overrides on top. A local value that
     displaces an explicit one in config.yaml is logged: the yaml no longer
@@ -259,7 +265,7 @@ def _with_local_overrides(config: Dict, config_path: str) -> Dict:
     local = read_local_config(config_path)
     for key, value in local.items():
         current = config.get(key)
-        if current not in (None, "auto") and current != value:
+        if current not in (None, "auto") and not _same_local_value(key, current, value):
             logging.getLogger(__name__).warning(
                 "%s sets %s=%r, so config.yaml's %r is not used",
                 local_config_path(config_path), key, value, current)
@@ -290,7 +296,10 @@ def write_hardware_version(config_path: str, version: int | None) -> str:
     if version is None:
         local.pop(HARDWARE_VERSION, None)
     else:
-        local[HARDWARE_VERSION] = normalize_hardware_version(int(version))
+        normalized = normalize_hardware_version(int(version))
+        # orca_core 0.6-0.12 recognise v2.1 only as 21, so v2.1.0 is written that
+        # way for a hand folder an older install also reads; 0.13+ reads it as 210.
+        local[HARDWARE_VERSION] = 21 if normalized == 210 else normalized
     if local:
         write_yaml_atomic(path, local)
     elif os.path.exists(path):
