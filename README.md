@@ -48,6 +48,8 @@ teleoperation's `--model_path`. Tension first and calibrate last.
 - **Slack test and tension sweep:** these are new routines, with currents per motor type. Feetech values are provisional, and on Feetech
   a slack test pass can miss small slack.
 - **Joint loop:** the slack test and sweep refuse to run while a joint-feedback loop is running.
+- **Touch sensors:** the sensing link reads whatever bytes have arrived and ignores replies to earlier requests, so touch keeps
+  working while the program is busy. On `main`, a busy console could lose touch until it reconnected.
 
 ## Get Started
 
