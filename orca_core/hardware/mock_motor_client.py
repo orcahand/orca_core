@@ -306,6 +306,13 @@ class MockMotorClient(MotorClient):
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         return self.current_ceilings_ma.get(motor_id, self.max_current_ma)
 
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        self.check_connected()
+        requested = list(self.motor_ids if motor_ids is None else motor_ids)
+        return {mid: self._cur.get(mid) for mid in requested}
+
     def read_servo_gains(self, motor_ids: Sequence[int]):
         self.check_connected()
         return {int(mid): self._servo_gains.get(int(mid)) for mid in motor_ids}

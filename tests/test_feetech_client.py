@@ -487,3 +487,18 @@ def test_feetech_decodes_its_own_status_byte_layout():
     assert FeetechClient.decode_hardware_error(0x0C) == ["overheating", "overcurrent"]
     assert FeetechClient.decode_hardware_error(0) == []
     assert DynamixelClient.decode_hardware_error(0x08) == ["motor_encoder"]
+
+
+def test_goal_currents_are_read_back_from_the_goal_current_register(client, monkeypatch):
+    feetech, handler = client
+    handler.unavailable_ids = {3}
+    read = handler.read2ByteTxRx
+
+    def read2(motor_id, address):
+        if address == HLS.GOAL_CURRENT and motor_id not in handler.unavailable_ids:
+            return {1: 46, 2: 0}[motor_id], COMM_SUCCESS, 0
+        return read(motor_id, address)
+
+    monkeypatch.setattr(handler, "read2ByteTxRx", read2)
+    assert feetech.read_goal_currents() == {
+        1: 46 * feetech.current_scale_ma, 2: 0.0, 3: None}

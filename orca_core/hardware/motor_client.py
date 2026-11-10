@@ -898,6 +898,17 @@ class MotorClient(ABC):
         """
         return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
 
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        """The goal-current limit each motor reports holding, in mA, read from the bus.
+
+        A sync write carries no acknowledgement, so this is the proof that a
+        :meth:`write_desired_current` landed. ``None`` marks a motor that did not
+        answer or has no current register. One round trip per motor.
+        """
+        raise NotImplementedError
+
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         """Cached ceiling for one motor: the family maximum unless a subclass knows better."""
         return self.max_current_ma

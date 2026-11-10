@@ -924,3 +924,16 @@ def test_a_small_limit_never_rounds_into_unlimited(client, bus, monkeypatch):
     client.write_servo_profile({1: ServoProfile(velocity_rad_s=1e-6)})
 
     assert dict(writes)[112] == [1]
+
+
+def test_goal_currents_are_read_back_from_the_goal_current_register(client, bus):
+    """A sync write carries no acknowledgement; the read-back is what proves a limit landed."""
+    asked = []
+
+    def read2(motor_id, address):
+        asked.append(address)
+        return ({1: 300, 2: 0}[motor_id], COMM_SUCCESS if motor_id == 1 else 1, 0)
+
+    bus.read2_hook = read2
+    assert client.read_goal_currents() == {1: 300 * client.current_scale_ma, 2: None}
+    assert set(asked) == {102}

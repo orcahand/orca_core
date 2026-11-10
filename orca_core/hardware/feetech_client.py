@@ -1245,6 +1245,18 @@ class FeetechClient(MotorClient):
         ceiling_raw = self._current_ceiling_raw.get(motor_id, HLS.GOAL_CURRENT_MAX_RAW)
         return ceiling_raw * self.current_scale_ma
 
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        self.check_connected()
+        requested = list(self.motor_ids if motor_ids is None else motor_ids)
+        out: "dict[int, float | None]" = {}
+        with self._bus_lock:
+            for motor_id in requested:
+                raw = self._read_word(motor_id, HLS.GOAL_CURRENT, 'goal current')
+                out[motor_id] = None if raw is None else raw * self.current_scale_ma
+        return out
+
     def _write_profile_params(self, motor_ids: Sequence[int]) -> None:
         """Sync-write acceleration, goal current and goal speed for ``motor_ids``.
 

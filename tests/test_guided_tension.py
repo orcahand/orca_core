@@ -473,6 +473,63 @@ def test_the_tension_step_pulls_at_the_tension_current_then_holds_at_the_ceiling
     assert seen == [(tension_ma, [tension_ma, uncapped_currents(hand)])]
 
 
+def test_every_limit_write_is_read_back_from_the_motors_and_drawn_currents_reported(
+    connected_mock_hand,
+):
+    """The log must show the limit each motor holds, not the one intended: the
+    stage's joints at their hold current, every other finger frozen at the
+    tension current, the pull at the tension current and the ratchet at the ceiling."""
+    hand = connected_mock_hand
+    config = hand.config
+    hand.motor_client.current_ceilings_ma = {m: 700.0 + m for m in config.motor_ids}
+    events, sampled = [], threading.Event()
+    answers = ["Continue", "goto:tension", "Done", "goto:score", FINISH_ANYWAY]
+
+    def progress(event):
+        events.append(event)
+        if event["event"] == "spread":
+            sampled.set()
+
+    def prompt(p):
+        if p["action"] == "range_check":
+            assert sampled.wait(5)
+        return answers.pop(0)
+
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
+                       persist=False, resume=False)
+
+    limits = {e["phase"]: e for e in events if e["event"] == "current_limits"}
+    stage = limits["range_check"]["stage"]
+    holds = guided_tension.joint_currents(config)
+    tension = float(config.tension_current)
+    fingers = [j for j in holds if j != "wrist"]
+    for joint in fingers:
+        want = holds[joint] if joint in stage["joints"] else tension
+        assert limits["range_check"]["limits"][joint] == {"asked": want, "held": want}, joint
+        assert limits["pull"]["limits"][joint] == {"asked": tension, "held": tension}, joint
+        ceiling = 700.0 + config.joint_to_motor_map[joint]
+        assert limits["ratchet"]["limits"][joint]["held"] == ceiling, joint
+
+    drawn = next(e for e in events if e["event"] == "currents_drawn")
+    assert drawn["stage"]["key"] == stage["key"]
+    assert set(fingers) <= set(drawn["drawn"])
+    assert all({"peak", "mean"} == set(v) for v in drawn["drawn"].values())
+
+
+def test_a_family_without_the_read_back_still_tensions(connected_mock_hand, monkeypatch):
+    hand = connected_mock_hand
+
+    def missing(motor_ids=None):
+        raise NotImplementedError
+
+    monkeypatch.setattr(hand.motor_client, "read_goal_currents", missing)
+    events = []
+    answers = ["Continue", "goto:tension", "Done", "goto:score", FINISH_ANYWAY]
+    run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0),
+                       progress_callback=events.append, persist=False, resume=False)
+    assert not [e for e in events if e["event"] == "current_limits"]
+
+
 # ----- slack scoring ----------------------------------------------------------
 
 

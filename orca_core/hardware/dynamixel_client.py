@@ -673,6 +673,27 @@ class DynamixelClient(MotorClient):
             return None
         return self.max_current_ma
 
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        requested = list(self.motor_ids if motor_ids is None else motor_ids)
+        present = set(self._present(requested))
+        out: "dict[int, float | None]" = {}
+        with self._bus_lock:
+            for motor_id in requested:
+                if motor_id not in present or self._current_ceiling_ma(motor_id) is None:
+                    out[motor_id] = None
+                    continue
+                raw, result, _ = self.packet_handler.read2ByteTxRx(
+                    self.port_handler, motor_id, ADDR_GOAL_CURRENT)
+                if result != self.dxl.COMM_SUCCESS:
+                    self._flush_input_buffer()
+                    out[motor_id] = None
+                    continue
+                signed = raw - 0x10000 if raw >= 0x8000 else raw
+                out[motor_id] = signed * self.current_scale_ma
+        return out
+
     def write_pwm_fraction(self, motor_ids: Sequence[int], fraction: float) -> None:
         """Goal PWM = ``fraction`` x each motor's PWM Limit; caps the output in
         every position mode, including the multi-turn one Goal Current ignores."""

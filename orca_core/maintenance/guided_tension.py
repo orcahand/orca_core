@@ -54,7 +54,7 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
-from .motor_reads import read_motor_pos_checked
+from .motor_reads import read_motor_pos_checked, read_motor_state_checked
 from .setup_file import read_section, write_section
 from .tensioning import (
     TENSION_EXTRA_DEG,
@@ -657,6 +657,27 @@ class _SpreadSampler(threading.Thread):
         self._active.set()
         self._joints: Optional[set] = None
         self.error: Optional[BaseException] = None
+        self._drawn_lock = threading.Lock()
+        self._drawn: Dict[int, Tuple[float, float, int]] = {}
+
+    def _record_drawn(self, currents: np.ndarray) -> None:
+        with self._drawn_lock:
+            for n, value in enumerate(currents):
+                if math.isfinite(value):
+                    peak, total, count = self._drawn.get(n, (0.0, 0.0, 0))
+                    self._drawn[n] = (max(peak, abs(value)), total + abs(value), count + 1)
+
+    def take_drawn(self) -> Dict[str, Dict[str, float]]:
+        """Peak and mean drawn current (mA) per joint since the last call, every motor."""
+        config = self._hand.config
+        joint_of = config.motor_to_joint_dict
+        with self._drawn_lock:
+            drawn, self._drawn = self._drawn, {}
+        return {
+            joint_of.get(config.motor_ids[n], str(config.motor_ids[n])): {
+                "peak": round(peak, 1), "mean": round(total / count, 1)}
+            for n, (peak, total, count) in sorted(drawn.items())
+        }
 
     def pause(self) -> None:
         """Stop recording: posing the hand for the next stage is not range."""
@@ -672,6 +693,7 @@ class _SpreadSampler(threading.Thread):
         self._joints = None if joints is None else set(joints)
         if centre is not None:
             self._rebase = (centre, self._joints)
+        self.take_drawn()
         self._active.set()
 
     def _apply_rebase(self) -> None:
@@ -713,10 +735,12 @@ class _SpreadSampler(threading.Thread):
                     continue
                 self._apply_rebase()
                 try:
-                    pos = read_motor_pos_checked(self._hand)
+                    state = read_motor_state_checked(self._hand)
                 except RuntimeError as exc:
                     logger.warning("%s; skipping this sample", exc)
                     continue
+                pos = state.position
+                self._record_drawn(np.asarray(state.current, dtype=float))
                 if self._watch is not None:
                     self._watch.poll()
                     if time.monotonic() >= next_recheck:
@@ -772,6 +796,33 @@ def per_motor_currents(
     joint_of = config.motor_to_joint_dict
     fallback = min(by_joint.values())
     return [by_joint.get(joint_of.get(m), fallback) for m in config.motor_ids]
+
+
+def _report_limits(
+    hand: "OrcaHand",
+    progress_callback: Optional[ProgressCallback],
+    phase: str,
+    asked: Sequence[float],
+    **info,
+) -> None:
+    """Emit ``current_limits``: per joint, the limit just asked for (``asked``, in
+    motor order) and the goal current the motor reports holding (``held``)."""
+    try:
+        with hand._motor_lock:
+            held = hand.motor_client.read_goal_currents()
+    except Exception as exc:  # a family without the read-back, or a bus that did not answer
+        logger.warning("current limit read-back after %s failed: %s", phase, exc)
+        return
+    config = hand.config
+    joint_of = config.motor_to_joint_dict
+    limits = {
+        joint_of.get(m, str(m)): {
+            "asked": round(float(a), 1),
+            "held": None if held.get(m) is None else round(float(held[m]), 1),
+        }
+        for m, a in zip(config.motor_ids, asked)
+    }
+    _emit(progress_callback, "current_limits", phase=phase, limits=limits, **info)
 
 
 def _hold_here(
@@ -888,8 +939,12 @@ def run_guided_tension(
 
     Progress events: ``step`` (``step``, ``round``), ``spread`` and ``score``
     (``round``, ``passed``, ``scored``, ``fraction``, ``motors``),
-    ``fault`` / ``fault_cleared`` (``motor``, ``joint``, ``flags``) and
-    ``cleanup_failed``.
+    ``fault`` / ``fault_cleared`` (``motor``, ``joint``, ``flags``),
+    ``cleanup_failed``, ``current_limits`` after every limit write of a range
+    check, pull or ratchet hold (``phase``, ``limits``: per joint the ``asked``
+    mA and the ``held`` mA the motor reads back) and ``currents_drawn`` when a
+    range check is answered (``drawn``: per joint the ``peak`` and ``mean`` mA
+    every motor drew while it ran).
 
     A motor whose Hardware Error Status latches (overload, a supply dip, ...)
     keeps answering the bus and acking torque enable but never energizes, so
@@ -1095,6 +1150,8 @@ def run_guided_tension(
                             for j, ma in hold_ma.items()
                         }
                         centre = _hold_here(hand, motor_ids, held)
+                        _report_limits(hand, progress_callback, "range_check",
+                                       per_motor_currents(config, held), **info)
                         watch.sweep(motor_ids)
                         if sampler is None:
                             sampler = _SpreadSampler(
@@ -1127,6 +1184,8 @@ def run_guided_tension(
                             **{threshold_key: thresholds},
                             **info,
                         )
+                        _emit(progress_callback, "currents_drawn",
+                              drawn=sampler.take_drawn(), **info)
                         if answer in (GOTO_SCORE, GOTO_TENSION):
                             jump = answer
                             break
@@ -1210,12 +1269,16 @@ def run_guided_tension(
                 uncapped ceiling sits there drawing it indefinitely.
                 """
                 hand.set_max_current(tension_ma)
+                _report_limits(hand, progress_callback, "pull",
+                               [tension_ma] * len(config.motor_ids), round=round_no)
                 if offset:
                     pull_tendons(hand, motor_ids, offset, start=start, should_stop=should_stop)
                 # Also with no pull: a jump here can arrive with torque off,
                 # and the motors must hold.
                 reached = settle_at_rest(hand, motor_ids, should_stop=should_stop)
-                hand.set_max_current(uncapped_currents(hand))
+                ratchet = uncapped_currents(hand)
+                hand.set_max_current(ratchet)
+                _report_limits(hand, progress_callback, "ratchet", ratchet, round=round_no)
                 return reached
 
             goals = pull_then_hold(pulled, None)
