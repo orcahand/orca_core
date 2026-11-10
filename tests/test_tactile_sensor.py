@@ -217,6 +217,23 @@ def test_clear_offsets(tactile_mock_factory):
 # Offset logic — auto-stream path
 # ---------------------------------------------------------------------------
 
+def test_a_start_whose_enable_reply_is_lost_leaves_the_stream_off(tactile_mock_factory, monkeypatch):
+    """The enable reached the device but its reply did not: the device must not be
+    left streaming to a client that never marked the stream as running."""
+    _, client, state = tactile_mock_factory(["thumb"])
+    real_enable = client.enable_auto_data_transmission
+
+    def enable_then_lose_the_reply(*args, **kwargs):
+        real_enable(*args, **kwargs)
+        raise OSError("Timed out waiting for register response")
+
+    monkeypatch.setattr(client, "enable_auto_data_transmission", enable_then_lose_the_reply)
+    with pytest.raises(OSError):
+        client.start_stream(resultant=True, taxels=False)
+
+    assert state.write_log[-1] == (ADDR_AUTO_ENABLE, REGISTER_DISABLE)
+
+
 @pytest.mark.parametrize("finger", ALL_FINGERS)
 def test_stream_offsets_applied(tactile_mock_factory, finger):
     link, client, state = tactile_mock_factory([finger])
