@@ -242,3 +242,25 @@ def test_back_then_skip_does_not_commit_the_forgotten_capture(hand):
                     prompt_callback=prompt, progress_callback=events.append)
     assert [e["joint"] for e in _events(events, "joint_calibrated")] == []
     assert list(hand.calibration.motor_limits_dict.get(motor, [None, None])) == before
+
+
+def test_back_after_a_finished_pair_restores_that_joints_previous_limits(hand):
+    """thumb_cmc's pair completes on the second step; Back from the third step and
+    Skip must leave its limits and ratio as they were before the run."""
+    motor = hand.config.joint_to_motor_map["thumb_cmc"]
+    limits = hand.calibration.motor_limits_dict.get(motor)
+    ratio = hand.calibration.joint_to_motor_ratios_dict.get(motor)
+    limits = list(limits) if limits is not None else None
+    answers = iter(["record", "record", "back", "skip", "skip", "skip"])
+
+    def prompt(request):
+        hand.motor_client._pos[abs(request["motor"])] = 0.4 if request["direction"] == "flex" else -0.9
+        return next(answers)
+
+    events = []
+    run_calibration(hand, joints=["thumb_cmc", "thumb_abd"], manual=True, persist=False,
+                    prompt_callback=prompt, progress_callback=events.append)
+    assert _events(events, "manual_capture_back")
+    after = hand.calibration.motor_limits_dict.get(motor)
+    assert (list(after) if after is not None else None) == limits
+    assert hand.calibration.joint_to_motor_ratios_dict.get(motor) == ratio

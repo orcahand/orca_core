@@ -1199,6 +1199,9 @@ def _drive_calibration(
         motor_id: [None, None] for motor_id in hand.config.motor_ids
     }
     joint_to_motor_ratios = dict(hand.calibration.joint_to_motor_ratios_dict)
+    # What a manual Back restores for a joint whose pair it undoes.
+    limits_before_run = {motor_id: list(limits) for motor_id, limits in motor_limits.items()}
+    ratios_before_run = dict(joint_to_motor_ratios)
 
     joint_encoder_calibration: Dict[str, JointEncoderCal] = dict(
         hand.calibration.joint_encoder_calibration_dict
@@ -1345,6 +1348,16 @@ def _drive_calibration(
                 sign = _direction_sign(hand, joint, direction)
                 pending_limits[motor_id][1 if sign == 1 else 0] = None
                 motor_travel_measured.pop(joint, None)
+                # A pair the previous step completed was already committed: undo it too.
+                if motor_id in limits_before_run:
+                    motor_limits[motor_id] = list(limits_before_run[motor_id])
+                else:
+                    motor_limits.pop(motor_id, None)
+                if motor_id in ratios_before_run:
+                    joint_to_motor_ratios[motor_id] = ratios_before_run[motor_id]
+                else:
+                    joint_to_motor_ratios.pop(motor_id, None)
+            commit_result()
             _emit(
                 progress_callback,
                 "manual_capture_back",
