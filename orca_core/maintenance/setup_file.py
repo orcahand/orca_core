@@ -18,6 +18,9 @@ each other's sections.
 A section missing from ``setup.yaml`` is read from the separate file it used
 to live in (``legacy``), so existing data keeps working; the next write of
 that section moves it into ``setup.yaml``. The old file is left in place.
+
+The file grows with every recorded sweep, and the console reads sections on
+every hand-info refresh, so a parse is kept until the file changes on disk.
 """
 
 from __future__ import annotations
@@ -27,11 +30,19 @@ import os
 import threading
 from typing import Any, Callable, Optional
 
+import yaml
+
 from ..utils.utils import read_yaml, write_yaml_atomic
 
 SETUP_FILE = "setup.yaml"
 
 _lock = threading.RLock()
+# libyaml's loader where PyYAML was built with it: the same result, several times faster.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_parsed: dict[str, tuple[tuple[int, int, int], dict]] = {}
+"""Per path: the (inode, mtime_ns, size) it was parsed at, and its content. Every
+write replaces the file, so the inode changes even where mtime is coarse. Callers
+hold ``_lock`` and never hand out or mutate the cached dict itself."""
 
 
 def setup_path(config) -> str:
@@ -39,8 +50,20 @@ def setup_path(config) -> str:
 
 
 def _read(path: str) -> dict:
-    data = read_yaml(path) if os.path.exists(path) else None
-    return data if isinstance(data, dict) else {}
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        _parsed.pop(path, None)
+        return {}
+    version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    cached = _parsed.get(path)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+    with open(path) as file:
+        data = yaml.load(file, Loader=_LOADER)
+    data = data if isinstance(data, dict) else {}
+    _parsed[path] = (version, data)
+    return data
 
 
 def read_section(config, name: str, legacy: Optional[str] = None) -> Any:
@@ -61,7 +84,7 @@ def write_section(config, name: str, value: Any) -> None:
     """Replace the ``name`` section; ``None`` removes it."""
     with _lock:
         path = setup_path(config)
-        data = _read(path)
+        data = dict(_read(path))
         if value is None:
             data.pop(name, None)
         else:
