@@ -259,3 +259,17 @@ def connected_mock_hand(mock_config_dir):
 def initialized_mock_hand(connected_mock_hand):
     connected_mock_hand.init_joints(force_calibrate=True)
     return connected_mock_hand
+
+
+@pytest.fixture()
+def real_mode_change(monkeypatch):
+    """Like the real clients, writing an operating mode switches torque back on."""
+    from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+
+    original = MockDynamixelClient.set_operating_mode
+
+    def set_operating_mode(self, motor_ids, mode_value):
+        original(self, motor_ids, mode_value)
+        self.set_torque_enabled(list(motor_ids), True)
+
+    monkeypatch.setattr(MockDynamixelClient, "set_operating_mode", set_operating_mode)

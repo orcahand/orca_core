@@ -137,6 +137,30 @@ def test_a_skipped_joint_is_not_moved_and_a_stop_leaves_torque_off(spooled):
         SlackTestSettings(max_free_deg=360.0).validate()
 
 
+def _torqued(hand):
+    return sorted(m for m, on in hand.motor_client._torque_enabled.items() if on)
+
+
+def test_every_motor_is_off_while_a_joint_is_held_and_after_the_test(real_mode_change, spooled):
+    hand, _ = spooled
+    at_hold = []
+    run_slack_test(hand, joints=["index_pip", "ring_mcp"], clock=_FakeClock(),
+                   hold_callback=lambda joint: at_hold.append(_torqued(hand)) or True)
+    assert at_hold == [[], []]
+    assert _torqued(hand) == []
+
+
+def test_a_feetech_spool_stopped_by_its_position_range_fails_instead_of_passing(
+        connected_feetech_mock_hand, monkeypatch):
+    hand, spools = _with_spools(connected_feetech_mock_hand, monkeypatch)
+    _, top = hand.motor_client.position_range_rad
+    motor = hand.config.joint_to_motor_map["index_pip"]
+    spools.start[motor] = top - math.radians(20.0)
+    spools.slack[motor] = 150.0
+    result = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock())["results"][0]
+    assert result["range_limited"] and result["status"] == "fail"
+
+
 def test_back_discards_the_previous_joint_and_tests_it_again(spooled):
     hand, spools = spooled
     answers = iter([False, slack_test.HOLD_BACK, True, True])

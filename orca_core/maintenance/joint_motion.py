@@ -112,6 +112,8 @@ def move_to_pose(
     hand.set_max_current(
         [pose_current_ma if m in driven else hold_current_ma for m in config.motor_ids]
     )
+    here = read_motor_pos_checked(hand)
+    hand.write_motor_pos(motors, here[[idx[m] for m in motors]])
     hand.enable_torque(motors)
     if pose == POSE_MID:
         roms = config.joint_roms_dict

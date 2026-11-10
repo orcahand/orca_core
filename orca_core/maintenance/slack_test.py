@@ -101,6 +101,7 @@ class SlackResult:
     plus_sense: str = ""  # which way the joint goes for each motor direction
     minus_sense: str = ""
     skipped: bool = False
+    range_limited: bool = False  # wound into the motor's position range, not a taut tendon
 
     @property
     def total_deg(self) -> float:
@@ -109,7 +110,7 @@ class SlackResult:
     def status(self, settings: SlackTestSettings) -> str:
         if self.skipped:
             return SKIPPED
-        return FAIL if self.total_deg > settings.max_free_deg else PASS
+        return FAIL if self.range_limited or self.total_deg > settings.max_free_deg else PASS
 
     def to_dict(self, settings: SlackTestSettings) -> dict:
         d = dataclasses.asdict(self)
@@ -194,12 +195,14 @@ def run_slack_test(
     ]
     idx = config.motor_id_to_idx_dict
     control_mode = config.control_mode
+    span = hand.motor_client.position_range_rad
     results = {j: SlackResult(j, motor_of[j]) for j in targets}
 
     def _restore() -> None:
+        # A mode change leaves torque on, on every family: switch mode first.
+        hand.set_control_mode(control_mode, all_present)
         hand.disable_torque()
         hand.set_max_current(config.max_current)
-        hand.set_control_mode(control_mode, all_present)
 
     def _check() -> None:
         if should_stop():
@@ -209,8 +212,8 @@ def run_slack_test(
         return float(read_motor_pos_checked(hand)[idx[motor]])
 
     try:
-        hand.disable_torque()
         hand.set_control_mode(CURRENT_BASED_POSITION, all_present)
+        hand.disable_torque()
         hand.set_max_current([settings.current_ma for _ in config.motor_ids])
         _emit(progress_callback, "slack_plan", joints=list(targets),
               motors=[motor_of[j] for j in targets])
@@ -249,17 +252,23 @@ def run_slack_test(
                 sense = joint_sense(config, joint, direction)
                 _emit(progress_callback, "slack_phase", joint=joint, direction=direction, sense=sense)
                 here = direction * math.degrees(_position(motor) - start)
-                hand.write_motor_pos([motor], np.array([start + direction * math.radians(budget)]))
+                goal = start + direction * math.radians(budget)
+                if span is not None:
+                    goal = min(max(goal, span[0]), span[1])
+                room = direction * math.degrees(goal - start)
+                hand.write_motor_pos([motor], np.array([goal]))
                 t0 = clock.now()
                 deg, reason = _wind(joint, motor, start, here, direction, budget, settings, progress_callback,
                                     should_stop, clock, _position)
                 wound_s = clock.now() - t0
+                if room < budget - 1.0 and deg >= room - 2.0:
+                    r.range_limited, reason = True, "range"
                 if direction > 0:
                     r.plus_deg, r.plus_sense = deg, sense
                 else:
                     r.minus_deg, r.minus_sense = deg, sense
                 t0 = clock.now()
-                returned = _return(hand, motor, start, settings, clock, _position)
+                returned = _return(hand, motor, start, settings, clock, _position, should_stop)
                 _emit(progress_callback, "slack_phase_done", joint=joint, direction=direction,
                       deg=round(deg, 2), reason=reason, seconds=round(wound_s, 2),
                       returned=returned, return_s=round(clock.now() - t0, 2))
@@ -337,7 +346,7 @@ def _wind(joint, motor, start, here, direction, budget, settings, progress_callb
             return deg, "timeout"
 
 
-def _return(hand, motor, start, settings, clock, position) -> str:
+def _return(hand, motor, start, settings, clock, position, should_stop=lambda: False) -> str:
     """Bring the motor back to where the joint's test started, at the test
     current, until it arrives or stops short. Returns which."""
     hand.write_motor_pos([motor], np.array([start]))
@@ -345,6 +354,8 @@ def _return(hand, motor, start, settings, clock, position) -> str:
     deadline = now + settings.return_timeout_s
     watch = _StallWatch(settings, now, math.degrees(position(motor) - start))
     while clock.now() < deadline:
+        if should_stop():
+            raise InterruptedError("slack test stopped")
         clock.sleep(settings.sample_period_s)
         off = math.degrees(position(motor) - start)
         if abs(off) < 2.0:

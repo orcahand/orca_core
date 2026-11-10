@@ -266,9 +266,10 @@ def run_tension_sweep(
     control_mode = config.control_mode
 
     def _restore() -> None:
+        # A mode change leaves torque on, on every family: switch mode first.
+        hand.set_control_mode(control_mode, all_present)
         hand.disable_torque()
         hand.set_max_current(config.max_current)
-        hand.set_control_mode(control_mode, all_present)
 
     def _check() -> None:
         if should_stop():
@@ -297,6 +298,7 @@ def run_tension_sweep(
         )
         if short:
             _emit(progress_callback, "pose_short", joints=short)
+        _check()
         centre = read_motor_pos_checked(hand)
         hand.write_motor_pos(all_present, centre[[idx[m] for m in all_present]])
         hand.enable_torque(all_present)
