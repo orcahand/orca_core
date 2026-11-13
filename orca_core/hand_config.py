@@ -17,7 +17,6 @@ from typing import Dict, List, Literal, Optional
 from .constants import (
     CALIBRATION_CURRENT_V21,
     CALIBRATION_GROUPS,
-    DEFAULT_GUIDED_TENSION_CURRENTS,
     DYNAMIXEL,
     GUIDED_TENSION_CURRENTS,
     CALIBRATION_RETRY_STEP_MA,
@@ -364,6 +363,17 @@ def _parse_guided_tension_currents(raw) -> Dict[str, dict]:
     return by_family
 
 
+def _one_joint_per_step(sequence: List[dict]) -> List[dict]:
+    """``sequence`` with each step split into one step per joint, order and direction kept."""
+    return [
+        {"step": number, "joints": {joint: direction}}
+        for number, (joint, direction) in enumerate(
+            ((joint, direction) for step in sequence for joint, direction in step["joints"].items()),
+            start=1,
+        )
+    ]
+
+
 def _parse_motor_travel(raw, key: str) -> Dict[str, float]:
     raw = raw or {}
     if not isinstance(raw, dict):
@@ -585,7 +595,7 @@ class OrcaHandConfig(BaseHandConfig):
     calibration_num_stable: int = 20
     calibration_sequence: List[dict] = field(default_factory=list)
     # Steps for manual calibration; one operator answer records a whole step.
-    # Empty falls back to calibration_sequence.
+    # Empty becomes calibration_sequence split into one joint per step.
     manual_calibration_sequence: List[dict] = field(default_factory=list)
     # Motor-shaft travel between a joint's two hardstops, in degrees, keyed by
     # joint name. The travel a joint's motor makes is set by that joint's
@@ -656,14 +666,16 @@ class OrcaHandConfig(BaseHandConfig):
 
     def guided_tension_currents_for(self, family: Optional[str] = None) -> dict:
         """``{"hold": {group or joint: mA}, "tension": mA}`` for ``family`` (default: this
-        hand's), the config's entries over the defaults. An unset ``tension`` follows
-        ``max_current``."""
+        hand's), the config's entries over the family client's ``guided_hold_current_ma``.
+        An unset ``tension`` follows ``max_current``."""
+        from .hardware.motor_factory import motor_client_class
+
         family = family or self.motor_type
-        if family not in DEFAULT_GUIDED_TENSION_CURRENTS:
+        if family not in SUPPORTED_MOTOR_TYPES:
             family = DYNAMIXEL
-        base = DEFAULT_GUIDED_TENSION_CURRENTS[family]
+        base = motor_client_class(family).guided_hold_current_ma
         own = self.guided_tension_currents_dict.get(family, {})
-        return {"hold": {**base["hold"], **own.get("hold", {})},
+        return {"hold": {**base, **own.get("hold", {})},
                 "tension": own.get("tension", self._family_max_current(family))}
 
     def _family_max_current(self, family: str) -> int:
@@ -867,8 +879,13 @@ class OrcaHandConfig(BaseHandConfig):
                     f"(210 for v2.1.0, 211 for v2.1.1), got {raw_hw!r}"
                 )
             kwargs["hardware_version"] = normalize_hardware_version(raw_hw)
-        if JOINT_ROMS_V211 in config:
-            kwargs["joint_roms_v211_dict"] = dict(config[JOINT_ROMS_V211])
+        raw_roms_v211 = config.get(JOINT_ROMS_V211) or {}
+        if not isinstance(raw_roms_v211, dict):
+            raise HandConfigValidationError(
+                f"{JOINT_ROMS_V211} must be a mapping of joint name to [min, max], "
+                f"got {raw_roms_v211!r}"
+            )
+        kwargs["joint_roms_v211_dict"] = dict(raw_roms_v211)
         if "calibration_current" in config:
             kwargs["calibration_current"] = _current_setting(
                 config["calibration_current"], "calibration_current"
@@ -1133,6 +1150,10 @@ class OrcaHandConfig(BaseHandConfig):
         if self.wrist_calibration_current is None:
             object.__setattr__(self, "wrist_calibration_current", self.calibration_current)
         self.validate_config()
+        if not self.manual_calibration_sequence:
+            object.__setattr__(
+                self, "manual_calibration_sequence", _one_joint_per_step(self.calibration_sequence)
+            )
 
     @property
     def currents_resolved(self) -> bool:

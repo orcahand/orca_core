@@ -154,33 +154,24 @@ def _unconnected_client():
 
 class TestTeardownWithTheBusHeld:
     """A reconnect provoked by a bus transaction tears the client down while
-    the bus is live. Which of the two teardowns is used decides whether a
-    momentary condition becomes a permanent one."""
+    the bus is live. Teardown takes the bus lock first, so a momentary
+    condition never becomes a permanent one."""
 
-    def test_the_shared_teardown_gives_up_when_the_bus_looks_busy(self):
-        """Why the new paths do not use it: the flag is read before the lock,
-        so the answer may be a true one about another thread -- and the
-        response is to return, leaving the port open and the client
-        registered, with nothing scheduled to try again."""
+    @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
+    def test_a_stale_in_use_flag_does_not_stop_the_teardown(self, teardown):
+        """A transaction that raised leaves the SDK's flag set with nobody
+        holding the bus; the port must still close and deregister."""
         client, _ = _unconnected_client()
         client.port_handler.is_using = True
 
-        client.disconnect()
-
-        assert not client.port_handler.closed
-        assert client in type(client).OPEN_CLIENTS
-        type(client).OPEN_CLIENTS.discard(client)
-
-    def test_the_fixed_order_closes_the_port_regardless(self):
-        client, _ = _unconnected_client()
-        client.port_handler.is_using = True
-
-        client.disconnect_fixed_lock_order()
+        getattr(client, teardown)()
 
         assert client.port_handler.closed
+        assert not client.port_handler.is_using
         assert client not in type(client).OPEN_CLIENTS
 
-    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self):
+    @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
+    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self, teardown):
         """The lock is the real mutual exclusion. Taking it first means the
         teardown queues behind a live exchange rather than reading its flag
         and declining, so no transaction is cut in half either."""
@@ -201,29 +192,18 @@ class TestTeardownWithTheBusHeld:
         holder.start()
         assert mid_transaction.wait(5)
 
-        teardown = threading.Thread(target=client.disconnect_fixed_lock_order)
-        teardown.start()
-        teardown.join(0.2)
-        assert teardown.is_alive(), "teardown should be waiting on the bus lock"
+        closer = threading.Thread(target=getattr(client, teardown))
+        closer.start()
+        closer.join(0.2)
+        assert closer.is_alive(), "teardown should be waiting on the bus lock"
 
         released.set()
         holder.join(5)
-        teardown.join(5)
+        closer.join(5)
 
         assert closed_while_busy == [False]
         assert client.port_handler.closed
         assert client not in type(client).OPEN_CLIENTS
-
-    def test_the_shared_teardown_is_left_exactly_as_it_was(self):
-        """Changing the locking of a method every consumer calls is its own
-        change. This branch only adds a path beside it."""
-        import inspect
-
-        from orca_core.hardware.dynamixel_client import DynamixelClient
-
-        source = inspect.getsource(DynamixelClient.disconnect)
-        assert "is_using" in source
-        assert "cannot disconnect" in source
 
     def test_a_register_write_does_not_touch_the_in_use_flag(self):
         """The register paths hold the bus lock and leave the SDK's own
@@ -238,9 +218,9 @@ class TestTeardownWithTheBusHeld:
 
 
 class TestEveryClientOffersTheFixedTeardown:
-    """Both families read the in-use flag before taking the lock, so both get
-    the twin, and the mocks carry it so a front-end exercising the path under
-    test is exercising the same surface."""
+    """Both families keep the fixed-order name for callers that ask for it,
+    and the mocks carry it so a front-end exercising the path under test is
+    exercising the same surface."""
 
     def test_real_and_mock_clients_all_have_it(self):
         from orca_core.hardware.motor_factory import (
@@ -252,7 +232,7 @@ class TestEveryClientOffersTheFixedTeardown:
             for factory in (motor_client_class, mock_motor_client_class):
                 assert hasattr(factory(motor_type), "disconnect_fixed_lock_order")
 
-    def test_it_takes_the_lock_before_reading_any_flag(self):
+    def test_disconnect_takes_the_lock_before_reading_any_flag(self):
         """The whole point. Reading first is what turns someone else's live
         transaction into a refusal to tear down."""
         import inspect
@@ -260,10 +240,10 @@ class TestEveryClientOffersTheFixedTeardown:
         from orca_core.hardware.motor_factory import motor_client_class
 
         for motor_type in FAMILIES:
-            source = inspect.getsource(
-                motor_client_class(motor_type).disconnect_fixed_lock_order)
+            source = inspect.getsource(motor_client_class(motor_type).disconnect)
             body = source[source.index('"""', source.index('"""') + 3):]
             assert "is_using" not in body
+            assert body.index("_bus_lock") < body.index("_reclaim_port")
             assert body.index("_bus_lock") < body.index("closePort")
 
 

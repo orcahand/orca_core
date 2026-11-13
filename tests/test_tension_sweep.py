@@ -151,6 +151,18 @@ def test_the_sweep_needs_limits_and_summarize_reads_a_curve(connected_mock_hand)
         SweepSettings(speed_deg_s=0.0).validate()
 
 
+def test_the_refusal_names_the_uncalibrated_wrist(connected_mock_hand):
+    import dataclasses
+
+    hand = connected_mock_hand
+    wrist_motor = hand.config.joint_to_motor_map["wrist"]
+    limits = {**hand.calibration.motor_limits_dict, wrist_motor: [None, None]}
+    hand.calibration = dataclasses.replace(
+        hand.calibration, motor_limits_dict=limits, calibrated=False)
+    with pytest.raises(ValueError, match="no motor limits or ratio for wrist$"):
+        run_tension_sweep(hand, joints=["index_pip"], clock=_FakeClock())
+
+
 def test_a_group_sweeps_together_and_a_motor_on_its_stop_ends_early(swept):
     hand, tendon = swept
     motor = hand.config.joint_to_motor_map

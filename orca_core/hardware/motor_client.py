@@ -147,14 +147,31 @@ class MotorClient(ABC):
     arrival_tolerance_rad: ClassVar[float] = 0.06
 
     def _flush_input_buffer(self):
-        """Discards stale RX bytes so a late reply can't be misread as the next response."""
-        ser = getattr(getattr(self, "port_handler", None), "ser", None)
+        """Recover the port after a failed transaction; call holding the bus lock.
+
+        Discards stale RX bytes, so a late reply can't be misread as the next
+        response, and drops the SDK's in-use claim: the SDK clears it only
+        once a reply is read, so a transaction that raised leaves it set and
+        every later one is refused as busy. Under the bus lock no live
+        transaction can own it.
+        """
+        handler = getattr(self, "port_handler", None)
+        if getattr(handler, "is_using", False) is True:
+            handler.is_using = False
+        ser = getattr(handler, "ser", None)
         if ser is None or not hasattr(ser, "reset_input_buffer"):
             return
         try:
             ser.reset_input_buffer()
         except Exception:
             pass
+
+    def _reclaim_port(self) -> None:
+        """Recover a port a raising transaction left marked in use; call holding the bus lock."""
+        if getattr(getattr(self, "port_handler", None), "is_using", False) is True:
+            logging.warning("Port %s was left in use by a failed transaction; "
+                            "reclaiming it.", getattr(self, "port_name", "?"))
+            self._flush_input_buffer()
 
     OPEN_CLIENTS: ClassVar[set] = set()
     """Connected clients of every family, so exit cleanup only touches live ports."""
@@ -336,6 +353,10 @@ class MotorClient(ABC):
 
     sweep_current_ma: ClassVar[int]
     """Current limit in mA for the motor a tension sweep is walking from limit to limit."""
+
+    guided_hold_current_ma: ClassVar["dict[str, int]"]
+    """Guided tensioning's range-check hold current in mA per joint group
+    (``abd``, ``mcp``, ``pip``), used where a config's ``guided_tension_currents`` sets none."""
 
     hardware_error_bits: ClassVar["tuple[tuple[int, str], ...]"] = (
         (0x01, "input_voltage"),

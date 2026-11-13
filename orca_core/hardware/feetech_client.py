@@ -151,8 +151,9 @@ def _raw_units_to_rad(raw: float, scale: float) -> float:
 
 
 def _rad_to_raw_units(rad: float, scale: float) -> int:
-    """Convert radians to raw motor units (applies direction inversion)."""
-    return int((rad * POSITION_DIRECTION) / scale)
+    """Convert radians to raw motor units (applies direction inversion), to the
+    nearest step so a read-back position written as a goal lands on itself."""
+    return int(round((rad * POSITION_DIRECTION) / scale))
 
 
 # Radian image of the raw POS_MIN..POS_MAX span, ascending. POSITION_DIRECTION
@@ -245,6 +246,7 @@ class FeetechClient(MotorClient):
     sweep_hold_current_ma = 400
     sweep_pose_current_ma = 600
     sweep_current_ma = 600
+    guided_hold_current_ma = {"abd": 380, "mcp": 320, "pip": 280}
 
     @classmethod
     def supported_baudrates(cls) -> list[int]:
@@ -453,16 +455,14 @@ class FeetechClient(MotorClient):
 
         The port is always closed and the client deregistered, even when the
         final torque-disable raises (e.g. the serial link is already gone);
-        that exception propagates after cleanup.
+        that exception propagates after cleanup. Takes the bus lock first, so
+        it waits out an in-flight transaction instead of refusing.
         """
         if not self._connected:
             return
 
-        if self.port_handler.is_using:
-            logging.error('Port handler in use; cannot disconnect.')
-            return
-
         with self._bus_lock:
+            self._reclaim_port()
             try:
                 # Disable torque before disconnecting
                 self.set_torque_enabled(self.motor_ids, False, retries=0)
@@ -490,34 +490,8 @@ class FeetechClient(MotorClient):
         return self._transport_bauds
 
     def disconnect_fixed_lock_order(self) -> None:
-        """Disconnect, waiting for the bus rather than giving up on it.
-
-        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
-        lock, and returns when it finds it set -- so a sampler legitimately
-        mid-transaction makes the teardown silently not happen, with no retry.
-        The port stays open, the client stays registered, and a reconnect
-        cannot replace the handler. A momentary condition becomes permanent.
-
-        Taking the lock first waits for any in-flight exchange to finish,
-        after which no live transaction can hold the flag, so the check is
-        unnecessary rather than skipped.
-
-        Deliberately a separate method. ``disconnect`` is on every consumer's
-        path and changing its locking is its own change with its own testing;
-        this exists so the behaviour can be proven in the one place that
-        provokes the race -- a reconnect triggered by a bus transaction --
-        before it is merged into the shared path.
-        """
-        if not self._connected:
-            return
-        with self._bus_lock:
-            try:
-                self.set_torque_enabled(self.motor_ids, False, retries=0)
-            finally:
-                self.port_handler.closePort()
-                self._connected = False
-                self._motor_modes.clear()
-                self.OPEN_CLIENTS.discard(self)
+        """Same as :meth:`disconnect`, which waits for the bus rather than giving up on it."""
+        self.disconnect()
 
     @classmethod
     def scannable_baudrates(cls) -> list[int]:
@@ -696,6 +670,7 @@ class FeetechClient(MotorClient):
         self.check_connected()
 
         with self._bus_lock:
+            self._reclaim_port()
             remaining_ids = list(motor_ids)
             while remaining_ids:
                 failed_ids = []
@@ -1111,9 +1086,9 @@ class FeetechClient(MotorClient):
                   4: self.packet_handler.read4ByteTxRx}[entry.size]
         with self._bus_lock:
             value, result, error = reader(int(motor_id), entry.address)
-        if result != COMM_SUCCESS or error != 0:
-            self._flush_input_buffer()
-            return None
+            if result != COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                return None
         return entry.from_raw(int(value))
 
     def write_config_register(self, motor_id: int, key: str,

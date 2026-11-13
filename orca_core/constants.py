@@ -44,7 +44,8 @@ CALIBRATION_CURRENT_V21 = "calibration_current_v21"
 # Joint groups calibration_current_v21 sets a current for.
 CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 GUIDED_TENSION_CURRENTS = "guided_tension_currents"
-# Range-check holds a config's guided_tension_currents does not override.
+# Mirrors each motor client's guided_hold_current_ma, which is what configs resolve
+# against; kept for importers that have no client class at hand.
 DEFAULT_GUIDED_TENSION_CURRENTS = {
     "dynamixel": {"hold": {"abd": 200, "mcp": 140, "pip": 100}},
     "feetech": {"hold": {"abd": 380, "mcp": 320, "pip": 280}},

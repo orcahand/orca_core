@@ -17,10 +17,8 @@ limits calibration recorded, flexing first then extending, so a group always
 moves the same way in joint terms. The thumb is parked fully extended while a
 finger group runs and the fingers are parked straight while a thumb joint
 runs; the rest hold at mid-range. Each motor's present current is sampled
-against its position the whole way, and
-the present current the motor reports is sampled against its position the
-whole way. The curve is the load the tendon and skin put on the motor over the
-whole travel; its level, compared joint for joint with a reference hand, says
+against its position the whole way. The curve is the load the tendon and
+skin put on the motor over the whole travel; its level, compared joint for joint with a reference hand, says
 whether a tendon is tighter or looser than it should be, and a stretch of near
 zero current after the reversal is slack: the spool turning before the other
 tendon takes up.
@@ -196,6 +194,20 @@ def _read_state_checked(hand, retries: int = 5, retry_interval: float = TINY_SLE
     raise RuntimeError("motor read failed: the motor bus returned no status packets")
 
 
+def _uncalibrated_description(hand, missing: Sequence[str]) -> str:
+    """Which joints keep the hand from counting as calibrated, for the refusal."""
+    calibration = getattr(hand, "calibration", None)
+    if not missing and hasattr(calibration, "_motor_ready"):
+        joint_to_motor = hand.config.joint_to_motor_map
+        missing = [
+            j for j in hand.config.joint_ids
+            if j in joint_to_motor and not calibration._motor_ready(int(joint_to_motor[j]))
+        ]
+    if missing:
+        return "no motor limits or ratio for " + ", ".join(missing)
+    return "the calibration is not marked complete; run calibration again"
+
+
 def run_tension_sweep(
     hand: "OrcaHand",
     *,
@@ -254,8 +266,8 @@ def run_tension_sweep(
     missing = [j for j in targets if not limits.get(motor_of[j]) or None in limits[motor_of[j]]]
     if missing or not getattr(hand, "calibrated", False):
         raise ValueError(
-            "the tension sweep needs a calibrated hand: no motor limits for "
-            + (", ".join(missing) if missing else "this hand")
+            "the tension sweep needs a calibrated hand (every motor, wrist included): "
+            + _uncalibrated_description(hand, missing)
         )
     all_present = [
         m

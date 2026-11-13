@@ -299,6 +299,20 @@ def test_v2_1_1_is_a_v2_1_hand_with_its_own_roms(tmp_path):
     assert base.with_hardware_version(210).joint_roms_dict == base.joint_roms_dict
 
 
+@pytest.mark.parametrize("empty", [None, {}])
+def test_an_empty_joint_roms_v211_means_no_overrides(tmp_path, empty):
+    path = _config_with(tmp_path, LEFT[0], joint_roms_v211=empty)
+    base = OrcaHandConfig.from_config_path(config_path=path)
+    assert base.joint_roms_v211_dict == {}
+    assert base.with_hardware_version(211).joint_roms_dict == base.joint_roms_dict
+
+
+def test_a_joint_roms_v211_that_is_not_a_mapping_is_rejected(tmp_path):
+    path = _config_with(tmp_path, LEFT[0], joint_roms_v211=[[-40, 30]])
+    with pytest.raises(HandConfigValidationError, match="joint_roms_v211"):
+        OrcaHandConfig.from_config_path(config_path=path)
+
+
 @pytest.mark.parametrize("spelling", ["auto", "Auto", " AUTO "])
 def test_auto_means_not_pinned(tmp_path, spelling):
     path = _config_with(tmp_path, LEFT[0], hardware_version=spelling)

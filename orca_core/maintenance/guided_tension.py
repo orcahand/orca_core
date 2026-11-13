@@ -55,7 +55,7 @@ import numpy as np
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
 from .motor_reads import read_motor_pos_checked, read_motor_state_checked
-from .setup_file import read_section, write_section
+from .setup_file import read_section, update_section, write_section
 from .tensioning import (
     TENSION_EXTRA_DEG,
     TENSION_OFFSET_DEG,
@@ -392,27 +392,38 @@ def _write_progress(
     scoring: Optional[str] = SCORING_FRACTION,
 ) -> None:
     """Replace the ``scoring`` part of one hand's record (``None`` drops it);
-    ``scoring=None`` drops the whole record."""
-    hands = dict((read_section(config, PROGRESS_SECTION, PROGRESS_FILE) or {}).get("hands") or {})
-    current = dict(hands.get(hand_key) or {})
-    if scoring is None:
-        current = {}
-    elif scoring == SCORING_SLACK:
-        current.pop("slack", None)
-        if record is not None:
-            current["slack"] = record
-    else:
-        slack = current.get("slack")
-        current = dict(record or {})
-        if slack:
-            current["slack"] = slack
-    if current:
-        hands[hand_key] = current
-    elif hand_key in hands:
-        hands.pop(hand_key)
-    else:
+    ``scoring=None`` drops the whole record. Read and written as one step, so
+    another process saving progress to the same file is not overwritten."""
+    if record is None and hand_key not in _progress_hands(
+        read_section(config, PROGRESS_SECTION, PROGRESS_FILE)
+    ):
         return
-    write_section(config, PROGRESS_SECTION, {"hands": hands})
+
+    def merged(section: Optional[dict]) -> dict:
+        hands = _progress_hands(section)
+        current = dict(hands.get(hand_key) or {})
+        if scoring is None:
+            current = {}
+        elif scoring == SCORING_SLACK:
+            current.pop("slack", None)
+            if record is not None:
+                current["slack"] = record
+        else:
+            slack = current.get("slack")
+            current = dict(record or {})
+            if slack:
+                current["slack"] = slack
+        if current:
+            hands[hand_key] = current
+        else:
+            hands.pop(hand_key, None)
+        return {"hands": hands}
+
+    update_section(config, PROGRESS_SECTION, merged, PROGRESS_FILE)
+
+
+def _progress_hands(section: Optional[dict]) -> dict:
+    return dict((section or {}).get("hands") or {})
 
 
 def clear_progress(
@@ -437,21 +448,32 @@ def latched_faults(hand: "OrcaHand", motor_ids: Sequence[int]) -> Dict[int, List
     """``motor_ids`` whose Hardware Error Status has bits latched, with the bit
     names. A latched motor still answers the bus and still acks torque enable;
     it just never energizes, so without this check it reads as holding."""
+    return _read_faults(hand, motor_ids)[0]
+
+
+def _read_faults(
+    hand: "OrcaHand", motor_ids: Sequence[int]
+) -> Tuple[Dict[int, List[str]], set]:
+    """:func:`latched_faults`, plus the motors whose register was actually read:
+    a motor that did not answer has neither latched nor cleared."""
     client = hand.motor_client
     read = getattr(client, "read_hardware_errors", None)
     if client is None or read is None or not motor_ids:
-        return {}
+        return {}, set()
     try:
         raw = read(list(motor_ids))
     except Exception:
         logger.debug("hardware error sweep failed", exc_info=True)
-        return {}
-    faults = {}
+        return {}, set()
+    faults, answered = {}, set()
     for mid, value in raw.items():
         flags = client.decode_hardware_error(value)
+        if flags is None:
+            continue
+        answered.add(int(mid))
         if flags:
             faults[int(mid)] = list(flags)
-    return faults
+    return faults, answered
 
 
 def reboot_and_hold(hand: "OrcaHand", motor_id: int) -> Optional[List[str]]:
@@ -479,7 +501,10 @@ def reboot_and_hold(hand: "OrcaHand", motor_id: int) -> Optional[List[str]]:
     hand.write_motor_pos([motor_id], goal)
     hand.enable_torque([motor_id])
     hand.write_motor_pos([motor_id], goal)
-    return latched_faults(hand, [motor_id]).get(motor_id, [])
+    faults, answered = _read_faults(hand, [motor_id])
+    if motor_id not in answered:
+        return None
+    return faults.get(motor_id, [])
 
 
 class _FaultWatch:
@@ -504,25 +529,25 @@ class _FaultWatch:
 
     def sweep(self, motor_ids: Sequence[int]) -> None:
         """Read every motor's error register (after a torque enable or a pull)."""
-        found = latched_faults(self._hand, motor_ids)
-        self._apply(found, set(motor_ids))
+        self._apply(*_read_faults(self._hand, motor_ids))
 
     def poll(self) -> None:
         """Cheap: the Alert bits that rode along in the sampler's own reads."""
         take = getattr(self._hand.motor_client, "take_hardware_alerts", None)
         alerted = [m for m in (take() if take is not None else {}) if m not in self.faults]
         if alerted:
-            self._apply(latched_faults(self._hand, alerted), set(alerted))
+            self._apply(*_read_faults(self._hand, alerted))
 
     def recheck(self) -> None:
         """Re-read the faulted motors: a reboot clears the register."""
         if self.faults:
-            self._apply(latched_faults(self._hand, list(self.faults)), set(self.faults))
+            self._apply(*_read_faults(self._hand, list(self.faults)))
 
-    def _apply(self, found: Dict[int, List[str]], asked: set) -> None:
+    def _apply(self, found: Dict[int, List[str]], answered: set) -> None:
+        """Only a motor whose register was read can latch or clear."""
         with self._lock:
             events = []
-            for mid in asked:
+            for mid in answered:
                 flags = found.get(mid)
                 if flags and flags != self.faults.get(mid):
                     self.faults[mid] = flags
@@ -770,6 +795,13 @@ class _SpreadSampler(threading.Thread):
                 )
         except BaseException as exc:
             self.error = exc
+            logger.exception("guided tension sampler stopped; live spreads have ended")
+            _emit(
+                self._progress_callback,
+                "sampler_failed",
+                round=self._round,
+                error=str(exc) or type(exc).__name__,
+            )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -939,12 +971,15 @@ def run_guided_tension(
 
     ``forget()``, polled while the run goes on, returns joints the operator
     wants tested again: their kept score is dropped (also from the saved
-    progress at the next score) and their ends start over, so a joint that
+    progress at the next score or finish) and their ends start over, so a joint that
     passed once has to pass again.
 
     Progress events: ``step`` (``step``, ``round``), ``spread`` and ``score``
     (``round``, ``passed``, ``scored``, ``fraction``, ``motors``),
     ``fault`` / ``fault_cleared`` (``motor``, ``joint``, ``flags``),
+    ``sampler_failed`` (``round``, ``error``) when the range-check sampler dies
+    and live spreads stop, ``torque_off_failed`` (``motors``, ``joints``) when
+    the exit cannot switch torque off on every motor,
     ``cleanup_failed``, ``current_limits`` after every limit write of a range
     check, pull or ratchet hold (``phase``, ``limits``: per joint the ``asked``
     mA and the ``held`` mA the motor reads back) and ``currents_drawn`` when a
@@ -1041,7 +1076,16 @@ def run_guided_tension(
     def _restore() -> None:
         # A mode change leaves torque on, on every family: switch mode first.
         hand.set_control_mode(control_mode)
-        hand.disable_torque()
+        still_on = list(hand.disable_torque() or [])
+        if still_on:
+            joint_of = config.motor_to_joint_dict
+            logger.error("guided tension could not switch torque off on motors %s", still_on)
+            _emit(
+                progress_callback,
+                "torque_off_failed",
+                motors=still_on,
+                joints=[joint_of.get(m) for m in still_on],
+            )
         hand.set_max_current(config.max_current)
 
     if scoring not in SCORINGS:
@@ -1080,19 +1124,43 @@ def run_guided_tension(
     template = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
 
     forget_lock = threading.Lock()
+    round_spreads: List[MotorSpread] = []
 
     def _drain_forget() -> set:
-        """Joints to test again, their kept score dropped from ``best`` and the template."""
+        """Joints to test again, dropped from ``best``, the template and this round's spreads."""
         if forget is None:
             return set()
         with forget_lock:
             joints = set(forget())
             for joint in joints:
                 best.pop(joint, None)
-            for spread in template:
+            for spread in (*template, *round_spreads):
                 if spread.joint in joints:
-                    spread.kept = None
+                    forget_spread(spread)
             return joints
+
+    def _score_round(spreads: List[MotorSpread]) -> Tuple[dict, dict]:
+        """The round's score and its progress record, after any pending retest.
+        Held under the forget lock, so the sampler cannot drain a retest midway."""
+        _drain_forget()
+        with forget_lock:
+            result = score(spreads, threshold, excluded, scoring)
+            record = {
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "rounds": rounds_before + round_no,
+            }
+            if slack_mode:
+                record["scores"] = {
+                    m["joint"]: {k: m[k] for k in ("slack_deg", "fraction", "status")}
+                    for m in result["motors"]
+                    if m["slack_deg"] is not None
+                }
+            else:
+                for m in result["motors"]:
+                    if m["fraction"] is not None:
+                        best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
+                record["best"] = {j: round(f, 3) for j, f in best.items()}
+        return result, record
 
     keys = [st.key for st in stages]
     stage_of = {f"{GOTO}{k}": j for j, k in enumerate(keys)}
@@ -1108,6 +1176,8 @@ def run_guided_tension(
             round_no += 1
             _drain_forget()
             spreads = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
+            with forget_lock:
+                round_spreads[:] = spreads
             watch.bind(spreads)
             passed = [_stage_passed(st, spreads, threshold, scoring) for st in stages]
             thresholds = {s.joint: pass_threshold(threshold, s.joint) for s in spreads}
@@ -1201,30 +1271,10 @@ def run_guided_tension(
                         sampler.pause()
                         if sampler.error is not None:
                             raise sampler.error
-                    again = _drain_forget()
-                    for spread in spreads:
-                        if spread.joint in again:
-                            forget_spread(spread)
-
-                    result = score(spreads, threshold, excluded, scoring)
-                    record = {
-                        "updated_at": datetime.now(timezone.utc).isoformat(
-                            timespec="seconds"
-                        ),
-                        "rounds": rounds_before + round_no,
-                    }
-                    if slack_mode:
-                        record["scores"] = {
-                            m["joint"]: {k: m[k] for k in ("slack_deg", "fraction", "status")}
-                            for m in result["motors"]
-                            if m["slack_deg"] is not None
-                        }
-                    else:
-                        for m in result["motors"]:
-                            if m["fraction"] is not None:
-                                best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
-                        record["best"] = {j: round(f, 3) for j, f in best.items()}
-                    if persist:
+                    result, record = _score_round(spreads)
+                    # A slack record holds only this round's sweeps, so a round without one saves nothing.
+                    saves = persist and (sampler is not None or not slack_mode)
+                    if saves:
                         _write_progress(config, key, record, scoring)
                     completed = result["passed"] == result["scored"]
                     if jump == GOTO_TENSION:
@@ -1253,6 +1303,12 @@ def run_guided_tension(
                     if answer == BACK or answer in stage_of:
                         i = back if answer == BACK else stage_of[answer]
                         continue
+                    if answer in (FINISH, FINISH_ANYWAY):
+                        # A retest asked for while the score was shown is saved too.
+                        result, record = _score_round(spreads)
+                        completed = result["passed"] == result["scored"]
+                        if saves:
+                            _write_progress(config, key, record, scoring)
                     break
             finally:
                 if sampler is not None:

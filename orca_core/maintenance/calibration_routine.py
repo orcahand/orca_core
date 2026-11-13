@@ -414,6 +414,8 @@ class _DriveState:
     # the stored calibration so a run that drives a subset of the joints keeps
     # the rest, and a re-drive overwrites with the newer figure.
     drive_currents: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # The joints whose drive current this run measured, as opposed to carried over.
+    joints_measured: set = field(default_factory=set)
 
 
 @dataclass
@@ -851,6 +853,7 @@ def _drive_step(
             joint = hand.config.motor_to_joint_dict[motor_id]
             state.drive_currents.setdefault(joint, {})[
                 step_direction[motor_id]] = summed / samples
+            state.joints_measured.add(joint)
 
     for motor_id in pwm_retries:
         try:
@@ -1503,8 +1506,13 @@ def _drive_calibration(
             ),
         )
 
-    if drive_current_measured:
-        table = _drive_current_table(hand, drive_current_measured, previous_drive_currents)
+    # calibration.yaml keeps every joint's figure; the table shows only this run's.
+    measured_this_run = {
+        joint: per_direction for joint, per_direction in drive_current_measured.items()
+        if joint in drive_state.joints_measured
+    }
+    if measured_this_run:
+        table = _drive_current_table(hand, measured_this_run, previous_drive_currents)
         logger.info(table)
         _emit(progress_callback, "drive_currents_measured", table=table)
 
@@ -1515,6 +1523,7 @@ def _drive_calibration(
         motor_travel_deg=dict(motor_travel_measured),
         drive_current_ma=dict(drive_current_measured),
         drive_current_previous_ma=dict(previous_drive_currents),
+        drive_current_measured_joints=sorted(measured_this_run),
     )
     return final_result
 

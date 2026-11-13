@@ -465,3 +465,26 @@ def test_the_fault_policy_methods_only_call_helpers_that_exist(cls):
             if not hasattr(client, attribute):
                 missing.append(f"{cls.__name__}.{name} -> self.{attribute}")
     assert not missing, "calls that do not exist: " + ", ".join(missing)
+
+
+@pytest.mark.parametrize("real, mock, expected", [
+    pytest.param(DynamixelClient, MockDynamixelClient, {"abd": 200, "mcp": 140, "pip": 100}, id="dynamixel"),
+    pytest.param(FeetechClient, MockFeetechClient, {"abd": 380, "mcp": 320, "pip": 280}, id="feetech"),
+])
+def test_every_family_declares_its_guided_hold_currents(real, mock, expected, monkeypatch):
+    from orca_core.constants import DEFAULT_GUIDED_TENSION_CURRENTS
+    from orca_core.hand_config import OrcaHandConfig
+
+    for cls in (real, mock):
+        assert cls.guided_hold_current_ma == expected
+    assert DEFAULT_GUIDED_TENSION_CURRENTS[real.motor_type]["hold"] == expected
+
+    # A config resolves its defaults from the family's client, not a table beside it.
+    import os
+
+    import orca_core
+
+    config = OrcaHandConfig.from_config_path(config_path=os.path.join(
+        os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"))
+    monkeypatch.setattr(real, "guided_hold_current_ma", {**expected, "mcp": 123})
+    assert config.guided_tension_currents_for(real.motor_type)["hold"]["mcp"] == 123

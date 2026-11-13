@@ -182,6 +182,50 @@ def test_one_answer_records_every_joint_of_a_manual_step(hand):
         ["index_mcp", "index_mcp", "middle_mcp", "middle_mcp"]
 
 
+def _config_without_manual_sequence(tmp_path, version, model):
+    import os
+
+    import yaml
+
+    import orca_core
+
+    source = os.path.join(os.path.dirname(orca_core.__file__), "models", version, model, "config.yaml")
+    with open(source, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    raw.pop("manual_calibration_sequence", None)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("version,model", [("v2", "orcahand-right"), ("v1", "orcahand-left")])
+def test_a_missing_manual_sequence_is_the_drive_sequence_one_joint_per_step(tmp_path, version, model):
+    from orca_core.hand_config import OrcaHandConfig
+
+    config = OrcaHandConfig.from_config_path(
+        config_path=_config_without_manual_sequence(tmp_path, version, model))
+    drive_order = [(j, d) for step in config.calibration_sequence for j, d in step["joints"].items()]
+    assert any(len(step["joints"]) > 1 for step in config.calibration_sequence)
+    assert all(len(step["joints"]) == 1 for step in config.manual_calibration_sequence)
+    assert [next(iter(s["joints"].items())) for s in config.manual_calibration_sequence] == drive_order
+    assert [s["step"] for s in config.manual_calibration_sequence] == list(range(1, len(drive_order) + 1))
+
+
+def test_without_a_manual_sequence_each_answer_records_one_hardstop(tmp_path):
+    fingers = ["index_mcp", "middle_mcp", "ring_mcp", "pinky_mcp"]
+    hand = MockOrcaHand(config_path=_config_without_manual_sequence(tmp_path, "v2", "orcahand-right"))
+    hand.connect()
+    try:
+        asked = []
+        run_calibration(hand, joints=fingers, manual=True, persist=False,
+                        prompt_callback=lambda r: asked.append(dict(r["joints"])) or "record")
+    finally:
+        hand.disconnect()
+    assert all(len(joints) == 1 for joints in asked)
+    assert len(asked) == 2 * len(fingers)
+
+
 def test_a_manual_run_asks_for_the_wrist_even_when_it_is_calibrated(hand):
     object.__setattr__(hand.calibration, "wrist_calibrated", True)
     asked = []
