@@ -7,7 +7,6 @@ from the package root and their historical deep-import paths.
 from __future__ import annotations
 
 import os
-import shutil
 
 import pytest
 
@@ -17,6 +16,7 @@ from orca_core import (
     JointFeedbackConnectError,
     MockOrcaHandJointFeedback,
 )
+from tests._helpers import copy_model_config
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,7 +57,7 @@ def test_silent_encoder_stream_surfaces_as_connect_error(tmp_path):
     catchable via the documented ``except JointFeedbackConnectError``, with
     the motor bus rolled back."""
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
 
     class _NoFrames(MockOrcaHandJointFeedback):
         def _create_encoder_link(self, port):

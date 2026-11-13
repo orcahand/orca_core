@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 import orca_core
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
@@ -442,11 +443,10 @@ def test_packaged_configs_list_only_what_differs_from_the_defaults():
     paths = sorted(glob.glob(os.path.join(V2_MODELS, "*", "config.yaml")))
     assert paths
     for path in paths:
-        config = OrcaHandConfig.from_config_path(config_path=path)
-        expected = (
-            {"dynamixel": {"hold": {"thumb_mcp": 100}}} if "orcahand-touch-" in path else {}
-        )
-        assert config.guided_tension_currents_dict == expected, path
+        with open(path, encoding="utf-8") as f:
+            own = yaml.safe_load(f).get("guided_tension_currents")
+        expected = {"dynamixel": {"hold": {"thumb_mcp": 100}}} if "orcahand-touch-" in path else None
+        assert own == expected, path
 
 
 def test_the_tension_step_pulls_at_the_tension_current_then_holds_at_the_ceiling(

@@ -19,6 +19,7 @@ from orca_core.hand_config import (
     HandConfigValidationError,
     OrcaHandConfig,
     OrcaHandTouchConfig,
+    load_config,
     write_hardware_version,
 )
 
@@ -30,8 +31,7 @@ FLIPPED = {"thumb_mcp", "thumb_dip"}
 
 
 def _config_with(tmp_path, source, **overrides):
-    with open(source, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_config(source)
     raw.update(overrides)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
@@ -76,15 +76,15 @@ def test_no_right_model_carries_a_v21_map(path):
     assert resolved.joint_inversion_dict == config.joint_inversion_dict
 
 
-def test_every_model_ships_the_same_baseline_and_only_for_v21():
-    """v2.0 hands have no travel baseline at all; every v2.1 variant shares one."""
-    baselines = []
+def test_every_model_takes_the_one_v21_baseline_from_shared_yaml():
+    """The v2.1 travel baseline lives once, in shared.yaml: no model restates it or ships a measurement."""
+    with open(os.path.join(V2_MODELS, "shared.yaml"), encoding="utf-8") as f:
+        baseline = yaml.safe_load(f)["joint_motor_travel_v21"]
     for path in LEFT + RIGHT:
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        assert "joint_motor_travel" not in raw, path
-        baselines.append(raw["joint_motor_travel_v21"])
-    assert all(b == baselines[0] for b in baselines)
+        assert "joint_motor_travel" not in raw and "joint_motor_travel_v21" not in raw, path
+        assert load_config(path)["joint_motor_travel_v21"] == baseline, path
 
 
 # --- the travel features follow the version ------------------------------
@@ -135,7 +135,7 @@ def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
 def test_a_written_pin_lives_beside_the_config_and_leaves_it_untouched(tmp_path, has_line):
     """The pin goes into local_config.yaml: config.yaml is never rewritten, so a
     packaged model stays exactly as shipped and a dev checkout stays clean."""
-    original = open(RIGHT[0], encoding="utf-8").read()
+    original = yaml.safe_dump(load_config(RIGHT[0]), sort_keys=False)
     if not has_line:
         original = original.replace("hardware_version: auto\n", "")
     path = tmp_path / "config.yaml"
@@ -251,9 +251,7 @@ def test_v21_on_a_model_without_the_map_only_records_the_version():
 def test_the_chosen_map_passes_the_same_checks_as_the_base_map(tmp_path):
     """Applying the v2.1 map rebuilds the config, so the ordinary checks run
     on it: a motor the hand does not have is caught then, like in any map."""
-    with open(LEFT[0], encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    v21 = dict(raw["joint_to_motor_map_v21"])
+    v21 = dict(load_config(LEFT[0])["joint_to_motor_map_v21"])
     v21["thumb_dip"] = -99
     path = _config_with(tmp_path, LEFT[0], joint_to_motor_map_v21=v21)
     config = OrcaHandConfig.from_config_path(config_path=path)   # loads: not in force yet

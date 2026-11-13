@@ -21,3 +21,15 @@ def wait_until(predicate, timeout: float = 1.0) -> None:
 def fake_serial_port(device: str, vid: int):
     """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
     return SimpleNamespace(device=device, vid=vid, description="fake")
+
+
+def copy_model_config(src, dst) -> None:
+    """Write ``src``'s effective config (its ``shared.yaml`` merged in) to ``dst``:
+    a standalone copy that loads the same with no ``shared.yaml`` beside it."""
+    from pathlib import Path
+
+    import yaml
+
+    from orca_core.hand_config import load_config
+
+    Path(dst).write_text(yaml.safe_dump(load_config(str(src)), sort_keys=False), encoding="utf-8")

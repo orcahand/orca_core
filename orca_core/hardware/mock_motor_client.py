@@ -52,7 +52,6 @@ FAMILY_ATTRIBUTES = (
     "sweep_hold_current_ma",
     "sweep_pose_current_ma",
     "sweep_current_ma",
-    "guided_hold_current_ma",
 )
 
 

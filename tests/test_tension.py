@@ -1,11 +1,11 @@
 import os
-import shutil
 import threading
 
 import pytest
 
 from orca_core.constants import WRIST
 from orca_core.maintenance.tensioning import finger_motor_ids, uncapped_currents
+from tests._helpers import copy_model_config
 
 
 def _holding(hand, move_motors=True):
@@ -99,7 +99,7 @@ def test_run_tension_exception_restores_hand_state(tmp_path):
         "models", "v2", "orcahand-right", "config.yaml",
     )
     config_path = tmp_path / "config.yaml"
-    shutil.copy(model_config, config_path)
+    copy_model_config(model_config, config_path)
     update_yaml(str(config_path), "max_current", 250)
     update_yaml(str(config_path), "calibration_current", 200)
     update_yaml(str(config_path), "control_mode", "position")

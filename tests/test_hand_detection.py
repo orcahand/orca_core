@@ -10,6 +10,7 @@ import pytest
 import orca_core.hand_factory as hand_factory
 from orca_core import OrcaHand, OrcaHandFull, OrcaHandTouch, detect_hand, load_hand
 from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo, parse_orca_info
+from tests._helpers import copy_model_config
 
 
 # ----- identity-line parsing ------------------------------------------------
@@ -619,13 +620,12 @@ def test_load_hand_resolves_default_currents_for_a_pinned_family_mock():
 
 
 def test_connect_resolves_default_currents_from_the_family_on_the_bus(tmp_path):
-    import shutil
 
     from orca_core.utils import update_yaml
 
     src = os.path.join(os.path.dirname(hand_factory.__file__), "models", "v2", "orcahand-right", "config.yaml")
     path = tmp_path / "config.yaml"
-    shutil.copy(src, path)
+    copy_model_config(src, path)
     update_yaml(str(path), "motor_type", "feetech")
     hand = load_hand(config_path=str(path), mock=True)
     assert (hand.config.max_current, hand.config.calibration_current) == (900, 900)
@@ -636,13 +636,12 @@ def test_connect_resolves_default_currents_from_the_family_on_the_bus(tmp_path):
 
 
 def test_connect_rejects_a_pinned_max_current_below_the_family_calibration_current(tmp_path):
-    import shutil
 
     from orca_core.utils import update_yaml
 
     src = os.path.join(os.path.dirname(hand_factory.__file__), "models", "v2", "orcahand-right", "config.yaml")
     path = tmp_path / "config.yaml"
-    shutil.copy(src, path)
+    copy_model_config(src, path)
     update_yaml(str(path), "max_current", 500)
     hand = load_hand(config_path=str(path), mock=True)
     hand.config = dataclasses.replace(hand.config, motor_type="feetech")

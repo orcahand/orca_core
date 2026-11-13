@@ -23,6 +23,7 @@ from orca_core import JointFeedbackConnectError, MockOrcaHandFull
 
 from tests._encoder_helpers import make_encoder_frame
 from tests._helpers import wait_until
+from orca_core.hand_config import load_config
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,8 +36,7 @@ RIGHT_CONFIG = os.path.join(
 def full_config(tmp_path):
     """A config with both joint-encoder support (from orcahand-joint-right) and a
     tactile ``sensors:`` block, as a full hand requires."""
-    with open(RIGHT_CONFIG) as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(RIGHT_CONFIG)
     cfg["sensors"] = {
         "port": "auto",
         "finger_to_sensor_id": {

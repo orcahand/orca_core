@@ -1,4 +1,3 @@
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from orca_core.constants import DEFAULT_MODEL_NAME
 from orca_core.hand_config import BaseHandConfig, OrcaHandConfig
 from orca_core.utils import get_model_path, update_yaml
 from orca_core.utils.utils import read_yaml
+from tests._helpers import copy_model_config
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -70,14 +70,14 @@ def test_unknown_model_raises_file_not_found():
 
 def test_encoder_serial_port_defaults_to_auto_when_yaml_omits_it(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
+    copy_model_config(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "auto"
 
 
 def test_encoder_serial_port_round_trips_explicit_value(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
+    copy_model_config(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     update_yaml(str(config_path), "encoder_serial_port", "/dev/ttyACM2")
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "/dev/ttyACM2"

@@ -9,7 +9,6 @@ the calibration routine answers a short measurement with.
 import math
 import os
 import re
-import shutil
 
 import pytest
 import yaml
@@ -24,6 +23,7 @@ from orca_core.maintenance.motor_travel import (
     write_joint_motor_travel,
 )
 from orca_core.utils.utils import read_yaml
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -33,7 +33,7 @@ MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right
 def model_dir(tmp_path):
     """A v2.1 copy of the packaged model with no packaged baseline or group
     currents, so each test's ``joint_motor_travel`` and currents are the only ones in force."""
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
     path = tmp_path / "config.yaml"
     doc = read_yaml(str(path))
     doc.pop("joint_motor_travel_v21")

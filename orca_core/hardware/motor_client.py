@@ -354,10 +354,6 @@ class MotorClient(ABC):
     sweep_current_ma: ClassVar[int]
     """Current limit in mA for the motor a tension sweep is walking from limit to limit."""
 
-    guided_hold_current_ma: ClassVar["dict[str, int]"]
-    """Guided tensioning's range-check hold current in mA per joint group
-    (``abd``, ``mcp``, ``pip``), used where a config's ``guided_tension_currents`` sets none."""
-
     hardware_error_bits: ClassVar["tuple[tuple[int, str], ...]"] = (
         (0x01, "input_voltage"),
         (0x04, "overheating"),

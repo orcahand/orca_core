@@ -1,7 +1,6 @@
 """Config-loading edge cases: empty config files and sensors.baudrate values."""
 
 import os
-import shutil
 
 import pytest
 import yaml
@@ -11,6 +10,8 @@ from orca_core.hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
 )
+from tests._helpers import copy_model_config
+from orca_core.hand_config import load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOUCH_CONFIG = os.path.join(
@@ -34,7 +35,7 @@ def test_comments_only_config_yaml_raises_clear_error(tmp_path):
 
 def _touch_config_with_baudrate(tmp_path, baudrate):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(TOUCH_CONFIG, config_path)
+    copy_model_config(TOUCH_CONFIG, config_path)
     with open(config_path) as f:
         doc = yaml.safe_load(f)
     doc.setdefault("sensors", {})["baudrate"] = baudrate
@@ -70,8 +71,7 @@ RIGHT_CONFIG = os.path.join(
 
 
 def _right_config_with(tmp_path, **overrides):
-    with open(RIGHT_CONFIG, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_config(RIGHT_CONFIG)
     raw.update(overrides)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")

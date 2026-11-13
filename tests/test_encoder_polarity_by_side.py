@@ -7,7 +7,6 @@ reusing another side's signs.
 
 import dataclasses as dc
 import os
-import shutil
 
 import numpy as np
 import pytest
@@ -20,6 +19,7 @@ from orca_core.hardware.sensing.constants import (
     JOINT_ENCODER_POLARITY_LEFT,
     JOINT_TO_ENCODER_SLOT,
 )
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2")
@@ -39,7 +39,7 @@ def _anchor_count(index: int) -> int:
 
 
 def _hand_with_anchors(config_path, tmp_path, joints):
-    shutil.copy(config_path, tmp_path / "config.yaml")
+    copy_model_config(config_path, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     encoder_cal = {
         joint: JointEncoderCal(enc_at_anchor_count=_anchor_count(i))

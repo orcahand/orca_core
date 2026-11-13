@@ -44,12 +44,6 @@ CALIBRATION_CURRENT_V21 = "calibration_current_v21"
 # Joint groups calibration_current_v21 sets a current for.
 CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 GUIDED_TENSION_CURRENTS = "guided_tension_currents"
-# Mirrors each motor client's guided_hold_current_ma, which is what configs resolve
-# against; kept for importers that have no client class at hand.
-DEFAULT_GUIDED_TENSION_CURRENTS = {
-    "dynamixel": {"hold": {"abd": 200, "mcp": 140, "pip": 100}},
-    "feetech": {"hold": {"abd": 380, "mcp": 320, "pip": 280}},
-}
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DRIVE_CURRENT_MEASURED = "drive_current_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
@@ -204,3 +198,13 @@ MOTOR_BAUD_RATES: dict[str, list[int]] = {
 # validated on assembled hands; 0 is faster still but not yet proven safe
 # against transceiver turnaround. Feetech is left at its factory value.
 DYNAMIXEL_RETURN_DELAY_TIME_US = 20
+
+
+def __getattr__(name: str):
+    # DEFAULT_GUIDED_TENSION_CURRENTS: a read-only view of models/v2/shared.yaml's
+    # guided_tension_currents, read on first use.
+    if name == "DEFAULT_GUIDED_TENSION_CURRENTS":
+        from .hand_config import _default_guided_tension_currents
+
+        return _default_guided_tension_currents()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

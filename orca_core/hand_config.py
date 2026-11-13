@@ -7,11 +7,13 @@
 # ==============================================================================
 
 import dataclasses
+import functools
 import logging
 import math
 import os
 import re
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Dict, List, Literal, Optional
 
 from .constants import (
@@ -53,7 +55,8 @@ from .hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
-from .utils.utils import get_model_path, read_yaml, write_yaml_atomic
+from .utils.utils import _get_models_dir, get_model_path, read_yaml, write_yaml_atomic
+from .version import LATEST_VERSION
 
 
 # What a current limit says in config.yaml to take the motor family's own value.
@@ -221,6 +224,72 @@ def _canonical_joint_to_motor_map(
         inversion_dict[joint] = motor_id < 0
         normalized_map[joint] = abs(motor_id)
     return normalized_map, inversion_dict
+
+
+SHARED_CONFIG_FILE = "shared.yaml"
+
+
+def shared_config_path(config_path: str) -> str:
+    """``shared.yaml`` in the parent of the model folder holding ``config_path``:
+    the defaults every model in that folder builds on (``models/v2/shared.yaml``)."""
+    model_dir = os.path.dirname(os.path.abspath(config_path))
+    return os.path.join(os.path.dirname(model_dir), SHARED_CONFIG_FILE)
+
+
+def _deep_merge(base: Dict, over: Dict) -> Dict:
+    """``base`` with ``over`` laid on top: mappings merge key by key, anything else is replaced."""
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _read_mapping(path: str) -> Dict:
+    doc = read_yaml(path) or {}
+    if not isinstance(doc, dict):
+        raise HandConfigValidationError(f"{path} must hold a mapping of config keys, got {type(doc).__name__}.")
+    return doc
+
+
+def _load_config_documents(config_path: str) -> tuple[Dict, Dict]:
+    """``(config.yaml as written, the effective document)`` for ``config_path``."""
+    own = _read_mapping(config_path)
+    shared_path = shared_config_path(config_path)
+    if not os.path.isfile(shared_path):
+        return own, own
+    return own, _deep_merge(_read_mapping(shared_path), own)
+
+
+def load_config(
+    config_path: str | None = None,
+    model_version: str | None = None,
+    model_name: str | None = None,
+) -> Dict:
+    """The effective yaml document of a model: ``shared.yaml`` from the model
+    folder's parent deep-merged under its ``config.yaml``, the model's values
+    winning. A config with no ``shared.yaml`` there (a v1 model, or a config
+    kept outside a models folder) is used as written and must be complete.
+    Writing this document out gives a standalone copy of the model."""
+    return _load_config_documents(
+        _resolve_config_path(config_path, model_version=model_version, model_name=model_name)
+    )[1]
+
+
+def _read_only(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: _read_only(item) for key, item in value.items()})
+    return value
+
+
+@functools.lru_cache(maxsize=None)
+def _default_guided_tension_currents():
+    """The packaged ``shared.yaml``'s ``guided_tension_currents``, read-only: the
+    hold currents a config whose folder has no ``shared.yaml`` falls back to."""
+    shared = _read_mapping(os.path.join(_get_models_dir(), LATEST_VERSION, SHARED_CONFIG_FILE))
+    return _read_only(_parse_guided_tension_currents(shared[GUIDED_TENSION_CURRENTS]))
 
 
 LOCAL_CONFIG_FILE = "local_config.yaml"
@@ -501,7 +570,7 @@ class BaseHandConfig:
             model_version=model_version,
             model_name=model_name,
         )
-        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
+        config = _with_local_overrides(_load_config_documents(resolved_config_path)[1], resolved_config_path)
 
         return cls(config_path=resolved_config_path, **_shared_hand_kwargs(config))
 
@@ -666,14 +735,12 @@ class OrcaHandConfig(BaseHandConfig):
 
     def guided_tension_currents_for(self, family: Optional[str] = None) -> dict:
         """``{"hold": {group or joint: mA}, "tension": mA}`` for ``family`` (default: this
-        hand's), the config's entries over the family client's ``guided_hold_current_ma``.
-        An unset ``tension`` follows ``max_current``."""
-        from .hardware.motor_factory import motor_client_class
-
+        hand's): the config's entries (``shared.yaml``'s included) over the packaged
+        ``shared.yaml``'s. An unset ``tension`` follows ``max_current``."""
         family = family or self.motor_type
         if family not in SUPPORTED_MOTOR_TYPES:
             family = DYNAMIXEL
-        base = motor_client_class(family).guided_hold_current_ma
+        base = _default_guided_tension_currents()[family]["hold"]
         own = self.guided_tension_currents_dict.get(family, {})
         return {"hold": {**base, **own.get("hold", {})},
                 "tension": own.get("tension", self._family_max_current(family))}
@@ -831,11 +898,19 @@ class OrcaHandConfig(BaseHandConfig):
             resolved_config_path, calibration_path
         )
 
-        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
-        if not config:
+        own, config = _load_config_documents(resolved_config_path)
+        config = _with_local_overrides(config, resolved_config_path)
+        if not own:
             raise HandConfigValidationError(
                 f"config.yaml at {resolved_config_path} is empty. Restore it "
                 "from the bundled model or your hand's backup."
+            )
+        if JOINT_ROM_DICT not in config and not os.path.isfile(shared_config_path(resolved_config_path)):
+            raise HandConfigValidationError(
+                f"{resolved_config_path} sets no joint_roms and there is no "
+                f"{shared_config_path(resolved_config_path)} to take them from. A model copied out of "
+                "the package needs either its generation's shared.yaml in the folder above the model "
+                "folder, or a standalone config.yaml: write out orca_core.load_config(<packaged config>)."
             )
 
         kwargs = {

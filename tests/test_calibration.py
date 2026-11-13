@@ -1,7 +1,6 @@
 import dataclasses as dc
 import logging
 import os
-import shutil
 
 import numpy as np
 import pytest
@@ -19,6 +18,7 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml, update_yaml
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-joint-right")
@@ -30,7 +30,7 @@ EXPECTED_LIMITS = [-1.0, 1.0]
 @pytest.fixture
 def calib_dir(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
     return tmp_path
 
 
@@ -322,7 +322,7 @@ def test_encoder_backed_joints_empty_when_field_unset(tmp_path):
     """Unset / null joint_encoder_joints yields an empty set."""
     src_config = os.path.join(MODEL_DIR, "config.yaml")
     config_path = tmp_path / "config.yaml"
-    shutil.copy(src_config, config_path)
+    copy_model_config(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", None)
     # Clearing the encoder hardware also clears the feedback opt-in; an
     # explicit use_joint_feedback: true with no encoders is now rejected.
@@ -748,7 +748,7 @@ def test_validator_rejects_unknown_joint_in_joint_encoder_joints(tmp_path):
 
     src_config = os.path.join(MODEL_DIR, "config.yaml")
     config_path = tmp_path / "config.yaml"
-    shutil.copy(src_config, config_path)
+    copy_model_config(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", ["not_a_joint"])
 
     with pytest.raises(HandConfigValidationError, match="not_a_joint"):
@@ -759,7 +759,7 @@ def test_validator_accepts_wrist_in_joint_encoder_joints(tmp_path):
     """The wrist has an encoder slot and may be selected explicitly."""
     src_config = os.path.join(MODEL_DIR, "config.yaml")
     config_path = tmp_path / "config.yaml"
-    shutil.copy(src_config, config_path)
+    copy_model_config(src_config, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", ["wrist"])
 
     hand = MockOrcaHand(config_path=str(config_path))
