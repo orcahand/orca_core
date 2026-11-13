@@ -289,6 +289,22 @@ def test_write_yaml_atomic_failed_write_keeps_original(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["calibration.yaml"]
 
 
+def test_write_yaml_atomic_waits_out_a_reader_holding_the_file(tmp_path, monkeypatch):
+    """Windows refuses the replace while another process has the file open."""
+    path = tmp_path / "setup.yaml"
+    replace = os.replace
+    refusals = [PermissionError("in use by another process")] * 3
+
+    def busy_replace(src, dst):
+        if refusals:
+            raise refusals.pop()
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_replace)
+    write_yaml_atomic(str(path), {"calibrated": True})
+    assert read_yaml(str(path)) == {"calibrated": True}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")
 def test_write_yaml_atomic_preserves_permissions(tmp_path):
     path = tmp_path / "calibration.yaml"

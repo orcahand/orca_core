@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import yaml
 import numpy as np
 
@@ -207,6 +208,22 @@ def is_packaged_model_path(path) -> bool:
         return False
 
 
+_REPLACE_ATTEMPTS = 20
+
+
+def _replace(src: str, dst: str) -> None:
+    """``os.replace``, retried briefly on PermissionError: Windows refuses it
+    while another process has ``dst`` open, e.g. reading it."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.05)
+
+
 def write_text_atomic(file_path, text: str) -> None:
     """Write ``text`` to ``file_path`` via a same-directory temp file and
     ``os.replace``, keeping the target's permissions, so a crash mid-write
@@ -226,7 +243,7 @@ def write_text_atomic(file_path, text: str) -> None:
             os.fsync(f.fileno())
         if mode is not None:
             os.chmod(tmp_path, mode)
-        os.replace(tmp_path, real_path)
+        _replace(tmp_path, real_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -269,7 +286,7 @@ def write_yaml_atomic(file_path, data):
             file.flush()
             os.fsync(file.fileno())
         os.chmod(tmp_path, mode)
-        os.replace(tmp_path, real_path)
+        _replace(tmp_path, real_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
