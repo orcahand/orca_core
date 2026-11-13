@@ -489,15 +489,22 @@ class DynamixelClient(MotorClient):
         Returns:
             A list of motor IDs that could not be set.
         """
+        self.check_connected()
         with self._bus_lock:
             self._reclaim_port()
             remaining_ids = self._present(motor_ids)
             while remaining_ids:
-                remaining_ids = self.write_byte(
-                    remaining_ids,
-                    int(enabled),
-                    ADDR_TORQUE_ENABLE,
-                )
+                failed_ids = []
+                for motor_id in remaining_ids:
+                    try:
+                        failed_ids += self.write_byte(
+                            [motor_id], int(enabled), ADDR_TORQUE_ENABLE)
+                    except Exception as e:
+                        # A write that raises counts as failed; the motors after it still get theirs.
+                        logging.error('Torque write to motor %d raised: %s', motor_id, e)
+                        self._flush_input_buffer()
+                        failed_ids.append(motor_id)
+                remaining_ids = failed_ids
                 if not remaining_ids:
                     break
                 logging.error('Could not set torque %s for IDs: %s',

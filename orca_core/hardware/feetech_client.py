@@ -675,9 +675,14 @@ class FeetechClient(MotorClient):
             while remaining_ids:
                 failed_ids = []
                 for motor_id in remaining_ids:
-                    result, error = self.packet_handler.write1ByteTxRx(
-                        motor_id, HLS.TORQUE_ENABLE, int(enabled)
-                    )
+                    try:
+                        result, error = self.packet_handler.write1ByteTxRx(
+                            motor_id, HLS.TORQUE_ENABLE, int(enabled)
+                        )
+                    except Exception as e:
+                        # A write that raises counts as failed; the motors after it still get theirs.
+                        logging.error('Torque write to motor %d raised: %s', motor_id, e)
+                        result = None
                     if result != COMM_SUCCESS:
                         failed_ids.append(motor_id)
                         self._flush_input_buffer()

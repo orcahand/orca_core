@@ -105,6 +105,17 @@ def test_torque_off_still_reaches_every_motor(stuck):
     assert len(port.sent) == len(IDS)
 
 
+def test_a_torque_write_that_raises_does_not_skip_the_rest(stuck):
+    client, port = stuck
+    port.sent.clear()
+    port.raise_next_read = True
+
+    failed = client.set_torque_enabled(IDS, False, retries=1)
+
+    assert len(port.sent) == 2 * len(IDS)  # every motor, and the retry pass ran
+    assert failed == IDS and not port.is_using
+
+
 def test_disconnect_still_closes_and_deregisters(stuck):
     client, port = stuck
 
