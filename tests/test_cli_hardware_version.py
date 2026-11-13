@@ -142,3 +142,36 @@ def test_no_board_still_falls_through_to_the_prompt(tmp_path, monkeypatch):
         assert hand.config.hardware_version == HARDWARE_VERSION_V21
     finally:
         hand.disconnect()
+
+
+def _pinned_mock_hand(tmp_path, version):
+    import yaml
+
+    raw = yaml.safe_load(open(LEFT, encoding="utf-8"))
+    raw["hardware_version"] = version
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    ns = Namespace(config_path=str(tmp_path / "config.yaml"), mock=True, model_name=None,
+                   engage_feedback=False, hardware_version=None)
+    return cli.create_hand_from_args(ns, engage_sensors=False)
+
+
+def test_a_board_found_on_its_other_port_beats_a_pin(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    hand = _pinned_mock_hand(tmp_path, 200)
+    monkeypatch.setattr(cli, "board_info_for_port", lambda port: SimpleNamespace(hw_version=210))
+    try:
+        cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+        assert hand.hardware_version == HARDWARE_VERSION_V21
+    finally:
+        hand.disconnect()
+
+
+def test_a_pin_is_used_without_asking_when_no_board_answers(tmp_path, monkeypatch):
+    hand = _pinned_mock_hand(tmp_path, 210)
+    monkeypatch.setattr(cli, "board_info_for_port", lambda port: None)
+    try:
+        cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+        assert hand.hardware_version == HARDWARE_VERSION_V21
+    finally:
+        hand.disconnect()

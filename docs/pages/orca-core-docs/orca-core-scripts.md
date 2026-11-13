@@ -230,7 +230,7 @@ Guided tendon tensioning for v2.1 hardware, one finger at a time. You pose the h
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, the connected hand is autodetected.</li><br>
     <li><strong>--scoring</strong> <code>fraction</code> / <code>slack</code>: Score each joint by the share of its expected travel (default), or by the degrees it falls short with both ends reached twice.</li><br>
     <li><strong>--hold-current</strong>, <strong>--tension-current</strong>: Override the range-check hold and the tensioning pull, in mA.</li><br>
-    <li><strong>--hardware-version N</strong>: Pin the hardware version (200, 210, 211) for a hand whose board cannot report it.</li>
+    <li><strong>--hardware-version N</strong>: Use this hardware version (200, 210, 211) for this run only, over what the board reports. Never saved.</li>
 </ul>
 
 <strong>Example:</strong>

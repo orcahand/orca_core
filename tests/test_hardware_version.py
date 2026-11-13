@@ -211,13 +211,16 @@ def test_a_session_choice_is_never_saved(tmp_path):
     assert sorted(p.name for p in (tmp_path / "orcahand-left").iterdir()) == ["config.yaml"]
 
 
-def test_a_config_yaml_pin_beats_the_board_and_says_so(tmp_path, caplog):
+def test_the_board_beats_a_config_yaml_pin_and_says_so(tmp_path, caplog):
     hand = _hand(tmp_path, hardware_version=200)
+    assert hand.hardware_version == 200, "with no board, the pin is in force"
     hand._board_hardware_version = 210
     with caplog.at_level("WARNING"):
         hand._apply_hardware_version()
-    assert hand.hardware_version == 200
-    assert "pins hardware_version=200" in caplog.text
+    assert hand.hardware_version == 210
+    assert "pins hardware_version=200" in caplog.text and "board's is used" in caplog.text
+    hand.set_hardware_version(200)
+    assert hand.hardware_version == 200, "a session choice still beats the board"
 
 
 def test_a_bad_version_is_refused(tmp_path):
@@ -381,8 +384,8 @@ def test_a_hardware_version_that_is_not_auto_or_a_whole_number_is_rejected(tmp_p
 
 
 # --- how load_hand resolves it -------------------------------------------
-# Precedence: a yaml pin, else the board (read by detection or handed in by a
-# caller that skipped it -- the same source two ways), else nothing.
+# Precedence: the board (read by detection or handed in by a caller that
+# skipped it -- the same source two ways), else a yaml pin, else nothing.
 
 
 def _detection(hw):
@@ -399,17 +402,26 @@ def test_the_board_is_used_when_nothing_is_pinned():
 
 def test_a_handed_in_board_value_ranks_as_detection():
     """The console loads by config_path, skips detection, and hands the board
-    value in. That is the board speaking through a different door, not an
-    override, so a pin still wins over it."""
+    value in. That is the board speaking through a different door, so it wins
+    over a pin just the same."""
     assert hand_factory._resolve_hardware_version(_pinned(None), None, 210) == 210
-    assert hand_factory._resolve_hardware_version(_pinned(200), None, 210) == 200
+    assert hand_factory._resolve_hardware_version(_pinned(200), None, 210) == 210
 
 
-def test_a_pin_wins_over_the_board_and_says_so(caplog):
+def test_the_board_wins_over_a_pin_and_says_so(caplog):
     with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(200), None) == 210
+        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(200), None) == 200
     assert "pins hardware_version=210" in caplog.text
-    assert "detected 200" in caplog.text
+    assert "board reports 200" in caplog.text
+
+
+def test_load_hand_puts_the_board_s_version_over_a_pin(tmp_path):
+    path = _config_with(tmp_path, LEFT[0], hardware_version=200)
+    hand = load_hand(config_path=path, mock=True, detected_hardware_version=210)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert hand.hardware_version == 210
+    assert all(hand.config.joint_inversion_dict[j] != base.joint_inversion_dict[j]
+               for j in FLIPPED)
 
 
 def test_a_pin_that_agrees_with_the_board_is_quiet(caplog):

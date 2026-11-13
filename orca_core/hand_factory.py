@@ -319,26 +319,29 @@ def detect_hand() -> HandDetection:
 
 
 def _resolve_hardware_version(config, detection, detected: int | None) -> int | None:
-    """A yaml pin, else what the board reported, else unknown.
+    """What the board reported, else a yaml pin, else unknown.
 
     The board's value reaches here two ways that rank the same: read by
     :func:`detect_hand`, or handed in as ``detected`` by a caller that loaded
-    by ``config_path`` and so skipped detection. A pin is a deliberate
-    override -- the only way a hand on a plain adapter, with no board to ask,
-    can say which revision it is -- and wins over the board; the clash is
-    logged by :func:`_overridden` so a stale copied config is never mistaken
-    for a detection bug. ``None`` leaves the config on its base map.
+    by ``config_path`` and so skipped detection. Unlike port and motor_type,
+    the board wins over a pin: its version is provisioned into this physical
+    hand, while a config.yaml speaks for every hand loaded from it. A pin is
+    how a hand on a plain adapter, with no board to ask, says which revision
+    it is. A disagreeing pin is logged so a stale copied config is never
+    mistaken for a detection bug. ``None`` leaves the config on its base map.
     """
     if detected is None and detection is not None and detection.identity is not None:
         detected = detection.identity.hw_version
     detected = normalize_hardware_version(detected)
     pinned = normalize_hardware_version(config.hardware_version)
-    if pinned is not None:
-        # Only a *disagreeing* board is worth a warning. No board at all is
-        # the normal case for a pinned config -- that is what the pin is for.
-        if detected is not None:
-            _overridden("hardware_version", pinned, detected)
+    if detected is None:
+        # No board at all is the normal case for a pinned config: that is what the pin is for.
         return pinned
+    if pinned is not None and pinned != detected:
+        logger.warning(
+            "the config pins hardware_version=%r in config.yaml but the board reports %r; "
+            "the board's is used (a pin only applies to a hand with no board).",
+            pinned, detected)
     return detected
 
 
@@ -469,11 +472,11 @@ def load_hand(
             encoders can share one CDC, so a caller that opens its own reader
             on the sensing port must not have the hand open it too.
         detected_hardware_version: The hardware revision the controller
-            board reported (2 for v2.0, 21 for v2.1), for a caller that loads
-            by ``config_path`` and so skipped detection. Ranks as detection:
-            a ``hardware_version`` pinned in config.yaml still wins, and the
-            clash is logged. ``None`` lets detection answer, or leaves the
-            base map when there is no board.
+            board reported (200 for v2.0, 210 for v2.1), for a caller that loads
+            by ``config_path`` and so skipped detection. Ranks as detection,
+            and wins over a ``hardware_version`` pinned in config.yaml (the
+            clash is logged). ``None`` lets detection answer, else the pin,
+            else leaves the base map.
 
     Returns:
         A constructed (not yet connected) hand instance.

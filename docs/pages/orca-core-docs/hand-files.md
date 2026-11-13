@@ -51,8 +51,9 @@ The board is written only at the end of a finished `scripts/calibrate.py` run on
 ## Hardware version
 
 The board's hardware version is used when it reports one. `--hardware-version` (or `hand.set_hardware_version()`)
-overrides it for the current run only; it is never saved. A `hardware_version:` written into a `config.yaml` still
-applies to every hand loaded from it.
+overrides it for the current run only; it is never saved. A `hardware_version:` written into a `config.yaml` is used
+only for a hand whose board reports none (a hand on a plain USB adapter). When the board reports a different version
+than the config pins, the board's is used and the log says so.
 
 ## Ports
 

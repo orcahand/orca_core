@@ -394,8 +394,8 @@ class OrcaHand(BaseHand):
     @property
     def hardware_version(self) -> int | None:
         """The hardware version in force (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1),
-        ``None`` while unknown: the session override, else a pin in config.yaml,
-        else what the board reported."""
+        ``None`` while unknown: the session override, else what the board
+        reported, else a pin in config.yaml."""
         return self.config.hardware_version
 
     @property
@@ -436,15 +436,20 @@ class OrcaHand(BaseHand):
         return None
 
     def _apply_hardware_version(self) -> None:
-        """Put the version in force: override, else config.yaml's pin, else the board's."""
+        """Put the version in force: override, else the board's, else config.yaml's pin.
+
+        The board's version belongs to this physical hand and config.yaml's to
+        every hand loaded from it, so a pin only speaks for a hand with no board.
+        """
         board = self._board_hardware_version
         pinned = self._pinned_hardware_version
         if self._hardware_version_override is None and pinned is not None \
                 and board is not None and board != pinned:
             logger.warning(
-                "config.yaml pins hardware_version=%r, so the board's %r is not used. "
-                "Set it to 'auto' to take the board's value.", pinned, board)
-        version = next((v for v in (self._hardware_version_override, pinned, board)
+                "config.yaml pins hardware_version=%r but this hand's board reports %r; "
+                "the board's is used (a pin only applies to a hand with no board).",
+                pinned, board)
+        version = next((v for v in (self._hardware_version_override, board, pinned)
                         if v is not None), None)
         if version == self.config.hardware_version:
             return

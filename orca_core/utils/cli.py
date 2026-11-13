@@ -168,15 +168,16 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
 def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
     """Decide the connected hand's hardware version the way the console does.
 
-    The board's answer at connect, a pin in config.yaml, or ``--hardware-version``
-    already settle it. A board whose motor port did not answer is asked on its
-    other port. Only with no board at all is the operator asked, for this run
-    only, and only when a terminal can answer.
+    ``--hardware-version`` or the board's answer at connect settle it. A board
+    whose motor port did not answer is asked on its other port. Then a pin in
+    config.yaml applies, and only with neither is the operator asked, for this
+    run only, and only when a terminal can answer.
     """
-    if hand.hardware_version is not None:
-        if hand.hardware_version_override is None and hand.board_hardware_version is not None:
-            print("Controller board reports hardware version "
-                  f"{format_hardware_version(hand.board_hardware_version)}.")
+    if hand.hardware_version_override is not None:
+        return
+    if hand.board_hardware_version is not None:
+        print("Controller board reports hardware version "
+              f"{format_hardware_version(hand.board_hardware_version)}.")
         return
     board = board_info_for_port(getattr(hand.config, "port", "") or "")
     reported = normalize_hardware_version(board.hw_version) if board is not None else None
@@ -184,6 +185,8 @@ def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> Non
         hand._board_hardware_version = reported
         hand._apply_hardware_version()
         print(f"Controller board reports hardware version {format_hardware_version(reported)}.")
+        return
+    if hand.hardware_version is not None:
         return
     # Only a terminal can answer: a piped or captured stdin keeps the version
     # unknown rather than blocking (or failing) the run.

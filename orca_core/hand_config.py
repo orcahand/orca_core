@@ -503,9 +503,9 @@ class OrcaHandConfig(BaseHandConfig):
     joint_inversion_dict: Dict[str, bool] = field(default_factory=dict)
     # The hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1). It selects which
     # joint_to_motor_map is in force and gates the v2.1-only features. Pinned in the yaml by a hand whose motor
-    # bus has no controller board to report it; otherwise `auto`, and load_hand
-    # fills it from the board. A pin beats the board and the clash is logged,
-    # as for port and motor_type. None means not known.
+    # bus has no controller board to report it; otherwise `auto`. A board's
+    # version wins over a pin (load_hand and connect put it in force and log a
+    # clash). None means not known.
     hardware_version: int | None = None
     # The signed map a v2.1 hand uses instead of joint_to_motor_map, kept raw
     # (sign included). Absent on models whose wiring did not change.
