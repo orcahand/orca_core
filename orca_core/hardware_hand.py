@@ -897,13 +897,33 @@ class OrcaHand(BaseHand):
         ``base_config``, so every attempt in the cascade starts clean and a
         failed one can never leak an open (advisory-locked) port.
         """
+        settled = self._identity_state()
         try:
             self._connect_on_port(port, base_config)
             return None
         except Exception as e:
             self._discard_motor_client()
+            # Identity may have been settled before the failure: put back the
+            # hand, folder and calibration this hand had before the attempt.
+            self._restore_identity_state(settled)
             self.config = base_config
             return e
+
+    # Everything a connect derives from which hand it is talking to.
+    _IDENTITY_STATE = (
+        "_hand_id", "_board_hand_id", "_board_info", "_board_store",
+        "_board_hardware_version", "_hardware_version_override",
+        "_joint_ranges", "_joint_ranges_measured_at", "_measured_range_joints",
+        "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
+        "_calibration_doc_stamp", "_rom_frame", "_wrap_offsets_dict", "_config",
+    )
+
+    def _identity_state(self) -> dict:
+        return {name: getattr(self, name, None) for name in self._IDENTITY_STATE}
+
+    def _restore_identity_state(self, state: dict) -> None:
+        for name, value in state.items():
+            setattr(self, name, value)
 
     def _discard_motor_client(self) -> None:
         """Drop the motor client, best-effort closing it first so a failed

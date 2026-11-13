@@ -101,6 +101,47 @@ class TestIdentityAtConnect:
         assert not hand.calibrated, "the other hand's calibration must not carry over"
 
 
+class TestAConnectThatFailsAfterTheBoardAnswered:
+    """The board names the hand before the motor client opens; if the connect
+    then fails, nothing of that hand may stay behind for a later save."""
+
+    @staticmethod
+    def failing(hand, monkeypatch):
+        def no_client():
+            raise OSError("the port went away")
+        monkeypatch.setattr(hand, "_create_motor_client", no_client)
+
+    def test_a_first_connect_leaves_the_hand_as_it_was(self, make_hand, model_dir, monkeypatch):
+        calibrated = make_hand(board("ser-0001"))
+        calibrated.calibrate(persist=True)
+        calibrated.disconnect()
+        hand = BoardedHand(config_path=str(model_dir / "config.yaml"))
+        before = dict(hand.motor_limits_dict)
+        assert before != calibrated.motor_limits_dict
+        self.failing(hand, monkeypatch)
+        assert not hand.connect()[0]
+        assert hand.hand_id is None and hand.board_hand_id is None and hand.hand_dir is None
+        assert hand.board_hardware_version is None and hand.hardware_version is None
+        assert hand.motor_limits_dict == before and hand.config.calibration_path == ""
+
+    def test_a_reconnect_to_another_hand_keeps_the_first_hand_s_state(self, make_hand,
+                                                                      monkeypatch):
+        hand = make_hand(board("ser-0001"))
+        hand.calibrate(persist=True)
+        limits = dict(hand.motor_limits_dict)
+        hand.disconnect()
+        monkeypatch.setattr(BoardedHand, "contact", board("ser-0002", "FEDCBA9876543210", hw=200))
+        self.failing(hand, monkeypatch)
+        assert not hand.connect()[0]
+        assert hand.hand_id == "ser-0001"
+        assert hand.hand_dir == str(hand_store.hand_dir("ser-0001"))
+        assert hand.motor_limits_dict == limits and hand.hardware_version == 210
+        hand.set_rom_frame("centered", persist=True)
+        assert read_yaml(str(hand_store.hand_dir("ser-0001") / "calibration.yaml"))[
+            "rom_frame"] == "centered"
+        assert not os.path.exists(hand_store.hand_dir("ser-0002") / "calibration.yaml")
+
+
 class TestTheSameHandFindsTheSameFolder:
     def test_a_second_session_loads_what_the_first_calibrated(self, make_hand):
         first = make_hand(board())
