@@ -523,7 +523,33 @@ class TestNowhereToKeepTheCalibration:
                             lambda *a, **k: pytest.fail("the routine ran"))
         with pytest.raises(OSError, match="ORCA_HOME"):
             hand.calibrate(persist=True)
-        assert hand.hand_id is None, "a boarded hand is never re-filed as board-less"
+        assert hand.hand_id == "ser-0000", "a boarded hand is never re-filed as board-less"
+
+    def test_another_hand_whose_folder_fails_keeps_nothing_of_the_last(self, make_hand,
+                                                                       monkeypatch):
+        hand = make_hand(board("ser-0001"))
+        hand.calibrate(persist=True)
+        hand.disconnect()
+
+        def no_folder(*args, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(hand_store, "open_hand_folder", no_folder)
+        monkeypatch.setattr(BoardedHand, "contact", board("ser-0002", "FEDCBA9876543210", hw=200))
+        assert hand.connect()[0]
+        assert (hand.hand_id, hand.board_hardware_version, hand.hardware_version) == (
+            "ser-0002", 200, 200)
+        assert hand.hand_dir is None and not hand.calibrated
+        assert all(limits == [None, None] for limits in hand.motor_limits_dict.values())
+        with pytest.raises(OSError, match="ORCA_HOME"):
+            hand.set_rom_frame("centered", persist=True)
+        assert "rom_frame" not in read_yaml(
+            str(hand_store.hand_dir("ser-0001") / "calibration.yaml"))
+
+    def test_a_first_connect_whose_folder_fails_still_takes_the_board_s_version(
+            self, make_hand, unwritable_home):
+        hand = make_hand(board(hw=210))
+        assert (hand.hand_id, hand.hardware_version) == ("ser-0000", 210)
 
     def test_a_hand_that_never_connected_says_so_too(self, model_dir, unwritable_home):
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"))

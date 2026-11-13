@@ -539,9 +539,10 @@ class OrcaHand(BaseHand):
             hand_store.record_contact(
                 folder, hand_id, model=self._model_name(), serial=serial, board_id=board_id)
         except OSError as exc:
-            logger.warning("cannot use the hand folder for %s under %s (%s); this "
-                           "hand's files will not be kept", hand_id, hand_store.orca_home(), exc)
-            return
+            logger.warning("cannot use the hand folder for %s under %s (%s); this hand's "
+                           "files will not be kept and it reads as uncalibrated",
+                           hand_id, hand_store.orca_home(), exc)
+            folder = None
         if self._hand_id is not None and hand_id != self._hand_id:
             # A different hand: versions known for the last one are not this one's.
             self._hardware_version_override = None
@@ -550,6 +551,9 @@ class OrcaHand(BaseHand):
         if info is not None:
             self._board_hardware_version = normalize_hardware_version(info.hw_version)
         self._apply_hardware_version()
+        if folder is None:
+            self._use_no_folder()
+            return
         if created:
             config_dir = os.path.dirname(self.config.config_path or "")
             legacy = hand_store.find_legacy_files(config_dir)
@@ -597,6 +601,17 @@ class OrcaHand(BaseHand):
         if (moved or reload) and not self._explicit_calibration:
             self._load_calibration(calibration)
             self._sanity_check()
+
+    def _use_no_folder(self) -> None:
+        """This hand has no folder: nothing read from a folder earlier stays in
+        force, and only a calibration file the caller named is kept."""
+        calibration = self.config.calibration_path if self._explicit_calibration else ""
+        self.config = dataclasses.replace(self.config, hand_dir="", calibration_path=calibration)
+        self._board_store = None
+        self._joint_ranges, self._joint_ranges_measured_at = {}, None
+        self._rebuild_config(self.config.hardware_version)
+        if not self._explicit_calibration:
+            self._load_calibration(None)
 
     def __del__(self):
         # Best-effort release of every link the subclass opened; a hand whose
