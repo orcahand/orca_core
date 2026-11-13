@@ -114,7 +114,6 @@ def test_a_file_system_that_cannot_lock_still_saves(tmp_path, monkeypatch, caplo
 
 def test_a_writer_waiting_for_another_process_does_not_hold_up_reads(tmp_path, monkeypatch):
     import threading
-    import time
 
     config = SimpleNamespace(hand_dir=str(tmp_path))
     path = setup_file.setup_path(config)
@@ -135,9 +134,13 @@ def test_a_writer_waiting_for_another_process_does_not_hold_up_reads(tmp_path, m
             target=setup_file.write_section, args=(config, "slack_tests", {"t": 1}))
         writer.start()
         assert waiting.wait(5)
-        started = time.monotonic()
-        assert setup_file.read_section(config, "sweeps") == {"s": 1}
-        assert time.monotonic() - started < 1.0
+        # The lock stays held until the read is done: a read that waited for it never ends.
+        read = []
+        reader = threading.Thread(
+            target=lambda: read.append(setup_file.read_section(config, "sweeps")), daemon=True)
+        reader.start()
+        reader.join(timeout=5)
+        assert read == [{"s": 1}]
         assert writer.is_alive()
         setup_file._unlock(other.fileno())
     writer.join(timeout=5)

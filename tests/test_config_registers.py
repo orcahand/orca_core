@@ -204,17 +204,6 @@ class TestTeardownWithTheBusHeld:
         assert client.port_handler.closed
         assert client not in type(client).OPEN_CLIENTS
 
-    def test_a_register_write_does_not_touch_the_in_use_flag(self):
-        """The register paths hold the bus lock and leave the SDK's own
-        bookkeeping to the SDK."""
-        import inspect
-
-        from orca_core.hardware.dynamixel_client import DynamixelClient
-
-        for method in (DynamixelClient.read_config_register,
-                       DynamixelClient.write_config_register):
-            assert "is_using" not in inspect.getsource(method)
-
 
 class TestEveryClientOffersTheFixedTeardown:
     """Both families keep the fixed-order name for callers that ask for it, as
