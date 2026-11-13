@@ -103,6 +103,7 @@ ORCA_HAND = BASE_HAND | {
     "last_read_ok",
     "is_connected",
     "jitter",
+    "joint_ranges_info",
     "legacy_files",
     "joint_to_motor_ratios_dict",
     "motor_client",

@@ -68,6 +68,21 @@ from .joint_position import OrcaJointPositions
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
+def _with_measured_ranges(config: OrcaHandConfig, roms: dict) -> OrcaHandConfig:
+    """``config`` with the ranges measured on this hand in force for these joints,
+    for both the clamp and the calibration mapping. The one call site of
+    ``OrcaHandConfig.with_measured_ranges``; returns ``config`` itself when
+    there is nothing to apply."""
+    if not roms:
+        return config
+    apply = getattr(config, "with_measured_ranges", None)
+    if apply is None:
+        logger.warning("this orca_core cannot apply the joint ranges measured on this "
+                       "hand; the model's ranges stay in force")
+        return config
+    return apply(roms)
+
+
 # How encoder-measured joint travel is laid onto the config ROM (see
 # effective_joint_roms_dict). "anchor" pins the flex hardstop to the config
 # upper and moves only the lower endpoint; "centered" splits the measured
@@ -152,7 +167,9 @@ class OrcaHand(BaseHand):
         self._current_task = None
 
         self._rom_frame = ROM_FRAME_ANCHOR
-        # Joints whose range was measured on this hand (joint_ranges.yaml).
+        # Ranges measured on this hand (joint_ranges.yaml), and the joints they are in force for.
+        self._joint_ranges: dict = {}
+        self._joint_ranges_measured_at = None
         self._measured_range_joints: frozenset = frozenset()
         self._hand_id: str | None = None
         self._board_hand_id: str | None = None
@@ -295,8 +312,45 @@ class OrcaHand(BaseHand):
                         if v is not None), None)
         if version == self.config.hardware_version:
             return
-        self.config = (self.config.with_hardware_version(version) if version is not None
-                       else self.config.without_hardware_version())
+        config = (self.config.with_hardware_version(version) if version is not None
+                  else self.config.without_hardware_version())
+        # A version change starts from the model's ranges; this hand's own go back on top.
+        self.config = _with_measured_ranges(config, self._joint_ranges)
+
+    # ------------------------------------------------------------------
+    # Joint ranges measured on this hand
+    # ------------------------------------------------------------------
+
+    @property
+    def joint_ranges_info(self) -> dict:
+        """Where this hand's joint ranges come from: ``{"source": "model",
+        "measured_at": None, "joints": []}``, or ``"measured"`` with the date
+        and the joints ``joint_ranges.yaml`` in its folder measured."""
+        if not self._measured_range_joints:
+            return {"source": "model", "measured_at": None, "joints": []}
+        return {"source": "measured", "measured_at": self._joint_ranges_measured_at,
+                "joints": sorted(self._measured_range_joints)}
+
+    def _read_joint_ranges(self, folder: str) -> None:
+        doc = hand_store.read_doc(os.path.join(folder, hand_store.JOINT_RANGES_FILE), "joint_ranges")
+        ranges = {}
+        for joint, rom in (doc.get("joint_roms") or {}).items():
+            valid = (joint in self.config.joint_ids and isinstance(rom, (list, tuple))
+                     and len(rom) == 2 and all(isinstance(v, (int, float)) for v in rom)
+                     and rom[0] < rom[1])
+            if valid:
+                ranges[str(joint)] = [float(rom[0]), float(rom[1])]
+            else:
+                logger.warning("ignoring joint range %s=%r in %s", joint, rom,
+                               os.path.join(folder, hand_store.JOINT_RANGES_FILE))
+        self._joint_ranges = ranges
+        self._joint_ranges_measured_at = doc.get("measured_at")
+
+    def _apply_measured_ranges(self) -> None:
+        config = _with_measured_ranges(self.config, self._joint_ranges)
+        applied = frozenset(self._joint_ranges) if config is not self.config else frozenset()
+        self._measured_range_joints = applied
+        self.config = config
 
     def _model_name(self) -> str:
         config_path = getattr(self.config, "config_path", "") or ""
@@ -357,6 +411,8 @@ class OrcaHand(BaseHand):
                        else os.path.join(folder, hand_store.CALIBRATION_FILE))
         moved = folder != self.config.hand_dir or calibration != self.config.calibration_path
         self.config = dataclasses.replace(self.config, hand_dir=folder, calibration_path=calibration)
+        self._read_joint_ranges(folder)
+        self._apply_measured_ranges()
         if (moved or reload) and not self._explicit_calibration:
             self._load_calibration(calibration)
             self._sanity_check()
@@ -532,7 +588,7 @@ class OrcaHand(BaseHand):
         roms = dict(self.config.joint_roms_dict)
         centered = self._rom_frame == ROM_FRAME_CENTERED
         for joint, rom in measured.items():
-            if joint not in roms:
+            if joint not in roms or joint in self._measured_range_joints:
                 continue
             if centered:
                 # Same measured span, but the excess/deficit vs the config
