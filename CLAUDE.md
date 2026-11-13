@@ -72,7 +72,7 @@ so a terminal and a GUI drive the identical routine.
 - [orca_core/base_hand.py](orca_core/base_hand.py) - Shared joint-space interface all hand backends implement
 - [orca_core/hardware/dynamixel_client.py](orca_core/hardware/dynamixel_client.py) - Dynamixel motor control interface
 - [orca_core/hardware/sensing/serial_discovery.py](orca_core/hardware/sensing/serial_discovery.py) - Auto-discovery of encoder/tactile serial ports
-- [orca_core/models/*/config.yaml](orca_core/models/) - Hand configuration files
+- [orca_core/models/*/config.yaml](orca_core/models/) - Hand configuration files; [orca_core/models/v2/shared.yaml](orca_core/models/v2/shared.yaml) holds what every v2 model shares
 - [scripts/](scripts/) - Calibration, tensioning, and diagnostic scripts
 
 ### Hardware Components
@@ -257,6 +257,19 @@ uv run python scripts/monitor_sensors.py
 ### Configuration
 
 All hand-specific settings are in `config.yaml`:
+- `models/v2/shared.yaml` - the defaults every packaged v2 model builds on: `joint_roms`,
+  `guided_tension_currents` holds per family, `calibration_current_v21`, `joint_motor_travel_v21`.
+  Loading a packaged v2 config (`orca_core.load_config()`, and every `from_config_path`) deep-merges
+  it under the model's `config.yaml`: the model wins, mappings merge key by key, and the per-joint
+  maps are trimmed to the model's `joint_ids` (a merge cannot delete a key). A model lists only
+  what differs. Only configs inside the package's `models/` tree (symlinks resolved) merge it;
+  any other config is standalone and must be complete - `orca_core.write_standalone_config()`
+  writes one. A standalone config without `joint_roms` is refused naming every shared key it
+  lacks; a v2 one missing only the v2.1 keys loads with a warning. Read a model's ranges or
+  travel through `load_config()` or the config object, never from the raw yaml.
+  `OrcaHandConfig.with_measured_ranges()` puts ranges measured on one hand in force as both the
+  clamp and the calibration frame (`measured_joint_roms_dict`); it does not refit a stored
+  joint-to-motor ratio.
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
 - `max_current` / `calibration_current` / `wrist_calibration_current` - `default` (what the
   packaged configs say) resolves to the connected motor family's own values, the
@@ -269,28 +282,30 @@ All hand-specific settings are in `config.yaml`:
 - `joint_motor_travel_v21:` / `joint_motor_travel:` - motor-shaft travel between each joint's
   hardstops, in degrees, **keyed by joint name**. **v2.1 hardware only**: on v2.0 or an unknown
   version `expected_motor_travel_deg()` is `None`, so calibration is one plain pass (no travel
-  check, no re-drive) and guided tensioning refuses (`any_hardware=True` overrides). The packaged
-  models ship the shared baseline as `joint_motor_travel_v21`; a hand's own measured
+  check, no re-drive) and guided tensioning refuses (`any_hardware=True` overrides).
+  `shared.yaml` holds the shared baseline as `joint_motor_travel_v21`; a hand's own measured
   `joint_motor_travel` wins per joint (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
   routine resolves the motor through `joint_to_motor_map` at the point of use). Calibration re-drives
   a joint that measures more than `calibration_travel_margin` short of its baseline
   (`calibration_travel_retries`, default 3). With nothing pinned each re-drive adds 50 mA
   (`CALIBRATION_RETRY_STEP_MA`; 300 → 350 → 400 → 450 on Dynamixel); pinning `calibration_max_current`
   and/or `calibration_retry_current` switches to an even ramp up to the retry current, capped at
-  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. A re-drive runs at this ladder or the motor's ceiling, whichever is higher, so the ladder only matters above the ceiling. The v2 models ship one shared v2.1 baseline (the spool
+  `calibration_max_current` (unset: the nominal current, so pin it for the ramp to climb) - the fix for an over-tensioned hand whose joints stall before their hardstops. A re-drive runs at this ladder or the motor's ceiling, whichever is higher, so the ladder only matters above the ceiling. `shared.yaml` holds one v2.1 baseline (the spool
   geometry is the same on every hand), measured with `scripts/measure_travel.py` on a freshly
   tensioned hand; guided tensioning (`scripts/guided_tension.py`) scores slack against it too.
 - `calibration_current_v21:` - **v2.1 only**: per motor family, a calibration current per joint
   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
-  The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
+  `shared.yaml` sets Dynamixel to 300/500/500 and leaves Feetech on `calibration_current`.
   These values only feed the re-drive ladder: they do not set the first pass's drive current.
-- `guided_tension_currents:` - **overrides only** for guided tensioning, per motor family (CLI and
-  console): `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
+- `guided_tension_currents:` - guided tensioning's currents, per motor family (CLI and console):
+  `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
   `--hold-current`), and `tension`, the limit for the pull and for fingers frozen during a range
-  check. Read through `config.tension_hold_current_for(joint)` and `config.tension_current`. Holds
-  default to `DEFAULT_GUIDED_TENSION_CURRENTS` and `tension` follows `max_current`; never restate
-  either here. The ratcheting hold runs at each motor's own ceiling.
+  check. Read through `config.tension_hold_current_for(joint)` and `config.tension_current`. The
+  group holds live in `shared.yaml` (a config with none falls back to the packaged ones, also
+  readable as `constants.DEFAULT_GUIDED_TENSION_CURRENTS`, a fresh dict per read); a model adds
+  only its own exceptions (the touch hands' `thumb_mcp`). `tension` follows `max_current`; never
+  restate it. The ratcheting hold runs at each motor's own ceiling.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
