@@ -60,10 +60,32 @@ def previous_path(path: str) -> str:
     return os.path.join(folder, f"{stem}.previous{ext or '.yaml'}")
 
 
+def swap_path(path: str) -> str:
+    """Where the current calibration waits while :func:`restore_previous` swaps."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}.swap{ext or '.yaml'}"
+
+
+def recover_swap(path: str) -> None:
+    """Finish or undo a :func:`restore_previous` that was interrupted, so the
+    pair of files is always one of its two whole states."""
+    swap = swap_path(path)
+    if not os.path.exists(swap):
+        return
+    if not os.path.exists(path):
+        os.replace(swap, path)                      # stopped after step 1: undo it
+    elif not os.path.exists(previous_path(path)):
+        os.replace(swap, previous_path(path))       # stopped after step 2: finish it
+
+
 def read_document(path: Optional[str]) -> Dict[str, Any]:
     """The calibration document at ``path``, migrated; ``{}`` when there is none."""
     if not path:
         return {}
+    try:
+        recover_swap(path)
+    except OSError:
+        pass
     return read_doc(path, KIND)
 
 
@@ -169,18 +191,15 @@ def restore_previous(path: str) -> Dict[str, Any]:
     Raises:
         FileNotFoundError: there is no previous calibration to restore.
     """
+    recover_swap(path)
     previous = previous_path(path)
     if not os.path.exists(previous):
         raise FileNotFoundError(f"no previous calibration kept beside {path}")
-    with open(previous, encoding="utf-8") as file:
-        restored = file.read()
-    current = None
+    # Three renames, each atomic: every state in between is whole, and
+    # recover_swap puts an interrupted one right on the next read.
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as file:
-            current = file.read()
-    write_text_atomic(path, restored)
-    if current is None:
-        os.remove(previous)
-    else:
-        write_text_atomic(previous, current)
+        os.replace(path, swap_path(path))
+    os.replace(previous, path)
+    if os.path.exists(swap_path(path)):
+        os.replace(swap_path(path), previous)
     return stamp_of(read_document(path))

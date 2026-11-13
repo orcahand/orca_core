@@ -243,3 +243,46 @@ class TestOneCalibrationOfUndo:
         hand.calibrate(progress_callback=events.append)
         assert not any(e["event"] == "calibration_file" for e in events)
         assert [e for e in events if e["event"] == "calibration_done"][0]["calibration_path"] is None
+
+
+class TestASwapCutShort:
+    """restore_previous swaps two files with three renames; a crash between
+    any two leaves a state the next read puts right, never two copies of one."""
+
+    @pytest.fixture
+    def pair(self, tmp_path):
+        from orca_core.hand_store import write_doc
+
+        path = tmp_path / "calibration.yaml"
+        write_doc(path, {"sequence": 2})
+        write_doc(calibration_store.previous_path(str(path)), {"sequence": 1})
+        return str(path)
+
+    def stamps(self, path):
+        current = calibration_store.read_document(path)["sequence"]
+        previous = calibration_store.read_document(calibration_store.previous_path(path))
+        return current, previous.get("sequence")
+
+    @pytest.mark.parametrize("renames_done, expected", [(1, (2, 1)), (2, (1, 2))])
+    def test_the_next_read_finds_a_whole_state(self, pair, monkeypatch, renames_done, expected):
+        real, calls = os.replace, []
+
+        def crash_after(src, dst):
+            if len(calls) == renames_done:
+                raise KeyboardInterrupt("power cut")
+            calls.append(src)
+            real(src, dst)
+
+        monkeypatch.setattr(calibration_store.os, "replace", crash_after)
+        with pytest.raises(KeyboardInterrupt):
+            calibration_store.restore_previous(pair)
+        monkeypatch.setattr(calibration_store.os, "replace", real)
+        assert os.path.exists(calibration_store.swap_path(pair))
+        assert self.stamps(pair) == expected
+        assert not os.path.exists(calibration_store.swap_path(pair))
+
+    def test_an_uninterrupted_swap_leaves_nothing_behind(self, pair):
+        assert calibration_store.restore_previous(pair)["sequence"] == 1
+        assert self.stamps(pair) == (1, 2)
+        assert sorted(os.listdir(os.path.dirname(pair))) == [
+            "calibration.previous.yaml", "calibration.yaml"]
