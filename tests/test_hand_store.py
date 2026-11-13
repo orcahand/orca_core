@@ -117,6 +117,20 @@ class TestDocuments:
         assert [p.name for p in tmp_path.iterdir()] == ["doc.yaml"]
 
 
+    def test_the_package_is_refused_under_any_spelling_the_file_system_opens(self, monkeypatch):
+        import orca_core
+
+        package = os.path.dirname(orca_core.__file__)
+        variant = os.path.join(package, "MODELS", "v2", "orcahand-right")
+        if not os.path.isdir(variant):
+            pytest.skip("a case-sensitive file system has no other spelling of the package")
+        written = []  # a failing run must not leave a file in the package
+        monkeypatch.setattr(hand_store, "write_yaml_atomic", lambda path, doc: written.append(path))
+        with pytest.raises(PermissionError):
+            hand_store.write_doc(os.path.join(variant, "calibration.yaml"), {"calibrated": True})
+        assert written == []
+
+
 class TestHandRecord:
     def test_first_contact_writes_identity_and_both_stamps(self, tmp_path):
         doc = hand_store.record_contact(

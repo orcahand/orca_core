@@ -204,10 +204,24 @@ def is_packaged_model_path(path) -> bool:
     models_dir = os.path.normcase(os.path.realpath(_get_models_dir()))
     candidate = os.path.normcase(os.path.realpath(path))
     try:
-        return os.path.commonpath([candidate, models_dir]) == models_dir
+        if os.path.commonpath([candidate, models_dir]) == models_dir:
+            return True
     except ValueError:
         # Different drives on Windows: cannot be inside the package tree.
         return False
+    # A case-insensitive file system (macOS) opens the tree under other
+    # spellings too, which only the file system itself can say.
+    probe = candidate
+    while True:
+        try:
+            if os.path.samefile(probe, models_dir):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        probe = parent
 
 
 _REPLACE_ATTEMPTS = 20
