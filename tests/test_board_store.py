@@ -18,10 +18,8 @@ from orca_core.board_store import (
     SLOT_BYTES,
     BoardIdentity,
     BoardStoreError,
-    BoardStoreTooLarge,
     crc16,
     pack,
-    packed_size,
     unpack,
 )
 from orca_core.hand_config import load_config
@@ -29,6 +27,10 @@ from orca_core.hand_config import load_config
 JOINTS = ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip", "index_abd", "index_mcp",
           "index_pip", "middle_abd", "middle_mcp", "middle_pip", "ring_abd", "ring_mcp",
           "ring_pip", "pinky_abd", "pinky_mcp", "pinky_pip", "wrist"]
+
+
+def _packed_size(calibration, **kwargs):
+    return len(pack(calibration, slot_bytes=1 << 30, **kwargs))
 
 
 def taxel_counts():
@@ -87,7 +89,7 @@ class TestTheRoundTrip:
         got = unpack(pack(doc)).calibration
         assert got == doc
         assert "joint_encoder_calibration" not in got
-        assert packed_size(doc) < packed_size(full_document())
+        assert _packed_size(doc) < _packed_size(full_document())
 
     def test_an_uncalibrated_motor_is_absent_rather_than_null(self):
         """Absent means uncalibrated, which is how the yaml loader reads it too."""
@@ -203,7 +205,7 @@ class TestWhatItRefuses:
 
 
 class TestRoomToGrow:
-    def test_an_unknown_section_is_skipped_and_reported(self):
+    def test_an_unknown_section_is_skipped(self):
         """An older reader must not choke on a section added later."""
         blob = bytearray(pack({"calibrated": True}))
         count = blob[5]
@@ -213,19 +215,18 @@ class TestRoomToGrow:
         struct.pack_into("<H", blob, 12, len(payload))
         struct.pack_into("<H", blob, 14, crc16(bytes(blob[:14]) + payload))
         store = unpack(bytes(blob[:HEADER_BYTES]) + payload)
-        assert store.unknown_sections == (200,)
         assert store.calibration["calibrated"] is True
 
     def test_a_document_too_big_is_refused_with_both_sizes(self):
         doc = full_document(joints=[f"j{i:02d}" for i in range(200)], motors=200)
-        with pytest.raises(BoardStoreTooLarge) as caught:
+        with pytest.raises(BoardStoreError) as caught:
             pack(doc, slot_bytes=512)
         message = str(caught.value)
         assert "512" in message and "more room" in message
 
     def test_the_size_is_measured_not_assumed(self):
-        small = packed_size({"calibrated": True})
-        large = packed_size(full_document())
+        small = _packed_size({"calibrated": True})
+        large = _packed_size(full_document())
         assert small < large < SLOT_BYTES
 
 
@@ -274,7 +275,7 @@ class TestEveryShippedModelFits:
         doc = full_document(joints=[str(j) for j in joints], motors=len(motors))
         doc.update(tactile_document())
         identity = BoardIdentity(side="right", hw_version=21, config=2500, serial="S" * 20)
-        size = packed_size(doc, identity=identity)
+        size = _packed_size(doc, identity=identity)
         assert size <= SLOT_BYTES, (
             f"{config_path}: worst case packs to {size} B, slot holds {SLOT_BYTES}"
         )

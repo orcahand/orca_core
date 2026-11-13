@@ -98,10 +98,6 @@ class BoardStoreError(ValueError):
     """A blob that cannot be trusted: wrong magic, bad CRC, truncated."""
 
 
-class BoardStoreTooLarge(BoardStoreError):
-    """The packed store does not fit the slot it was destined for."""
-
-
 def crc16(data: bytes, crc: int = 0) -> int:
     """CRC-16/XMODEM (poly 0x1021, init 0).
 
@@ -136,9 +132,6 @@ class BoardStore:
     calibration: Dict[str, Any]
     identity: BoardIdentity
     sequence: int
-    layout_version: int
-    # Section types this reader did not understand, in the order seen.
-    unknown_sections: Tuple[int, ...] = ()
 
 
 def _finger_order(calibration: Mapping[str, Any]) -> List[str]:
@@ -282,7 +275,7 @@ def pack(
     as small as that hand's data.
 
     Raises:
-        BoardStoreTooLarge: when the result would not fit ``slot_bytes``. The
+        BoardStoreError: when the result would not fit ``slot_bytes``. The
             size is measured, never assumed: pack first, then compare.
         BoardStoreError: anything else the encoding cannot hold (a joint name
             that is not ASCII, a motor ID above 255, a malformed value).
@@ -409,23 +402,18 @@ def _pack(calibration, identity, sequence, joints, slot_bytes) -> bytes:
 
     payload = b"".join(sections)
     if len(payload) > 0xFFFF:
-        raise BoardStoreTooLarge(
+        raise BoardStoreError(
             f"the payload is {len(payload)} bytes; the length field holds 65535"
         )
     header = struct.pack(_HEADER_FMT, MAGIC, LAYOUT_VERSION, len(sections), flags,
                          int(sequence) & 0xFFFFFFFF, len(payload), 0)
     blob = header[:-2] + struct.pack("<H", crc16(header[:-2] + payload)) + payload
     if len(blob) > slot_bytes:
-        raise BoardStoreTooLarge(
+        raise BoardStoreError(
             f"the packed store is {len(blob)} bytes and the slot holds "
             f"{slot_bytes}; it needs {len(blob) - slot_bytes} bytes more room"
         )
     return blob
-
-
-def packed_size(calibration: Mapping[str, Any], **kwargs: Any) -> int:
-    """How many bytes this document takes, measured by packing it."""
-    return len(pack(calibration, slot_bytes=1 << 30, **kwargs))
 
 
 def unpack(blob: bytes) -> BoardStore:
@@ -455,13 +443,13 @@ def unpack(blob: bytes) -> BoardStore:
     if crc != want:
         raise BoardStoreError(f"CRC is 0x{crc:04X}, the bytes give 0x{want:04X}")
     try:
-        return _decode(payload, version, section_count, flags, sequence)
+        return _decode(payload, section_count, flags, sequence)
     except (struct.error, IndexError) as exc:
         # A CRC-valid store whose sections do not hold what their type says.
         raise BoardStoreError(f"a section does not hold what its type says ({exc})") from exc
 
 
-def _decode(payload: bytes, version: int, section_count: int, flags: int,
+def _decode(payload: bytes, section_count: int, flags: int,
             sequence: int) -> BoardStore:
     calibration: Dict[str, Any] = {
         "calibrated": bool(flags & FLAG_CALIBRATED),
@@ -470,7 +458,6 @@ def _decode(payload: bytes, version: int, section_count: int, flags: int,
     identity = BoardIdentity()
     names: List[str] = []
     fingers: List[str] = []
-    unknown: List[int] = []
     pending: List[Tuple[int, int, bytes]] = []
 
     offset = 0
@@ -494,8 +481,7 @@ def _decode(payload: bytes, version: int, section_count: int, flags: int,
                            SEC_TAXEL_GATES, SEC_SENSOR_OFFSETS, SEC_RESULTANT_OFFSETS,
                            SEC_STAMP, SEC_FINGERPRINT):
             pending.append((type_code, count, body))
-        else:
-            unknown.append(type_code)
+        # Any other section was added by a newer layout: skipped.
 
     def joint(idx: int) -> str:
         if idx >= len(names):
@@ -585,6 +571,4 @@ def _decode(payload: bytes, version: int, section_count: int, flags: int,
         calibration=calibration,
         identity=identity,
         sequence=sequence,
-        layout_version=version,
-        unknown_sections=tuple(unknown),
     )

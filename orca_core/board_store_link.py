@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .board_store import crc16
-from .constants import ORCA_ID_PROBE_BAUDRATE, ORCA_ID_PROBE_TIMEOUT_S
+from .constants import ORCA_ID_PROBE_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +137,3 @@ def read_store_over_link(link, metadata: Optional[StoreMetadata] = None,
             "the calibration store read off the board does not match the CRC it reported"
         )
     return blob
-
-
-def read_store(port: str, baudrate: int = ORCA_ID_PROBE_BAUDRATE,
-               timeout: float = LINE_TIMEOUT_S) -> Optional[bytes]:
-    """Open ``port`` exclusively and read the store on it."""
-    import serial
-
-    with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
-        return read_store_over_link(link, timeout=timeout)
