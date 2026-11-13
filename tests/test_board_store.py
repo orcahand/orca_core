@@ -283,3 +283,47 @@ class TestEveryShippedModelFits:
             f"{config_path}: {size} B is over three quarters of a {SLOT_BYTES} B slot; "
             "enlarge __cal_store_size in the firmware's linker script"
         )
+
+
+def _store(*sections, sequence=1):
+    """A CRC-valid store holding exactly ``sections`` (type, count, body)."""
+    payload = b"".join(struct.pack("<BBH", t, n, len(body)) + body for t, n, body in sections)
+    header = struct.pack("<4sBBHIH", MAGIC, LAYOUT_VERSION, len(sections), 0, sequence,
+                         len(payload))
+    return header + struct.pack("<H", crc16(header + payload)) + payload
+
+
+class TestWhatItCannotHold:
+    """A store that passes its CRC but whose sections are malformed, and a
+    document the encoding cannot carry, are both a BoardStoreError: callers
+    treat that as 'no store', never as a crash."""
+
+    @pytest.mark.parametrize("section", [
+        (4, 1, b"\x01\x00\x00\x00\x00"),          # motor limits: 5 bytes of a 17-byte record
+        (1, 1, b"\x4c"),                          # identity cut short
+        (14, 1, b"\x07"),                         # stamp cut short
+        (11, 1, b"\x00\x05\x00\x00\x00"),         # taxel gates claiming 5 floats
+    ])
+    def test_a_short_section_behind_a_valid_crc(self, section):
+        names = (10, 1, b"\x05thumb")
+        with pytest.raises(BoardStoreError, match="does not hold"):
+            unpack(_store(names, section))
+
+    @pytest.mark.parametrize("doc, why", [
+        ({"motor_travel_measured": {"índex_mcp": 1.0}}, "ASCII"),
+        ({"motor_limits": {256: [0.0, 1.0]}}, "0-255"),
+        ({"motor_travel_measured": {"j" * 300: 1.0}}, "255"),
+        ({"motor_limits": {1: ["a", 1.0]}}, "cannot be packed"),
+    ])
+    def test_a_document_the_encoding_cannot_carry(self, doc, why):
+        with pytest.raises(BoardStoreError, match=why):
+            pack(doc)
+
+    def test_a_hand_can_be_checked_before_its_run(self):
+        from orca_core.board_store import check_packable
+
+        check_packable(JOINTS, range(1, 18))
+        with pytest.raises(BoardStoreError, match="0-255"):
+            check_packable(JOINTS, [1, 300])
+        with pytest.raises(BoardStoreError, match="ASCII"):
+            check_packable(["dedo_índice"], [1])

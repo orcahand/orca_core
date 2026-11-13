@@ -248,6 +248,25 @@ def _limits(value: Any) -> Optional[Tuple[float, float]]:
     return float(value[0]), float(value[1])
 
 
+def check_packable(joints: Sequence[str], motor_ids: Sequence[Any]) -> None:
+    """Raise ``BoardStoreError`` when a hand with these joints and motors could
+    not keep its calibration on a board, so a caller can say so before a run
+    rather than after it."""
+    names = [str(j) for j in joints]
+    if len(names) > 0xFF:
+        raise BoardStoreError(f"{len(names)} joints; a board store names at most 255")
+    for name in names:
+        try:
+            encoded = name.encode("ascii")
+        except UnicodeEncodeError:
+            raise BoardStoreError(f"joint name {name!r} is not plain ASCII") from None
+        if len(encoded) > 0xFF:
+            raise BoardStoreError(f"joint name {name[:20]!r}... is longer than 255 bytes")
+    for motor_id in motor_ids:
+        if isinstance(motor_id, bool) or not isinstance(motor_id, int) or not 0 <= motor_id <= 0xFF:
+            raise BoardStoreError(f"motor ID {motor_id!r} is outside 0-255")
+
+
 def pack(
     calibration: Mapping[str, Any],
     *,
@@ -265,8 +284,22 @@ def pack(
     Raises:
         BoardStoreTooLarge: when the result would not fit ``slot_bytes``. The
             size is measured, never assumed: pack first, then compare.
+        BoardStoreError: anything else the encoding cannot hold (a joint name
+            that is not ASCII, a motor ID above 255, a malformed value).
     """
+    try:
+        return _pack(calibration, identity, sequence, joints, slot_bytes)
+    except BoardStoreError:
+        raise
+    except (struct.error, KeyError, TypeError, ValueError) as exc:
+        raise BoardStoreError(f"this calibration cannot be packed ({exc})") from exc
+
+
+def _pack(calibration, identity, sequence, joints, slot_bytes) -> bytes:
     names = [str(j) for j in (joints if joints is not None else _joint_order(calibration))]
+    motors = {int(m) for key in ("joint_to_motor_ratios", "motor_limits")
+              for m in (calibration.get(key) or {})}
+    check_packable(names, sorted(motors))
     index = {name: i for i, name in enumerate(names)}
 
     sections: List[bytes] = [_pack_identity(identity)]
@@ -421,7 +454,15 @@ def unpack(blob: bytes) -> BoardStore:
     want = crc16(blob[:HEADER_BYTES - 2] + payload)
     if crc != want:
         raise BoardStoreError(f"CRC is 0x{crc:04X}, the bytes give 0x{want:04X}")
+    try:
+        return _decode(payload, version, section_count, flags, sequence)
+    except (struct.error, IndexError) as exc:
+        # A CRC-valid store whose sections do not hold what their type says.
+        raise BoardStoreError(f"a section does not hold what its type says ({exc})") from exc
 
+
+def _decode(payload: bytes, version: int, section_count: int, flags: int,
+            sequence: int) -> BoardStore:
     calibration: Dict[str, Any] = {
         "calibrated": bool(flags & FLAG_CALIBRATED),
         "wrist_calibrated": bool(flags & FLAG_WRIST_CALIBRATED),

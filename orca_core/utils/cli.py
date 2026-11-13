@@ -225,6 +225,21 @@ def load_stored_calibration(hand, hand_id: str | None = None) -> str:
     return hand_id
 
 
+def board_store_problem(hand) -> "str | None":
+    """Why this hand's calibration could not be kept on its board, said before a
+    run rather than after it; ``None`` when it can (or there is no board)."""
+    from ..board_store import BoardStoreError, check_packable
+
+    if not getattr(hand, "board_hand_id", None):
+        return None
+    try:
+        check_packable(hand.config.joint_ids, hand.config.motor_ids)
+    except BoardStoreError as exc:
+        print(f"Note: this hand's calibration will be kept on this computer only: {exc}.")
+        return str(exc)
+    return None
+
+
 def push_calibration_to_board(hand) -> bool:
     """Keep this hand's fresh calibration on the hand's own board too.
 
@@ -235,7 +250,11 @@ def push_calibration_to_board(hand) -> bool:
     """
     from ..board_push import push_for_hand
 
-    result = push_for_hand(hand)
+    try:
+        result = push_for_hand(hand)
+    except Exception as exc:
+        print(f"Calibration kept on this computer only: the board was not written ({exc}).")
+        return False
     if result.written:
         print(f"Calibration also written to the hand's own board "
               f"(store sequence {result.sequence}, {result.size} bytes).")

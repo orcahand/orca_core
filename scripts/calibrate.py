@@ -8,6 +8,7 @@ from orca_core.utils.cli import (
     connect_hand,
     create_hand_from_args,
     open_encoder_stream,
+    board_store_problem,
     print_calibration_progress,
     push_calibration_to_board,
     select_joints,
@@ -84,6 +85,8 @@ def main():
     print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
     if hand.hand_id:
         print(f"Calibrating hand {hand.hand_id} (files in {hand.hand_dir}).")
+    if not args.mock:
+        board_store_problem(hand)
 
     finished = []
 

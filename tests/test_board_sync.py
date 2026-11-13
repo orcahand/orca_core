@@ -111,6 +111,15 @@ class TestFirstContact:
         assert not os.path.exists(hand.config.calibration_path)
         assert "cannot be read" in caplog.text
 
+    def test_a_store_with_a_valid_crc_but_a_short_section_is_not_used(self, connect, caplog):
+        from tests.test_board_store import _store
+
+        hand = connect(_store((4, 1, b"\x01\x00\x00")))
+        assert hand.is_connected()
+        assert hand.board_calibration_newer() is None
+        assert not os.path.exists(hand.config.calibration_path)
+        assert "cannot be read" in caplog.text
+
 
 class TestTheBanner:
     def computer_calibrated(self, connect, config, board_at):
@@ -312,6 +321,33 @@ class TestWritingTheBoard:
         result = board_push.push_for_hand(hand)
         assert not result.written and "no board" in result.reason
         assert not (firmware / "tool.log").exists()
+
+
+class TestAHandWhoseCalibrationABoardCannotHold:
+    def test_it_is_said_before_the_run(self, connect, capsys):
+        from orca_core.utils import cli
+
+        from types import SimpleNamespace
+
+        hand = connect(None)
+        assert cli.board_store_problem(hand) is None
+        odd = SimpleNamespace(board_hand_id="ser-0000",
+                              config=SimpleNamespace(joint_ids=["index_mcp"], motor_ids=[1, 300]))
+        assert "0-255" in cli.board_store_problem(odd)
+        assert "this computer only" in capsys.readouterr().out
+        odd.board_hand_id = None
+        assert cli.board_store_problem(odd) is None, "no board, nothing to say"
+
+    def test_a_push_that_fails_never_ends_the_run_in_a_traceback(self, connect, capsys,
+                                                                  monkeypatch):
+        from orca_core.utils import cli
+
+        def broken(hand):
+            raise board_store.BoardStoreError("joint name 'é' is not plain ASCII")
+
+        monkeypatch.setattr(board_push, "push_for_hand", broken)
+        assert cli.push_calibration_to_board(connect(None)) is False
+        assert "this computer only" in capsys.readouterr().out
 
 
 def test_calibrate_script_pushes_only_after_a_finished_real_run():
