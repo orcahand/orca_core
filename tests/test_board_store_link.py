@@ -184,3 +184,39 @@ class TestReadingTheStore:
         got = board_store.unpack(board_store_link.read_store_over_link(FakeBoard(store)))
         assert got.calibration["motor_limits"] == {1: [-1.0, 1.0], 2: [0.5, 2.5]}
         assert got.identity.serial == "ser-0000"
+
+
+class TestALostOrDamagedReply:
+    def test_silence_is_asked_again_and_told_apart_from_no_store(self):
+        class LosesFirst(FakeBoard):
+            lost = 1
+
+            def write(self, data):
+                if bytes(data).strip() == b"ORCA_CAL?" and self.lost:
+                    self.lost -= 1
+                    return
+                super().write(data)
+
+        store = blob()
+        assert board_store_link.query_metadata(LosesFirst(store), timeout=0.01) == (
+            True, board_store_link.read_metadata_over_link(FakeBoard(store)))
+        assert board_store_link.query_metadata(FakeBoard(None), timeout=0.01) == (True, None)
+
+        class Silent(FakeBoard):
+            def write(self, data):
+                pass
+
+        assert board_store_link.query_metadata(Silent(store), timeout=0.01) == (False, None)
+
+    def test_a_chunk_that_lost_a_hex_digit_is_asked_for_again(self):
+        class DropsADigitOnce(FakeBoard):
+            dropped = False
+
+            def write(self, data):
+                super().write(data)
+                if bytes(data).startswith(b"ORCA_CAL?0") and not self.dropped:
+                    self.dropped = True
+                    self.out = self.out[:-2] + self.out[-1:]   # one digit short
+
+        store = blob()
+        assert board_store_link.read_store_over_link(DropsADigitOnce(store)) == store

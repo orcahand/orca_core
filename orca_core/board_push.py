@@ -73,32 +73,43 @@ def firmware_tool(repo: Optional[Path] = None) -> Optional[Path]:
     return tool if tool.is_file() else None
 
 
-def board_state(port: str, timeout: float = 0.2) -> "tuple[Optional[BoardIdentity], int]":
+# How often the board is asked who it is before a write is refused.
+INFO_ATTEMPTS = 3
+
+
+def board_state(port: str, timeout: float = 0.2) -> "tuple[BoardIdentity, int]":
     """The identity to carry forward and the sequence to beat.
 
     Read from the board's own store when it has one, else from what the board
     reports about itself, so a board written for the first time still keeps its
-    identity. Sequence 0 means nothing readable is there.
+    identity. Sequence 0 means the board said it holds nothing.
+
+    Raises:
+        OSError: the board never said what it holds, or who it is: a write
+            then could go out under a sequence the board ignores, or make
+            it forget which hand it is.
     """
     import serial
 
+    from . import board_store_link
     from .hardware.sensing.serial_discovery import probe_orca_info_over_link
 
     identity = None
-    sequence = 0
     with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE, timeout=timeout,
                        exclusive=True) as link:
-        from . import board_store_link
-
-        metadata = board_store_link.read_metadata_over_link(link)
+        answered, metadata = board_store_link.query_metadata(link)
+        if not answered:
+            raise OSError("the board did not say what calibration it holds")
+        sequence = metadata.sequence if metadata is not None else 0
         if metadata is not None:
-            sequence = metadata.sequence
             try:
                 blob = board_store_link.read_store_over_link(link, metadata)
                 identity = board_store.unpack(blob).identity
             except Exception as exc:
                 logger.debug("could not read the store on %s: %s", port, exc)
-        if identity is None or not identity.provisioned:
+        for _ in range(INFO_ATTEMPTS):
+            if identity is not None and identity.provisioned:
+                break
             info = probe_orca_info_over_link(link)
             if info is not None:
                 identity = BoardIdentity(
@@ -107,7 +118,23 @@ def board_state(port: str, timeout: float = 0.2) -> "tuple[Optional[BoardIdentit
                     config=info.config,
                     serial=info.serial,
                 )
+    if identity is None:
+        raise OSError("the board did not say which hand it is")
     return identity, sequence
+
+
+def board_serves(port: str, blob: bytes, timeout: float = 0.2) -> bool:
+    """Whether the board on ``port`` now serves ``blob`` as its store."""
+    import serial
+
+    from . import board_store_link
+    from .board_store import crc16
+
+    with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE, timeout=timeout,
+                       exclusive=True) as link:
+        _, metadata = board_store_link.query_metadata(link)
+    return (metadata is not None and metadata.length == len(blob)
+            and metadata.crc == crc16(blob))
 
 
 def push(
@@ -140,11 +167,7 @@ def push(
         return PushResult(False, f"the board on {port} did not answer ({exc})")
 
     try:
-        blob = board_store.pack(
-            calibration,
-            identity=identity or BoardIdentity(),
-            sequence=sequence + 1,
-        )
+        blob = board_store.pack(calibration, identity=identity, sequence=sequence + 1)
     except board_store.BoardStoreError as exc:
         return PushResult(False, f"this calibration cannot be stored on a board ({exc})")
 
@@ -166,6 +189,12 @@ def push(
         return PushResult(
             False,
             detail[-1] if detail else f"the firmware tool failed ({done.returncode})")
+    try:
+        served = board_serves(port, blob)
+    except Exception as exc:
+        return PushResult(False, f"what the board holds now could not be read back ({exc})")
+    if not served:
+        return PushResult(False, "the board does not serve the calibration just written")
     return PushResult(True, sequence=sequence + 1, size=len(blob), blob=blob)
 
 

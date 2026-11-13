@@ -430,8 +430,7 @@ def serial_port(monkeypatch):
     monkeypatch.setattr(constants, "ORCA_ID_PROBE_TIMEOUT_S", 0.01)
     monkeypatch.setattr(board_sync, "probe_orca_info_over_link", functools.partial(
         serial_discovery.probe_orca_info_over_link, timeout=0.01))
-    monkeypatch.setattr(board_store_link, "read_metadata_over_link", functools.partial(
-        board_store_link.read_metadata_over_link, timeout=0.01))
+    monkeypatch.setattr(board_store_link, "METADATA_TIMEOUT_S", 0.01)
     state = {"link": None, "error": None}
 
     class FakeSerial:

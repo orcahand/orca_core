@@ -11,7 +11,9 @@ import sys
 import pytest
 
 import orca_core
-from orca_core import MockOrcaHand, OrcaHand, board_push, board_store, board_sync, hand_store
+from orca_core import (
+    MockOrcaHand, OrcaHand, board_push, board_store, board_store_link, board_sync, hand_store,
+)
 from orca_core.board_store import BoardIdentity, pack
 from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
 from orca_core.utils import read_yaml
@@ -282,6 +284,21 @@ class TestReadingTheBoardAtConnect:
         contact = board_sync.contact_board("/dev/cu.usbmodemXXXX", cached_store=lambda info: stale)
         assert contact.store == port.store
 
+    def test_a_lost_store_reply_at_first_contact_is_asked_again(self, port, config, monkeypatch):
+        monkeypatch.setattr(board_store_link, "METADATA_TIMEOUT_S", 0.01)
+        port.store = board_blob(config)
+        lost = {"left": 1}
+        write = type(port).write
+
+        def lose_the_first_store_question(data):
+            if bytes(data).strip() == b"ORCA_CAL?" and lost["left"]:
+                lost["left"] -= 1
+                return
+            write(port, data)
+
+        port.write = lose_the_first_store_question
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX").store == port.store
+
     def test_a_board_without_a_store_still_names_its_hand(self, port):
         contact = board_sync.contact_board("/dev/cu.usbmodemXXXX")
         assert contact.info.serial == "ser-0000" and contact.store is None
@@ -289,7 +306,41 @@ class TestReadingTheBoardAtConnect:
 
 class TestWritingTheBoard:
     @pytest.fixture
-    def firmware(self, tmp_path, monkeypatch):
+    def board(self, tmp_path, monkeypatch, config):
+        """The board behind the port: what the firmware tool last wrote, once it has."""
+        from tests.test_board_store_link import FakeBoard
+
+        sent = tmp_path / "sent.bin"
+
+        class Board(FakeBoard):
+            def write(self, data):
+                if sent.exists() and self.serves_what_was_sent:
+                    self.store = sent.read_bytes()
+                super().write(data)
+
+        fake = Board(pack({"calibrated": True, "motor_limits": {1: [0.0, 1.0]}},
+                          identity=BoardIdentity(side="right", serial="ser-0000"), sequence=6))
+        fake.serves_what_was_sent = True
+
+        class FakeSerial:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return fake
+
+            def __exit__(self, *exc):
+                return False
+
+        import serial
+
+        monkeypatch.setattr(serial, "Serial", FakeSerial)
+        monkeypatch.setattr(board_store_link, "METADATA_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(board_store_link, "LINE_TIMEOUT_S", 0.01)
+        return fake
+
+    @pytest.fixture
+    def firmware(self, tmp_path, monkeypatch, board):
         repo = tmp_path / "orca_firmware"
         tool = repo / "tools" / "bench" / "cal_store.py"
         tool.parent.mkdir(parents=True)
@@ -304,8 +355,6 @@ class TestWritingTheBoard:
             "sys.exit(int(pathlib.Path(__file__).with_name('rc').read_text() or 0)"
             " if pathlib.Path(__file__).with_name('rc').exists() else 0)\n")
         monkeypatch.setenv(board_push.FIRMWARE_REPO_ENV, str(repo))
-        monkeypatch.setattr(board_push, "board_state",
-                            lambda port: (BoardIdentity(side="right", serial="ser-0000"), 6))
         return tmp_path
 
     def calibrated(self, connect, config):
@@ -339,6 +388,44 @@ class TestWritingTheBoard:
         (firmware / "orca_firmware" / "tools" / "bench" / "rc").write_text("3")
         result = board_push.push_for_hand(self.calibrated(connect, config))
         assert not result.written and result.reason
+
+    def test_a_lost_reply_is_asked_again_and_the_write_beats_the_board_s_sequence(
+            self, connect, config, firmware, board):
+        hand = self.calibrated(connect, config)
+        lost = {"left": 1}
+        write = type(board).write
+
+        def lose_the_first_store_question(data):
+            if bytes(data).strip() == b"ORCA_CAL?" and lost["left"]:
+                lost["left"] -= 1
+                return
+            write(board, data)
+
+        board.write = lose_the_first_store_question
+        result = board_push.push_for_hand(hand)
+        assert result.written and result.sequence == 7
+
+    @pytest.mark.parametrize("silent_to", [b"ORCA_CAL?", b"ORCA_INFO?"])
+    def test_a_board_that_will_not_say_what_it_holds_or_who_it_is_is_not_written(
+            self, connect, config, firmware, board, silent_to):
+        hand = self.calibrated(connect, config)
+        if silent_to == b"ORCA_INFO?":
+            board.answers_info = False
+            board.store = b"OHC1" + b"\x00" * 40       # unreadable: no identity in it
+        write = type(board).write
+        board.write = lambda data: None if bytes(data).strip() == silent_to else write(board, data)
+        result = board_push.push_for_hand(hand)
+        assert not result.written and result.reason
+        assert not (firmware / "tool.log").exists()
+
+    def test_a_write_the_board_does_not_serve_is_not_reported_written(
+            self, connect, config, firmware, board):
+        hand = self.calibrated(connect, config)
+        board.serves_what_was_sent = False
+        result = board_push.push_for_hand(hand)
+        assert not result.written
+        cache = hand_store.hand_dir("ser-0000") / "board.bin"
+        assert cache.read_bytes() != (firmware / "sent.bin").read_bytes()
 
     def test_a_hand_without_a_board_is_skipped(self, model_dir, firmware, monkeypatch):
         monkeypatch.setattr(BoardedHand, "contact", board_sync.NO_BOARD)

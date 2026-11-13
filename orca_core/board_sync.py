@@ -132,7 +132,7 @@ def contact_board(
                     return BoardContact(silent_board=_says_orca(port))
                 # Firmware older than ORCA_INFO? has no identity to give.
                 return _old_firmware_contact(port)
-            metadata = board_store_link.read_metadata_over_link(link)
+            _, metadata = board_store_link.query_metadata(link)
             if metadata is None:
                 return BoardContact(info=info)
             cached = cached_store(info) if cached_store is not None else None

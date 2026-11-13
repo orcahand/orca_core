@@ -45,12 +45,17 @@ LINE_TIMEOUT_S = 0.5
 METADATA_TIMEOUT_S = ORCA_ID_PROBE_TIMEOUT_S
 #: How many times one line is asked for again before the read is given up.
 LINE_RETRIES = 2
+#: How often a board that stays silent is asked what it holds: a lost reply
+#: must not read as "holds nothing".
+METADATA_ATTEMPTS = 3
 
 _META = re.compile(
     rb"ORCA:CAL;SLOT=(\d+);SEQ=(\d+);LEN=(\d+);CRC=([0-9A-Fa-f]{4});CHUNK=(\d+)\n"
 )
 _CHUNK = re.compile(rb"ORCA:CALD;(\d+);([0-9A-Fa-f]{4});([0-9A-Fa-f]*)\n")
 _NONE = re.compile(rb"ORCA:CAL;NONE")
+# What _ask returns when the board says it holds no store.
+_HOLDS_NONE = object()
 
 
 @dataclass(frozen=True)
@@ -65,7 +70,8 @@ class StoreMetadata:
 
 
 def _ask(link, query: bytes, pattern: "re.Pattern[bytes]", timeout: float):
-    """Send ``query`` and return the first match in what comes back."""
+    """Send ``query`` and return the first match in what comes back:
+    ``_HOLDS_NONE`` when the board says it holds no store, ``None`` for silence."""
     try:
         link.reset_input_buffer()
         link.write(query)
@@ -84,16 +90,35 @@ def _ask(link, query: bytes, pattern: "re.Pattern[bytes]", timeout: float):
         if found:
             return found
         if _NONE.search(buf):
-            return None
+            return _HOLDS_NONE
     return None
+
+
+def query_metadata(link, timeout: Optional[float] = None,
+                   attempts: int = METADATA_ATTEMPTS) -> "tuple[bool, Optional[StoreMetadata]]":
+    """What the board holds, asked again while it stays silent: ``(True,
+    metadata)``, ``(True, None)`` when it says it holds nothing, and ``(False,
+    None)`` when it never answered, so nothing is known about its store."""
+    for _ in range(max(1, attempts)):
+        found = _ask(link, STORE_QUERY, _META,
+                     METADATA_TIMEOUT_S if timeout is None else timeout)
+        if found is _HOLDS_NONE:
+            return True, None
+        if found is not None:
+            return True, _metadata(found)
+    return False, None
 
 
 def read_metadata_over_link(link,
                             timeout: float = METADATA_TIMEOUT_S) -> Optional[StoreMetadata]:
     """What the board holds, or ``None`` when it holds nothing or is not one."""
     found = _ask(link, STORE_QUERY, _META, timeout)
-    if found is None:
+    if found is None or found is _HOLDS_NONE:
         return None
+    return _metadata(found)
+
+
+def _metadata(found: "re.Match[bytes]") -> StoreMetadata:
     return StoreMetadata(
         slot=int(found.group(1)),
         sequence=int(found.group(2)),
@@ -121,9 +146,12 @@ def read_store_over_link(link, metadata: Optional[StoreMetadata] = None,
     for index in range(-(-meta.length // meta.chunk_bytes)):
         for _ in range(retries + 1):
             found = _ask(link, b"ORCA_CAL?%d\n" % index, _CHUNK, timeout)
-            if found is None or int(found.group(1)) != index:
+            if found is None or found is _HOLDS_NONE or int(found.group(1)) != index:
                 continue
-            payload = bytes.fromhex(found.group(3).decode("ascii"))
+            try:
+                payload = bytes.fromhex(found.group(3).decode("ascii"))
+            except ValueError:
+                continue  # a line that lost a digit on the way
             if crc16(payload) == int(found.group(2), 16):
                 blob.extend(payload)
                 break
