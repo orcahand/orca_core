@@ -13,7 +13,7 @@ import yaml
 
 from orca_core import MockOrcaHand
 from orca_core.maintenance import calibration_routine, motor_reads
-from orca_core.utils.utils import read_yaml, write_yaml_atomic
+from orca_core.utils.utils import read_yaml, write_bytes_atomic, write_yaml_atomic
 from tests._helpers import copy_model_config, hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -289,7 +289,7 @@ def test_write_yaml_atomic_failed_write_keeps_original(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["calibration.yaml"]
 
 
-def test_write_yaml_atomic_waits_out_a_reader_holding_the_file(tmp_path, monkeypatch):
+def test_atomic_writes_wait_out_a_reader_holding_the_file(tmp_path, monkeypatch):
     """Windows refuses the replace while another process has the file open."""
     path = tmp_path / "setup.yaml"
     replace = os.replace
@@ -303,6 +303,10 @@ def test_write_yaml_atomic_waits_out_a_reader_holding_the_file(tmp_path, monkeyp
     monkeypatch.setattr(os, "replace", busy_replace)
     write_yaml_atomic(str(path), {"calibrated": True})
     assert read_yaml(str(path)) == {"calibrated": True}
+
+    refusals.extend([PermissionError("in use by another process")] * 3)
+    write_bytes_atomic(str(tmp_path / "board.bin"), b"\x01\x02")
+    assert (tmp_path / "board.bin").read_bytes() == b"\x01\x02"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")

@@ -224,25 +224,25 @@ def _replace(src: str, dst: str) -> None:
             time.sleep(0.05)
 
 
-def write_text_atomic(file_path, text: str) -> None:
-    """Write ``text`` to ``file_path`` via a same-directory temp file and
-    ``os.replace``, keeping the target's permissions, so a crash mid-write
-    never leaves a truncated file."""
+def write_bytes_atomic(file_path, data: bytes) -> None:
+    """Replace ``file_path`` with ``data`` via a same-directory temp file and
+    ``os.replace``, so a crash mid-write never leaves a truncated file. A
+    symlink is resolved first, and the target keeps its permissions."""
     real_path = os.path.realpath(file_path)
+    # mkstemp creates 0600 files; carry over the target's permissions.
     try:
         mode = os.stat(real_path).st_mode & 0o7777
-    except FileNotFoundError:
-        mode = None
+    except OSError:
+        mode = 0o644
     fd, tmp_path = tempfile.mkstemp(
-        dir=os.path.dirname(real_path) or ".", prefix=".", suffix=".tmp"
+        dir=os.path.dirname(real_path) or ".", prefix=os.path.basename(real_path) + ".", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        if mode is not None:
-            os.chmod(tmp_path, mode)
+        os.chmod(tmp_path, mode)
         _replace(tmp_path, real_path)
     except BaseException:
         try:
@@ -252,25 +252,9 @@ def write_text_atomic(file_path, text: str) -> None:
         raise
 
 
-def write_bytes_atomic(file_path, data: bytes) -> None:
-    """Write ``data`` to ``file_path`` via a same-directory temp file and ``os.replace``."""
-    real_path = os.path.realpath(file_path)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=os.path.dirname(real_path) or ".", prefix=".", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, real_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+def write_text_atomic(file_path, text: str) -> None:
+    """:func:`write_bytes_atomic` for UTF-8 ``text``."""
+    write_bytes_atomic(file_path, text.encode("utf-8"))
 
 
 def write_yaml_atomic(file_path, data):
@@ -288,32 +272,7 @@ def write_yaml_atomic(file_path, data):
         data: Mapping of top-level keys to values forming the whole document.
     """
     data = {key: _to_plain(value) for key, value in data.items()}
-    real_path = os.path.realpath(file_path)
-
-    # mkstemp creates 0600 files; carry over the target's permissions so the
-    # replace doesn't silently restrict who can read an existing file.
-    try:
-        mode = os.stat(real_path).st_mode & 0o7777
-    except OSError:
-        mode = 0o644
-
-    target_dir = os.path.dirname(real_path) or "."
-    fd, tmp_path = tempfile.mkstemp(
-        dir=target_dir, prefix=os.path.basename(real_path) + ".", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w") as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-            file.flush()
-            os.fsync(file.fileno())
-        os.chmod(tmp_path, mode)
-        _replace(tmp_path, real_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_text_atomic(file_path, yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
 def read_yaml(file_path):
