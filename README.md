@@ -101,8 +101,8 @@ To get started with Orca Core, follow these steps:
     model's folder. Guided tensioning needs v2.1 hardware; on v2.0, use `scripts/tension.py` instead. Tension first and
     calibrate last.
 
-    Calibration and tensioning records are saved beside the `config.yaml` you load. With more than one hand of the same model,
-    give each hand its own copy of the config and point every script at it, including teleoperation's `--model_path`.
+    Calibration and tensioning records are saved in the hand's own folder, `~/.orca/hands/<hand id>/` (see
+    [Where a hand's files live](#where-a-hands-files-live)), so several hands of one model can share its config.
 
 3. **Move the hand to the neutral position**:
 
@@ -111,6 +111,27 @@ To get started with Orca Core, follow these steps:
     ```
 
 ---
+
+## Where a hand's files live
+
+Each physical hand keeps its own files in `~/.orca/hands/<hand id>/` (set `ORCA_HOME` to move `~/.orca`); a model's
+`config.yaml` is only ever read.
+
+- **Which folder:** the hand's board is asked at connect. Its serial names the folder, else its board id; a hand on a
+  plain USB adapter shares `noboard-<model>` with every such hand of that model. Mock hands use a temporary folder.
+- **`calibration.yaml`** holds what the last calibration measured, with `calibrated_at` and a `sequence` number. Ratios
+  are derived from it each time it is loaded, for the joint ranges in force then. The calibration before it is kept as
+  `calibration.previous.yaml` (`hand.restore_previous_calibration()`).
+- **`setup.yaml`** keeps the latest setup record of each kind; older ones are under `archive/`.
+- **`hand.yaml`** records the hand's id, the serials and board ids it has reported, its model and an optional nickname.
+- A first connect copies the calibration kept on the hand's board when the computer has none. `scripts/calibrate.py`
+  writes the board back when an `orca_firmware` checkout is present.
+- `--hardware-version` lasts for the run only; a `--motor-port` (or `port:`) that does not answer fails instead of
+  falling back to another port.
+- Files older versions kept beside `config.yaml` (`calibration.yaml`, `setup.yaml`, `local_config.yaml`, ...) are no
+  longer read and are left untouched; calibrate each hand once.
+
+Details: [docs/pages/orca-core-docs/hand-files.md](docs/pages/orca-core-docs/hand-files.md).
 
 ## Troubleshooting
 

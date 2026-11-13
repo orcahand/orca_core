@@ -28,7 +28,8 @@ Measures how far each joint's motor turns between that joint's two hardstops and
 <br><strong>Args:</strong><br>
 <ul>
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. Omit to autodetect the connected hand.</li><br>
-    <li><strong>--from-calibration</strong> (<strong>action</strong>, optional): Derive the baseline from the stored `calibration.yaml` instead of sweeping. Moves nothing and needs no motor bus.</li><br>
+    <li><strong>--from-calibration</strong> (<strong>action</strong>, optional): Derive the baseline from a hand's stored calibration instead of sweeping. Moves nothing and needs no motor bus.</li><br>
+    <li><strong>--hand-id</strong> (<strong>str</strong>, optional): With --from-calibration, the hand whose calibration to use, when this computer has several of the model.</li><br>
     <li><strong>--current</strong> (<strong>int</strong>, optional): Calibration current (mA) for the sweep. Raise it above the config value so a stiff joint still reaches its hardstop.</li><br>
     <li><strong>--force-wrist</strong> (<strong>action</strong>, optional): Include the wrist even if it is already calibrated.</li><br>
     <li><strong>--dry-run</strong> (<strong>action</strong>, optional): Print the measured travel without writing `config.yaml`.</li><br>

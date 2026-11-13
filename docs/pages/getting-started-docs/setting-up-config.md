@@ -267,14 +267,14 @@ python scripts/measure_travel.py /path/to/orcahand-right/config.yaml
 
 That drives every joint onto both hardstops, prints the measured travel per
 joint, and writes the block. Add `--dry-run` to review the numbers first, or
-`--from-calibration` to derive them from an existing clean `calibration.yaml`
+`--from-calibration` to derive them from the hand's existing clean calibration
 without moving the hand. Compare joints that share a design — the four `_pip`
 joints, the four `_mcp` joints — as a cross-check: one that reads well below its
 siblings is usually over-tensioned rather than genuinely shorter.
 
-Each calibration run also writes what it actually measured to
-`calibration.yaml` under `motor_travel_measured:`, so successive runs can be
-compared.
+Each calibration run also writes what it actually measured to the hand's
+`calibration.yaml` (in its own folder) under `motor_travel_measured:`, so
+successive runs can be compared.
 
 A joint with no baseline has its travel measured and logged,
 but not checked, and is never re-driven.
