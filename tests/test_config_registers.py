@@ -157,22 +157,20 @@ class TestTeardownWithTheBusHeld:
     condition never becomes a permanent one."""
 
     @pytest.mark.parametrize("motor_type", FAMILIES)
-    @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
-    def test_a_stale_in_use_flag_does_not_stop_the_teardown(self, motor_type, teardown):
+    def test_a_stale_in_use_flag_does_not_stop_the_teardown(self, motor_type):
         """A transaction that raised leaves the SDK's flag set with nobody
         holding the bus; the port must still close and deregister."""
         client, _ = _unconnected_client(motor_type)
         client.port_handler.is_using = True
 
-        getattr(client, teardown)()
+        client.disconnect()
 
         assert client.port_handler.closed
         assert not client.port_handler.is_using
         assert client not in type(client).OPEN_CLIENTS
 
     @pytest.mark.parametrize("motor_type", FAMILIES)
-    @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
-    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self, motor_type, teardown):
+    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self, motor_type):
         """The lock is the real mutual exclusion. Taking it first means the
         teardown queues behind a live exchange rather than reading its flag
         and declining, so no transaction is cut in half either."""
@@ -193,7 +191,7 @@ class TestTeardownWithTheBusHeld:
         holder.start()
         assert mid_transaction.wait(5)
 
-        closer = threading.Thread(target=getattr(client, teardown))
+        closer = threading.Thread(target=client.disconnect)
         closer.start()
         closer.join(0.2)
         assert closer.is_alive(), "teardown should be waiting on the bus lock"
@@ -219,19 +217,25 @@ class TestTeardownWithTheBusHeld:
 
 
 class TestEveryClientOffersTheFixedTeardown:
-    """Both families keep the fixed-order name for callers that ask for it,
-    and the mocks carry it so a front-end exercising the path under test is
-    exercising the same surface."""
+    """Both families keep the fixed-order name for callers that ask for it, as
+    the same teardown, and the mocks carry it so a front-end exercising the
+    path under test is exercising the same surface."""
 
-    def test_real_and_mock_clients_all_have_it(self):
-        from orca_core.hardware.motor_factory import (
-            mock_motor_client_class,
-            motor_client_class,
-        )
+    @pytest.mark.parametrize("motor_type", FAMILIES)
+    def test_it_is_the_same_teardown(self, motor_type):
+        client, _ = _unconnected_client(motor_type)
+        client.port_handler.is_using = True
+
+        client.disconnect_fixed_lock_order()
+
+        assert client.port_handler.closed
+        assert client not in type(client).OPEN_CLIENTS
+
+    def test_the_mocks_have_it(self):
+        from orca_core.hardware.motor_factory import mock_motor_client_class
 
         for motor_type in FAMILIES:
-            for factory in (motor_client_class, mock_motor_client_class):
-                assert hasattr(factory(motor_type), "disconnect_fixed_lock_order")
+            assert hasattr(mock_motor_client_class(motor_type), "disconnect_fixed_lock_order")
 
 
 class TestUnits:

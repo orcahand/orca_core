@@ -4,6 +4,7 @@ The hands here run the real identity path (the board's answer at connect)
 over mock motors, so no serial port is opened.
 """
 
+import functools
 import os
 
 import pytest
@@ -289,6 +290,15 @@ class FakeLink:
 def serial_port(monkeypatch):
     import serial
 
+    from orca_core import board_store_link, constants
+    from orca_core.hardware.sensing import serial_discovery
+
+    # A fake link answers at once or never, so a short wait shows silence as well.
+    monkeypatch.setattr(constants, "ORCA_ID_PROBE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(board_sync, "probe_orca_info_over_link", functools.partial(
+        serial_discovery.probe_orca_info_over_link, timeout=0.01))
+    monkeypatch.setattr(board_store_link, "read_metadata_over_link", functools.partial(
+        board_store_link.read_metadata_over_link, timeout=0.01))
     state = {"link": None, "error": None}
 
     class FakeSerial:
