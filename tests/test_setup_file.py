@@ -157,3 +157,14 @@ def test_writers_in_separate_processes_lose_no_update(tmp_path):
 
     assert read_yaml(setup_file.setup_path(config)) == {
         "schema": 1, "count": 80, "sweeps": True, "slack_tests": True}
+
+
+def test_a_corrupt_file_is_set_aside_and_records_carry_on(tmp_path):
+    config = SimpleNamespace(hand_dir=str(tmp_path))
+    setup_file.write_section(config, "slack_tests", {"t": 1})
+    (tmp_path / "setup.yaml").write_text("slack_tests: [unclosed\n")
+
+    assert setup_file.read_section(config, "slack_tests") is None
+    assert len(list(tmp_path.glob("setup.yaml.corrupt-*"))) == 1
+    setup_file.update_section(config, "slack_tests", lambda v: {"t": 2})
+    assert setup_file.read_section(config, "slack_tests") == {"t": 2}

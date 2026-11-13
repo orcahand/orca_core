@@ -234,9 +234,16 @@ def _read(path: str, fresh: bool = False) -> dict:
     cached = _parsed.get(path)
     if not fresh and cached is not None and cached[0] == version:
         return cached[1]
-    with open(path) as file:
-        data = yaml.load(file, Loader=_LOADER)
-    data = data if isinstance(data, dict) else {}
+    try:
+        with open(path) as file:
+            data = yaml.load(file, Loader=_LOADER)
+    except (yaml.YAMLError, UnicodeDecodeError):
+        hand_store._set_aside(path, "not valid YAML")
+        return {}
+    if data is not None and not isinstance(data, dict):
+        hand_store._set_aside(path, "not a mapping")
+        return {}
+    data = data or {}
     _parsed[path] = (version, data)
     return data
 

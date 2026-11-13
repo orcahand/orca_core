@@ -6,6 +6,7 @@ over mock motors, so no serial port is opened.
 
 import functools
 import os
+from pathlib import Path
 
 import pytest
 
@@ -182,6 +183,32 @@ class TestTheSameHandFindsTheSameFolder:
         hand.set_rom_frame("centered")
         assert hand.hand_id == "noboard-orcahand-right"
         assert read_yaml(hand.config.calibration_path)["rom_frame"] == "centered"
+
+
+class TestAnUnreadableFileIsSetAside:
+    """A file that is not a YAML mapping (a typo, a cut-off write) is renamed
+    to ``<name>.corrupt-<time>`` and the hand carries on without it."""
+
+    def test_a_corrupt_hand_yaml(self, make_hand, caplog):
+        folder = Path(make_hand(board()).hand_dir)
+        (folder / "hand.yaml").write_text("nickname: 'unterminated\n")
+        hand = make_hand(board())
+        assert hand.hand_id == "ser-0000"
+        assert len(list(folder.glob("hand.yaml.corrupt-*"))) == 1
+        assert hand_store.read_hand(folder)["aliases"]["serial"] == ["ser-0000"]
+        assert "moved it to" in caplog.text
+
+    @pytest.mark.parametrize("damage", ["motor_limits: [unclosed\n", "- a list\n"])
+    def test_a_corrupt_calibration_yaml(self, make_hand, damage):
+        hand = make_hand(board())
+        hand.calibrate(persist=True)
+        hand.calibrate(persist=True)
+        (Path(hand.hand_dir) / "calibration.yaml").write_text(damage)
+        hand = make_hand(board())
+        assert not hand.calibrated
+        assert len(list(Path(hand.hand_dir).glob("calibration.yaml.corrupt-*"))) == 1
+        hand.restore_previous_calibration()
+        assert hand.calibrated
 
 
 class TestExplicitCalibrationPath:

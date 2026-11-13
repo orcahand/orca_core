@@ -42,6 +42,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from .utils.utils import read_yaml, write_yaml_atomic
 
 logger = logging.getLogger(__name__)
@@ -165,15 +167,35 @@ def _mock_hand_dir(hand_id: str) -> Path:
 
 # --- documents ------------------------------------------------------------------
 
+def _set_aside(path: os.PathLike | str, problem: str) -> None:
+    """Rename an unreadable ``path`` to ``<name>.corrupt-<UTC time>`` so it reads
+    as absent from now on, and say where it went."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside = f"{path}.corrupt-{stamp}"
+    try:
+        os.replace(path, aside)
+    except OSError as exc:
+        logger.warning("%s cannot be read (%s) and cannot be moved aside (%s); "
+                       "ignoring it", path, problem, exc)
+        return
+    logger.warning("%s cannot be read (%s); moved it to %s and carrying on without it",
+                   path, problem, aside)
+
+
 def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
     """The ``kind`` document at ``path``; ``{}`` when absent.
 
-    A document from a newer orca_core than this one is returned as it is, with a
-    warning: its readers here may miss what it added.
+    A document that is not a YAML mapping is moved aside (see :func:`_set_aside`)
+    and reads as absent. A document from a newer orca_core than this one is
+    returned as it is, with a warning: its readers here may miss what it added.
     """
-    raw = read_yaml(str(path)) or {}
+    try:
+        raw = read_yaml(str(path)) or {}
+    except (yaml.YAMLError, UnicodeDecodeError):
+        _set_aside(path, "not valid YAML")
+        return {}
     if not isinstance(raw, dict):
-        logger.warning("%s is not a mapping; ignoring it", path)
+        _set_aside(path, "not a mapping")
         return {}
     try:
         version = int(raw.get(SCHEMA_KEY, 0) or 0)
