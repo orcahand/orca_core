@@ -4,6 +4,24 @@ Learn how to configure your ORCA Hand system settings. The primary configuration
 
 This file defines parameters crucial for the hand's operation, including communication settings, motor and joint mappings, movement ranges, and calibration procedures.
 
+### Shared defaults: `models/v2/shared.yaml`
+
+Values that are the same for every v2 model live once, in `orca_core/models/v2/shared.yaml`: the joint ranges (`joint_roms`), the guided-tensioning hold currents per motor family (`guided_tension_currents`), the v2.1 calibration currents (`calibration_current_v21`) and the v2.1 motor travel baseline (`joint_motor_travel_v21`). A model's `config.yaml` lists only what differs from it.
+
+When a config is loaded, the `shared.yaml` in the folder above the model folder is merged under it: a value in `config.yaml` wins, and a mapping merges key by key, so a model can change one joint's range or add one joint's hold current and keep the rest. `orca_core.load_config(path)` returns the merged document.
+
+A config with no `shared.yaml` in the folder above it (a v1 model, or a config kept somewhere else) is read as written and must be complete. To use a v2 model outside the package, write out its merged document:
+
+```python
+import yaml
+from orca_core import load_config
+
+with open("my-hand/config.yaml", "w") as f:
+    yaml.safe_dump(load_config(model_name="orcahand-right"), f, sort_keys=False)
+```
+
+Copying a model's `config.yaml` on its own does not work: it fails to load with an error that says so.
+
 !!! Warning
     Be careful when editing this file, incorrect settings can cause unexpected behavior and make debugging more difficult.
 
@@ -134,11 +152,15 @@ joint_to_motor_map:
 ### 4. Joint Range of Motion (ROM)
 
 ```yaml
-joint_roms:
+joint_roms:            # in models/v2/shared.yaml for every v2 model
   thumb_mcp: [-50, 50]
   ...
   wrist: [-50, 30]
 ```
+
+Ranges are in degrees. They are the clamp for every command and the frame calibration maps each motor's travel onto. The v2 ranges are in `shared.yaml` and are the same for every hardware version; a v2.1.1 hand also takes `joint_roms_v211` (only the joints that differ) when one is set.
+
+Ranges measured on one hand can replace the defaults for chosen joints: `config.with_measured_ranges({"index_mcp": [-20.0, 101.5]})` returns a config whose named joints use those ranges for both the clamp and the calibration mapping, over the model's ranges and over an encoder-measured span.
 
 **What should be changed?**
 
@@ -175,9 +197,9 @@ calibration_threshold: 0.01
 
 Finger joints are driven onto their hardstops at each motor's own current ceiling, because a lower cap can stall a joint short of its stop and record that as the stop. `calibration_current` does not cap this drive. `calibration_current: default` is the motor family's own value (300 mA on Dynamixel hands, 900 mA on Feetech hands), and a number pins a different one. It sets the wrist's current (`wrist_calibration_current` follows it unless set) and where the re-drive ladder starts.
 
-On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). The packaged models list 300 mA for a v2.1 Dynamixel hand's abductions and 500 mA for its MCPs and PIPs; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. These values only set where a joint's re-drive ladder starts, and a re-drive never drops below the motor's ceiling.
+On v2.1 hardware, `calibration_current_v21` sets a current per joint group for a motor family, replacing `calibration_current` for those joints: `abd` (the abductions and `thumb_cmc`), `mcp`, and `pip` (the PIPs and `thumb_dip`). `shared.yaml` lists 300 mA for a v2.1 Dynamixel hand's abductions and 500 mA for its MCPs and PIPs; a family that is not listed, and every v2.0 hand, keeps `calibration_current`. These values only set where a joint's re-drive ladder starts, and a re-drive never drops below the motor's ceiling.
 
-`guided_tension_currents` overrides guided tensioning's currents per motor family, used by both `scripts/guided_tension.py` and the console. `hold` is the current each joint group (`abd`, `mcp`, `pip`) yields at while you move it through its range; the defaults are 200/140/100 mA on Dynamixel and 380/320/280 mA on Feetech. A joint named under `hold` keeps its own current over its group's and over `--hold-current`; the touch hands hold `thumb_mcp` at 100 mA on Dynamixel. `tension` limits the pull and the fingers frozen during a range check, and follows `max_current` unless set. While you ratchet the spools, the fingers hold at each motor's own current ceiling.
+`guided_tension_currents` sets guided tensioning's currents per motor family, used by both `scripts/guided_tension.py` and the console. `hold` is the current each joint group (`abd`, `mcp`, `pip`) yields at while you move it through its range; the defaults, in `shared.yaml`, are 200/140/100 mA on Dynamixel and 380/320/280 mA on Feetech (`orca_core.constants.DEFAULT_GUIDED_TENSION_CURRENTS` is a read-only view of them, and a config with no `shared.yaml` above it falls back to them). A joint named under `hold` keeps its own current over its group's and over `--hold-current`; the touch hands hold `thumb_mcp` at 100 mA on Dynamixel. `tension` limits the pull and the fingers frozen during a range check, and follows `max_current` unless set. While you ratchet the spools, the fingers hold at each motor's own current ceiling.
 
 These parameters should generally not be changed unless you have experience tuning the calibration behavior for a specific hardware modification.
 
@@ -208,7 +230,7 @@ If you want to specify the sequence or calibrate only specific joints you can ad
 ### 8. Motor Travel Baseline
 
 ```yaml
-joint_motor_travel_v21:   # packaged baseline, shared by every v2.1 hand
+joint_motor_travel_v21:   # baseline in models/v2/shared.yaml, shared by every v2.1 hand
   index_mcp: 139.39
   index_pip: 131.04
   ...
@@ -222,7 +244,7 @@ calibration_travel_retries: 3
 version is unknown (no board and no `hardware_version` pin), there is no
 baseline: calibration is a single plain pass with no travel check or re-drive,
 and guided tensioning refuses to run (hold the motors and ratchet the spools
-instead). The packaged models ship the baseline as `joint_motor_travel_v21`;
+instead). `shared.yaml` ships the baseline as `joint_motor_travel_v21`;
 a `joint_motor_travel` block measured on your own hand takes precedence joint
 by joint, but likewise only on v2.1.
 
