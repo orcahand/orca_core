@@ -8,12 +8,11 @@ when the config is built -- so nothing downstream has to know a revision exists.
 
 import glob
 import os
-from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from orca_core import hand_factory, load_hand
+from orca_core import load_hand
 from orca_core.constants import HARDWARE_VERSION_V21
 from orca_core.hand_config import (
     HandConfigValidationError,
@@ -333,7 +332,6 @@ def test_boards_provisioned_before_the_three_digit_form_read_as_v2_1_0():
     assert legacy.hardware_version == HARDWARE_VERSION_V21 and legacy.uses_motor_travel
     assert legacy.joint_inversion_dict == current.joint_inversion_dict
     assert base.with_hardware_version(2).hardware_version == 200
-    assert hand_factory._resolve_hardware_version(_pinned(None), _detection(21), None) == 210
 
 
 def test_v2_1_1_is_a_v2_1_hand_with_its_own_roms(tmp_path):
@@ -382,66 +380,60 @@ def test_a_hardware_version_that_is_not_auto_or_a_whole_number_is_rejected(tmp_p
 
 
 # --- how load_hand resolves it -------------------------------------------
-# Precedence: the board (read by detection or handed in by a caller that
-# skipped it -- the same source two ways), else a yaml pin, else nothing.
+# Precedence: the session override, else the board (read by detection or
+# handed in by a caller that skipped it -- the same source two ways), else a
+# yaml pin, else nothing.
 
 
-def _detection(hw):
-    return SimpleNamespace(identity=SimpleNamespace(hw_version=hw))
+def _loaded(tmp_path, pin=None, board=None):
+    pinned = {} if pin is None else {"hardware_version": pin}
+    return load_hand(config_path=_config_with(tmp_path, LEFT[0], **pinned), mock=True,
+                     detected_hardware_version=board)
 
 
-def _pinned(hw):
-    return SimpleNamespace(hardware_version=hw)
+def test_the_board_is_used_when_nothing_is_pinned(tmp_path):
+    assert _loaded(tmp_path, board=210).hardware_version == 210
 
 
-def test_the_board_is_used_when_nothing_is_pinned():
-    assert hand_factory._resolve_hardware_version(_pinned(None), _detection(210), None) == 210
+def test_a_board_provisioned_before_the_three_digit_form_reads_as_v2_1_0(tmp_path):
+    assert _loaded(tmp_path, board=21).hardware_version == 210
 
 
-def test_a_handed_in_board_value_ranks_as_detection():
+def test_a_handed_in_board_value_wins_over_a_pin_and_says_so_once(tmp_path, caplog):
     """The console loads by config_path, skips detection, and hands the board
     value in. That is the board speaking through a different door, so it wins
     over a pin just the same."""
-    assert hand_factory._resolve_hardware_version(_pinned(None), None, 210) == 210
-    assert hand_factory._resolve_hardware_version(_pinned(200), None, 210) == 210
-
-
-def test_the_board_wins_over_a_pin_and_says_so(caplog):
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(200), None) == 200
-    assert "pins hardware_version=210" in caplog.text
-    assert "board reports 200" in caplog.text
+    with caplog.at_level("WARNING"):
+        hand = _loaded(tmp_path, pin=200, board=210)
+        hand.connect()
+    assert hand.hardware_version == 210
+    assert caplog.text.count("pins hardware_version=200") == 1
+    assert "board reports 210" in caplog.text
 
 
 def test_load_hand_puts_the_board_s_version_over_a_pin(tmp_path):
-    path = _config_with(tmp_path, LEFT[0], hardware_version=200)
-    hand = load_hand(config_path=path, mock=True, detected_hardware_version=210)
+    hand = _loaded(tmp_path, pin=200, board=210)
     base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
-    assert hand.hardware_version == 210
     assert all(hand.config.joint_inversion_dict[j] != base.joint_inversion_dict[j]
                for j in FLIPPED)
 
 
-def test_a_pin_that_agrees_with_the_board_is_quiet(caplog):
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(210), None) == 210
+def test_a_pin_that_agrees_with_the_board_is_quiet(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        assert _loaded(tmp_path, pin=210, board=210).hardware_version == 210
     assert "hardware_version" not in caplog.text
 
 
-def test_a_pin_with_no_board_is_quiet(caplog):
+def test_a_pin_with_no_board_is_quiet(tmp_path, caplog):
     """The pin exists for hands with no board. Warning that 'the detected None
     is not used' would nag exactly the people using it as intended."""
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), None, None) == 210
-        assert hand_factory._resolve_hardware_version(
-            _pinned(210), SimpleNamespace(identity=None), None) == 210
+    with caplog.at_level("WARNING"):
+        assert _loaded(tmp_path, pin=210).hardware_version == 210
     assert "hardware_version" not in caplog.text
 
 
-def test_nothing_known_resolves_to_nothing():
-    assert hand_factory._resolve_hardware_version(_pinned(None), None, None) is None
-    assert hand_factory._resolve_hardware_version(
-        _pinned(None), SimpleNamespace(identity=None), None) is None
+def test_nothing_known_resolves_to_nothing(tmp_path):
+    assert _loaded(tmp_path).hardware_version is None
 
 
 def test_load_hand_applies_a_handed_in_version_to_the_mock_hand():

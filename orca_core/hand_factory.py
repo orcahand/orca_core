@@ -318,33 +318,6 @@ def detect_hand() -> HandDetection:
     )
 
 
-def _resolve_hardware_version(config, detection, detected: int | None) -> int | None:
-    """What the board reported, else a yaml pin, else unknown.
-
-    The board's value reaches here two ways that rank the same: read by
-    :func:`detect_hand`, or handed in as ``detected`` by a caller that loaded
-    by ``config_path`` and so skipped detection. Unlike port and motor_type,
-    the board wins over a pin: its version is provisioned into this physical
-    hand, while a config.yaml speaks for every hand loaded from it. A pin is
-    how a hand on a plain adapter, with no board to ask, says which revision
-    it is. A disagreeing pin is logged so a stale copied config is never
-    mistaken for a detection bug. ``None`` leaves the config on its base map.
-    """
-    if detected is None and detection is not None and detection.identity is not None:
-        detected = detection.identity.hw_version
-    detected = normalize_hardware_version(detected)
-    pinned = normalize_hardware_version(config.hardware_version)
-    if detected is None:
-        # No board at all is the normal case for a pinned config: that is what the pin is for.
-        return pinned
-    if pinned is not None and pinned != detected:
-        logger.warning(
-            "the config pins hardware_version=%r in config.yaml but the board reports %r; "
-            "the board's is used (a pin only applies to a hand with no board).",
-            pinned, detected)
-    return detected
-
-
 def _overridden(field: str, configured, detected) -> bool:
     """Whether ``config.yaml`` pins ``field`` to something other than what was
     detected. Logs the clash so a pin is never mistaken for a detection bug."""
@@ -513,12 +486,6 @@ def load_hand(
     )
     if detection is not None:
         config = _pin_detected_ports(config, detection)
-    config = config.with_hardware_version(
-        _resolve_hardware_version(config, detection, detected_hardware_version)
-    )
-    if config.is_v21 and config.joint_to_motor_map_v21:
-        logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
-
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
         logger.warning(
@@ -539,10 +506,17 @@ def load_hand(
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
     hand = hand_cls(config=config)
+    # The board's version, read by detection or handed in by a caller that
+    # loaded by path (the same source two ways), is put in force by the hand.
     board_version = detected_hardware_version
     if board_version is None and detection is not None and detection.identity is not None:
         board_version = detection.identity.hw_version
-    hand._board_hardware_version = normalize_hardware_version(board_version)
+    board_version = normalize_hardware_version(board_version)
+    if board_version is not None:
+        hand._board_hardware_version = board_version
+        hand._apply_hardware_version()
+    if hand.config.is_v21 and hand.config.joint_to_motor_map_v21:
+        logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
     if detection is not None and detection.motor_port is not None:
         from .board_sync import BoardContact
 

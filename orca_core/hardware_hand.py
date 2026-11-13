@@ -428,16 +428,17 @@ class OrcaHand(BaseHand):
         """
         board = self._board_hardware_version
         pinned = self._pinned_hardware_version
+        version = next((v for v in (self._hardware_version_override, board, pinned)
+                        if v is not None), None)
+        if version == self.config.hardware_version:
+            return
         if self._hardware_version_override is None and pinned is not None \
                 and board is not None and board != pinned:
             logger.warning(
                 "config.yaml pins hardware_version=%r but this hand's board reports %r; "
                 "the board's is used (a pin only applies to a hand with no board).",
                 pinned, board)
-        version = next((v for v in (self._hardware_version_override, board, pinned)
-                        if v is not None), None)
-        if version != self.config.hardware_version:
-            self._rebuild_config(version)
+        self._rebuild_config(version)
 
     def _rebuild_config(self, version: int | None) -> None:
         """Put ``version``'s map and ranges in force, rebuilt from the config's
