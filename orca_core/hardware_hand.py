@@ -26,7 +26,7 @@ from .calibration import (
     joint_fingerprints,
     result_from_mapping,
 )
-from .hand_config import HandConfigValidationError, OrcaHandConfig, load_config
+from .hand_config import HandConfigValidationError, OrcaHandConfig, _valid_rom, load_config
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import (
     MotionTimeoutError,
@@ -472,10 +472,7 @@ class OrcaHand(BaseHand):
         doc = hand_store.read_doc(os.path.join(folder, hand_store.JOINT_RANGES_FILE), "joint_ranges")
         ranges = {}
         for joint, rom in (doc.get("joint_roms") or {}).items():
-            valid = (joint in self.config.joint_ids and isinstance(rom, (list, tuple))
-                     and len(rom) == 2 and all(isinstance(v, (int, float)) for v in rom)
-                     and rom[0] < rom[1])
-            if valid:
+            if joint in self.config.joint_ids and _valid_rom(rom):
                 ranges[str(joint)] = [float(rom[0]), float(rom[1])]
             else:
                 logger.warning("ignoring joint range %s=%r in %s", joint, rom,

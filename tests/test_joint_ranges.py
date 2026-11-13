@@ -1,9 +1,5 @@
 """Joint ranges measured on one hand (joint_ranges.yaml in its folder) are in
-force for both the clamp and the calibration mapping of that hand.
-
-OrcaHandConfig.with_measured_ranges lands with the shared-model-data change;
-until both are merged these tests stand in a minimal version of it.
-"""
+force for both the clamp and the calibration mapping of that hand."""
 
 import dataclasses
 import os
@@ -18,26 +14,16 @@ MODEL = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2", "orcah
 MEASURED = [-10.0, 80.0]
 
 
-def _stand_in(self, roms):
-    return dataclasses.replace(self, joint_roms_dict={**self.joint_roms_dict, **roms})
-
-
 @pytest.fixture
-def ranges_supported(monkeypatch):
-    if not hasattr(hand_config.OrcaHandConfig, "with_measured_ranges"):
-        monkeypatch.setattr(hand_config.OrcaHandConfig, "with_measured_ranges", _stand_in,
-                            raising=False)
-
-
-@pytest.fixture
-def hand_with_ranges(tmp_path, ranges_supported):
+def hand_with_ranges(tmp_path):
     folder = tmp_path / "orcahand-left"
     folder.mkdir()
     copy_model_config(MODEL, folder / "config.yaml")
     mock_folder = hand_store.mock_hand_dir(hand_store.mock_hand_id("orcahand-left"))
     hand_store.write_doc(mock_folder / "joint_ranges.yaml", {
         "measured_at": "2026-11-01T10:00:00Z", "source": "camera rig",
-        "joint_roms": {"index_mcp": MEASURED, "not_a_joint": [0, 1], "index_pip": [5, 1]},
+        "joint_roms": {"index_mcp": MEASURED, "not_a_joint": [0, 1], "index_pip": [5, 1],
+                       "index_abd": [float("-inf"), 10.0], "ring_mcp": [float("nan"), 90.0]},
     })
     return MockOrcaHand(config_path=str(folder / "config.yaml"))
 

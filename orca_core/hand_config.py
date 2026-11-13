@@ -1355,14 +1355,7 @@ class OrcaHandConfig(BaseHandConfig):
             if joint not in self.joint_ids:
                 raise HandConfigValidationError(
                     f"measured range for {joint!r}, which is not one of this hand's joints.")
-            if (
-                isinstance(rom, (str, bytes, dict))
-                or not hasattr(rom, "__len__")
-                or len(rom) != 2
-                or any(isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(v)
-                       for v in rom)
-                or not rom[0] < rom[1]
-            ):
+            if not _valid_rom(rom):
                 raise HandConfigValidationError(
                     f"measured range for {joint} must be [min, max] in degrees with min < max, got {rom!r}")
             measured[str(joint)] = [float(rom[0]), float(rom[1])]
@@ -1373,6 +1366,18 @@ class OrcaHandConfig(BaseHandConfig):
             joint_roms_dict={**recorded.joint_roms_dict, **measured},
             measured_joint_roms_dict={**recorded.measured_joint_roms_dict, **measured},
         )
+
+
+def _valid_rom(rom) -> bool:
+    """True for a ``[min, max]`` pair of finite numbers with ``min < max``."""
+    return (
+        not isinstance(rom, (str, bytes, dict))
+        and hasattr(rom, "__len__")
+        and len(rom) == 2
+        and all(not isinstance(v, bool) and isinstance(v, numbers.Real) and math.isfinite(v)
+                for v in rom)
+        and rom[0] < rom[1]
+    )
 
 
 def _sensor_kwargs(sensors: dict) -> dict:
