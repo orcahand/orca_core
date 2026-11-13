@@ -7,7 +7,6 @@ running joint loop.
 from __future__ import annotations
 
 import os
-import shutil
 
 import numpy as np
 import pytest
@@ -25,6 +24,7 @@ from orca_core.utils.utils import read_yaml
 
 from tests._encoder_helpers import with_even_parity
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
+from tests._helpers import copy_model_config
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,7 +55,7 @@ def few_anchor_samples(monkeypatch):
 @pytest.fixture
 def joint_feedback_config(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
     return str(config_path)
 
 

@@ -14,6 +14,7 @@ import yaml
 
 from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -27,7 +28,7 @@ REFERENCE_PATH = os.path.join(REPO_ROOT, "tests", "reference", "calibration_expe
 def calibration_result():
     """Run a full from-scratch calibration on MockOrcaHand and return the persisted YAML."""
     tmp = tempfile.mkdtemp()
-    shutil.copy(os.path.join(CONFIG_DIR, "config.yaml"), os.path.join(tmp, "config.yaml"))
+    copy_model_config(os.path.join(CONFIG_DIR, "config.yaml"), os.path.join(tmp, "config.yaml"))
     calib_path = os.path.join(tmp, "calibration.yaml")
 
     hand = MockOrcaHand(config_path=os.path.join(tmp, "config.yaml"))

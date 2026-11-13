@@ -1430,8 +1430,9 @@ def _drive_calibration(
             # The encoder pass for this step has already run, so a joint whose
             # travel was measured this run fits its ratio against the measured
             # span — putting the map's degrees in the encoders' own units. The
-            # rest fall back to the config nominal.
-            rom = joint_roms_measured.get(joint) or hand.config.joint_roms_dict[joint]
+            # rest fall back to the config nominal. Ranges measured on the hand win over both.
+            rom = (hand.config.measured_joint_roms_dict.get(joint)
+                   or joint_roms_measured.get(joint) or hand.config.joint_roms_dict[joint])
             delta_joint = rom[1] - rom[0]
             joint_to_motor_ratios[motor_id] = float(delta_motor / delta_joint)
             _report(

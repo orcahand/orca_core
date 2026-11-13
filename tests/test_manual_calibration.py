@@ -190,8 +190,9 @@ def _config_without_manual_sequence(tmp_path, version, model):
     import orca_core
 
     source = os.path.join(os.path.dirname(orca_core.__file__), "models", version, model, "config.yaml")
-    with open(source, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    from orca_core.hand_config import load_config
+
+    raw = load_config(source)
     raw.pop("manual_calibration_sequence", None)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")

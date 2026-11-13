@@ -1,7 +1,6 @@
 """Smoke tests for the HTTP API: every route exercised against a MockOrcaHand."""
 
 import os
-import shutil
 import threading
 import time
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from fastapi.testclient import TestClient
 import orca_core
 from orca_core import MockOrcaHand, OrcaHand
 import orca_core.api.api as api
+from tests._helpers import copy_model_config
 
 
 @pytest.fixture(scope="module")
@@ -24,7 +24,7 @@ def api_env(tmp_path_factory):
     packaged = os.path.join(
         os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
     )
-    shutil.copy(packaged, config_dir / "config.yaml")
+    copy_model_config(packaged, config_dir / "config.yaml")
     (config_dir / "calibration.yaml").write_text("{}\n", encoding="utf-8")
 
     hand = MockOrcaHand(config_path=str(config_dir / "config.yaml"))
@@ -268,7 +268,7 @@ def disconnected_client(tmp_path, monkeypatch):
     packaged = os.path.join(
         os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
     )
-    shutil.copy(packaged, tmp_path / "config.yaml")
+    copy_model_config(packaged, tmp_path / "config.yaml")
     (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     monkeypatch.setattr(api, "hand", hand)

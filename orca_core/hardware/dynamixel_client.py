@@ -254,7 +254,6 @@ class DynamixelClient(MotorClient):
     sweep_hold_current_ma = 200
     sweep_pose_current_ma = 350
     sweep_current_ma = 300
-    guided_hold_current_ma = {"abd": 200, "mcp": 140, "pip": 100}
     # Model numbers with no Goal Current register at all (XC430-T240BB-T).
     MODELS_WITHOUT_CURRENT_CONTROL = frozenset({1080})
     supports_reboot = True

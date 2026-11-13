@@ -3,7 +3,6 @@ runtime ``set_pid_gains`` / ``get_pid_gains`` facade."""
 
 import dataclasses
 import os
-import shutil
 
 import pytest
 import yaml
@@ -22,6 +21,8 @@ from orca_core.hand_config import (
 )
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
+from tests._helpers import copy_model_config
+from orca_core.hand_config import load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL_CONFIG = os.path.join(
@@ -32,7 +33,7 @@ REAL_CONFIG = os.path.join(
 @pytest.fixture
 def joint_feedback_config(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
     return str(config_path)
 
 
@@ -113,7 +114,7 @@ def _write_config(tmp_path, gains_block):
     """A minimal valid config.yaml carrying a joint_control_gains block."""
     src = OrcaHandConfig.from_config_path(model_version="v2",
                                           model_name="orcahand-right")
-    doc = yaml.safe_load(open(src.config_path))
+    doc = load_config(src.config_path)
     doc["joint_control_gains"] = gains_block
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -149,7 +150,7 @@ def test_override_for_unknown_joint_is_rejected(tmp_path):
 
 
 def test_packaged_models_pin_no_gains_so_constants_stay_authoritative():
-    """No packaged config.yaml may hard-code gains: doing so would shadow
+    """No packaged config.yaml (shared.yaml included) may hard-code gains: doing so would shadow
     control/constants.py and make editing the defaults a silent no-op."""
     import glob
 
@@ -158,8 +159,7 @@ def test_packaged_models_pin_no_gains_so_constants_stay_authoritative():
     )
     assert paths, "packaged model configs must be found for this check to bite"
     for path in paths:
-        doc = yaml.safe_load(open(path)) or {}
-        assert "joint_control_gains" not in doc, path
+        assert "joint_control_gains" not in load_config(path), path
 
     for model in ("orcahand-joint-right", "orcahand-full-right"):
         config = OrcaHandConfig.from_config_path(model_version="v2",

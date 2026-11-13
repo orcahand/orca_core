@@ -205,14 +205,14 @@ def patch_comports(monkeypatch):
 def mock_config_dir(tmp_path):
     """Writable copy of the packaged v2 config so connect() can persist to it."""
     import os
-    import shutil
 
     import orca_core
+    from tests._helpers import copy_model_config
 
     model_config = os.path.join(
         os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
     )
-    shutil.copy(model_config, tmp_path / "config.yaml")
+    copy_model_config(model_config, tmp_path / "config.yaml")
     (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
     return tmp_path
 

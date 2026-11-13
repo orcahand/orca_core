@@ -246,7 +246,6 @@ class FeetechClient(MotorClient):
     sweep_hold_current_ma = 400
     sweep_pose_current_ma = 600
     sweep_current_ma = 600
-    guided_hold_current_ma = {"abd": 380, "mcp": 320, "pip": 280}
 
     @classmethod
     def supported_baudrates(cls) -> list[int]:

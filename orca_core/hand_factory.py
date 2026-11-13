@@ -45,6 +45,7 @@ from .hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
     _resolve_config_path,
+    load_config,
 )
 from .hardware.sensing.constants import (
     DEFAULT_ENCODER_BAUDRATE,
@@ -69,7 +70,6 @@ from .hardware_hand_sensing import (
     OrcaHandJointFeedback,
     OrcaHandTouch,
 )
-from .utils.utils import read_yaml
 
 
 logger = logging.getLogger(__name__)
@@ -497,7 +497,7 @@ def load_hand(
         model_version=model_version,
         model_name=model_name,
     )
-    raw = read_yaml(resolved_config_path) or {}
+    raw = load_config(resolved_config_path)
     declares_tactile = "sensors" in raw
     # The config keeps its sensor declaration either way; only the class that
     # would open the link is withheld, mirroring engage_feedback.

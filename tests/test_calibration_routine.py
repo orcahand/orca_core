@@ -4,7 +4,6 @@ offset-calibration failures, and the atomic YAML persistence helper."""
 import dataclasses
 import logging
 import os
-import shutil
 import sys
 import threading
 
@@ -15,6 +14,7 @@ import yaml
 from orca_core import MockOrcaHand
 from orca_core.maintenance import calibration_routine, motor_reads
 from orca_core.utils.utils import read_yaml, write_yaml_atomic
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -22,7 +22,7 @@ MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right
 
 @pytest.fixture
 def calib_dir(tmp_path):
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -379,7 +379,7 @@ def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypat
     from orca_core.utils import update_yaml
 
     config_path = tmp_path / "config.yaml"
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), config_path)
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), config_path)
     update_yaml(str(config_path), "motor_type", "feetech")
 
     hand = MockOrcaHand(config_path=str(config_path))

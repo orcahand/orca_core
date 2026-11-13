@@ -88,6 +88,9 @@ To get started with Orca Core, follow these steps:
 1. **Check the configuration file**:
 
     - Review the config file (e.g., `orca_core/models/v2/orcahand-right/config.yaml`) and make sure it matches your hardware setup.
+      Joint ranges and the guided-tensioning currents every v2 model shares are in `orca_core/models/v2/shared.yaml`,
+      merged under each model's `config.yaml`. To keep a model outside the package, write a complete
+      copy with `orca_core.write_standalone_config("my-hand/config.yaml", model_name="orcahand-right")`.
 
 2. **Run the tension and calibration scripts**:
 

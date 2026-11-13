@@ -1,7 +1,6 @@
 import dataclasses
 import logging
 import os
-import shutil
 
 import numpy as np
 import pytest
@@ -9,6 +8,7 @@ from orca_core import MockOrcaHand, OrcaHand
 from orca_core.calibration import JointEncoderCal
 from orca_core.hardware.sensing.constants import AUTO_ENC_NUM_JOINTS
 from orca_core.utils import read_yaml
+from tests._helpers import copy_model_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -30,7 +30,7 @@ def mock_hand():
 
 @pytest.fixture
 def calibrated_hand(tmp_path):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     success, msg = hand.connect()
     assert success, f"Failed to connect: {msg}"
@@ -178,13 +178,13 @@ def test_calibrated_list_command_round_trips(calibrated_hand):
 
 @pytest.mark.parametrize("hand_cls", [OrcaHand, MockOrcaHand])
 def test_construction_leaves_config_dir_untouched(tmp_path, hand_cls):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     hand_cls(config_path=str(tmp_path / "config.yaml"))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["config.yaml"]
 
 
 def test_sanity_check_demotes_stale_calibrated_flag_in_existing_file(tmp_path):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     calib_path = tmp_path / "calibration.yaml"
     calib_path.write_text("calibrated: true\n", encoding="utf-8")
 
@@ -195,7 +195,7 @@ def test_sanity_check_demotes_stale_calibrated_flag_in_existing_file(tmp_path):
 
 
 def test_sanity_check_does_not_rewrite_already_uncalibrated_file(tmp_path):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     calib_path = tmp_path / "calibration.yaml"
     original = "calibrated: false\noperator_note: keep me\n"
     calib_path.write_text(original, encoding="utf-8")
@@ -206,7 +206,7 @@ def test_sanity_check_does_not_rewrite_already_uncalibrated_file(tmp_path):
 
 
 def test_sanity_check_demote_write_is_gated_on_persist_calibration(tmp_path, monkeypatch):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     calib_path = tmp_path / "calibration.yaml"
     original = "calibrated: true\n"
     calib_path.write_text(original, encoding="utf-8")
@@ -219,7 +219,7 @@ def test_sanity_check_demote_write_is_gated_on_persist_calibration(tmp_path, mon
 
 
 def test_mock_construction_never_rewrites_stale_calibration_file(tmp_path):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     calib_path = tmp_path / "calibration.yaml"
     original = "calibrated: true\n"
     calib_path.write_text(original, encoding="utf-8")
@@ -332,7 +332,7 @@ def test_torque_toggles_return_failed_ids_and_warn(mock_hand, caplog):
 
 
 def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
 
     created = []
@@ -363,7 +363,7 @@ def test_failed_connect_after_client_open_closes_client(tmp_path, monkeypatch):
 
 
 def test_failed_connect_logs_instead_of_printing(tmp_path, monkeypatch, capsys, caplog):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
 
     def failing_create():
@@ -393,7 +393,7 @@ def test_failed_connect_logs_instead_of_printing(tmp_path, monkeypatch, capsys, 
 @pytest.fixture
 def fresh_mock_dir(tmp_path):
     """Config-only model dir, as in a fresh checkout or wheel install."""
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -486,7 +486,7 @@ def test_applying_a_calibration_rearms_uncalibrated_warnings(mock_hand, caplog):
 
 
 def test_raw_to_joint_angle_without_validated_side_raises_actionable_error(tmp_path):
-    shutil.copy(REAL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(REAL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     hand.calibration = dataclasses.replace(
         hand.calibration,
@@ -524,7 +524,7 @@ def test_stop_task_reports_and_logs_a_well_formed_message(mock_hand, caplog):
 
 
 def test_encoder_backed_joints_public_accessor(tmp_path):
-    shutil.copy(JOINT_MODEL_CONFIG, tmp_path / "config.yaml")
+    copy_model_config(JOINT_MODEL_CONFIG, tmp_path / "config.yaml")
     hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
     assert hand.encoder_backed_joints, "joint model should expose encoder-backed joints"
     assert hand.encoder_backed_joints == hand._encoder_backed_joints()

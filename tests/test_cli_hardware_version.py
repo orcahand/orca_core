@@ -4,12 +4,12 @@ the same place the console's picker writes."""
 
 import glob
 import os
-import shutil
 from argparse import Namespace
 
 import orca_core
 from orca_core.constants import HARDWARE_VERSION_V21
 from orca_core.utils import cli
+from tests._helpers import copy_model_config
 
 MODELS = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2")
 LEFT = sorted(glob.glob(os.path.join(MODELS, "*-left", "config.yaml")))[0]
@@ -17,7 +17,7 @@ THUMB = ("thumb_mcp", "thumb_dip")
 
 
 def _mock_hand(tmp_path, **args):
-    shutil.copy(LEFT, tmp_path / "config.yaml")
+    copy_model_config(LEFT, tmp_path / "config.yaml")
     ns = Namespace(config_path=str(tmp_path / "config.yaml"), mock=True, model_name=None,
                    engage_feedback=False, hardware_version=None)
     for k, v in args.items():
@@ -31,6 +31,7 @@ def _flipped(hand):
 
 def test_an_unknown_version_is_asked_for_and_the_answer_is_kept(tmp_path):
     hand = _mock_hand(tmp_path)
+    before = (tmp_path / "config.yaml").read_text()
     base = _flipped(hand)
     asked = []
     try:
@@ -41,7 +42,7 @@ def test_an_unknown_version_is_asked_for_and_the_answer_is_kept(tmp_path):
     finally:
         hand.disconnect()
     assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 21"
-    assert (tmp_path / "config.yaml").read_text() == open(LEFT, encoding="utf-8").read()
+    assert (tmp_path / "config.yaml").read_text() == before
 
 
 def test_enter_keeps_the_version_unknown_and_writes_nothing(tmp_path):
