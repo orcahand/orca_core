@@ -483,17 +483,24 @@ def test_every_limit_write_is_read_back_from_the_motors_and_drawn_currents_repor
     hand = connected_mock_hand
     config = hand.config
     hand.motor_client.current_ceilings_ma = {m: 700.0 + m for m in config.motor_ids}
-    events, sampled = [], threading.Event()
+    events, samples = [], threading.Condition()
     answers = ["Continue", "goto:tension", "Done", "goto:score", FINISH_ANYWAY]
 
     def progress(event):
-        events.append(event)
-        if event["event"] == "spread":
-            sampled.set()
+        with samples:
+            events.append(event)
+            samples.notify_all()
+
+    def spreads():
+        return sum(e["event"] == "spread" for e in events)
 
     def prompt(p):
         if p["action"] == "range_check":
-            assert sampled.wait(5)
+            # The sampler may have sampled before the stage began, and one sample
+            # may straddle the prompt: the second spread from here was taken in it.
+            with samples:
+                asked = spreads()
+                assert samples.wait_for(lambda: spreads() >= asked + 2, timeout=5)
         return answers.pop(0)
 
     run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
