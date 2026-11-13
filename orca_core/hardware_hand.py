@@ -532,7 +532,7 @@ class OrcaHand(BaseHand):
         info = contact.info
         serial = info.serial if info is not None else None
         board_id = info.board_id if info is not None else None
-        from_board = hand_store.resolve_hand_id(serial, board_id)
+        from_board = hand_store.resolve_hand_id(serial, board_id, contact.usb_serial)
         hand_id = from_board or hand_store.no_board_hand_id(self._model_name())
         try:
             folder, created = hand_store.open_hand_folder(

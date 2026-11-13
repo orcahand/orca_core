@@ -44,6 +44,8 @@ class BoardContact:
     store: Optional[bytes] = None
     # A controller board is behind the port but did not say who it is.
     silent_board: bool = False
+    # The USB serial number of a board whose firmware is too old to report an identity.
+    usb_serial: Optional[str] = None
 
 
 NO_BOARD = BoardContact()
@@ -75,6 +77,18 @@ def _answers_legacy_id(link) -> bool:
                        lambda buf: any(r in buf for r in replies)) is not None
 
 
+def _old_firmware_contact(port: str) -> BoardContact:
+    from .hardware.sensing.serial_discovery import oh_board_usb_serial
+
+    usb_serial = oh_board_usb_serial(port)
+    logger.warning(
+        "the controller board on %s runs firmware too old to report its identity; update "
+        "its firmware. Until then this hand is filed under %s.", port,
+        f"its USB serial number ({usb_serial})" if usb_serial
+        else "its model's shared no-board folder, with every such hand of that model")
+    return BoardContact(usb_serial=usb_serial)
+
+
 def contact_board(
     port: str, cached_store: Optional[Callable[[OrcaBoardInfo], Optional[bytes]]] = None
 ) -> BoardContact:
@@ -100,10 +114,12 @@ def contact_board(
                 if info is not None:
                     break
             if info is None:
-                # Firmware older than ORCA_INFO? has no identity to give.
-                if board and not _answers_legacy_id(link):
+                if not board:
+                    return NO_BOARD
+                if not _answers_legacy_id(link):
                     return BoardContact(silent_board=True)
-                return NO_BOARD
+                # Firmware older than ORCA_INFO? has no identity to give.
+                return _old_firmware_contact(port)
             metadata = board_store_link.read_metadata_over_link(link)
             if metadata is None:
                 return BoardContact(info=info)

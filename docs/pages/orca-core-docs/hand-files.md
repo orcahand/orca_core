@@ -20,8 +20,9 @@ Nothing is written into the installed package or beside a model's `config.yaml`.
 ## Which folder a hand gets
 
 The hand's controller board is asked who it is when the hand connects. Its serial names the folder; a board with no
-serial yet uses its own board id, and that folder is renamed to the serial once the board reports one. A hand on a
-plain USB adapter, which reports nothing, is filed under `noboard-<model>`: every such hand of one model shares that
+serial yet uses its own board id, and that folder is renamed to the serial once the board reports one. A board whose
+firmware is too old to report an identity is filed under `usb-<its USB serial number>`, with a warning to update the
+firmware. A hand on a plain USB adapter, which reports nothing, is filed under `noboard-<model>`: every such hand of one model shares that
 folder. A controller board that does not say who it is (asked three times) fails the connect with "reconnect the
 hand" rather than being filed there. Mock hands use a temporary folder and never touch `~/.orca`.
 

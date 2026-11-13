@@ -7,6 +7,7 @@ over mock motors, so no serial port is opened.
 import functools
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -403,9 +404,25 @@ class TestABoardThatDoesNotSayWhoItIs:
         board_port["error"] = OSError("busy")
         assert board_sync.contact_board("/dev/cu.usbmodemXXXX").silent_board
 
-    def test_firmware_with_no_identity_to_give_is_still_a_board_less_hand(self, board_port):
-        board_port["link"] = FlakyLink(drops=0, legacy=True)
-        assert board_sync.contact_board("/dev/cu.usbmodemXXXX") == board_sync.NO_BOARD
+    def test_firmware_with_no_identity_to_give_is_named_by_its_usb_serial(
+        self, serial_port, patch_comports, caplog
+    ):
+        from orca_core.constants import KNOWN_VIDS
+
+        port = "/dev/cu.usbmodemXXXX"
+        vid = next(iter(KNOWN_VIDS["oh_board"]))
+        serial_port["link"] = FlakyLink(drops=0, legacy=True)
+        patch_comports([SimpleNamespace(device=port, vid=vid, serial_number="0123ABCD")])
+        assert board_sync.contact_board(port) == board_sync.BoardContact(usb_serial="0123ABCD")
+        assert "too old to report its identity; update its firmware" in caplog.text
+
+        patch_comports([SimpleNamespace(device=port, vid=vid, serial_number=None)])
+        assert board_sync.contact_board(port) == board_sync.NO_BOARD
+
+    def test_a_hand_named_by_its_usb_serial_gets_its_own_folder(self, make_hand):
+        assert make_hand(board_sync.BoardContact(usb_serial="0123ABCD")).hand_id == "usb-0123ABCD"
+        assert make_hand(board_sync.BoardContact(usb_serial="a/b")).hand_id == \
+            "noboard-orcahand-right"
 
     def test_a_plain_adapter_is_asked_once(self, serial_port):
         serial_port["link"] = link = FlakyLink(drops=99)

@@ -349,6 +349,17 @@ def oh_board_ports() -> "list[str]":
     ]
 
 
+def oh_board_usb_serial(port: str) -> Optional[str]:
+    """The USB serial number of the controller board presenting ``port``;
+    ``None`` for another device or a board that reports none."""
+    import serial.tools.list_ports
+
+    for entry in serial.tools.list_ports.comports():
+        if entry.device == port and entry.vid in KNOWN_VIDS["oh_board"]:
+            return entry.serial_number or None
+    return None
+
+
 def find_tactile_port() -> Optional[str]:
     """Return the dedicated tactile adapter's device path, or None if zero or >1 match."""
     import serial.tools.list_ports

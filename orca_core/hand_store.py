@@ -21,9 +21,10 @@ folder per hand, outside every installed package::
         board.bin                   the board's calibration store as last read
         archive/<section>/<name>.yaml   older setup records, one file per record
 
-A hand's id is its board's serial, else the board's own id. A hand that
-reports neither (a plain USB adapter) is filed under ``noboard-<model>``, so
-every such hand of one model shares a folder. Mock hands get a folder in a
+A hand's id is its board's serial, else the board's own id, else, for a board
+whose firmware is too old to report either, ``usb-<its USB serial number>``. A
+hand with none of these (a plain USB adapter) is filed under ``noboard-<model>``,
+so every such hand of one model shares a folder. Mock hands get a folder in a
 temporary directory and never touch ``ORCA_HOME``.
 
 Every file written here carries ``schema:``, which :func:`read_doc` checks,
@@ -62,6 +63,7 @@ BOARD_STORE_FILE = "board.bin"
 ARCHIVE_DIR = "archive"
 
 NO_BOARD_PREFIX = "noboard-"
+USB_PREFIX = "usb-"
 MOCK_PREFIX = "mock-"
 
 # Per-hand files from before hand folders existed. Found beside a loaded config,
@@ -137,9 +139,12 @@ def _mock_hand_id(model_name: str) -> str:
     return MOCK_PREFIX + _slug(model_name)
 
 
-def resolve_hand_id(serial: Optional[str], board_id: Optional[str]) -> Optional[str]:
-    """The id a board names its hand by: the serial, else the board id."""
-    for candidate in (serial, board_id):
+def resolve_hand_id(serial: Optional[str], board_id: Optional[str],
+                    usb_serial: Optional[str] = None) -> Optional[str]:
+    """The id a board names its hand by: the serial, else the board id, else
+    (firmware too old to report either) ``usb-<the board's USB serial number>``."""
+    usb = USB_PREFIX + str(usb_serial) if usb_serial else None
+    for candidate in (serial, board_id, usb):
         if candidate and valid_hand_id(str(candidate)):
             return str(candidate)
     return None
