@@ -122,6 +122,24 @@ def test_a_pin_is_in_force_without_load_hand(tmp_path):
     assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
 
 
+def test_a_pinned_config_still_knows_its_base_map(tmp_path):
+    """The pin is applied at load; another version must start from the yaml's
+    own map, not from the pinned one."""
+    path = _config_with(tmp_path, LEFT[0], hardware_version=210)
+    pinned = OrcaHandConfig.from_config_path(config_path=path)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert pinned.base_joint_to_motor_map
+    assert pinned.with_hardware_version(200).joint_inversion_dict == base.joint_inversion_dict
+    assert pinned.without_hardware_version().joint_inversion_dict == base.joint_inversion_dict
+
+
+def test_a_session_choice_on_a_pinned_hand_puts_that_version_s_map_in_force(tmp_path):
+    hand = _hand(tmp_path, hardware_version=210)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert hand.set_hardware_version(200) == 200
+    assert hand.config.joint_inversion_dict == base.joint_inversion_dict
+
+
 def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
     source = os.path.join(V2_MODELS, "orcahand-touch-left", "config.yaml")
     path = _config_with(tmp_path, source, hardware_version=21)

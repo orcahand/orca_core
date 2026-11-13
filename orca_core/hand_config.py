@@ -1160,14 +1160,17 @@ class OrcaHandConfig(BaseHandConfig):
     def without_hardware_version(self) -> "OrcaHandConfig":
         """This config with no hardware version in force: the base map and ranges."""
         if not self.base_joint_to_motor_map:
+            # Nothing has been applied yet (with_hardware_version always records
+            # the base), so the map and ranges in force are the base ones, even
+            # when a pinned version is set but not yet applied.
             signed = {
                 joint: -motor_id if self.joint_inversion_dict.get(joint, False) else motor_id
                 for joint, motor_id in self.joint_to_motor_map.items()
             }
             return dataclasses.replace(
-                self, base_joint_to_motor_map=signed,
+                self, hardware_version=None, base_joint_to_motor_map=signed,
                 base_joint_roms_dict={j: list(r) for j, r in self.joint_roms_dict.items()},
-            ) if self.hardware_version is None else self
+            )
         joint_to_motor_map, joint_inversion_dict = _canonical_joint_to_motor_map(
             self.base_joint_to_motor_map)
         return dataclasses.replace(
