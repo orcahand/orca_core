@@ -1117,6 +1117,7 @@ def run_guided_tension(
     round_spreads: List[MotorSpread] = []
     checked: set = set()  # joints range-checked this round since their last retest
     unsaved_retests: set = set()
+    unscored_retests: set = set()
 
     def _drain_forget() -> set:
         """Joints to test again, dropped from ``best``, the template and this round's spreads."""
@@ -1131,14 +1132,18 @@ def run_guided_tension(
                     forget_spread(spread)
             checked.difference_update(joints)
             unsaved_retests.update(joints)
+            unscored_retests.update(joints)
             return joints
 
     def _score_round(spreads: List[MotorSpread]) -> Tuple[dict, dict, set]:
-        """The round's score, its progress record and the retests drained first.
-        Held under the forget lock, so the sampler cannot drain a retest midway.
-        Only range-checked joints are recorded: an unchecked one's zero spread is no measurement."""
-        retested = _drain_forget()
+        """The round's score, its progress record and the retests drained since
+        the last score, by this call or by the sampler. Held under the forget
+        lock, so the sampler cannot drain a retest midway. Only range-checked
+        joints are recorded: an unchecked one's zero spread is no measurement."""
+        _drain_forget()
         with forget_lock:
+            retested = set(unscored_retests)
+            unscored_retests.clear()
             result = score(spreads, threshold, excluded, scoring)
             record = {
                 "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

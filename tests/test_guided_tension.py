@@ -1221,3 +1221,29 @@ def test_a_slack_retest_at_the_score_drops_the_saved_score_and_rescores(connecte
                        forget=lambda: asks.pop() if asks else set())
     assert "index_mcp" not in read_progress(hand.config, "ser-0008", "slack")["scores"]
     assert len([e for e in events if e["event"] == "score"]) == 2
+
+
+def test_a_retest_the_sampler_drained_before_finish_is_still_scored(connected_mock_hand):
+    hand = connected_mock_hand
+    inner, progress = _drive(hand, lambda j: 0.9)
+    asks, drained = [], threading.Event()
+
+    def forget():
+        if not asks:
+            return set()
+        drained.set()
+        return asks.pop()
+
+    def prompt(p):
+        if p["action"] == "score" and FINISH in p["options"]:
+            asks.append({"index_mcp"})
+            assert drained.wait(5), "the paused sampler never asked for retests"
+        return inner(p)
+
+    result = run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+        hand_key="ser-0007", forget=forget,
+    )
+    by_joint = {m["joint"]: m for m in result.spreads}
+    assert not result.completed and by_joint["index_mcp"]["status"] != "pass"
+    assert read_last_tension(hand.config) is None
