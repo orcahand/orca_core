@@ -697,6 +697,8 @@ class OrcaHand(BaseHand):
             self._settle_identity(board_sync.NO_BOARD)
         path = self.config.calibration_path
         if create:
+            if path:
+                hand_store._refuse_packaged(path)
             folder = os.path.dirname(os.path.abspath(path)) if path else ""
             existing = folder
             while existing and not os.path.isdir(existing) and os.path.dirname(existing) != existing:

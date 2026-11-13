@@ -38,7 +38,7 @@ from typing import Any, Callable, Iterator, Optional
 import yaml
 
 from .. import hand_store
-from ..utils.utils import is_packaged_model_path, write_yaml_atomic
+from ..utils.utils import write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +205,9 @@ def _acquire(path: str) -> Optional[int]:
 @contextlib.contextmanager
 def _locked(path: str) -> Iterator[None]:
     """Hold ``path``'s writer lock in this process and an advisory lock on its
-    sidecar lock file across processes; raises TimeoutError rather than wait forever."""
+    sidecar lock file across processes; raises TimeoutError rather than wait forever,
+    and PermissionError for a path inside the installed package, before any lock file."""
+    hand_store._refuse_packaged(path)
     with _lock:
         writer = _writers.setdefault(path, _Writer())
     with writer.lock:
@@ -251,10 +253,6 @@ def _read(path: str, fresh: bool = False) -> dict:
 def _store(path: str, data: dict, name: str, value: Any) -> Any:
     """Write ``value`` as section ``name``, archiving what drops out of it
     first so a crash between the two never loses a record. Returns what was kept."""
-    if is_packaged_model_path(path):
-        raise PermissionError(
-            f"refusing to write {path}: setup records belong in the hand's own folder, "
-            "never inside the installed package")
     data = dict(data)
     if value is None:
         data.pop(name, None)

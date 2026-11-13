@@ -168,3 +168,14 @@ def test_a_corrupt_file_is_set_aside_and_records_carry_on(tmp_path):
     assert len(list(tmp_path.glob("setup.yaml.corrupt-*"))) == 1
     setup_file.update_section(config, "slack_tests", lambda v: {"t": 2})
     assert setup_file.read_section(config, "slack_tests") == {"t": 2}
+
+
+def test_nothing_is_written_inside_the_installed_package():
+    import orca_core
+    import pytest
+
+    folder = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right")
+    config = SimpleNamespace(hand_dir=folder)
+    with pytest.raises(PermissionError, match="installed package"):
+        setup_file.write_section(config, "slack_tests", {"t": 1})
+    assert sorted(os.listdir(folder)) == ["config.yaml"]

@@ -489,6 +489,21 @@ class TestNowhereToKeepTheCalibration:
         with pytest.raises(OSError, match="ORCA_HOME"):
             hand.set_rom_frame("centered")
 
+    def test_an_explicit_file_inside_the_package_is_never_written(self, make_hand, monkeypatch):
+        from orca_core import hardware_hand
+
+        packaged = os.path.join(MODEL, "calibration.yaml")
+        hand = make_hand(board(), calibration_path=packaged)
+        monkeypatch.setattr(hardware_hand, "run_calibration",
+                            lambda *a, **k: pytest.fail("the routine ran"))
+        with pytest.raises(PermissionError, match="installed package"):
+            hand.calibrate(persist=True)
+        with pytest.raises(PermissionError, match="installed package"):
+            hand.set_rom_frame("centered", persist=True)
+        with pytest.raises(PermissionError, match="installed package"):
+            hand_store.write_doc(packaged, {"calibrated": True})
+        assert not os.path.exists(packaged)
+
     def test_an_explicit_file_in_a_folder_still_to_be_made_is_fine(self, make_hand, tmp_path):
         target = tmp_path / "new" / "deeper" / "mine.yaml"
         hand = make_hand(board(), calibration_path=str(target))

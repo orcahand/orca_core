@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .utils.utils import read_yaml, write_yaml_atomic
+from .utils.utils import is_packaged_model_path, read_yaml, write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +220,23 @@ def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
     return raw
 
 
+def _refuse_packaged(path: os.PathLike | str) -> None:
+    """Raises PermissionError for ``path`` inside the installed package's models:
+    what one hand records never goes where every hand of a model reads."""
+    if is_packaged_model_path(path):
+        raise PermissionError(
+            f"refusing to write {path}: a hand's files belong in its own folder, "
+            "never inside the installed package")
+
+
 def write_doc(path: os.PathLike | str, doc: Dict[str, Any]) -> Path:
     """Replace ``path`` with ``doc`` (``schema:`` first), atomically, creating its
-    folder. A schema newer than this orca_core's, read with ``doc``, is kept."""
+    folder. A schema newer than this orca_core's, read with ``doc``, is kept.
+
+    Raises:
+        PermissionError: ``path`` is inside the installed package.
+    """
+    _refuse_packaged(path)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     body = {SCHEMA_KEY: max(SCHEMA, schema_of(doc))}

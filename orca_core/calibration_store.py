@@ -41,6 +41,7 @@ from .hand_store import (
     CALIBRATION_FILE,
     PREVIOUS_CALIBRATION_FILE,
     SCHEMA,
+    _refuse_packaged,
     now_iso,
     read_doc,
     schema_of,
@@ -191,6 +192,7 @@ def save(
         NewerCalibrationError: a newer orca_core wrote ``path`` and this is
             not the start of a new calibration.
     """
+    _refuse_packaged(path)
     if not start_run:
         check_writable(path)
     doc = read_document(path)
@@ -220,6 +222,7 @@ def adopt(
     on from the higher of the two, or is kept as it is with ``keep_sequence``
     (a first copy, where there is nothing here to count on from).
     """
+    _refuse_packaged(path)
     current = read_document(path)
     doc = {k: v for k, v in document.items() if k != JOINT_TO_MOTOR_RATIOS}
     if os.path.exists(path):
