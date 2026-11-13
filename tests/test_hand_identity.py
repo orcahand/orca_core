@@ -253,6 +253,28 @@ class TestACalibrationFromANewerOrcaCore:
         assert read_yaml(str(path))["schema"] == 1
         assert Path(hand.hand_dir, "calibration.previous.yaml").read_text() == newer
 
+    def test_a_hand_that_persists_still_loads_and_restores_it(self, model_dir, tmp_path):
+        path = tmp_path / "calibration.yaml"
+        newer = "schema: 2\ncalibrated: true\nmotor_limits: {1: [0.0, 1.0]}\n"
+        path.write_text(newer)
+        hand = OrcaHand(config_path=str(model_dir / "config.yaml"), calibration_path=str(path))
+        assert not hand.calibrated
+        assert path.read_text() == newer
+
+        Path(tmp_path / "calibration.previous.yaml").write_text("schema: 1\nsequence: 1\n")
+        hand.restore_previous_calibration()
+        assert not hand.calibrated
+        assert Path(tmp_path / "calibration.previous.yaml").read_text() == newer
+
+    def test_a_flag_that_cannot_be_corrected_is_left_as_it_is(self, model_dir, monkeypatch,
+                                                              tmp_path):
+        path = tmp_path / "calibration.yaml"
+        path.write_text("schema: 1\ncalibrated: true\nmotor_limits: {1: [0.0, 1.0]}\n")
+        monkeypatch.setattr(hand_store, "is_packaged_model_path", lambda p: True)
+        hand = OrcaHand(config_path=str(model_dir / "config.yaml"), calibration_path=str(path))
+        assert not hand.calibrated
+        assert read_yaml(str(path))["calibrated"] is True
+
 
 class TestExplicitCalibrationPath:
     def test_an_explicit_file_is_read_and_written_while_the_folder_is_still_the_hand_s(

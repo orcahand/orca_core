@@ -64,7 +64,6 @@ from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
     get_and_choose_port,
-    read_yaml,
     write_bytes_atomic,
 )
 
@@ -2144,9 +2143,11 @@ class OrcaHand(BaseHand):
         """Demote the calibrated flag when any motor limit is missing.
 
         The on-disk flag is corrected only on classes that persist
-        calibration, and only when ``calibration.yaml`` exists and still
-        claims ``calibrated: true``; constructing a hand never creates or
-        rewrites the file otherwise, and mock hands never write at all.
+        calibration, and only when ``calibration.yaml`` is one this orca_core
+        uses and still claims ``calibrated: true``; constructing a hand never
+        creates or rewrites the file otherwise, and mock hands never write at
+        all. The correction is best-effort: a file that cannot be written is
+        left as it is, since the flag in force is already demoted.
         """
         if all(self.calibration._motor_has_limits(m) for m in self.motor_limits_dict):
             return
@@ -2159,10 +2160,14 @@ class OrcaHand(BaseHand):
         if not self._persist_calibration:
             return
         calibration_path = self._calibration_file()
-        if calibration_path and os.path.exists(calibration_path) and (
-            (read_yaml(calibration_path) or {}).get(CALIBRATED)
-        ):
+        if not calibration_path or not calibration_store.read_document(
+                calibration_path).get(CALIBRATED):
+            return
+        try:
             self._update_calibration_file({CALIBRATED: False})
+        except (OSError, calibration_store.NewerCalibrationError) as exc:
+            logger.warning("could not mark %s as not calibrated (%s); it reads as "
+                           "uncalibrated here all the same", calibration_path, exc)
 
     def tension(
         self,
