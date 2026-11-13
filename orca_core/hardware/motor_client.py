@@ -149,11 +149,8 @@ class MotorClient(ABC):
     def _flush_input_buffer(self):
         """Recover the port after a failed transaction; call holding the bus lock.
 
-        Discards stale RX bytes, so a late reply can't be misread as the next
-        response, and drops the SDK's in-use claim: the SDK clears it only
-        once a reply is read, so a transaction that raised leaves it set and
-        every later one is refused as busy. Under the bus lock no live
-        transaction can own it.
+        Discards stale RX bytes and clears the SDK's ``is_using`` flag, which a
+        transaction that raised leaves set (under the lock nothing live owns it).
         """
         handler = getattr(self, "port_handler", None)
         if getattr(handler, "is_using", False) is True:

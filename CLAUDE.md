@@ -289,8 +289,8 @@ All hand-specific settings are in `config.yaml`:
   console): `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
   `--hold-current`), and `tension`, the limit for the pull and for fingers frozen during a range
   check. Read through `config.tension_hold_current_for(joint)` and `config.tension_current`. Holds
-  default to `DEFAULT_GUIDED_TENSION_CURRENTS` and `tension` follows `max_current`; never restate
-  either here. The ratcheting hold runs at each motor's own ceiling.
+  default to the motor client's `guided_hold_current_ma` and `tension` follows `max_current`; never
+  restate either here. The ratcheting hold runs at each motor's own ceiling.
 - `joint_to_motor_map_v21:` - an optional second signed map for v2.1 hardware, which routes the
   thumb MCP/DIP tendons the other way on left hands. Same joints, same motor IDs as
   `joint_to_motor_map`; only the two thumb signs differ. `hardware_version:` (in every v2
