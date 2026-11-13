@@ -222,6 +222,7 @@ ORCA_HAND_CONFIG = BASE_HAND_CONFIG | {
     "joint_to_motor_map_v21",
     "manual_calibration_sequence",
     "max_current",
+    "measured_joint_roms_dict",
     "motor_id_to_idx_dict",
     "motor_ids",
     "motor_to_joint_dict",
@@ -238,6 +239,7 @@ ORCA_HAND_CONFIG = BASE_HAND_CONFIG | {
     "validate_control_mode",
     "with_family_currents",
     "with_hardware_version",
+    "with_measured_ranges",
     "wrist_calibration_current",
 }
 

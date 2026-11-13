@@ -10,6 +10,7 @@ import dataclasses
 import functools
 import logging
 import math
+import numbers
 import os
 import re
 from dataclasses import dataclass, field
@@ -649,6 +650,9 @@ class OrcaHandConfig(BaseHandConfig):
     joint_to_motor_map_v21: Dict[str, int] = field(default_factory=dict)
     # The joint ROMs a v2.1.1 hand overrides; with_hardware_version lays them over joint_roms.
     joint_roms_v211_dict: Dict[str, List[float]] = field(default_factory=dict)
+    # Ranges measured on this hand (with_measured_ranges), already in joint_roms_dict. They win
+    # over every packaged range and over a calibration's encoder-measured span.
+    measured_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -1286,8 +1290,43 @@ class OrcaHandConfig(BaseHandConfig):
                 _canonical_joint_to_motor_map(self.joint_to_motor_map_v21)
             )
         if hardware_version == HARDWARE_VERSION_V211 and self.joint_roms_v211_dict:
-            changes["joint_roms_dict"] = {**self.joint_roms_dict, **self.joint_roms_v211_dict}
+            changes["joint_roms_dict"] = {
+                **self.joint_roms_dict, **self.joint_roms_v211_dict, **self.measured_joint_roms_dict
+            }
         return dataclasses.replace(self, **changes)
+
+    def with_measured_ranges(self, roms: Dict[str, List[float]]) -> "OrcaHandConfig":
+        """This config with ``roms`` (joint -> ``[min, max]`` degrees, measured on
+        this hand) in force for the named joints. They become both the clamp
+        (``joint_roms_dict``) and the frame the calibration maps motor travel
+        onto, over the model's ranges and an encoder-measured span alike; the
+        other joints keep theirs. Raises HandConfigValidationError for a joint
+        the hand does not have or a range that is not ``[min, max]`` with
+        ``min < max``."""
+        if not isinstance(roms, dict):
+            raise HandConfigValidationError(
+                f"measured ranges must map a joint name to [min, max], got {roms!r}")
+        measured = {}
+        for joint, rom in roms.items():
+            if joint not in self.joint_ids:
+                raise HandConfigValidationError(
+                    f"measured range for {joint!r}, which is not one of this hand's joints.")
+            if (
+                isinstance(rom, (str, bytes, dict))
+                or not hasattr(rom, "__len__")
+                or len(rom) != 2
+                or any(isinstance(v, bool) or not isinstance(v, numbers.Real) or not math.isfinite(v)
+                       for v in rom)
+                or not rom[0] < rom[1]
+            ):
+                raise HandConfigValidationError(
+                    f"measured range for {joint} must be [min, max] in degrees with min < max, got {rom!r}")
+            measured[str(joint)] = [float(rom[0]), float(rom[1])]
+        return dataclasses.replace(
+            self,
+            joint_roms_dict={**self.joint_roms_dict, **measured},
+            measured_joint_roms_dict={**self.measured_joint_roms_dict, **measured},
+        )
 
 
 def _sensor_kwargs(sensors: dict) -> dict:

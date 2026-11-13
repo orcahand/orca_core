@@ -1,4 +1,5 @@
-"""models/v2/shared.yaml: the defaults every v2 model builds on.
+"""models/v2/shared.yaml: the defaults every v2 model builds on, and the
+measured ranges a config can take for one hand.
 
 ``tests/fixtures/v2_configs_0.13.1/`` holds the eight v2 configs exactly as
 0.13.0 and 0.13.1 shipped them (``git show release/0.13.1:<path>``; the two
@@ -8,6 +9,7 @@ config as its old, complete self.
 """
 
 import dataclasses
+import math
 import os
 from types import MappingProxyType
 
@@ -15,7 +17,7 @@ import pytest
 import yaml
 
 import orca_core
-from orca_core import OrcaHandConfig, OrcaHandTouchConfig, load_config
+from orca_core import MockOrcaHand, OrcaHandConfig, OrcaHandTouchConfig, load_config
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
 from orca_core.hand_config import HandConfigValidationError, shared_config_path
 from orca_core.hardware.motor_factory import motor_client_class
@@ -205,3 +207,83 @@ def test_a_shared_yaml_that_is_not_a_mapping_is_refused(tmp_path):
     (tmp_path / "models" / "shared.yaml").write_text("- a\n- b\n")
     with pytest.raises(HandConfigValidationError, match="mapping"):
         load_config(path)
+
+
+# --- with_measured_ranges --------------------------------------------------------
+
+
+@pytest.fixture
+def right():
+    return OrcaHandConfig.from_config_path(config_path=os.path.join(V2_MODELS, "orcahand-right", "config.yaml"))
+
+
+def test_measured_ranges_become_the_clamp(right):
+    measured = right.with_measured_ranges({"index_mcp": [-10, 90], "wrist": (-50.5, 30)})
+    assert measured.joint_roms_dict["index_mcp"] == [-10.0, 90.0]
+    assert measured.joint_roms_dict["wrist"] == [-50.5, 30.0]
+    assert measured.measured_joint_roms_dict == {"index_mcp": [-10.0, 90.0], "wrist": [-50.5, 30.0]}
+    assert list(measured.joint_roms_dict) == list(right.joint_roms_dict)
+    assert all(measured.joint_roms_dict[j] == right.joint_roms_dict[j]
+               for j in right.joint_ids if j not in ("index_mcp", "wrist"))
+    assert right.measured_joint_roms_dict == {} and right.joint_roms_dict["index_mcp"] == [-22.75, 103.69]
+
+    from orca_core import OrcaJointPositions
+
+    clamped = measured.clamp_joint_positions(OrcaJointPositions.from_dict({"index_mcp": 100.0}))
+    assert clamped.as_dict()["index_mcp"] == 90.0
+
+
+def test_measured_ranges_accumulate_and_survive_a_v211_overlay(right):
+    config = dataclasses.replace(right, joint_roms_v211_dict={"index_mcp": [-1, 1], "index_pip": [-2, 2]})
+    config = config.with_measured_ranges({"index_mcp": [-10, 90]}).with_measured_ranges({"ring_pip": [0, 80]})
+    assert set(config.measured_joint_roms_dict) == {"index_mcp", "ring_pip"}
+    v211 = config.with_hardware_version(211)
+    assert v211.joint_roms_dict["index_mcp"] == [-10.0, 90.0]
+    assert v211.joint_roms_dict["index_pip"] == [-2, 2]
+    assert v211.joint_roms_dict["ring_pip"] == [0.0, 80.0]
+
+
+@pytest.mark.parametrize("roms, match", [
+    ({"elbow": [0, 1]}, "not one of this hand's joints"),
+    ({"index_mcp": [0, 1, 2]}, r"\[min, max\]"),
+    ({"index_mcp": [5, 5]}, "min < max"),
+    ({"index_mcp": [6, 5]}, "min < max"),
+    ({"index_mcp": "0,90"}, r"\[min, max\]"),
+    ({"index_mcp": [0, math.nan]}, r"\[min, max\]"),
+    ({"index_mcp": [0, math.inf]}, r"\[min, max\]"),
+    ({"index_mcp": [False, True]}, r"\[min, max\]"),
+    ({"index_mcp": None}, r"\[min, max\]"),
+    ([("index_mcp", [0, 1])], "must map a joint"),
+])
+def test_measured_ranges_are_validated(right, roms, match):
+    with pytest.raises(HandConfigValidationError, match=match):
+        right.with_measured_ranges(roms)
+
+
+def test_measured_ranges_win_over_an_encoder_measured_span_in_the_calibration_frame(tmp_path):
+    copy_model_config(os.path.join(V2_MODELS, "orcahand-right", "config.yaml"), tmp_path / "config.yaml")
+    hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+    hand.calibration = dataclasses.replace(
+        hand.calibration, joint_roms_measured_dict={"index_mcp": [-30.0, 103.69], "index_pip": [-20.0, 106.43]})
+    hand.config = hand.config.with_measured_ranges({"index_mcp": [-15.0, 95.0]})
+    assert hand.effective_joint_roms_dict["index_mcp"] == [-15.0, 95.0]
+    assert hand.effective_joint_roms_dict["index_pip"] == [-20.0, 106.43]
+
+
+def test_a_calibration_maps_motor_travel_onto_the_measured_range(tmp_path):
+    copy_model_config(os.path.join(V2_MODELS, "orcahand-right", "config.yaml"), tmp_path / "config.yaml")
+    hand = MockOrcaHand(config_path=str(tmp_path / "config.yaml"))
+    hand.config = hand.config.with_measured_ranges({"index_mcp": [-15.0, 95.0]})
+    ok, msg = hand.connect()
+    assert ok, msg
+    try:
+        hand.calibrate(persist=False)
+        motor = hand.config.joint_to_motor_map["index_mcp"]
+        lo, hi = hand.motor_limits_dict[motor]
+        assert hand.joint_to_motor_ratios_dict[motor] == pytest.approx((hi - lo) / 110.0)
+        other = hand.config.joint_to_motor_map["index_pip"]
+        lo, hi = hand.motor_limits_dict[other]
+        rom = hand.config.joint_roms_dict["index_pip"]
+        assert hand.joint_to_motor_ratios_dict[other] == pytest.approx((hi - lo) / (rom[1] - rom[0]))
+    finally:
+        hand.disconnect()

@@ -199,7 +199,8 @@ class OrcaHand(BaseHand):
 
         This is the map's frame of reference, not a command limit: config ROMs
         remain the clamp applied by :meth:`OrcaHandConfig.clamp_joint_positions`
-        and the denominator of :meth:`pose_from_fractions`.
+        and the denominator of :meth:`pose_from_fractions`. Ranges measured on
+        the hand (:meth:`OrcaHandConfig.with_measured_ranges`) win over both.
         """
         measured = self.calibration.joint_roms_measured_dict
         if not measured:
@@ -207,7 +208,7 @@ class OrcaHand(BaseHand):
         roms = dict(self.config.joint_roms_dict)
         centered = self._rom_frame == ROM_FRAME_CENTERED
         for joint, rom in measured.items():
-            if joint not in roms:
+            if joint not in roms or joint in self.config.measured_joint_roms_dict:
                 continue
             if centered:
                 # Same measured span, but the excess/deficit vs the config
