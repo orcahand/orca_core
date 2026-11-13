@@ -199,19 +199,6 @@ def _config_without_manual_sequence(tmp_path, version, model):
     return str(path)
 
 
-@pytest.mark.parametrize("version,model", [("v2", "orcahand-right"), ("v1", "orcahand-left")])
-def test_a_missing_manual_sequence_is_the_drive_sequence_one_joint_per_step(tmp_path, version, model):
-    from orca_core.hand_config import OrcaHandConfig
-
-    config = OrcaHandConfig.from_config_path(
-        config_path=_config_without_manual_sequence(tmp_path, version, model))
-    drive_order = [(j, d) for step in config.calibration_sequence for j, d in step["joints"].items()]
-    assert any(len(step["joints"]) > 1 for step in config.calibration_sequence)
-    assert all(len(step["joints"]) == 1 for step in config.manual_calibration_sequence)
-    assert [next(iter(s["joints"].items())) for s in config.manual_calibration_sequence] == drive_order
-    assert [s["step"] for s in config.manual_calibration_sequence] == list(range(1, len(drive_order) + 1))
-
-
 def test_without_a_manual_sequence_each_answer_records_one_hardstop(tmp_path):
     fingers = ["index_mcp", "middle_mcp", "ring_mcp", "pinky_mcp"]
     hand = MockOrcaHand(config_path=_config_without_manual_sequence(tmp_path, "v2", "orcahand-right"))

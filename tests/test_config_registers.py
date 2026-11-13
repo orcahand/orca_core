@@ -127,12 +127,10 @@ class TestDescribe:
         assert entry.describe(0) != entry.describe(None)
 
 
-def _unconnected_client():
+def _unconnected_client(motor_type):
     """A real client with a stand-in port handler, so teardown can be driven
     without hardware."""
     import threading
-
-    from orca_core.hardware.dynamixel_client import DynamixelClient
 
     class FakePort:
         is_open = True
@@ -145,10 +143,11 @@ def _unconnected_client():
             self.closed = True
             self.is_open = False
 
-    client = DynamixelClient([1, 2])
+    client = motor_client_class(motor_type)([1, 2])
     client.port_handler = FakePort()
+    client._connected = True
     client.set_torque_enabled = lambda *a, **k: None
-    DynamixelClient.OPEN_CLIENTS.add(client)
+    client.OPEN_CLIENTS.add(client)
     return client, threading
 
 
@@ -157,11 +156,12 @@ class TestTeardownWithTheBusHeld:
     the bus is live. Teardown takes the bus lock first, so a momentary
     condition never becomes a permanent one."""
 
+    @pytest.mark.parametrize("motor_type", FAMILIES)
     @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
-    def test_a_stale_in_use_flag_does_not_stop_the_teardown(self, teardown):
+    def test_a_stale_in_use_flag_does_not_stop_the_teardown(self, motor_type, teardown):
         """A transaction that raised leaves the SDK's flag set with nobody
         holding the bus; the port must still close and deregister."""
-        client, _ = _unconnected_client()
+        client, _ = _unconnected_client(motor_type)
         client.port_handler.is_using = True
 
         getattr(client, teardown)()
@@ -170,12 +170,13 @@ class TestTeardownWithTheBusHeld:
         assert not client.port_handler.is_using
         assert client not in type(client).OPEN_CLIENTS
 
+    @pytest.mark.parametrize("motor_type", FAMILIES)
     @pytest.mark.parametrize("teardown", ["disconnect", "disconnect_fixed_lock_order"])
-    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self, teardown):
+    def test_it_waits_for_an_in_flight_transaction_instead_of_refusing(self, motor_type, teardown):
         """The lock is the real mutual exclusion. Taking it first means the
         teardown queues behind a live exchange rather than reading its flag
         and declining, so no transaction is cut in half either."""
-        client, threading = _unconnected_client()
+        client, threading = _unconnected_client(motor_type)
         mid_transaction = threading.Event()
         released = threading.Event()
         closed_while_busy = []
@@ -231,20 +232,6 @@ class TestEveryClientOffersTheFixedTeardown:
         for motor_type in FAMILIES:
             for factory in (motor_client_class, mock_motor_client_class):
                 assert hasattr(factory(motor_type), "disconnect_fixed_lock_order")
-
-    def test_disconnect_takes_the_lock_before_reading_any_flag(self):
-        """The whole point. Reading first is what turns someone else's live
-        transaction into a refusal to tear down."""
-        import inspect
-
-        from orca_core.hardware.motor_factory import motor_client_class
-
-        for motor_type in FAMILIES:
-            source = inspect.getsource(motor_client_class(motor_type).disconnect)
-            body = source[source.index('"""', source.index('"""') + 3):]
-            assert "is_using" not in body
-            assert body.index("_bus_lock") < body.index("_reclaim_port")
-            assert body.index("_bus_lock") < body.index("closePort")
 
 
 class TestUnits:

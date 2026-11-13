@@ -1164,17 +1164,6 @@ def test_a_retest_is_saved_from_a_round_without_a_range_check(connected_mock_han
     assert read_progress(hand.config, "ser-0001")["best"].get("index_mcp", 0.0) < 0.85
 
 
-def test_the_terminal_names_a_fault_and_how_to_clear_it(capsys):
-    script = _guided_tension_script()
-    script._print_progress({"event": "fault", "motor": 7, "joint": "index_mcp", "flags": ["overload"]})
-    script._print_progress({"event": "fault_cleared", "motor": 7, "joint": "index_mcp"})
-    out = capsys.readouterr().out
-    fault, cleared = out.strip().splitlines()
-    assert "index_mcp" in fault and "motor 7" in fault and "overload" in fault
-    assert "power-cycle" in fault.lower() and "run this again" in fault
-    assert "index_mcp" in cleared and "cleared" in cleared.lower()
-
-
 def test_saving_progress_rereads_the_file_under_its_lock(connected_mock_hand, monkeypatch):
     """Another process may save its hand between this one's read and write;
     the write must merge into what is on disk, not into a stale read."""

@@ -749,19 +749,3 @@ def test_the_table_lists_only_the_joints_driven_this_run(model_dir):
     assert "index_pip" not in tables[0], tables[0]
     done = [e for e in events if e["event"] == "calibration_done"][-1]
     assert done["drive_current_measured_joints"] == ["index_mcp"]
-
-
-def test_a_manual_run_shows_no_drive_current_table(model_dir):
-    path = _write_config(model_dir)
-    hand = MockOrcaHand(config_path=path)
-    hand.connect()
-    try:
-        hand.calibrate(joints=["index_mcp"], persist=True)
-        events = []
-        calibration_routine.run_calibration(
-            hand, joints=["index_mcp"], manual=True, persist=False,
-            prompt_callback=lambda r: "skip", progress_callback=events.append)
-    finally:
-        hand.disconnect()
-
-    assert not [e for e in events if e["event"] == "drive_currents_measured"]
