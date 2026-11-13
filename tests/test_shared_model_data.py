@@ -1,9 +1,8 @@
 """models/v2/shared.yaml: the defaults every v2 model builds on, and the
 measured ranges a config can take for one hand.
 
-``tests/fixtures/v2_configs_0.13.1/`` holds the eight v2 configs exactly as
-0.13.0 and 0.13.1 shipped them (``git show release/0.13.1:<path>``; the two
-releases' configs are identical). They have no shared.yaml beside them, so
+``tests/fixtures/v2_configs_0.13/`` holds the eight v2 configs exactly as
+0.13.0 shipped them (``git show v0.13.0:<path>``). They have no shared.yaml beside them, so
 they load as written: every packaged model must load to the same effective
 config as its old, complete self.
 """
@@ -25,7 +24,7 @@ from tests._helpers import copy_model_config
 
 V2_MODELS = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2")
 V1_MODELS = os.path.join(os.path.dirname(orca_core.__file__), "models", "v1")
-REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "v2_configs_0.13.1")
+REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "v2_configs_0.13")
 MODELS = sorted(m for m in os.listdir(V2_MODELS) if os.path.isdir(os.path.join(V2_MODELS, m)))
 HARDWARE_VERSIONS = [None, 20, 21, 210, 211]
 
