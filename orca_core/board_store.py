@@ -57,9 +57,8 @@ HEADER_BYTES = struct.calcsize(_HEADER_FMT)
 _SECTION_FMT = "<BBH"
 _SECTION_BYTES = struct.calcsize(_SECTION_FMT)
 
-# Mirrors __cal_store_slot_size in orca_firmware's
-# variants/OpenRB-150/linker_scripts/gcc/flash_with_bootloader.ld, which is the
-# authority for the board's flash map. A packed store must fit one slot.
+# One store slot of the board's flash map (__cal_store_slot_size in orca_firmware's
+# OpenRB-150 linker script, the authority). A packed store must fit one slot.
 SLOT_BYTES = 0x4000
 
 logger = logging.getLogger(__name__)
@@ -78,9 +77,8 @@ SEC_ENCODER_ANCHORS = 6
 SEC_ROMS_MEASURED = 7
 SEC_DRIVE_CURRENTS = 8
 SEC_ROM_FRAME = 9
-# Tactile calibration, which a touch hand keeps in the same document. Stored as
-# float32: the sensor reports each axis on a single-byte scale, so float32 is
-# already several orders finer than the data (see orca_ui/hand/zeroing.py).
+# Tactile calibration a touch hand keeps in the same document, as float32: the
+# sensor reports each axis on a single-byte scale, far coarser than float32.
 SEC_FINGER_NAMES = 10
 SEC_TAXEL_GATES = 11
 SEC_SENSOR_OFFSETS = 12

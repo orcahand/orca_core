@@ -39,9 +39,8 @@ STORE_QUERY = b"ORCA_CAL?\n"
 #: Per-line timeout for the chunks. A chunk is one flash page read out of
 #: memory-mapped flash, so the board answers immediately or not at all.
 LINE_TIMEOUT_S = 0.5
-#: Timeout for the first question, which is the one a hand with no ORCA board
-#: pays on every connect: the same budget the ``ORCA_ID?`` probe already uses,
-#: so asking costs no more than asking what the board is.
+#: Timeout for the first question, which every connect pays: the budget the
+#: ``ORCA_ID?`` probe already uses, so asking costs no more than that does.
 METADATA_TIMEOUT_S = ORCA_ID_PROBE_TIMEOUT_S
 #: How many times one line is asked for again before the read is given up.
 LINE_RETRIES = 2

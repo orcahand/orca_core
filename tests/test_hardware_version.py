@@ -148,7 +148,7 @@ def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
 
 
 def test_a_local_config_beside_the_config_is_never_read(tmp_path):
-    """local_config.yaml retired: an old one left beside a config pins nothing."""
+    """An old local_config.yaml left beside a config pins nothing."""
     path = _config_with(tmp_path, LEFT[0])
     (tmp_path / "local_config.yaml").write_text("hardware_version: 21\n", encoding="utf-8")
     assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None

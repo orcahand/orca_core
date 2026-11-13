@@ -28,7 +28,7 @@ REFERENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
 MODELS = sorted(m for m in os.listdir(V2_MODELS) if os.path.isdir(os.path.join(V2_MODELS, m)))
 HARDWARE_VERSIONS = [None, 20, 21, 210, 211]
 
-# The guided-tensioning holds 0.13.0 kept in constants and 0.13.1 on the motor clients.
+# The guided-tensioning holds of the reference configs, per motor family.
 HOLDS_0_13 = {
     "dynamixel": {"abd": 200, "mcp": 140, "pip": 100},
     "feetech": {"abd": 380, "mcp": 320, "pip": 280},
@@ -84,8 +84,8 @@ def test_every_v2_model_loads_as_0_13_did(model, hardware_version):
 
 @pytest.mark.parametrize("model", MODELS)
 def test_the_effective_document_is_the_0_13_config(model):
-    """Key for key, the merged yaml is the old file; only the guided-tension
-    block now carries the family holds the old code supplied."""
+    """Key for key, the merged yaml is the reference config, except that the
+    guided-tension block carries the family holds."""
     merged = load_config(os.path.join(V2_MODELS, model, "config.yaml"))
     old = _read(os.path.join(REFERENCE, model, "config.yaml"))
     tension = merged.pop("guided_tension_currents")

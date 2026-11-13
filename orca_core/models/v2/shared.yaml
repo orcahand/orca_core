@@ -57,9 +57,8 @@ joint_roms:
   - -12.62
   - 108.4
 
-# Guided tensioning, per motor family: the range-check hold current per joint
-# group (abd, mcp, pip). A model may add a joint of its own. The pull (tension)
-# follows max_current unless a model sets it.
+# Guided tensioning per motor family: the range-check hold per joint group (abd, mcp,
+# pip); a model may add a joint. The pull (tension) follows max_current unless set.
 guided_tension_currents:
   dynamixel:
     hold:

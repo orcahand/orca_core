@@ -105,7 +105,7 @@ class SplittingBoard(FakeBoard):
 
 
 class TestRepliesThatArriveInPieces:
-    """Pinned because real hardware split them and the fakes did not."""
+    """Real hardware delivers a reply a few bytes at a time."""
 
     def test_the_metadata_is_not_read_until_the_line_is_whole(self):
         store = blob()

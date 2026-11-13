@@ -1,9 +1,5 @@
-"""calibration.yaml stores measurements; ratios are derived when it is loaded.
-
-The bug these guard: a calibration file stored joint-to-motor ratios fitted
-against the joint ranges in force when it was made. When the packaged ranges
-changed (0.12 -> 0.13), every such file silently mapped every joint wrong.
-"""
+"""calibration.yaml stores measurements; ratios are derived when it is loaded,
+so a calibration made under other joint ranges still maps every joint right."""
 
 import os
 
@@ -22,7 +18,7 @@ from tests._helpers import copy_model_config
 
 MODELS = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2")
 
-# orcahand-right's index_mcp in orca_core 0.12, before the ranges were refitted.
+# An index_mcp range other than the model's, as a calibration made under it stored.
 RANGE_012 = [-25.0, 100.0]
 
 

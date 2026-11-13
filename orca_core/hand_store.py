@@ -67,8 +67,8 @@ NO_BOARD_PREFIX = "noboard-"
 USB_PREFIX = "usb-"
 MOCK_PREFIX = "mock-"
 
-# Per-hand files from before hand folders existed. Found beside a loaded config,
-# they are reported once (see legacy_files) and never read, moved or deleted.
+# Per-hand files an older orca_core kept beside a config. Found beside a loaded
+# config, they are reported once (see legacy_files) and never read, moved or deleted.
 LEGACY_FILES = (
     "calibration.yaml",
     "setup.yaml",
