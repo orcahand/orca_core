@@ -15,6 +15,19 @@ class TestWhereHandsLive:
         assert hand_store.orca_home() == tmp_path / "elsewhere"
         assert hand_store.hand_dir("ser-0000") == tmp_path / "elsewhere" / "hands" / "ser-0000"
 
+    def test_a_relative_orca_home_is_made_absolute_once_and_said(self, tmp_path, monkeypatch,
+                                                                  caplog):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(hand_store.ORCA_HOME_ENV, f"rel-{tmp_path.name}")
+        assert hand_store.orca_home() == tmp_path / f"rel-{tmp_path.name}"
+        assert "relative path" in caplog.text
+        monkeypatch.chdir(tmp_path.parent)
+        assert hand_store.orca_home() == tmp_path / f"rel-{tmp_path.name}"
+
+    def test_a_tilde_in_orca_home_is_the_user_s_home(self, monkeypatch):
+        monkeypatch.setenv(hand_store.ORCA_HOME_ENV, "~/orca-elsewhere")
+        assert hand_store.orca_home() == Path.home() / "orca-elsewhere"
+
     def test_without_the_variable_it_is_dot_orca_in_home(self, monkeypatch):
         monkeypatch.delenv(hand_store.ORCA_HOME_ENV)
         assert hand_store.orca_home() == Path.home() / ".orca"

@@ -90,10 +90,27 @@ class HandStoreError(ValueError):
 # --- locations ----------------------------------------------------------------
 
 
+_resolved_homes: Dict[str, Path] = {}
+
+
 def orca_home() -> Path:
-    """The root of everything orca keeps for this user: ``$ORCA_HOME``, else ``~/.orca``."""
+    """The root of everything orca keeps for this user: ``$ORCA_HOME``, else ``~/.orca``.
+
+    ``~`` is expanded, and a relative ``$ORCA_HOME`` is made absolute against the
+    folder this process first read it in (with a warning), so a later change of
+    working folder never moves the hands' files.
+    """
     configured = os.environ.get(ORCA_HOME_ENV)
-    return Path(configured).expanduser() if configured else Path.home() / ".orca"
+    if not configured:
+        return Path.home() / ".orca"
+    home = _resolved_homes.get(configured)
+    if home is None:
+        home = Path(configured).expanduser()
+        if not home.is_absolute():
+            home = home.absolute()
+            logger.warning("%s=%s is a relative path; using %s", ORCA_HOME_ENV, configured, home)
+        _resolved_homes[configured] = home
+    return home
 
 
 def _hands_dir() -> Path:
