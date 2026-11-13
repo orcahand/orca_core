@@ -1,4 +1,4 @@
-"""A port somebody named is the only one tried.
+"""A port somebody named is the only one tried; a detected one is looked for again.
 
 Falling back to auto-detection when a named port stays silent can connect to a
 different hand on the same computer, and only a stray log line says so.
@@ -76,7 +76,7 @@ def test_auto_may_still_offer_the_picker(config_path, silent_ports):
     tried, asked = silent_ports
     ok, _ = OrcaHand(config_path=config_path).connect(interactive=True)
     assert not ok
-    assert asked == ["auto", "picker"]
+    assert asked == ["auto", "auto", "picker"]
 
 
 def test_a_port_detection_found_may_still_offer_the_picker(config_path, silent_ports):
@@ -88,4 +88,47 @@ def test_a_port_detection_found_may_still_offer_the_picker(config_path, silent_p
     hand._board_hint = ("/dev/cu.usbmodemXXXX", board_sync.NO_BOARD)
     ok, _ = hand.connect(interactive=True)
     assert not ok
-    assert asked == ["picker"]
+    assert asked == ["auto", "picker"]
+    assert tried[:2] == ["/dev/cu.usbmodemXXXX", "/dev/cu.usbmodemOTHER"]
+
+
+@pytest.mark.parametrize("detected_by", ["auto", "detection"])
+def test_a_detected_board_that_re_enumerated_is_found_again_headless(
+        config_path, monkeypatch, detected_by):
+    """A board can come back under a new device name between detection and
+    connect; a headless connect must still reach it."""
+    import dataclasses
+
+    tried = []
+
+    def answer_only_on_the_new_name(self, port, base_config=None):
+        tried.append(port)
+        if port != "/dev/cu.usbmodemNEW":
+            raise ConnectionError("no motor responded")
+        self.config = dataclasses.replace(base_config or self.config, port=port)
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", answer_only_on_the_new_name)
+    names = iter(["/dev/cu.usbmodemOLD", "/dev/cu.usbmodemNEW"])
+    monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: next(names))
+    hand = OrcaHand(config_path=config_path)
+    if detected_by == "detection":
+        next(names)
+        hand.config = dataclasses.replace(hand.config, port="/dev/cu.usbmodemOLD")
+        hand._board_hint = ("/dev/cu.usbmodemOLD", board_sync.NO_BOARD)
+    ok, message = hand.connect(interactive=False)
+    assert ok, message
+    assert tried == ["/dev/cu.usbmodemOLD", "/dev/cu.usbmodemNEW"]
+
+
+def test_a_named_port_is_never_swapped_for_a_detected_one(config_path, monkeypatch):
+    tried = []
+
+    def answer_only_elsewhere(self, port, base_config=None):
+        tried.append(port)
+        raise ConnectionError("no motor responded")
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", answer_only_elsewhere)
+    monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: "/dev/cu.usbmodemNEW")
+    update_yaml(config_path, "port", "/dev/cu.usbmodemXXXX")
+    ok, _ = OrcaHand(config_path=config_path).connect(interactive=False)
+    assert not ok and tried == ["/dev/cu.usbmodemXXXX"]

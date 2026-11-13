@@ -1072,6 +1072,14 @@ class OrcaHand(BaseHand):
                 "port is never swapped for another, which could be a different hand; "
                 "check its power and cable, or set port: auto to detect it."
             )
+        # A detected port can vanish when its board re-enumerates under another
+        # name; looking again finds it, also for a headless caller.
+        again = unresolved is None and auto_detect_port(self.config.motor_type)
+        if again and again != first_port:
+            error = self._try_port(again, existing_config)
+            if error is None:
+                return True, f"Connection successful with auto-detected port {again}"
+            logger.warning("Connection failed on %s: %s", again, error)
 
         if not interactive:
             return False, f"Connection failed on {first_port}: {str(error)}"
