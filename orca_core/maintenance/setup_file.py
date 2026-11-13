@@ -265,7 +265,8 @@ def _store(path: str, data: dict, name: str, value: Any) -> Any:
             hand_store.archive_record(folder, section, record_name, record)
         data[name] = value
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    write_yaml_atomic(path, {hand_store.SCHEMA_KEY: hand_store.SCHEMA,
+    schema = max(hand_store.SCHEMA, hand_store.schema_of(data))
+    write_yaml_atomic(path, {hand_store.SCHEMA_KEY: schema,
                              **{k: v for k, v in data.items() if k != hand_store.SCHEMA_KEY}})
     return value
 

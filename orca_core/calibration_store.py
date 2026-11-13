@@ -22,6 +22,7 @@ file it replaces to ``calibration.previous.yaml``, the one step of undo.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Mapping, Optional
 
@@ -39,11 +40,15 @@ from .constants import (
 from .hand_store import (
     CALIBRATION_FILE,
     PREVIOUS_CALIBRATION_FILE,
+    SCHEMA,
     now_iso,
     read_doc,
+    schema_of,
     write_doc,
 )
 from .utils.utils import write_text_atomic
+
+logger = logging.getLogger(__name__)
 
 SEQUENCE = "sequence"
 CALIBRATED_AT = "calibrated_at"
@@ -78,15 +83,52 @@ def recover_swap(path: str) -> None:
         os.replace(swap, previous_path(path))       # stopped after step 2: finish it
 
 
-def read_document(path: Optional[str]) -> Dict[str, Any]:
-    """The calibration document at ``path``; ``{}`` when there is none."""
-    if not path:
-        return {}
+class NewerCalibrationError(RuntimeError):
+    """The calibration file was written by a newer orca_core; only a new
+    calibration replaces it."""
+
+
+def _read(path: str) -> Dict[str, Any]:
     try:
         recover_swap(path)
     except OSError:
         pass
     return read_doc(path, KIND)
+
+
+def read_document(path: Optional[str]) -> Dict[str, Any]:
+    """The calibration document at ``path``; ``{}`` when there is none, or when
+    a newer orca_core wrote it: what it holds is never used to drive motors."""
+    if not path:
+        return {}
+    doc = _read(path)
+    if schema_of(doc) > SCHEMA:
+        logger.warning(
+            "%s was written by a newer orca_core, so this one does not use it: the hand "
+            "reads as uncalibrated until it is calibrated again, which keeps that file as "
+            "%s", path, os.path.basename(previous_path(path)))
+        return {}
+    return doc
+
+
+def check_writable(path: str) -> None:
+    """Refuse to change a calibration file a newer orca_core wrote, other than
+    by replacing it with a new calibration.
+
+    Raises:
+        NewerCalibrationError: it was written by a newer orca_core.
+    """
+    if os.path.exists(path) and schema_of(_read(path)) > SCHEMA:
+        raise NewerCalibrationError(
+            f"{path} was written by a newer orca_core and is left as it is; calibrate "
+            "the hand to replace it (it is then kept as the previous calibration)")
+
+
+def previous_stamp(path: str) -> Optional[Dict[str, Any]]:
+    """:func:`stamp_of` the calibration kept before the one at ``path``, ``None``
+    when none is kept."""
+    previous = previous_path(path)
+    return stamp_of(_read(previous)) if os.path.exists(previous) else None
 
 
 def stamp_of(doc: Mapping[str, Any]) -> Dict[str, Any]:
@@ -144,7 +186,13 @@ def save(
     ``calibration.previous.yaml`` and ``sequence`` goes up by one. ``stamp``
     (implied by ``start_run``) sets ``calibrated_at`` to now. Returns the
     document written.
+
+    Raises:
+        NewerCalibrationError: a newer orca_core wrote ``path`` and this is
+            not the start of a new calibration.
     """
+    if not start_run:
+        check_writable(path)
     doc = read_document(path)
     if start_run:
         if os.path.exists(path):

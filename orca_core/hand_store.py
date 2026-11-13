@@ -172,6 +172,14 @@ def _mock_hand_dir(hand_id: str) -> Path:
 
 # --- documents ------------------------------------------------------------------
 
+def schema_of(doc: Dict[str, Any]) -> int:
+    """The schema ``doc`` was written with; 0 for a document without one."""
+    try:
+        return int(doc.get(SCHEMA_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _set_aside(path: os.PathLike | str, problem: str) -> None:
     """Rename an unreadable ``path`` to ``<name>.corrupt-<UTC time>`` so it reads
     as absent from now on, and say where it went."""
@@ -192,7 +200,8 @@ def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
 
     A document that is not a YAML mapping is moved aside (see :func:`_set_aside`)
     and reads as absent. A document from a newer orca_core than this one is
-    returned as it is, with a warning: its readers here may miss what it added.
+    returned as it is, with a warning: its readers here may miss what it added,
+    and :func:`write_doc` keeps its schema and the keys a caller passes back.
     """
     try:
         raw = read_yaml(str(path)) or {}
@@ -202,23 +211,21 @@ def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         _set_aside(path, "not a mapping")
         return {}
-    try:
-        version = int(raw.get(SCHEMA_KEY, 0) or 0)
-    except (TypeError, ValueError):
-        version = 0
+    version = schema_of(raw)
     if version > SCHEMA:
         logger.warning(
             "%s was written with schema %d by a newer orca_core (this one reads %d); "
-            "reading it as far as this version understands it", path, version, SCHEMA)
+            "what that version added is not understood here", path, version, SCHEMA)
     # A schema change adds its step here: bring a ``kind`` document of ``version`` forward.
     return raw
 
 
 def write_doc(path: os.PathLike | str, doc: Dict[str, Any]) -> Path:
-    """Replace ``path`` with ``doc`` (``schema:`` first), atomically, creating its folder."""
+    """Replace ``path`` with ``doc`` (``schema:`` first), atomically, creating its
+    folder. A schema newer than this orca_core's, read with ``doc``, is kept."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = {SCHEMA_KEY: SCHEMA}
+    body = {SCHEMA_KEY: max(SCHEMA, schema_of(doc))}
     body.update({k: v for k, v in doc.items() if k != SCHEMA_KEY})
     write_yaml_atomic(str(path), body)
     return path

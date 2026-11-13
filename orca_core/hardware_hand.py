@@ -741,10 +741,7 @@ class OrcaHand(BaseHand):
         :meth:`restore_previous_calibration` would bring back, or ``None``.
         """
         path = self._calibration_file() or None
-        previous = None
-        if path and os.path.exists(calibration_store.previous_path(path)):
-            previous = calibration_store.stamp_of(
-                calibration_store.read_document(calibration_store.previous_path(path)))
+        previous = calibration_store.previous_stamp(path) if path else None
         return {"path": path, **self._calibration_doc_stamp, "previous": previous}
 
     def restore_previous_calibration(self) -> dict:
@@ -833,6 +830,7 @@ class OrcaHand(BaseHand):
     def _update_calibration_file(self, values: dict) -> None:
         """Set top-level keys of this hand's calibration file, atomically."""
         path = self._calibration_file(create=True)
+        calibration_store.check_writable(path)
         doc = calibration_store.read_document(path)
         doc.update(values)
         write_doc(path, doc)

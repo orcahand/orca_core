@@ -45,10 +45,16 @@ class TestWhereHandsLive:
 
 class TestDocuments:
     def test_every_document_carries_the_schema_first(self, tmp_path):
-        path = hand_store.write_doc(tmp_path / "x" / "doc.yaml", {"a": 1, "schema": 99})
+        path = hand_store.write_doc(tmp_path / "x" / "doc.yaml", {"a": 1, "schema": 0})
         text = path.read_text()
         assert text.startswith("schema: 1\n")
         assert yaml.safe_load(text) == {"schema": 1, "a": 1}
+
+    def test_a_newer_hand_yaml_keeps_its_schema_and_keys_when_written(self, tmp_path):
+        (tmp_path / "hand.yaml").write_text("schema: 7\nfuture: yes\n")
+        hand_store.set_nickname(tmp_path, "bench")
+        assert yaml.safe_load((tmp_path / "hand.yaml").read_text()) == {
+            "schema": 7, "future": True, "nickname": "bench"}
 
     def test_an_absent_document_reads_empty(self, tmp_path):
         assert hand_store.read_doc(tmp_path / "missing.yaml", "hand") == {}

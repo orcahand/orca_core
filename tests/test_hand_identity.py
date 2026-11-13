@@ -212,6 +212,29 @@ class TestAnUnreadableFileIsSetAside:
         assert hand.calibrated
 
 
+class TestACalibrationFromANewerOrcaCore:
+    def test_is_not_used_or_changed_until_the_hand_is_calibrated(self, make_hand, caplog):
+        from orca_core.calibration_store import NewerCalibrationError
+
+        hand = make_hand(board())
+        hand.calibrate(persist=True)
+        path = Path(hand.config.calibration_path)
+        newer = path.read_text().replace("schema: 1\n", "schema: 2\n", 1)
+        path.write_text(newer)
+
+        hand = make_hand(board())
+        assert not hand.calibrated
+        assert "written by a newer orca_core" in caplog.text
+        with pytest.raises(NewerCalibrationError):
+            hand.set_rom_frame("centered", persist=True)
+        assert path.read_text() == newer
+
+        hand.calibrate(persist=True)
+        assert hand.calibrated
+        assert read_yaml(str(path))["schema"] == 1
+        assert Path(hand.hand_dir, "calibration.previous.yaml").read_text() == newer
+
+
 class TestExplicitCalibrationPath:
     def test_an_explicit_file_is_read_and_written_while_the_folder_is_still_the_hand_s(
         self, make_hand, tmp_path
