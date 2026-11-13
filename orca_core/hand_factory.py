@@ -348,7 +348,7 @@ def _overridden(field: str, configured, detected) -> bool:
     if configured in (None, "auto") or configured == detected:
         return False
     logger.warning(
-        "the config pins %s=%r (config.yaml or local_config.yaml), so the "
+        "the config pins %s=%r in config.yaml, so the "
         "detected %r is not used. Set it to 'auto' (or lift the pin) to autodetect.",
         field, configured, detected,
     )
@@ -536,6 +536,10 @@ def load_hand(
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
     hand = hand_cls(config=config)
+    board_version = detected_hardware_version
+    if board_version is None and detection is not None and detection.identity is not None:
+        board_version = detection.identity.hw_version
+    hand._board_hardware_version = normalize_hardware_version(board_version)
     if detection is not None and detection.motor_port is not None:
         from .board_sync import BoardContact
 

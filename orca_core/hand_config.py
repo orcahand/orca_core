@@ -228,87 +228,12 @@ def _canonical_joint_to_motor_map(
     return normalized_map, inversion_dict
 
 
-LOCAL_CONFIG_FILE = "local_config.yaml"
-# Keys a hand's local_config.yaml may override. Everything else in it is ignored
-# with a warning: the file is for what belongs to one hand, not for config edits.
-LOCAL_CONFIG_KEYS = (HARDWARE_VERSION,)
-
-
-def local_config_path(config_path: str) -> str:
-    """``local_config.yaml`` beside ``config_path``: a hand's own overrides,
-    kept out of the packaged config so the package stays pristine and git
-    clean. Written by :func:`write_hardware_version`; read at every load."""
-    return os.path.join(os.path.dirname(os.path.abspath(config_path)), LOCAL_CONFIG_FILE)
-
-
-def read_local_config(config_path: str) -> Dict:
-    """The overrides in force for ``config_path``'s hand (whitelisted keys only)."""
-    raw = read_yaml(local_config_path(config_path)) or {}
-    if not isinstance(raw, dict):
-        logging.getLogger(__name__).warning(
-            "%s is not a mapping; ignoring it", local_config_path(config_path))
-        return {}
-    unknown = sorted(set(raw) - set(LOCAL_CONFIG_KEYS))
-    if unknown:
-        logging.getLogger(__name__).warning(
-            "%s: ignoring %s (only %s may be overridden there)",
-            local_config_path(config_path), unknown, ", ".join(LOCAL_CONFIG_KEYS))
-    return {k: raw[k] for k in LOCAL_CONFIG_KEYS if k in raw}
-
-
-def _same_local_value(key: str, current, value) -> bool:
-    if key == HARDWARE_VERSION and all(isinstance(v, int) and not isinstance(v, bool) for v in (current, value)):
-        return normalize_hardware_version(current) == normalize_hardware_version(value)
-    return current == value
-
-
-def _with_local_overrides(config: Dict, config_path: str) -> Dict:
-    """``config`` with the hand's local overrides on top. A local value that
-    displaces an explicit one in config.yaml is logged: the yaml no longer
-    says what is in force."""
-    local = read_local_config(config_path)
-    for key, value in local.items():
-        current = config.get(key)
-        if current not in (None, "auto") and not _same_local_value(key, current, value):
-            logging.getLogger(__name__).warning(
-                "%s sets %s=%r, so config.yaml's %r is not used",
-                local_config_path(config_path), key, value, current)
-    return {**config, **local}
-
-
 def format_hardware_version(version: int | None) -> str:
     """``211`` -> ``"v2.1.1"``; the older ``21`` and ``2`` read as v2.1.0 and v2.0.0."""
     if version is None:
         return "an unknown version"
     version = normalize_hardware_version(version)
     return f"v{version // 100}.{version // 10 % 10}.{version % 10}"
-
-
-def write_hardware_version(config_path: str, version: int | None) -> str:
-    """Pin ``hardware_version`` for the hand at ``config_path``, or lift the
-    pin for ``None``. The pin lives in the hand's ``local_config.yaml`` beside
-    the config; config.yaml itself is never touched, so a packaged model stays
-    as shipped. Returns the path written."""
-    if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 0):
-        raise HandConfigValidationError(
-            f"{HARDWARE_VERSION} must be a non-negative integer or None, got {version!r}"
-        )
-    path = local_config_path(config_path)
-    local = read_yaml(path) or {}
-    if not isinstance(local, dict):
-        local = {}
-    if version is None:
-        local.pop(HARDWARE_VERSION, None)
-    else:
-        normalized = normalize_hardware_version(int(version))
-        # orca_core 0.6-0.12 recognise v2.1 only as 21, so v2.1.0 is written that
-        # way for a hand folder an older install also reads; 0.13+ reads it as 210.
-        local[HARDWARE_VERSION] = 21 if normalized == 210 else normalized
-    if local:
-        write_yaml_atomic(path, local)
-    elif os.path.exists(path):
-        os.remove(path)
-    return path
 
 
 def calibration_group(joint: str) -> Optional[str]:
@@ -506,7 +431,7 @@ class BaseHandConfig:
             model_version=model_version,
             model_name=model_name,
         )
-        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
+        config = read_yaml(resolved_config_path) or {}
 
         return cls(config_path=resolved_config_path, **_shared_hand_kwargs(config))
 
@@ -589,6 +514,10 @@ class OrcaHandConfig(BaseHandConfig):
     joint_to_motor_map_v21: Dict[str, int] = field(default_factory=dict)
     # The joint ROMs a v2.1.1 hand overrides; with_hardware_version lays them over joint_roms.
     joint_roms_v211_dict: Dict[str, List[float]] = field(default_factory=dict)
+    # The signed map and ranges before any hardware version was applied, kept by
+    # with_hardware_version so another version (or none) can be put in force later.
+    base_joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
+    base_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -840,7 +769,7 @@ class OrcaHandConfig(BaseHandConfig):
             resolved_config_path, calibration_path
         )
 
-        config = _with_local_overrides(read_yaml(resolved_config_path) or {}, resolved_config_path)
+        config = read_yaml(resolved_config_path) or {}
         if not config:
             raise HandConfigValidationError(
                 f"config.yaml at {resolved_config_path} is empty. Restore it "
@@ -1214,14 +1143,40 @@ class OrcaHandConfig(BaseHandConfig):
         if hardware_version is None:
             return self
         hardware_version = normalize_hardware_version(hardware_version)
-        changes = {"hardware_version": hardware_version}
+        base = self.without_hardware_version()
+        changes = {
+            "hardware_version": hardware_version,
+            "base_joint_to_motor_map": base.base_joint_to_motor_map,
+            "base_joint_roms_dict": base.base_joint_roms_dict,
+        }
         if hardware_version // 10 == HARDWARE_VERSION_V21 // 10 and self.joint_to_motor_map_v21:
             changes["joint_to_motor_map"], changes["joint_inversion_dict"] = (
                 _canonical_joint_to_motor_map(self.joint_to_motor_map_v21)
             )
         if hardware_version == HARDWARE_VERSION_V211 and self.joint_roms_v211_dict:
-            changes["joint_roms_dict"] = {**self.joint_roms_dict, **self.joint_roms_v211_dict}
-        return dataclasses.replace(self, **changes)
+            changes["joint_roms_dict"] = {**base.joint_roms_dict, **self.joint_roms_v211_dict}
+        return dataclasses.replace(base, **changes)
+
+    def without_hardware_version(self) -> "OrcaHandConfig":
+        """This config with no hardware version in force: the base map and ranges."""
+        if not self.base_joint_to_motor_map:
+            signed = {
+                joint: -motor_id if self.joint_inversion_dict.get(joint, False) else motor_id
+                for joint, motor_id in self.joint_to_motor_map.items()
+            }
+            return dataclasses.replace(
+                self, base_joint_to_motor_map=signed,
+                base_joint_roms_dict={j: list(r) for j, r in self.joint_roms_dict.items()},
+            ) if self.hardware_version is None else self
+        joint_to_motor_map, joint_inversion_dict = _canonical_joint_to_motor_map(
+            self.base_joint_to_motor_map)
+        return dataclasses.replace(
+            self,
+            hardware_version=None,
+            joint_to_motor_map=joint_to_motor_map,
+            joint_inversion_dict=joint_inversion_dict,
+            joint_roms_dict={j: list(r) for j, r in self.base_joint_roms_dict.items()},
+        )
 
 
 def _sensor_kwargs(sensors: dict) -> dict:

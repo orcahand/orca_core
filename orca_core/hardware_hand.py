@@ -160,6 +160,11 @@ class OrcaHand(BaseHand):
         # (port, BoardContact) already read by detection, so connect need not ask again.
         self._board_hint = None
         self._legacy_files: list[str] = []
+        # Hardware version: what the board reported, what the operator chose for
+        # this session (never saved), and a pin written into config.yaml.
+        self._board_hardware_version: int | None = None
+        self._hardware_version_override: int | None = None
+        self._pinned_hardware_version = self._yaml_hardware_version_pin()
         self._explicit_calibration = self._names_own_calibration_file(self.config)
         if self.config.hand_dir:
             # A config taken from a hand that already knew its folder (an
@@ -229,6 +234,70 @@ class OrcaHand(BaseHand):
             raise RuntimeError("connect the hand first: its folder is not known yet")
         return hand_store.set_nickname(self.hand_dir, nickname).get("nickname")
 
+    # ------------------------------------------------------------------
+    # Hardware version
+    # ------------------------------------------------------------------
+
+    @property
+    def hardware_version(self) -> int | None:
+        """The hardware version in force (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1),
+        ``None`` while unknown: the session override, else a pin in config.yaml,
+        else what the board reported."""
+        return self.config.hardware_version
+
+    @property
+    def board_hardware_version(self) -> int | None:
+        """The version the hand's board reported; ``None`` without a board."""
+        return self._board_hardware_version
+
+    @property
+    def hardware_version_override(self) -> int | None:
+        """The version chosen for this session with :meth:`set_hardware_version`."""
+        return self._hardware_version_override
+
+    def set_hardware_version(self, version: int | None) -> int | None:
+        """Use ``version`` for this hand for this session only; ``None`` goes back
+        to the board's (or config.yaml's). Never written anywhere, and cleared
+        when a different hand connects. Returns the version in force.
+
+        Raises:
+            ValueError: ``version`` is not a non-negative whole number.
+        """
+        from .constants import normalize_hardware_version
+
+        if version is not None and (
+            isinstance(version, bool) or not isinstance(version, int) or version < 0
+        ):
+            raise ValueError(f"a hardware version is a non-negative whole number, got {version!r}")
+        self._hardware_version_override = normalize_hardware_version(version)
+        self._apply_hardware_version()
+        return self.hardware_version
+
+    def _yaml_hardware_version_pin(self) -> int | None:
+        from .constants import HARDWARE_VERSION, normalize_hardware_version
+
+        config_path = getattr(self.config, "config_path", "") or ""
+        raw = (read_yaml(config_path) or {}).get(HARDWARE_VERSION) if config_path else None
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return normalize_hardware_version(raw)
+        return None
+
+    def _apply_hardware_version(self) -> None:
+        """Put the version in force: override, else config.yaml's pin, else the board's."""
+        board = self._board_hardware_version
+        pinned = self._pinned_hardware_version
+        if self._hardware_version_override is None and pinned is not None \
+                and board is not None and board != pinned:
+            logger.warning(
+                "config.yaml pins hardware_version=%r, so the board's %r is not used. "
+                "Set it to 'auto' to take the board's value.", pinned, board)
+        version = next((v for v in (self._hardware_version_override, pinned, board)
+                        if v is not None), None)
+        if version == self.config.hardware_version:
+            return
+        self.config = (self.config.with_hardware_version(version) if version is not None
+                       else self.config.without_hardware_version())
+
     def _model_name(self) -> str:
         config_path = getattr(self.config, "config_path", "") or ""
         if config_path:
@@ -257,7 +326,16 @@ class OrcaHand(BaseHand):
             logger.warning("cannot use the hand folder for %s under %s (%s); this "
                            "hand's files will not be kept", hand_id, hand_store.orca_home(), exc)
             return
+        if self._hand_id is not None and hand_id != self._hand_id:
+            # A different hand: versions known for the last one are not this one's.
+            self._hardware_version_override = None
+            self._board_hardware_version = None
         self._hand_id, self._board_hand_id, self._board_info = hand_id, from_board, info
+        if info is not None:
+            from .constants import normalize_hardware_version
+
+            self._board_hardware_version = normalize_hardware_version(info.hw_version)
+        self._apply_hardware_version()
         if created:
             config_dir = os.path.dirname(getattr(self.config, "config_path", "") or "")
             self._legacy_files = hand_store.find_legacy_files(config_dir)

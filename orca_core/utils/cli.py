@@ -18,7 +18,7 @@ import yaml
 
 from orca_core import BaseHand, load_hand
 from orca_core.constants import normalize_hardware_version
-from orca_core.hand_config import format_hardware_version, write_hardware_version
+from orca_core.hand_config import format_hardware_version
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import JointEncoderClient
 from orca_core.hardware.sensing.serial_discovery import board_info_for_port, resolve_sensing_ports
@@ -58,9 +58,9 @@ def add_hand_arguments(
         type=int,
         default=None,
         metavar="N",
-        help="Pin the hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1) for a hand whose "
-             "controller board cannot report it; written to its local_config.yaml, "
-             "as the console's picker does. Without it an interactive run asks.",
+        help="The hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1) for this "
+             "run only, over what its board reports; never saved. Without it a hand "
+             "with no board to ask is asked about interactively.",
     )
     if feedback_flag:
         parser.add_argument(
@@ -119,22 +119,21 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
     return hand
 
 
-def pin_hardware_version(hand, version: int) -> str:
-    """Put ``version`` in force for this run and keep it in the hand's
-    ``local_config.yaml``, so the next run (script or console) starts with it.
-    Returns the path written."""
-    path = write_hardware_version(hand.config.config_path, int(version))
-    hand.config = hand.config.with_hardware_version(int(version))
-    print(f"Hardware version pinned to {format_hardware_version(int(version))} in {path}")
-    return path
+def pin_hardware_version(hand, version: int) -> int | None:
+    """Use ``version`` for this hand for this run only; nothing is saved.
+    Returns the version in force."""
+    in_force = hand.set_hardware_version(int(version))
+    print(f"Hardware version {format_hardware_version(in_force)} for this run "
+          "(not saved; the board's version is used when it reports one).")
+    return in_force
 
 
 def prompt_hardware_version(hand, ask=input) -> "int | None":
-    """Ask which revision a hand of unknown version is, and pin the answer.
+    """Ask which revision a hand of unknown version is, for this run.
 
-    Reached only when neither a controller board nor a pin said: a plain
+    Reached only when neither a controller board nor config.yaml said: a plain
     adapter. Enter keeps the version unknown for this run (v2.0 behaviour:
-    base map, no travel features).
+    base map, no travel features). The answer is never saved.
     """
     print(
         "Hardware version unknown: no controller board answered and none is pinned.\n"
@@ -149,32 +148,28 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
             print("Continuing with the hardware version unknown (v2.0 behaviour).")
             return None
         if answer.isdigit():
-            pin_hardware_version(hand, int(answer))
-            return hand.config.hardware_version
+            return pin_hardware_version(hand, int(answer))
         print("Please enter a whole number (200, 210 or 211) or press Enter.")
 
 
 def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
     """Decide the connected hand's hardware version the way the console does.
 
-    A pin (config.yaml or the hand's local_config.yaml) wins and a disagreeing
-    board is logged. Otherwise the controller board behind the motor port
-    decides, however the hand was loaded (a config path skips core's
-    detection, so the board is asked here). Only with no board at all is the
-    operator asked, and only when a terminal can answer.
+    The board's answer at connect, a pin in config.yaml, or ``--hardware-version``
+    already settle it. A board whose motor port did not answer is asked on its
+    other port. Only with no board at all is the operator asked, for this run
+    only, and only when a terminal can answer.
     """
-    pinned = normalize_hardware_version(getattr(hand.config, "hardware_version", None))
-    board = board_info_for_port(getattr(hand.config, "port", "") or "")
-    reported = board.hw_version if board is not None else None
-    if pinned is not None:
-        if reported is not None and reported != pinned:
-            logger.warning(
-                "the config pins hardware_version=%r (config.yaml or local_config.yaml), "
-                "so the board's %r is not used. Lift the pin to take the board's value.",
-                pinned, reported)
+    if hand.hardware_version is not None:
+        if hand.hardware_version_override is None and hand.board_hardware_version is not None:
+            print("Controller board reports hardware version "
+                  f"{format_hardware_version(hand.board_hardware_version)}.")
         return
+    board = board_info_for_port(getattr(hand.config, "port", "") or "")
+    reported = normalize_hardware_version(board.hw_version) if board is not None else None
     if reported is not None:
-        hand.config = hand.config.with_hardware_version(reported)
+        hand._board_hardware_version = reported
+        hand._apply_hardware_version()
         print(f"Controller board reports hardware version {format_hardware_version(reported)}.")
         return
     # Only a terminal can answer: a piped or captured stdin keeps the version

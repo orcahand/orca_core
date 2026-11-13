@@ -1,6 +1,6 @@
 """A hand of unknown hardware version (plain adapter, no pin) is asked for it
-by the shared CLI helpers, and the answer is kept in its local_config.yaml --
-the same place the console's picker writes."""
+by the shared CLI helpers. The answer, like --hardware-version, holds for the
+run only and is never written anywhere."""
 
 import glob
 import os
@@ -38,10 +38,12 @@ def test_an_unknown_version_is_asked_for_and_the_answer_is_kept(tmp_path):
         assert len(asked) == 1
         assert hand.config.hardware_version == HARDWARE_VERSION_V21
         assert _flipped(hand) == [not f for f in base], "the v2.1 left map is in force at once"
+        assert hand.hardware_version_override == HARDWARE_VERSION_V21
     finally:
         hand.disconnect()
-    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 21"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.yaml"]
     assert (tmp_path / "config.yaml").read_text() == open(LEFT, encoding="utf-8").read()
+    assert "hardware_version" not in open(os.path.join(hand.hand_dir, "hand.yaml")).read()
 
 
 def test_enter_keeps_the_version_unknown_and_writes_nothing(tmp_path):
@@ -72,14 +74,14 @@ def test_a_known_version_is_not_asked_for(tmp_path):
         hand.disconnect()
 
 
-def test_the_flag_pins_for_the_run_and_for_the_next_one(tmp_path):
+def test_the_flag_holds_for_the_run_only(tmp_path):
     hand = _mock_hand(tmp_path, hardware_version=210)
     hand.disconnect()
     assert hand.config.hardware_version == HARDWARE_VERSION_V21
-    assert (tmp_path / "local_config.yaml").read_text().strip() == "hardware_version: 21"
-    again = _mock_hand(tmp_path)   # no flag this time: the sidecar carries it
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.yaml"]
+    again = _mock_hand(tmp_path)   # no flag this time: nothing carries it over
     try:
-        assert again.config.hardware_version == HARDWARE_VERSION_V21
+        assert again.config.hardware_version is None
     finally:
         again.disconnect()
 
@@ -120,16 +122,14 @@ def test_the_board_decides_before_anyone_is_asked(tmp_path, monkeypatch):
     assert not (tmp_path / "local_config.yaml").exists()
 
 
-def test_a_pin_beats_the_board_and_the_clash_is_logged(tmp_path, monkeypatch, caplog):
+def test_the_flag_beats_the_board(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     hand = _mock_hand(tmp_path, hardware_version=200)
     monkeypatch.setattr(cli, "board_info_for_port", lambda port: SimpleNamespace(hw_version=210))
     try:
-        with caplog.at_level("WARNING"):
-            cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+        cli.connect_hand(hand, ask=lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
         assert hand.config.hardware_version == 200
-        assert "pins hardware_version=200" in caplog.text and "board's 210" in caplog.text
     finally:
         hand.disconnect()
 
