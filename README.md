@@ -10,7 +10,7 @@
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space. While working directly with core will let you interact with your ORCA Hand on a deep level, the Orca Ui repository (found at: https://github.com/orcahand/orca_ui) can let users get started right away, helping you setup/maintain your hand, tune its performance, and better understand its capabilities. 
 
-## What's new in 0.13.1
+## What's new in 0.14.0
 
 - **Stop after a motor-bus error:** a USB error in the middle of a motor transaction no longer leaves the port marked busy
   ("Port is in use"), so Stop and disconnect still switch torque off and close the port.
@@ -117,24 +117,9 @@ To get started with Orca Core, follow these steps:
 
 ## Where a hand's files live
 
-Each physical hand keeps its own files in `~/.orca/hands/<hand id>/` (set `ORCA_HOME` to move `~/.orca`); a model's
-`config.yaml` is only ever read.
-
-- **Which folder:** the hand's board is asked at connect. Its serial names the folder, else its board id; a hand on a
-  plain USB adapter shares `noboard-<model>` with every such hand of that model. Mock hands use a temporary folder.
-- **`calibration.yaml`** holds what the last calibration measured, with `calibrated_at` and a `sequence` number. Ratios
-  are derived from it each time it is loaded, for the joint ranges in force then. The calibration before it is kept as
-  `calibration.previous.yaml` (`hand.restore_previous_calibration()`).
-- **`setup.yaml`** keeps the latest setup record of each kind; older ones are under `archive/`.
-- **`hand.yaml`** records the hand's id, the serials and board ids it has reported, its model and an optional nickname.
-- A first connect copies the calibration kept on the hand's board when the computer has none. `scripts/calibrate.py`
-  writes the board back when an `orca_firmware` checkout is present.
-- `--hardware-version` lasts for the run only; a `--motor-port` (or `port:`) that does not answer fails instead of
-  falling back to another port.
-- Files older versions kept beside `config.yaml` (`calibration.yaml`, `setup.yaml`, `local_config.yaml`, ...) are no
-  longer read and are left untouched; calibrate each hand once.
-
-Details: [docs/pages/orca-core-docs/hand-files.md](docs/pages/orca-core-docs/hand-files.md).
+Each physical hand keeps its own files (calibration, setup records, identity) in `~/.orca/hands/<hand id>/` (set
+`ORCA_HOME` to move `~/.orca`); a model's `config.yaml` is only ever read. Files older versions kept beside `config.yaml`
+are no longer read; calibrate each hand once. Details: [docs/pages/orca-core-docs/hand-files.md](docs/pages/orca-core-docs/hand-files.md).
 
 ## Troubleshooting
 
