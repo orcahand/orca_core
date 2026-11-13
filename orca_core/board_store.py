@@ -521,8 +521,8 @@ def unpack(blob: bytes) -> BoardStore:
                 name: values for name, _, values in per_finger(body, 1)
             }
         elif type_code == SEC_STAMP:
-            sequence, length = struct.unpack_from("<IB", body, 0)
-            calibration["sequence"] = sequence
+            stamp_sequence, length = struct.unpack_from("<IB", body, 0)
+            calibration["sequence"] = stamp_sequence
             at = body[5:5 + length].decode("ascii", "replace")
             if at:
                 calibration["calibrated_at"] = at

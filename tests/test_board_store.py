@@ -122,6 +122,12 @@ class TestTheStampAndFingerprint:
         assert got["calibrated_at"] == "2026-11-13T10:00:00Z"
         assert got["fingerprint"] == doc["fingerprint"]
 
+    def test_the_calibration_s_sequence_is_not_the_slot_s(self):
+        """Two counters: which calibration this is, and which slot write won."""
+        store = unpack(pack({"sequence": 7, "calibrated_at": "2026-11-13T10:00:00Z"}, sequence=42))
+        assert store.calibration["sequence"] == 7
+        assert store.sequence == 42
+
     def test_a_store_without_them_reads_without_them(self):
         got = unpack(pack({"motor_limits": {1: [0.0, 1.0]}})).calibration
         assert "calibrated_at" not in got and "fingerprint" not in got
