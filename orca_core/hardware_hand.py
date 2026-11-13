@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 
-from . import calibration_store
+from . import board_sync, calibration_store, hand_store
 from .base_hand import BaseHand
 from .calibration import (
     FINGERPRINT,
@@ -154,9 +154,134 @@ class OrcaHand(BaseHand):
         self._rom_frame = ROM_FRAME_ANCHOR
         # Joints whose range was measured on this hand (joint_ranges.yaml).
         self._measured_range_joints: frozenset = frozenset()
-        self._load_calibration(self.config.calibration_path)
+        self._hand_id: str | None = None
+        self._board_hand_id: str | None = None
+        self._board_info = None
+        # (port, BoardContact) already read by detection, so connect need not ask again.
+        self._board_hint = None
+        self._legacy_files: list[str] = []
+        self._explicit_calibration = self._names_own_calibration_file(self.config)
+        if self.config.hand_dir:
+            # A config taken from a hand that already knew its folder (an
+            # operation building a fresh hand) stays on that folder.
+            self._hand_id = os.path.basename(os.path.normpath(self.config.hand_dir))
+        self._load_calibration(self.config.calibration_path or None)
+        self._settle_identity_at_construction()
         self._sanity_check()
-        self.is_calibrated(verbose=True)
+        if self.config.calibration_path:
+            self.is_calibrated(verbose=True)
+
+    @staticmethod
+    def _names_own_calibration_file(config: OrcaHandConfig) -> bool:
+        """Whether ``config`` names a calibration file other than its hand folder's."""
+        path = config.calibration_path
+        if not path:
+            return False
+        own = config.hand_dir and os.path.join(config.hand_dir, hand_store.CALIBRATION_FILE)
+        return not own or os.path.abspath(path) != os.path.abspath(own)
+
+    def _settle_identity_at_construction(self) -> None:
+        """A physical hand learns which hand it is at connect; mocks override."""
+
+    # ------------------------------------------------------------------
+    # Identity and the hand's folder
+    # ------------------------------------------------------------------
+
+    @property
+    def hand_id(self) -> str | None:
+        """What this hand's files are filed under: the board's serial, else its
+        board id, else ``noboard-<model>``. ``None`` until it has connected."""
+        return self._hand_id
+
+    @property
+    def board_hand_id(self) -> str | None:
+        """The id the hand's own board reported at connect; ``None`` without a board."""
+        return self._board_hand_id
+
+    @property
+    def hand_dir(self) -> str | None:
+        """This hand's folder (see :mod:`orca_core.hand_store`); ``None`` until known."""
+        return self.config.hand_dir or None
+
+    @property
+    def legacy_files(self) -> list[str]:
+        """Per-hand files an older orca_core kept beside this hand's config,
+        found when this hand's folder was first created here. They are not
+        read, copied or touched; list them once to say a fresh calibration is
+        needed. Empty on every later connect."""
+        return list(self._legacy_files)
+
+    @property
+    def nickname(self) -> str | None:
+        """A display name for this physical hand, kept in its ``hand.yaml``."""
+        if not self.hand_dir:
+            return None
+        return hand_store.read_hand(self.hand_dir).get("nickname")
+
+    def set_nickname(self, nickname: str | None) -> str | None:
+        """Name this physical hand for display (``None`` or blank clears it).
+
+        Raises:
+            RuntimeError: the hand does not know its folder yet (connect first).
+            HandStoreError: the name is longer than 64 or has control characters.
+        """
+        if not self.hand_dir:
+            raise RuntimeError("connect the hand first: its folder is not known yet")
+        return hand_store.set_nickname(self.hand_dir, nickname).get("nickname")
+
+    def _model_name(self) -> str:
+        config_path = getattr(self.config, "config_path", "") or ""
+        if config_path:
+            return os.path.basename(os.path.dirname(os.path.abspath(config_path)))
+        return str(getattr(self.config, "type", "") or "hand")
+
+    def _contact_board(self, port: str) -> "board_sync.BoardContact":
+        hint = self._board_hint
+        if hint is not None and hint[0] == port:
+            return hint[1]
+        return board_sync.contact_board(port)
+
+    def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
+        """Decide which physical hand this is and point its files at its folder."""
+        info = contact.info
+        serial = info.serial if info is not None else None
+        board_id = info.board_id if info is not None else None
+        from_board = hand_store.resolve_hand_id(serial, board_id)
+        hand_id = from_board or hand_store.no_board_hand_id(self._model_name())
+        try:
+            folder, created = hand_store.open_hand_folder(
+                hand_id, serial=serial, board_id=board_id)
+            hand_store.record_contact(
+                folder, hand_id, model=self._model_name(), serial=serial, board_id=board_id)
+        except OSError as exc:
+            logger.warning("cannot use the hand folder for %s under %s (%s); this "
+                           "hand's files will not be kept", hand_id, hand_store.orca_home(), exc)
+            return
+        self._hand_id, self._board_hand_id, self._board_info = hand_id, from_board, info
+        if created:
+            config_dir = os.path.dirname(getattr(self.config, "config_path", "") or "")
+            self._legacy_files = hand_store.find_legacy_files(config_dir)
+            if self._legacy_files:
+                logger.warning(
+                    "found per-hand files from an older orca_core beside %s (%s); they are "
+                    "not used: this hand's files now live in %s, so calibrate it again",
+                    config_dir, ", ".join(os.path.basename(p) for p in self._legacy_files),
+                    folder)
+        else:
+            self._legacy_files = []
+        # The folder is the source of truth: another hand object (an operation's
+        # fresh hand) may have calibrated this hand since it was last read.
+        self._use_folder(str(folder), reload=True)
+
+    def _use_folder(self, folder: str, reload: bool = False) -> None:
+        """Read and write this hand's files in ``folder`` from now on."""
+        calibration = (self.config.calibration_path if self._explicit_calibration
+                       else os.path.join(folder, hand_store.CALIBRATION_FILE))
+        moved = folder != self.config.hand_dir or calibration != self.config.calibration_path
+        self.config = dataclasses.replace(self.config, hand_dir=folder, calibration_path=calibration)
+        if (moved or reload) and not self._explicit_calibration:
+            self._load_calibration(calibration)
+            self._sanity_check()
 
     def __del__(self):
         # Best-effort release of every link the subclass opened; a hand whose
@@ -238,8 +363,12 @@ class OrcaHand(BaseHand):
         self._stored_fingerprint = fingerprint if isinstance(fingerprint, dict) else None
         self._derive_calibration()
 
-    def _calibration_file(self) -> str:
-        """The calibration file this hand reads and writes."""
+    def _calibration_file(self, create: bool = False) -> str:
+        """The calibration file this hand reads and writes (``""`` while not
+        known). ``create`` settles the folder of a hand that never connected,
+        so a write always has somewhere to go."""
+        if create and not self.config.calibration_path:
+            self._settle_identity(board_sync.NO_BOARD)
         return self.config.calibration_path
 
     def _save_calibration(
@@ -254,7 +383,7 @@ class OrcaHand(BaseHand):
         return its path. ``start_run`` marks a new calibration: the replaced
         file becomes the previous one and the sequence goes up. ``stamp`` sets
         ``calibrated_at`` to now (a calibration run's later writes)."""
-        path = self._calibration_file()
+        path = self._calibration_file(create=True)
         doc = calibration_store.save(
             path, result, include_encoder=include_encoder,
             fingerprint=joint_fingerprints(self.config),
@@ -364,7 +493,7 @@ class OrcaHand(BaseHand):
 
     def _update_calibration_file(self, values: dict) -> None:
         """Set top-level keys of this hand's calibration file, atomically."""
-        path = self._calibration_file()
+        path = self._calibration_file(create=True)
         doc = calibration_store.read_document(path)
         doc.update(values)
         write_doc(path, doc)
@@ -453,6 +582,9 @@ class OrcaHand(BaseHand):
             raise ConnectionError(
                 f"no motor responded on {port} (check power and wiring)"
             )
+        # Before the motor client takes the port: the one window to ask the
+        # board which hand this is.
+        self._settle_identity(self._contact_board(port))
         self._motor_client = self._create_motor_client()
         # The family is known now, so a config that says "default" gets its
         # current limits before anything reads them.
@@ -1856,6 +1988,22 @@ class MockMotorResolutionMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._install_mock_calibration()
+
+    def _settle_identity_at_construction(self) -> None:
+        self._settle_identity(board_sync.NO_BOARD)
+
+    def _contact_board(self, port: str) -> "board_sync.BoardContact":
+        return board_sync.NO_BOARD
+
+    def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
+        """A mock is filed in a temporary folder, never under ``ORCA_HOME``."""
+        hand_id = hand_store.mock_hand_id(self._model_name())
+        folder = hand_store.mock_hand_dir(hand_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        if not (folder / hand_store.HAND_FILE).exists():
+            hand_store.record_contact(folder, hand_id, model=self._model_name())
+        self._hand_id, self._board_hand_id, self._board_info = hand_id, None, None
+        self._use_folder(str(folder))
 
     def _install_mock_calibration(self) -> None:
         """Fill in motor calibration that a mock has no way to measure.

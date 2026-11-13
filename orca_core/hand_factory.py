@@ -535,4 +535,10 @@ def load_hand(
         config = config.with_family_currents(family_cls)
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
-    return hand_cls(config=config)
+    hand = hand_cls(config=config)
+    if detection is not None and detection.motor_port is not None:
+        from .board_sync import BoardContact
+
+        # Detection already asked the board who it is; connect reuses that.
+        hand._board_hint = (detection.motor_port, BoardContact(info=detection.identity))
+    return hand

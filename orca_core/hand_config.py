@@ -191,10 +191,15 @@ def _resolve_config_path(
 
 
 def _resolve_calibration_path(config_path: str, calibration_path: str | None) -> str:
-    """Resolve the companion ``calibration.yaml`` path for a config file."""
-    if calibration_path is not None:
+    """An explicitly given calibration file, absolute; ``""`` otherwise.
+
+    Nothing beside a model's config is a hand's own file: without an explicit
+    path a hand reads and writes the calibration in its own folder under
+    ``ORCA_HOME`` once it knows which hand it is (see :mod:`orca_core.hand_store`).
+    """
+    if calibration_path:
         return os.path.abspath(calibration_path)
-    return os.path.join(os.path.dirname(config_path), "calibration.yaml")
+    return ""
 
 
 def canonical_joint_ids(
@@ -555,7 +560,11 @@ class BaseHandConfig:
 class OrcaHandConfig(BaseHandConfig):
     """ORCA hand configuration layered on top of the shared base spec."""
 
+    # The calibration file in use: the hand folder's, or one given explicitly.
+    # Empty until the hand knows which hand it is.
     calibration_path: str = ""
+    # This physical hand's folder (see orca_core.hand_store); empty until known.
+    hand_dir: str = ""
     # None = auto-detect at connect time (probed and persisted to config.yaml).
     baudrate: int | None = None
     port: str = "auto"

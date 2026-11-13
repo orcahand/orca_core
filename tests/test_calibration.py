@@ -19,6 +19,7 @@ from orca_core.hardware.sensing.constants import (
 )
 from orca_core import MockOrcaHand
 from orca_core.utils import read_yaml, update_yaml
+from tests._helpers import hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-joint-right")
@@ -56,7 +57,7 @@ def check_calibrated(hand, calib_path):
 
 
 def test_calibration_yaml_missing(calib_dir):
-    calib_path = calib_dir / "calibration.yaml"
+    calib_path = hand_calibration_file(calib_dir)
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
 
@@ -279,7 +280,7 @@ def test_calibrate_with_joint_feedback_persists_encoder_block(calib_dir):
     )
     hand.calibrate(joint_encoder_client=encoder, persist=True)
 
-    calib_path = calib_dir / "calibration.yaml"
+    calib_path = hand_calibration_file(calib_dir)
     raw = read_yaml(str(calib_path))
     assert "joint_encoder_calibration" in raw
 
@@ -346,7 +347,7 @@ def test_calibrate_writes_encoder_block_only_for_configured_subset(calib_dir):
     )
     hand.calibrate(joint_encoder_client=encoder, persist=True)
 
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert set(raw["joint_encoder_calibration"].keys()) == {"ring_mcp", "ring_pip"}
 
 
@@ -424,7 +425,7 @@ def test_calibrate_partial_single_direction_preserves_motor_limits(calib_dir):
 def _seed_anchor_block(calib_dir, anchors):
     """Persist a joint_encoder_calibration block before the hand is built."""
     update_yaml(
-        str(calib_dir / "calibration.yaml"),
+        str(hand_calibration_file(calib_dir)),
         JOINT_ENCODER_CALIBRATION,
         {j: {"enc_at_anchor_count": c} for j, c in anchors.items()},
     )
@@ -465,7 +466,7 @@ def test_failed_anchor_sample_keeps_previous_anchor(calib_dir, monkeypatch):
         joint_encoder_client=object(), progress_callback=events.append, persist=True
     )
 
-    block = read_yaml(str(calib_dir / "calibration.yaml"))["joint_encoder_calibration"]
+    block = read_yaml(str(hand_calibration_file(calib_dir)))["joint_encoder_calibration"]
     assert block["ring_pip"]["enc_at_anchor_count"] == 222, "previous anchor lost"
     assert block["ring_mcp"]["enc_at_anchor_count"] == 5000, "anchor not re-sampled"
     assert (
@@ -511,7 +512,7 @@ def test_aborted_run_preserves_previous_anchors_on_disk(calib_dir, monkeypatch):
     kinds = [e["event"] for e in events]
     assert kinds[-1] == "calibration_aborted"
     assert kinds.count("step_done") == 1, "expected an abort right after step 1"
-    block = read_yaml(str(calib_dir / "calibration.yaml"))["joint_encoder_calibration"]
+    block = read_yaml(str(hand_calibration_file(calib_dir)))["joint_encoder_calibration"]
     assert block == {
         "ring_mcp": {"enc_at_anchor_count": 111},
         "ring_pip": {"enc_at_anchor_count": 222},
@@ -526,7 +527,7 @@ def test_aborted_run_preserves_previous_anchors_on_disk(calib_dir, monkeypatch):
 def test_run_calibration_persist_false_leaves_disk_untouched(calib_dir):
     from orca_core.maintenance.calibration_routine import run_calibration
 
-    calib_path = calib_dir / "calibration.yaml"
+    calib_path = hand_calibration_file(calib_dir)
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
     before = read_yaml(str(calib_path))
@@ -539,7 +540,7 @@ def test_run_calibration_persist_false_leaves_disk_untouched(calib_dir):
 
 
 def test_per_step_persist_preserves_unrelated_keys(calib_dir):
-    calib_path = calib_dir / "calibration.yaml"
+    calib_path = hand_calibration_file(calib_dir)
     update_yaml(str(calib_path), "operator_note", "check tendon 3")
 
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
@@ -713,7 +714,7 @@ def test_dead_slot_gets_no_anchor_and_loses_a_stale_one(calib_dir):
         if e["event"] == "encoder_anchor_failed" and "did not track" in e["error"]
     }
     assert rejected == {"wrist", "ring_pip"}
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert "ring_pip" not in raw["joint_encoder_calibration"]
 
 
@@ -807,7 +808,7 @@ def test_calibrate_stop_mid_drive_loop_persists_nothing(calib_dir):
     """A stop landing inside the hardstop-drive loop must abort BEFORE the
     encoder pass / limit capture samples — and persists — values taken at an
     arbitrary pose (the joints are not at their hardstops)."""
-    calib_path = calib_dir / "calibration.yaml"
+    calib_path = hand_calibration_file(calib_dir)
     hand = MockOrcaHand(config_path=str(calib_dir / "config.yaml"))
     hand.connect()
 
@@ -939,7 +940,7 @@ def test_measured_rom_persists_and_reloads(calib_dir):
     """The measured ROMs survive a round trip through calibration.yaml."""
     hand, _ = _calibrate_with_measured_roms(calib_dir, span_scale=0.95)
 
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert set(raw["joint_roms_measured"]) == set(
         hand.calibration.joint_roms_measured_dict
     )
@@ -990,7 +991,7 @@ def test_slot_going_dead_drops_its_stale_measured_rom(calib_dir):
 
     assert "ring_pip" not in hand.calibration.joint_roms_measured_dict
     assert "ring_pip" not in hand.calibration.joint_encoder_calibration_dict
-    assert "ring_pip" not in read_yaml(str(calib_dir / "calibration.yaml"))[
+    assert "ring_pip" not in read_yaml(str(hand_calibration_file(calib_dir)))[
         "joint_roms_measured"
     ]
     assert "middle_pip" in hand.calibration.joint_roms_measured_dict
@@ -1018,7 +1019,7 @@ def test_partial_recalibration_keeps_untouched_measured_roms(calib_dir):
     after = hand.calibration.joint_roms_measured_dict
     assert after["index_pip"] != before["index_pip"]
     assert after["middle_pip"] == before["middle_pip"]
-    assert read_yaml(str(calib_dir / "calibration.yaml"))["joint_roms_measured"][
+    assert read_yaml(str(hand_calibration_file(calib_dir)))["joint_roms_measured"][
         "middle_pip"
     ] == pytest.approx(before["middle_pip"])
 
@@ -1033,7 +1034,7 @@ def test_open_loop_calibration_records_no_measured_roms(calib_dir):
     assert hand.calibration.joint_roms_measured_dict == {}
     assert hand.effective_joint_roms_dict == hand.config.joint_roms_dict
     assert "joint_roms_measured" not in read_yaml(
-        str(calib_dir / "calibration.yaml")
+        str(hand_calibration_file(calib_dir))
     )
 
 

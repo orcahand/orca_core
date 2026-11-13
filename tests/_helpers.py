@@ -21,3 +21,18 @@ def wait_until(predicate, timeout: float = 1.0) -> None:
 def fake_serial_port(device: str, vid: int):
     """Build a fake serial.tools.list_ports.ListPortInfo-like object."""
     return SimpleNamespace(device=device, vid=vid, description="fake")
+
+
+def hand_calibration_file(config_dir):
+    """The calibration file a mock hand built from ``config_dir/config.yaml`` uses:
+    its hand folder's, never one beside the config. The folder is created so a
+    test can seed the file before building the hand."""
+    import os
+    from pathlib import Path
+
+    from orca_core import hand_store
+
+    name = os.path.basename(os.path.abspath(str(config_dir)))
+    folder = hand_store.mock_hand_dir(hand_store.mock_hand_id(name))
+    folder.mkdir(parents=True, exist_ok=True)
+    return Path(folder) / hand_store.CALIBRATION_FILE
