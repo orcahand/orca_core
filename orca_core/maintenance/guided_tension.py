@@ -96,11 +96,9 @@ SETTLE_DEG = 1.0
 REPEAT_TOL_DEG = 2.0
 AWAY_FRACTION = 0.25
 AWAY_MIN_DEG = 5.0
-# Sections of setup.yaml, and the files they were kept in before it.
+# Sections of setup.yaml.
 LAST_TENSION_SECTION = "last_tension"
-LAST_TENSION_FILE = "last_tension.yaml"
 PROGRESS_SECTION = "tension_progress"
-PROGRESS_FILE = "tension_progress.yaml"
 DEFAULT_HAND_KEY = "default"
 
 CONTINUE = "Continue"
@@ -351,7 +349,7 @@ def score(
 
 def read_last_tension(config: "OrcaHandConfig") -> Optional[dict]:
     """The last guided tension that reached 100 %, or ``None``."""
-    return read_section(config, LAST_TENSION_SECTION, LAST_TENSION_FILE) or None
+    return read_section(config, LAST_TENSION_SECTION) or None
 
 
 def record_hold_tension(config: "OrcaHandConfig") -> None:
@@ -377,7 +375,7 @@ def read_progress(
     ``best``. Slack: ``updated_at``, ``rounds`` and the last round's ``scores``
     per joint (``slack_deg``, ``fraction``, ``status``), kept in the record's
     ``slack`` part so the two scorings never see each other's numbers."""
-    hands = (read_section(config, PROGRESS_SECTION, PROGRESS_FILE) or {}).get("hands") or {}
+    hands = (read_section(config, PROGRESS_SECTION) or {}).get("hands") or {}
     record = hands.get(hand_key or DEFAULT_HAND_KEY) or {}
     if scoring == SCORING_SLACK:
         return record.get("slack") or None
@@ -395,7 +393,7 @@ def _write_progress(
     ``scoring=None`` drops the whole record. Read and written as one step, so
     another process saving progress to the same file is not overwritten."""
     if record is None and hand_key not in _progress_hands(
-        read_section(config, PROGRESS_SECTION, PROGRESS_FILE)
+        read_section(config, PROGRESS_SECTION)
     ):
         return
 
@@ -419,7 +417,7 @@ def _write_progress(
             hands.pop(hand_key, None)
         return {"hands": hands}
 
-    update_section(config, PROGRESS_SECTION, merged, PROGRESS_FILE)
+    update_section(config, PROGRESS_SECTION, merged)
 
 
 def _progress_hands(section: Optional[dict]) -> dict:

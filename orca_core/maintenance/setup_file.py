@@ -38,7 +38,7 @@ from typing import Any, Callable, Iterator, Optional
 import yaml
 
 from .. import hand_store
-from ..utils.utils import is_packaged_model_path, read_yaml, write_yaml_atomic
+from ..utils.utils import is_packaged_model_path, write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,8 @@ hold ``_lock`` and never hand out or mutate the cached dict itself."""
 
 
 def setup_dir(config) -> str:
-    """The folder holding ``config``'s hand's setup records: its hand folder,
-    else (a config built outside any hand) the folder of its calibration file."""
+    """The folder holding ``config``'s hand's setup records: its hand folder."""
     folder = getattr(config, "hand_dir", "") or ""
-    if not folder:
-        calibration = getattr(config, "calibration_path", "") or ""
-        folder = os.path.dirname(calibration) if calibration else ""
     # Never a relative folder: that would be wherever the process happens to run.
     if not folder or not os.path.isabs(folder):
         raise ValueError(
@@ -245,16 +241,6 @@ def _read(path: str, fresh: bool = False) -> dict:
     return data
 
 
-def _section(config, data: dict, name: str, legacy: Optional[str]) -> Any:
-    if name in data:
-        return copy.deepcopy(data[name])
-    if legacy:
-        old = os.path.join(setup_dir(config), legacy)
-        if os.path.exists(old):
-            return read_yaml(old)
-    return None
-
-
 def _store(path: str, data: dict, name: str, value: Any) -> Any:
     """Write ``value`` as section ``name``, archiving what drops out of it
     first so a crash between the two never loses a record. Returns what was kept."""
@@ -277,11 +263,10 @@ def _store(path: str, data: dict, name: str, value: Any) -> Any:
     return value
 
 
-def read_section(config, name: str, legacy: Optional[str] = None) -> Any:
-    """The ``name`` section, or the content of the ``legacy`` file beside it
-    while the section has never been written; None when neither exists."""
+def read_section(config, name: str) -> Any:
+    """The ``name`` section, or None when it has never been written."""
     with _lock:
-        return _section(config, _read(setup_path(config)), name, legacy)
+        return copy.deepcopy(_read(setup_path(config)).get(name))
 
 
 def write_section(config, name: str, value: Any) -> None:
@@ -291,15 +276,13 @@ def write_section(config, name: str, value: Any) -> None:
         _store(path, _read(path, fresh=True), name, value)
 
 
-def update_section(
-    config, name: str, fn: Callable[[Any], Any], legacy: Optional[str] = None
-) -> Any:
+def update_section(config, name: str, fn: Callable[[Any], Any]) -> Any:
     """Read the section, pass it to ``fn`` and store what ``fn`` returns, as
     one step under the lock; returns the stored value."""
     path = setup_path(config)
     with _locked(path):
         with _lock:
             data = _read(path, fresh=True)
-        value = fn(_section(config, data, name, legacy))
+        value = fn(copy.deepcopy(data.get(name)))
         with _lock:
             return _store(path, data, name, value)
