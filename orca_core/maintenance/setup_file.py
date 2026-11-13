@@ -6,21 +6,22 @@
 # See the LICENSE file at the root of this repository for full license information.
 # ==============================================================================
 
-"""``setup.yaml``: everything the setup routines record about a hand, in one
-file beside its ``calibration.yaml``.
+"""``setup.yaml``: what the setup routines recorded about a hand, in one file
+in the hand's own folder (see :mod:`orca_core.hand_store`).
 
-One top-level section per kind of record (``slack_tests``, ``sweeps``,
-``travel_baselines``, ``tension_progress``, ``last_tension``); records inside
-are keyed by the hand they were made on where that matters. Each write re-reads
+One top-level section per kind of record (``slack_tests``, ``tension_sweeps``,
+``travel_baselines``, ``tension_progress``, ``last_tension``). Each write re-reads
 the file and replaces it whole while holding a lock on ``setup.yaml.lock`` beside
 it, so two writers, in one process or several, never lose each other's sections.
 
-A section missing from ``setup.yaml`` is read from the separate file it used
-to live in (``legacy``), so existing data keeps working; the next write of
-that section moves it into ``setup.yaml``. The old file is left in place.
+The file keeps only the latest record of each kind, plus the one marked as the
+reference (the reference sweep, the active travel baseline). Every other record
+moves to ``archive/<section>/<name>.yaml`` as it drops out, one file per record,
+and every sweep's full data is archived as it is saved; :func:`read_archive`
+reads them back.
 
-The file grows with every recorded sweep, and the console reads sections on
-every hand-info refresh, so a parse is kept until the file changes on disk.
+The console reads sections on every hand-info refresh, so a parse is kept until
+the file changes on disk.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ from typing import Any, Callable, Iterator, Optional
 
 import yaml
 
-from ..utils.utils import read_yaml, write_yaml_atomic
+from .. import hand_store
+from ..utils.utils import is_packaged_model_path, read_yaml, write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,80 @@ write replaces the file, so the inode changes even where mtime is coarse. Caller
 hold ``_lock`` and never hand out or mutate the cached dict itself."""
 
 
+def setup_dir(config) -> str:
+    """The folder holding ``config``'s hand's setup records: its hand folder,
+    else (a config built outside any hand) the folder of its calibration file."""
+    folder = getattr(config, "hand_dir", "") or ""
+    if folder:
+        return folder
+    calibration = getattr(config, "calibration_path", "") or ""
+    if calibration:
+        return os.path.dirname(calibration)
+    raise ValueError(
+        "this config belongs to no hand folder yet: connect the hand (or pass a "
+        "hand's config) before reading or writing its setup records")
+
+
 def setup_path(config) -> str:
-    return os.path.join(os.path.dirname(config.calibration_path), SETUP_FILE)
+    return os.path.join(setup_dir(config), SETUP_FILE)
+
+
+def read_archive(config, section: str, name: Any = None) -> Any:
+    """Archived records of ``section`` for ``config``'s hand: ``{name: record}``,
+    or the one record called ``name`` (``None`` if there is none). Sections with
+    two kinds of record archive them as ``travel_baselines-snapshots`` and
+    ``travel_baselines-baselines``."""
+    return hand_store.read_archive(setup_dir(config), section, name)
+
+
+def _newest(records: dict) -> Optional[str]:
+    if not records:
+        return None
+    return max(records, key=lambda key: (str((records[key] or {}).get("recorded_at") or ""), str(key)))
+
+
+def _keep_latest(
+    value: Any,
+    collection: str,
+    *,
+    pinned: tuple = (),
+    also=None,
+    archive_all: bool = False,
+) -> "tuple[Any, list]":
+    """``value`` with ``value[collection]`` cut to its newest record plus the
+    ``pinned`` names (and ``also(records)``), and the records to archive."""
+    if not isinstance(value, dict) or not isinstance(value.get(collection), dict):
+        return value, []
+    records = value[collection]
+    keep = {_newest(records), *pinned}
+    if also is not None:
+        keep.add(also(records))
+    kept = {k: r for k, r in records.items() if k in keep}
+    archive = list(records.items()) if archive_all else [
+        (k, r) for k, r in records.items() if k not in keep]
+    return {**value, collection: kept}, archive
+
+
+def _newest_full_snapshot(records: dict) -> Optional[str]:
+    return _newest({k: r for k, r in records.items() if not (r or {}).get("partial")})
+
+
+def _prune(name: str, value: Any) -> "tuple[Any, list]":
+    """``value`` as setup.yaml keeps it, and ``[(archive section, name, record)]``."""
+    if name == "slack_tests":
+        value, out = _keep_latest(value, "tests")
+        return value, [(name, k, r) for k, r in out]
+    if name == "tension_sweeps":
+        reference = value.get("reference") if isinstance(value, dict) else None
+        value, out = _keep_latest(value, "sweeps", pinned=(reference,), archive_all=True)
+        return value, [(name, k, r) for k, r in out]
+    if name == "travel_baselines":
+        active = value.get("active") if isinstance(value, dict) else None
+        value, baselines = _keep_latest(value, "baselines", pinned=(active,))
+        value, snapshots = _keep_latest(value, "snapshots", also=_newest_full_snapshot)
+        return value, ([(f"{name}-baselines", k, r) for k, r in baselines]
+                       + [(f"{name}-snapshots", k, r) for k, r in snapshots])
+    return value, []
 
 
 class _Writer:
@@ -174,19 +248,32 @@ def _section(config, data: dict, name: str, legacy: Optional[str]) -> Any:
     if name in data:
         return copy.deepcopy(data[name])
     if legacy:
-        old = os.path.join(os.path.dirname(config.calibration_path), legacy)
+        old = os.path.join(setup_dir(config), legacy)
         if os.path.exists(old):
             return read_yaml(old)
     return None
 
 
-def _store(path: str, data: dict, name: str, value: Any) -> None:
+def _store(path: str, data: dict, name: str, value: Any) -> Any:
+    """Write ``value`` as section ``name``, archiving what drops out of it
+    first so a crash between the two never loses a record. Returns what was kept."""
+    if is_packaged_model_path(path):
+        raise PermissionError(
+            f"refusing to write {path}: setup records belong in the hand's own folder, "
+            "never inside the installed package")
     data = dict(data)
     if value is None:
         data.pop(name, None)
     else:
+        value, archive = _prune(name, value)
+        folder = os.path.dirname(path)
+        for section, record_name, record in archive:
+            hand_store.archive_record(folder, section, record_name, record)
         data[name] = value
-    write_yaml_atomic(path, data)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    write_yaml_atomic(path, {hand_store.SCHEMA_KEY: hand_store.SCHEMA,
+                             **{k: v for k, v in data.items() if k != hand_store.SCHEMA_KEY}})
+    return value
 
 
 def read_section(config, name: str, legacy: Optional[str] = None) -> Any:
@@ -214,5 +301,4 @@ def update_section(
             data = _read(path, fresh=True)
         value = fn(_section(config, data, name, legacy))
         with _lock:
-            _store(path, data, name, value)
-        return value
+            return _store(path, data, name, value)

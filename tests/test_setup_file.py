@@ -71,7 +71,7 @@ def test_a_writer_waits_for_another_process_and_keeps_its_section(tmp_path):
         setup_file._unlock(other.fileno())
     writer.join(timeout=5)
 
-    assert read_yaml(path) == {"sweeps": {"s": 1}, "slack_tests": {"t": 1}}
+    assert read_yaml(path) == {"schema": 1, "sweeps": {"s": 1}, "slack_tests": {"t": 1}}
 
 
 def test_a_lock_held_too_long_raises_instead_of_waiting_forever(tmp_path, monkeypatch):
@@ -164,4 +164,4 @@ def test_writers_in_separate_processes_lose_no_update(tmp_path):
     assert all(w.wait(timeout=60) == 0 for w in workers)
 
     assert read_yaml(setup_file.setup_path(config)) == {
-        "count": 80, "sweeps": True, "slack_tests": True}
+        "schema": 1, "count": 80, "sweeps": True, "slack_tests": True}
