@@ -45,7 +45,6 @@ from typing import Callable, Dict, Optional, TYPE_CHECKING
 
 import numpy as np
 
-from .. import calibration_store
 from ..calibration import CalibrationResult, JointEncoderCal
 from ..constants import (
     CURRENT_BASED_POSITION,
@@ -330,19 +329,6 @@ def _build_calibration_result(
         },
     )
     return dataclasses.replace(result, calibrated=result._all_motors_ready())
-
-
-def persist_calibration(
-    calibration_path: str, *, result: CalibrationResult, include_encoder: bool
-) -> None:
-    """Persist ``result``'s measurements to ``calibration.yaml`` in one atomic replace.
-
-    The whole document is rewritten at once so an interrupted write can never
-    leave the file truncated or with mismatched keys. Keys not owned by the
-    calibration routine are preserved. Ratios are not stored: they are derived
-    from the limits whenever the file is loaded.
-    """
-    calibration_store.save(calibration_path, result, include_encoder=include_encoder)
 
 
 def _skips_torque_release(hand: "OrcaHand", motor_id: int) -> bool:
