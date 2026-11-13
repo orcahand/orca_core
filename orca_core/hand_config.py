@@ -14,7 +14,6 @@ import numbers
 import os
 import re
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Dict, List, Literal, Optional
 
 from .constants import (
@@ -279,18 +278,13 @@ def load_config(
     )[1]
 
 
-def _read_only(value):
-    if isinstance(value, dict):
-        return MappingProxyType({key: _read_only(item) for key, item in value.items()})
-    return value
-
-
 @functools.lru_cache(maxsize=None)
-def _default_guided_tension_currents():
-    """The packaged ``shared.yaml``'s ``guided_tension_currents``, read-only: the
-    hold currents a config whose folder has no ``shared.yaml`` falls back to."""
+def _default_guided_tension_currents() -> Dict:
+    """The packaged ``shared.yaml``'s ``guided_tension_currents``: the hold
+    currents a config with no ``shared.yaml`` under it falls back to. Cached and
+    shared, so never hand it out without copying it."""
     shared = _read_mapping(os.path.join(_get_models_dir(), LATEST_VERSION, SHARED_CONFIG_FILE))
-    return _read_only(_parse_guided_tension_currents(shared[GUIDED_TENSION_CURRENTS]))
+    return _parse_guided_tension_currents(shared[GUIDED_TENSION_CURRENTS])
 
 
 LOCAL_CONFIG_FILE = "local_config.yaml"

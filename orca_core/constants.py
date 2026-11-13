@@ -201,10 +201,12 @@ DYNAMIXEL_RETURN_DELAY_TIME_US = 20
 
 
 def __getattr__(name: str):
-    # DEFAULT_GUIDED_TENSION_CURRENTS: a read-only view of models/v2/shared.yaml's
-    # guided_tension_currents, read on first use.
+    # DEFAULT_GUIDED_TENSION_CURRENTS: models/v2/shared.yaml's guided_tension_currents,
+    # a fresh plain copy on every access, so changing it never reaches a hand's config.
     if name == "DEFAULT_GUIDED_TENSION_CURRENTS":
+        import copy
+
         from .hand_config import _default_guided_tension_currents
 
-        return _default_guided_tension_currents()
+        return copy.deepcopy(_default_guided_tension_currents())
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

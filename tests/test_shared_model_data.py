@@ -11,7 +11,6 @@ config as its old, complete self.
 import dataclasses
 import math
 import os
-from types import MappingProxyType
 
 import pytest
 import yaml
@@ -112,18 +111,30 @@ def test_the_models_hold_only_what_differs():
             assert key not in own, (model, key)
 
 
-# --- the read-only view of the holds ------------------------------------------
+# --- the packaged holds as a constant ------------------------------------------
 
 
-def test_default_guided_tension_currents_is_a_read_only_view_of_shared_yaml():
-    from orca_core.constants import DEFAULT_GUIDED_TENSION_CURRENTS
+def test_default_guided_tension_currents_are_shared_yamls_as_plain_dicts():
+    import copy
+    import json
+    import pickle
+
+    from orca_core.constants import DEFAULT_GUIDED_TENSION_CURRENTS as defaults
 
     shared = _read(os.path.join(V2_MODELS, "shared.yaml"))["guided_tension_currents"]
-    assert {f: {"hold": dict(e["hold"])} for f, e in DEFAULT_GUIDED_TENSION_CURRENTS.items()} == shared
-    assert {f: dict(e["hold"]) for f, e in shared.items()} == HOLDS_0_13
-    assert isinstance(DEFAULT_GUIDED_TENSION_CURRENTS, MappingProxyType)
-    with pytest.raises(TypeError):
-        DEFAULT_GUIDED_TENSION_CURRENTS["dynamixel"]["hold"]["abd"] = 1
+    assert defaults == shared
+    assert {f: e["hold"] for f, e in shared.items()} == HOLDS_0_13
+    assert type(defaults) is dict and type(defaults["dynamixel"]["hold"]) is dict
+    assert copy.deepcopy(defaults) == pickle.loads(pickle.dumps(defaults)) == json.loads(json.dumps(defaults))
+    assert yaml.safe_load(yaml.safe_dump(defaults)) == defaults
+
+
+def test_changing_the_default_guided_tension_currents_reaches_no_config(right):
+    from orca_core import constants
+
+    constants.DEFAULT_GUIDED_TENSION_CURRENTS["dynamixel"]["hold"]["abd"] = 1
+    assert constants.DEFAULT_GUIDED_TENSION_CURRENTS["dynamixel"]["hold"]["abd"] == 200
+    assert right.guided_tension_currents_for("dynamixel")["hold"]["abd"] == 200
 
 
 def test_a_config_with_no_shared_yaml_still_gets_the_packaged_holds(tmp_path):
