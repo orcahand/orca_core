@@ -1,5 +1,6 @@
 # Defaults for every v2 model. Each model's config.yaml is laid over this file:
 # its values win, and mappings merge key by key, so a model lists only what differs.
+# The per-joint maps below keep only the joints in a model's joint_ids.
 
 # Joint ranges in degrees, for every hardware version. A v2.1.1 hand also takes
 # joint_roms_v211 (only the joints that differ) when one is set.

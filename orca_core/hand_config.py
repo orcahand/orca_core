@@ -55,7 +55,7 @@ from .hardware.sensing.constants import (
     DEFAULT_FINGER_TO_SENSOR_ID,
 )
 from .joint_position import OrcaJointPositions
-from .utils.utils import _get_models_dir, get_model_path, read_yaml, write_yaml_atomic
+from .utils.utils import _get_models_dir, get_model_path, is_packaged_model_path, read_yaml, write_yaml_atomic
 from .version import LATEST_VERSION
 
 
@@ -227,13 +227,23 @@ def _canonical_joint_to_motor_map(
 
 
 SHARED_CONFIG_FILE = "shared.yaml"
+# shared.yaml maps keyed by joint name. A merge cannot delete a key, so each is
+# trimmed to the model's joint_ids: a model without a joint drops its entries.
+_SHARED_JOINT_MAPS = (JOINT_ROM_DICT, JOINT_ROMS_V211, JOINT_MOTOR_TRAVEL_V21)
 
 
-def shared_config_path(config_path: str) -> str:
-    """``shared.yaml`` in the parent of the model folder holding ``config_path``:
-    the defaults every model in that folder builds on (``models/v2/shared.yaml``)."""
-    model_dir = os.path.dirname(os.path.abspath(config_path))
-    return os.path.join(os.path.dirname(model_dir), SHARED_CONFIG_FILE)
+def shared_config_path(config_path: str) -> str | None:
+    """The ``shared.yaml`` the config at ``config_path`` builds on, or None.
+
+    Only a packaged model has one: its generation's ``models/<version>/shared.yaml``,
+    found through symlinks. A config anywhere else is standalone and complete,
+    whatever ``shared.yaml`` happens to sit near it.
+    """
+    real = os.path.realpath(config_path)
+    if not is_packaged_model_path(real):
+        return None
+    path = os.path.join(os.path.dirname(os.path.dirname(real)), SHARED_CONFIG_FILE)
+    return path if is_packaged_model_path(path) and os.path.isfile(path) else None
 
 
 def _deep_merge(base: Dict, over: Dict) -> Dict:
@@ -258,9 +268,15 @@ def _load_config_documents(config_path: str) -> tuple[Dict, Dict]:
     """``(config.yaml as written, the effective document)`` for ``config_path``."""
     own = _read_mapping(config_path)
     shared_path = shared_config_path(config_path)
-    if not os.path.isfile(shared_path):
+    if shared_path is None:
         return own, own
-    return own, _deep_merge(_read_mapping(shared_path), own)
+    shared = _read_mapping(shared_path)
+    joint_ids = own.get(JOINT_IDS)
+    if isinstance(joint_ids, list):
+        for key in _SHARED_JOINT_MAPS:
+            if isinstance(shared.get(key), dict):
+                shared[key] = {j: v for j, v in shared[key].items() if j in joint_ids}
+    return own, _deep_merge(shared, own)
 
 
 def load_config(
@@ -268,11 +284,12 @@ def load_config(
     model_version: str | None = None,
     model_name: str | None = None,
 ) -> Dict:
-    """The effective yaml document of a model: ``shared.yaml`` from the model
-    folder's parent deep-merged under its ``config.yaml``, the model's values
-    winning. A config with no ``shared.yaml`` there (a v1 model, or a config
-    kept outside a models folder) is used as written and must be complete.
-    Writing this document out gives a standalone copy of the model."""
+    """The effective yaml document of a model: for a packaged v2 model, its
+    generation's ``shared.yaml`` deep-merged under its ``config.yaml``, the
+    model's values winning and the shared per-joint maps trimmed to its
+    ``joint_ids``. Any other config (a v1 model, a config outside the package)
+    is used as written and must be complete. Writing this document out gives a
+    standalone copy of the model."""
     return _load_config_documents(
         _resolve_config_path(config_path, model_version=model_version, model_name=model_name)
     )[1]
@@ -903,12 +920,11 @@ class OrcaHandConfig(BaseHandConfig):
                 f"config.yaml at {resolved_config_path} is empty. Restore it "
                 "from the bundled model or your hand's backup."
             )
-        if JOINT_ROM_DICT not in config and not os.path.isfile(shared_config_path(resolved_config_path)):
+        if JOINT_ROM_DICT not in config:
             raise HandConfigValidationError(
-                f"{resolved_config_path} sets no joint_roms and there is no "
-                f"{shared_config_path(resolved_config_path)} to take them from. A model copied out of "
-                "the package needs either its generation's shared.yaml in the folder above the model "
-                "folder, or a standalone config.yaml: write out orca_core.load_config(<packaged config>)."
+                f"{resolved_config_path} sets no joint_roms. Only a packaged model takes them from "
+                "its generation's shared.yaml; a config outside the package must be complete: "
+                "write out orca_core.load_config(<packaged config>)."
             )
 
         kwargs = {

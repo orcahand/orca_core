@@ -151,6 +151,15 @@ def test_a_config_with_no_shared_yaml_still_gets_the_packaged_holds(tmp_path):
 # --- load_config ---------------------------------------------------------------
 
 
+@pytest.fixture
+def packaged_tree(tmp_path, monkeypatch):
+    """``tmp_path/models`` standing in for the package's models folder."""
+    from orca_core.utils import utils
+
+    monkeypatch.setattr(utils, "_get_models_dir", lambda: str(tmp_path / "models"))
+    return tmp_path
+
+
 def _tree(tmp_path, shared, model):
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "shared.yaml").write_text(yaml.safe_dump(shared, sort_keys=False))
@@ -160,7 +169,8 @@ def _tree(tmp_path, shared, model):
     return str(path)
 
 
-def test_shared_yaml_merges_under_the_model_and_the_model_wins(tmp_path):
+def test_shared_yaml_merges_under_the_model_and_the_model_wins(packaged_tree):
+    tmp_path = packaged_tree
     path = _tree(
         tmp_path,
         {"a": 1, "roms": {"x": [0, 1], "y": [0, 2]}, "nested": {"f": {"hold": {"abd": 1, "mcp": 2}}}},
@@ -177,19 +187,74 @@ def test_shared_yaml_merges_under_the_model_and_the_model_wins(tmp_path):
     assert list(merged["roms"]) == ["x", "y"], "a model's override keeps the shared order"
 
 
-def test_a_model_folders_own_shared_yaml_sets_its_holds(tmp_path):
-    doc = load_config(os.path.join(V2_MODELS, "orcahand-right", "config.yaml"))
-    shared = {k: doc.pop(k) for k in ("joint_roms", "guided_tension_currents")}
+def test_a_generations_shared_yaml_sets_its_holds(packaged_tree):
+    doc = _read(os.path.join(V2_MODELS, "orcahand-right", "config.yaml"))
+    shared = _read(os.path.join(V2_MODELS, "shared.yaml"))
     shared["guided_tension_currents"]["feetech"]["hold"]["mcp"] = 333
-    config = OrcaHandConfig.from_config_path(config_path=_tree(tmp_path, shared, doc))
+    config = OrcaHandConfig.from_config_path(config_path=_tree(packaged_tree, shared, doc))
     assert config.joint_roms_dict["wrist"] == [-64.46, 38.51]
     assert config.guided_tension_currents_for("feetech")["hold"]["mcp"] == 333
+
+
+def _without_wrist(doc):
+    doc["joint_ids"].remove("wrist")
+    doc["motor_ids"].remove(abs(doc["joint_to_motor_map"]["wrist"]))
+    for key in ("joint_to_motor_map", "joint_to_motor_map_v21", "neutral_position"):
+        doc.get(key, {}).pop("wrist", None)
+    for key in ("calibration_sequence", "manual_calibration_sequence"):
+        for step in doc.get(key, []):
+            step["joints"].pop("wrist", None)
+        doc[key] = [step for step in doc.get(key, []) if step["joints"]]
+    return doc
+
+
+def test_a_model_without_a_joint_drops_the_shared_entries_for_it(packaged_tree):
+    shared = _read(os.path.join(V2_MODELS, "shared.yaml"))
+    shared["joint_roms_v211"] = {"wrist": [-1, 1], "index_mcp": [-2, 2]}
+    doc = _without_wrist(_read(os.path.join(V2_MODELS, "orcahand-right", "config.yaml")))
+    path = _tree(packaged_tree, shared, doc)
+    merged = load_config(path)
+    for key in ("joint_roms", "joint_roms_v211", "joint_motor_travel_v21"):
+        assert "wrist" not in merged[key], key
+    assert list(merged["joint_roms"]) == [j for j in shared["joint_roms"] if j != "wrist"]
+    assert merged["joint_roms_v211"] == {"index_mcp": [-2, 2]}
+    config = OrcaHandConfig.from_config_path(config_path=path)
+    config.validate()
+    assert "wrist" not in config.joint_ids and "wrist" not in config.joint_roms_dict
+
+
+def test_a_symlinked_packaged_config_takes_its_shared_yaml(tmp_path):
+    source = os.path.join(V2_MODELS, "orcahand-left", "config.yaml")
+    (tmp_path / "hand").mkdir()
+    link = tmp_path / "hand" / "config.yaml"
+    link.symlink_to(source)
+    assert shared_config_path(str(link)) == os.path.realpath(os.path.join(V2_MODELS, "shared.yaml"))
+    assert load_config(str(link)) == load_config(source)
+    OrcaHandConfig.from_config_path(config_path=str(link)).validate()
+
+
+def test_a_shared_yaml_outside_the_package_is_never_merged(tmp_path):
+    """A shared.yaml near a config the package does not ship (an unrelated file,
+    or a generation folder copied out) has no effect: such a config is complete."""
+    root = tmp_path / "robots"
+    (root / "hand").mkdir(parents=True)
+    (root / "shared.yaml").write_text(yaml.safe_dump({"joint_roms": {"index_mcp": [0, 1]}, "max_current": 1}))
+    source = os.path.join(V2_MODELS, "orcahand-right", "config.yaml")
+    copy_model_config(source, root / "hand" / "config.yaml")
+    path = str(root / "hand" / "config.yaml")
+    assert shared_config_path(path) is None
+    assert load_config(path) == load_config(source)
+
+    (root / "hand" / "config.yaml").write_text(open(source, encoding="utf-8").read())
+    (root / "shared.yaml").write_text(open(os.path.join(V2_MODELS, "shared.yaml"), encoding="utf-8").read())
+    with pytest.raises(HandConfigValidationError, match="sets no joint_roms"):
+        OrcaHandConfig.from_config_path(config_path=path)
 
 
 @pytest.mark.parametrize("model", ["orcahand-left", "orcahand-right"])
 def test_v1_models_are_read_as_written(model):
     path = os.path.join(V1_MODELS, model, "config.yaml")
-    assert not os.path.exists(shared_config_path(path))
+    assert shared_config_path(path) is None
     assert load_config(path) == _read(path)
 
 
@@ -213,9 +278,9 @@ def test_a_slim_config_copied_alone_is_refused_with_the_way_out(tmp_path):
         OrcaHandConfig.from_config_path(config_path=str(tmp_path / "config.yaml"))
 
 
-def test_a_shared_yaml_that_is_not_a_mapping_is_refused(tmp_path):
-    path = _tree(tmp_path, {}, {"a": 1})
-    (tmp_path / "models" / "shared.yaml").write_text("- a\n- b\n")
+def test_a_shared_yaml_that_is_not_a_mapping_is_refused(packaged_tree):
+    path = _tree(packaged_tree, {}, {"a": 1})
+    (packaged_tree / "models" / "shared.yaml").write_text("- a\n- b\n")
     with pytest.raises(HandConfigValidationError, match="mapping"):
         load_config(path)
 

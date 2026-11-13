@@ -8,9 +8,9 @@ This file defines parameters crucial for the hand's operation, including communi
 
 Values that are the same for every v2 model live once, in `orca_core/models/v2/shared.yaml`: the joint ranges (`joint_roms`), the guided-tensioning hold currents per motor family (`guided_tension_currents`), the v2.1 calibration currents (`calibration_current_v21`) and the v2.1 motor travel baseline (`joint_motor_travel_v21`). A model's `config.yaml` lists only what differs from it.
 
-When a config is loaded, the `shared.yaml` in the folder above the model folder is merged under it: a value in `config.yaml` wins, and a mapping merges key by key, so a model can change one joint's range or add one joint's hold current and keep the rest. `orca_core.load_config(path)` returns the merged document.
+When a packaged v2 model is loaded (also through a symlink), its generation's `shared.yaml` is merged under it: a value in `config.yaml` wins, and a mapping merges key by key, so a model can change one joint's range or add one joint's hold current and keep the rest. A merge cannot remove a key, so the per-joint maps (`joint_roms`, `joint_roms_v211`, `joint_motor_travel_v21`) are trimmed to the model's `joint_ids`: a model without a wrist simply leaves it out of `joint_ids`. `orca_core.load_config(path)` returns the merged document.
 
-A config with no `shared.yaml` in the folder above it (a v1 model, or a config kept somewhere else) is read as written and must be complete. To use a v2 model outside the package, write out its merged document:
+Every other config (a v1 model, or any config outside the package) is read as written and must be complete; a `shared.yaml` near it is never merged, even a copy of the package's. To use a v2 model outside the package, write out its merged document:
 
 ```python
 import yaml
