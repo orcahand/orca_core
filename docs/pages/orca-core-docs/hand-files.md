@@ -41,7 +41,8 @@ each time the file is loaded, so a calibration made before a change of joint ran
 Each joint also records which motor and directions its limits were measured with; if the model's motor mapping has
 changed since, those joints read as uncalibrated until you calibrate them again.
 
-A new calibration keeps the one it replaces as `calibration.previous.yaml`. `hand.restore_previous_calibration()` swaps
+A new calibration keeps the one it replaces as `calibration.previous.yaml`, unless that one is a run stopped before it
+finished, which is simply replaced. `hand.restore_previous_calibration()` swaps
 the two back, and `hand.calibration_info` gives the file in use, its `calibrated_at` and `sequence`, and the previous
 one's. A calibration run says which file it wrote.
 

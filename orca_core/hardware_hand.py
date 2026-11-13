@@ -718,16 +718,18 @@ class OrcaHand(BaseHand):
         include_encoder: bool,
         start_run: bool = False,
         stamp: bool = False,
+        in_progress: bool | None = None,
     ) -> str:
         """Write ``result``'s measurements to this hand's calibration file and
         return its path. ``start_run`` marks a new calibration: the replaced
         file becomes the previous one and the sequence goes up. ``stamp`` sets
-        ``calibrated_at`` to now (a calibration run's later writes)."""
+        ``calibrated_at`` to now (a calibration run's later writes).
+        ``in_progress`` marks a run's writes before its last."""
         path = self._calibration_file(create=True)
         doc = calibration_store.save(
             path, result, include_encoder=include_encoder,
             fingerprint=joint_fingerprints(self.config),
-            start_run=start_run, stamp=stamp,
+            start_run=start_run, stamp=stamp, in_progress=in_progress,
         )
         self._calibration_doc_stamp = calibration_store.stamp_of(doc)
         return path

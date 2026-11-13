@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 SEQUENCE = "sequence"
 CALIBRATED_AT = "calibrated_at"
 SOURCE = "source"
+# Set while a calibration run is still writing; left set by a run that stopped.
+IN_PROGRESS = "in_progress"
 KIND = "calibration"
 
 
@@ -179,14 +181,17 @@ def save(
     fingerprint: Optional[Mapping[str, str]] = None,
     start_run: bool = False,
     stamp: bool = False,
+    in_progress: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Write ``result``'s measurements to ``path`` in one atomic replace.
 
     Keys this module does not own are kept. ``start_run`` marks the first
     write of a new calibration: the file it replaces becomes
-    ``calibration.previous.yaml`` and ``sequence`` goes up by one. ``stamp``
-    (implied by ``start_run``) sets ``calibrated_at`` to now. Returns the
-    document written.
+    ``calibration.previous.yaml`` and ``sequence`` goes up by one, except a
+    run that stopped before it finished, which is replaced and not kept.
+    ``stamp`` (implied by ``start_run``) sets ``calibrated_at`` to now.
+    ``in_progress`` sets or clears the mark of a run still writing (``None``
+    leaves it). Returns the document written.
 
     Raises:
         NewerCalibrationError: a newer orca_core wrote ``path`` and this is
@@ -197,7 +202,7 @@ def save(
         check_writable(path)
     doc = read_document(path)
     if start_run:
-        if os.path.exists(path):
+        if os.path.exists(path) and not doc.get(IN_PROGRESS):
             with open(path, encoding="utf-8") as file:
                 write_text_atomic(previous_path(path), file.read())
         doc[SEQUENCE] = stamp_of(doc)["sequence"] + 1
@@ -208,6 +213,10 @@ def save(
     doc.update(measurements(result, include_encoder=include_encoder))
     if fingerprint is not None:
         doc[FINGERPRINT] = dict(sorted(fingerprint.items()))
+    if in_progress:
+        doc[IN_PROGRESS] = True
+    elif in_progress is not None:
+        doc.pop(IN_PROGRESS, None)
     write_doc(path, doc)
     return doc
 

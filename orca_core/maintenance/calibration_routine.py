@@ -1249,7 +1249,8 @@ def _drive_calibration(
         if persist:
             path = hand._save_calibration(
                 result, include_encoder=encoder_pass_active,
-                start_run=not saved_to, stamp=True)
+                start_run=not saved_to, stamp=True,
+                in_progress=drive_current_measured is None)
             if not saved_to:
                 saved_to.append(path)
                 _report(progress_callback, "calibration_file", logging.INFO,

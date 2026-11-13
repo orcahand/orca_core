@@ -212,6 +212,25 @@ class TestAnUnreadableFileIsSetAside:
         assert hand.calibrated
 
 
+class TestAStoppedCalibration:
+    def test_a_retry_keeps_the_last_complete_calibration_as_previous(self, make_hand):
+        hand = make_hand(board())
+        hand.calibrate(persist=True)
+
+        def stop_after_a_step(event):
+            if event["event"] == "step_done":
+                hand._task_stop_event.set()
+
+        hand.calibrate(persist=True, progress_callback=stop_after_a_step)
+        hand._task_stop_event.clear()
+        assert read_yaml(hand.config.calibration_path)["in_progress"] is True
+        hand.calibrate(persist=True)
+
+        info = hand.calibration_info
+        assert (info["sequence"], info["previous"]["sequence"]) == (3, 1)
+        assert "in_progress" not in read_yaml(hand.config.calibration_path)
+
+
 class TestACalibrationFromANewerOrcaCore:
     def test_is_not_used_or_changed_until_the_hand_is_calibrated(self, make_hand, caplog):
         from orca_core.calibration_store import NewerCalibrationError
