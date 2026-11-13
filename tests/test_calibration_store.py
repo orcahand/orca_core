@@ -210,6 +210,19 @@ class TestOneCalibrationOfUndo:
         assert hand.calibration_info["sequence"] == 2
         assert hand.motor_limits_dict[3] != [0.1, 0.9]
 
+    def test_a_calibration_put_in_force_while_connected_rechecks_wrap_offsets(self, model_dir):
+        """Offsets judged against one calibration's limits can be a full turn
+        wrong against another's."""
+        import math
+
+        hand = self.calibrated_hand(model_dir())
+        hand.calibrate(persist=True)
+        hand.calibrate(persist=True, joints=["index_mcp"])
+        hand._wrap_offsets_dict = {m: 2 * math.pi for m in hand.config.motor_ids}
+        hand.restore_previous_calibration()
+        hand.get_joint_position()
+        assert set(hand._wrap_offsets_dict.values()) == {0.0}
+
     def test_with_nothing_to_restore_it_says_so(self, model_dir):
         hand = self.calibrated_hand(model_dir())
         hand.calibrate(persist=True)
