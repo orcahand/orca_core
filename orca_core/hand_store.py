@@ -26,8 +26,8 @@ reports neither (a plain USB adapter) is filed under ``noboard-<model>``, so
 every such hand of one model shares a folder. Mock hands get a folder in a
 temporary directory and never touch ``ORCA_HOME``.
 
-Every file written here carries ``schema:``; :func:`read_doc` migrates older
-documents forward in code, and every write replaces the file atomically.
+Every file written here carries ``schema:``, which :func:`read_doc` checks,
+and every write replaces the file atomically.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .utils.utils import read_yaml, write_yaml_atomic
 
@@ -165,51 +165,26 @@ def mock_hand_dir(hand_id: str) -> Path:
 
 # --- documents ------------------------------------------------------------------
 
-Migration = Callable[[Dict[str, Any]], Dict[str, Any]]
-MIGRATIONS: Dict[str, Dict[int, Migration]] = {}
-"""Per document kind, ``{from_schema: fn}`` taking a document one schema
-forward. A file without ``schema:`` is schema 0."""
-
-
-def register_migration(kind: str, from_schema: int, fn: Migration) -> None:
-    MIGRATIONS.setdefault(kind, {})[from_schema] = fn
-
-
-def migrate(kind: str, doc: Dict[str, Any], *, path: Any = None) -> Dict[str, Any]:
-    """``doc`` brought forward to :data:`SCHEMA` by the registered migrations.
+def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
+    """The ``kind`` document at ``path``; ``{}`` when absent.
 
     A document from a newer orca_core than this one is returned as it is, with a
     warning: its readers here may miss what it added.
     """
+    raw = read_yaml(str(path)) or {}
+    if not isinstance(raw, dict):
+        logger.warning("%s is not a mapping; ignoring it", path)
+        return {}
     try:
-        version = int(doc.get(SCHEMA_KEY, 0) or 0)
+        version = int(raw.get(SCHEMA_KEY, 0) or 0)
     except (TypeError, ValueError):
         version = 0
     if version > SCHEMA:
         logger.warning(
             "%s was written with schema %d by a newer orca_core (this one reads %d); "
-            "reading it as far as this version understands it", path or kind, version, SCHEMA)
-        return doc
-    steps = MIGRATIONS.get(kind, {})
-    while version < SCHEMA:
-        step = steps.get(version)
-        if step is not None:
-            doc = step(dict(doc))
-        version += 1
-    doc = dict(doc)
-    doc[SCHEMA_KEY] = SCHEMA
-    return doc
-
-
-def read_doc(path: os.PathLike | str, kind: str) -> Dict[str, Any]:
-    """The document at ``path`` migrated to the current schema; ``{}`` when absent."""
-    raw = read_yaml(str(path)) or {}
-    if not isinstance(raw, dict):
-        logger.warning("%s is not a mapping; ignoring it", path)
-        return {}
-    if not raw:
-        return {}
-    return migrate(kind, raw, path=path)
+            "reading it as far as this version understands it", path, version, SCHEMA)
+    # A schema change adds its step here: bring a ``kind`` document of ``version`` forward.
+    return raw
 
 
 def write_doc(path: os.PathLike | str, doc: Dict[str, Any]) -> Path:

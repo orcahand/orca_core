@@ -79,7 +79,7 @@ def recover_swap(path: str) -> None:
 
 
 def read_document(path: Optional[str]) -> Dict[str, Any]:
-    """The calibration document at ``path``, migrated; ``{}`` when there is none."""
+    """The calibration document at ``path``; ``{}`` when there is none."""
     if not path:
         return {}
     try:

@@ -53,13 +53,6 @@ class TestDocuments:
     def test_an_absent_document_reads_empty(self, tmp_path):
         assert hand_store.read_doc(tmp_path / "missing.yaml", "hand") == {}
 
-    def test_a_document_without_schema_is_migrated_forward(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(hand_store, "MIGRATIONS", {})
-        hand_store.register_migration("thing", 0, lambda d: {**d, "upgraded": True})
-        (tmp_path / "old.yaml").write_text("a: 1\n")
-        assert hand_store.read_doc(tmp_path / "old.yaml", "thing") == {
-            "a": 1, "upgraded": True, "schema": 1}
-
     def test_a_newer_schema_is_read_as_is_and_said(self, tmp_path, caplog):
         (tmp_path / "new.yaml").write_text("schema: 7\nfuture: yes\n")
         doc = hand_store.read_doc(tmp_path / "new.yaml", "hand")
