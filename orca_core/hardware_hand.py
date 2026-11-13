@@ -380,8 +380,10 @@ class OrcaHand(BaseHand):
         :attr:`calibration_info`.
 
         Raises:
-            RuntimeError: the board held no calibration at connect.
+            RuntimeError: the board held no calibration at connect, or a task
+                or the joint loop is running.
         """
+        self._refuse_while_busy("adopt_board_calibration")
         store = self._board_store
         if store is None or not store.calibration.get("motor_limits"):
             raise RuntimeError("this hand's board held no calibration when it connected")
@@ -420,7 +422,9 @@ class OrcaHand(BaseHand):
 
         Raises:
             ValueError: ``version`` is not a non-negative whole number.
+            RuntimeError: a task or the joint loop is running.
         """
+        self._refuse_while_busy("set_hardware_version")
         if version is not None and (
             isinstance(version, bool) or not isinstance(version, int) or version < 0
         ):
@@ -843,7 +847,9 @@ class OrcaHand(BaseHand):
 
         Raises:
             FileNotFoundError: no previous calibration is kept for this hand.
+            RuntimeError: a task or the joint loop is running.
         """
+        self._refuse_while_busy("restore_previous_calibration")
         path = self._calibration_file()
         if not path:
             raise FileNotFoundError("this hand has no calibration file yet")
@@ -2161,6 +2167,14 @@ class OrcaHand(BaseHand):
 
     def _refuse_routine_while_loop_runs(self, routine: str) -> None:
         """Maintenance routines check this first; only hands with a joint loop refuse."""
+
+    def _refuse_while_busy(self, change: str) -> None:
+        """A running task or joint loop keeps the map and calibration it started
+        with, so changing them under it is refused."""
+        if self.task_running:
+            raise RuntimeError(f"{change}() while a task is running is not supported; "
+                               "stop the task first")
+        self._refuse_routine_while_loop_runs(change)
 
     def _warn_uncalibrated(self, motor_id: int, joint_name: str, missing: str) -> None:
         """Warn once per motor about missing calibration data (reads can run at loop rate)."""

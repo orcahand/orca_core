@@ -256,6 +256,33 @@ class TestOneCalibrationOfUndo:
         hand.get_joint_position()
         assert set(hand._wrap_offsets_dict.values()) == {0.0}
 
+    def test_nothing_in_force_changes_under_a_running_task_or_joint_loop(self, model_dir):
+        import threading
+
+        from orca_core import OrcaHandFull
+
+        hand = self.calibrated_hand(model_dir())
+        hand.calibrate(persist=True)
+        hand.calibrate(persist=True, joints=["index_mcp"])
+        before = dict(hand.motor_limits_dict)
+        release = threading.Event()
+        hand._task_thread = threading.Thread(target=release.wait)
+        hand._task_thread.start()
+        try:
+            for change in (hand.restore_previous_calibration, hand.adopt_board_calibration,
+                           lambda: hand.set_hardware_version(210)):
+                with pytest.raises(RuntimeError, match="task"):
+                    change()
+        finally:
+            release.set()
+            hand._task_thread.join()
+        assert hand.motor_limits_dict == before and hand.hardware_version is None
+
+        looping = OrcaHandFull.__new__(OrcaHandFull)
+        looping._loop, looping._task_thread = object(), None
+        with pytest.raises(RuntimeError, match="joint-feedback loop"):
+            looping.set_hardware_version(210)
+
     def test_with_nothing_to_restore_it_says_so(self, model_dir):
         hand = self.calibrated_hand(model_dir())
         hand.calibrate(persist=True)
