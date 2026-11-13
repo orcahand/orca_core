@@ -1116,7 +1116,7 @@ def test_a_retest_then_finish_anyway_drops_the_saved_pass(connected_mock_hand):
         hand, prompt_callback=prompt, progress_callback=progress, persist=True,
         hand_key="ser-0006", forget=lambda: asks.pop() if asks else set(),
     )
-    assert read_progress(hand.config, "ser-0006")["best"]["index_mcp"] < 0.85
+    assert "index_mcp" not in read_progress(hand.config, "ser-0006")["best"]
 
 
 def test_a_retest_is_never_drained_while_the_round_is_scored(connected_mock_hand, monkeypatch):
@@ -1185,3 +1185,43 @@ def test_saving_progress_rereads_the_file_under_its_lock(connected_mock_hand, mo
     monkeypatch.undo()
     assert read_progress(config, "ser-0007")["rounds"] == 1
     assert read_progress(config, "ser-0008")["rounds"] == 2
+
+
+def test_a_joint_never_range_checked_saves_no_fraction(connected_mock_hand):
+    hand = connected_mock_hand
+    checked = []
+
+    def prompt(p):
+        if p["action"] == "pose":
+            return "goto:score" if p["round"] > 1 else p["options"][0]
+        if p["action"] == "range_check":
+            checked.extend(p["stage"]["joints"])
+            return "goto:tension"
+        return DONE if p["action"] == "tension" else FINISH_ANYWAY
+
+    run_guided_tension(hand, prompt_callback=prompt, persist=True, hand_key="ser-0007",
+                       tension_offset_deg=0)
+    assert set(read_progress(hand.config, "ser-0007")["best"]) == set(checked)
+
+
+def test_a_slack_retest_at_the_score_drops_the_saved_score_and_rescores(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive_slack(hand, lambda j: 0.98 if j == "index_mcp" else 0.2)
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+                       hand_key="ser-0008", scoring="slack")
+    assert "index_mcp" in read_progress(hand.config, "ser-0008", "slack")["scores"]
+
+    asks = []
+    events = []
+
+    def prompt(p):
+        if p["action"] == "score":
+            asks.append({"index_mcp"})
+            return FINISH_ANYWAY
+        return GOTO_SCORE
+
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=events.append,
+                       persist=True, hand_key="ser-0008", scoring="slack",
+                       forget=lambda: asks.pop() if asks else set())
+    assert "index_mcp" not in read_progress(hand.config, "ser-0008", "slack")["scores"]
+    assert len([e for e in events if e["event"] == "score"]) == 2

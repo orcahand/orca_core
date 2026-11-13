@@ -1134,6 +1134,8 @@ def run_guided_tension(
 
     forget_lock = threading.Lock()
     round_spreads: List[MotorSpread] = []
+    checked: set = set()  # joints range-checked this round since their last retest
+    unsaved_retests: set = set()
 
     def _drain_forget() -> set:
         """Joints to test again, dropped from ``best``, the template and this round's spreads."""
@@ -1146,12 +1148,15 @@ def run_guided_tension(
             for spread in (*template, *round_spreads):
                 if spread.joint in joints:
                     forget_spread(spread)
+            checked.difference_update(joints)
+            unsaved_retests.update(joints)
             return joints
 
-    def _score_round(spreads: List[MotorSpread]) -> Tuple[dict, dict]:
-        """The round's score and its progress record, after any pending retest.
-        Held under the forget lock, so the sampler cannot drain a retest midway."""
-        _drain_forget()
+    def _score_round(spreads: List[MotorSpread]) -> Tuple[dict, dict, set]:
+        """The round's score, its progress record and the retests drained first.
+        Held under the forget lock, so the sampler cannot drain a retest midway.
+        Only range-checked joints are recorded: an unchecked one's zero spread is no measurement."""
+        retested = _drain_forget()
         with forget_lock:
             result = score(spreads, threshold, excluded, scoring)
             record = {
@@ -1162,14 +1167,29 @@ def run_guided_tension(
                 record["scores"] = {
                     m["joint"]: {k: m[k] for k in ("slack_deg", "fraction", "status")}
                     for m in result["motors"]
-                    if m["slack_deg"] is not None
+                    if m["slack_deg"] is not None and m["joint"] in checked
                 }
             else:
                 for m in result["motors"]:
-                    if m["fraction"] is not None:
+                    if m["fraction"] is not None and m["joint"] in checked:
                         best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
                 record["best"] = {j: round(f, 3) for j, f in best.items()}
-        return result, record
+        return result, record, retested
+
+    def _save(record: dict, saves: bool) -> None:
+        """Store the round's record. A round that has none to store still drops
+        the joints asked to be retested from the saved one."""
+        with forget_lock:
+            retested = set(unsaved_retests)
+            unsaved_retests.clear()
+        if saves:
+            _write_progress(config, key, record, scoring)
+        elif persist and retested:
+            saved_now = read_progress(config, key, scoring) or {}
+            scores = saved_now.get("scores") or {}
+            if retested & set(scores):
+                kept = {j: s for j, s in scores.items() if j not in retested}
+                _write_progress(config, key, {**saved_now, "scores": kept}, scoring)
 
     keys = [st.key for st in stages]
     stage_of = {f"{GOTO}{k}": j for j, k in enumerate(keys)}
@@ -1187,6 +1207,7 @@ def run_guided_tension(
             spreads = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
             with forget_lock:
                 round_spreads[:] = spreads
+                checked.clear()
             watch.bind(spreads)
             passed = [_stage_passed(st, spreads, threshold, scoring) for st in stages]
             thresholds = {s.joint: pass_threshold(threshold, s.joint) for s in spreads}
@@ -1269,6 +1290,8 @@ def run_guided_tension(
                             **{threshold_key: thresholds},
                             **info,
                         )
+                        with forget_lock:
+                            checked.update(stage.joints)
                         _emit(progress_callback, "currents_drawn",
                               drawn=sampler.take_drawn(), **info)
                         if answer in (GOTO_SCORE, GOTO_TENSION):
@@ -1280,11 +1303,10 @@ def run_guided_tension(
                         sampler.pause()
                         if sampler.error is not None:
                             raise sampler.error
-                    result, record = _score_round(spreads)
+                    result, record, _ = _score_round(spreads)
                     # A slack record holds only this round's sweeps, so a round without one saves nothing.
                     saves = persist and (sampler is not None or not slack_mode)
-                    if saves:
-                        _write_progress(config, key, record, scoring)
+                    _save(record, saves)
                     completed = result["passed"] == result["scored"]
                     if jump == GOTO_TENSION:
                         _emit(progress_callback, "score", round=round_no, **result)
@@ -1313,11 +1335,13 @@ def run_guided_tension(
                         i = back if answer == BACK else stage_of[answer]
                         continue
                     if answer in (FINISH, FINISH_ANYWAY):
-                        # A retest asked for while the score was shown is saved too.
-                        result, record = _score_round(spreads)
-                        completed = result["passed"] == result["scored"]
-                        if saves:
-                            _write_progress(config, key, record, scoring)
+                        # A retest asked for while the score was shown is scored and saved too.
+                        rescored, record, retested = _score_round(spreads)
+                        if retested:
+                            result = rescored
+                            completed = result["passed"] == result["scored"]
+                            _emit(progress_callback, "score", round=round_no, **result)
+                            _save(record, saves)
                     break
             finally:
                 if sampler is not None:
