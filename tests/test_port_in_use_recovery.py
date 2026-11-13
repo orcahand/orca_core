@@ -32,11 +32,15 @@ class FakePort:
         self.port_name = "/dev/cu.usbmodemXXXX"
         self.sent = []
         self.raise_next_read = False
+        self.raise_next_write = False
 
     def clearPort(self):
         pass
 
     def writePort(self, packet):
+        if self.raise_next_write:
+            self.raise_next_write = False
+            raise serial.SerialException("write failed: device disconnected")
         self.sent.append(bytes(packet))
         return len(packet)
 
@@ -131,3 +135,17 @@ def test_the_next_failed_transaction_releases_the_port(stuck):
     client.read_hardware_error(IDS[0])
 
     assert not port.is_using
+
+
+def test_a_sync_write_that_raised_does_not_resend_its_values():
+    client, _ = _dynamixel()
+    port = client.port_handler
+    port.raise_next_write = True
+    with pytest.raises(serial.SerialException):
+        client.sync_write(IDS, [111, 222], TORQUE_ADDRESS, 1)
+    client.set_torque_enabled(IDS, False, retries=0)  # reclaims the port
+    port.sent.clear()
+
+    client.sync_write(IDS, [7, 8], TORQUE_ADDRESS, 1)
+
+    assert bytes([IDS[0], 7, IDS[1], 8]) in port.sent[-1]

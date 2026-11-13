@@ -462,6 +462,8 @@ class FeetechClient(MotorClient):
             return
 
         with self._bus_lock:
+            if not self._connected:  # a concurrent disconnect got the lock first
+                return
             self._reclaim_port()
             try:
                 # Disable torque before disconnecting

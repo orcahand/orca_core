@@ -442,6 +442,8 @@ class DynamixelClient(MotorClient):
         if not self.is_connected:
             return
         with self._bus_lock:
+            if not self.is_connected:  # a concurrent disconnect got the lock first
+                return
             self._reclaim_port()
             try:
                 # Ensure motors are disabled at the end.
@@ -783,6 +785,8 @@ class DynamixelClient(MotorClient):
                 self._sync_writers[key] = self.dxl.GroupSyncWrite(
                     self.port_handler, self.packet_handler, address, size)
             sync_writer = self._sync_writers[key]
+            # Cleared first too, so a txPacket that raised cannot leave its values to go out with these.
+            sync_writer.clearParam()
             errored_ids = []
             present = set(self._present(motor_ids))
             for motor_id, desired_pos in zip(motor_ids, values):
