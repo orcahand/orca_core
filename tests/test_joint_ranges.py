@@ -71,6 +71,34 @@ def test_they_outrank_an_encoder_measured_span(hand_with_ranges):
     assert hand.effective_joint_roms_dict["index_mcp"] == MEASURED
 
 
+def test_ranges_taken_out_of_the_file_go_back_to_the_model_s(hand_with_ranges, tmp_path):
+    hand = hand_with_ranges
+    model = hand_config.OrcaHandConfig.from_config_path(config_path=MODEL).joint_roms_dict["index_mcp"]
+    os.remove(os.path.join(hand.hand_dir, "joint_ranges.yaml"))
+    hand._use_folder(hand.hand_dir, reload=True)
+    assert hand.config.joint_roms_dict["index_mcp"] == model
+    assert hand.joint_ranges_info["source"] == "model"
+
+
+def test_another_hand_s_ranges_do_not_follow_into_this_one(hand_with_ranges, tmp_path):
+    hand = hand_with_ranges
+    model = hand_config.OrcaHandConfig.from_config_path(config_path=MODEL).joint_roms_dict["index_mcp"]
+    other = tmp_path / "another-hand"
+    other.mkdir()
+    hand._use_folder(str(other))
+    assert hand.config.joint_roms_dict["index_mcp"] == model
+
+
+def test_a_changed_range_replaces_the_old_one(hand_with_ranges):
+    hand = hand_with_ranges
+    hand_store.write_doc(os.path.join(hand.hand_dir, "joint_ranges.yaml"),
+                         {"joint_roms": {"index_pip": [0.0, 90.0]}})
+    hand._use_folder(hand.hand_dir, reload=True)
+    model = hand_config.OrcaHandConfig.from_config_path(config_path=MODEL).joint_roms_dict
+    assert hand.config.joint_roms_dict["index_pip"] == [0.0, 90.0]
+    assert hand.config.joint_roms_dict["index_mcp"] == model["index_mcp"]
+
+
 def test_without_a_file_the_model_s_ranges_are_in_force(tmp_path):
     folder = tmp_path / "orcahand-left"
     folder.mkdir()

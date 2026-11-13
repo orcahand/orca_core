@@ -451,12 +451,20 @@ class OrcaHand(BaseHand):
                 pinned, board)
         version = next((v for v in (self._hardware_version_override, board, pinned)
                         if v is not None), None)
-        if version == self.config.hardware_version:
-            return
-        config = (self.config.with_hardware_version(version) if version is not None
-                  else self.config.without_hardware_version())
-        # A version change starts from the model's ranges; this hand's own go back on top.
-        self.config = _with_measured_ranges(config, self._joint_ranges)
+        if version != self.config.hardware_version:
+            self._rebuild_config(version)
+
+    def _rebuild_config(self, version: int | None) -> None:
+        """Put ``version``'s map and ranges in force, rebuilt from the config's
+        base (never layered on the config in force), with the ranges measured
+        on this hand on top. Ranges that are gone from this hand's file, or
+        belonged to a hand connected earlier, are no longer in force."""
+        base = self.config.without_hardware_version()
+        config = base.with_hardware_version(version) if version is not None else base
+        measured = _with_measured_ranges(config, self._joint_ranges)
+        self._measured_range_joints = (
+            frozenset(self._joint_ranges) if measured is not config else frozenset())
+        self.config = measured
 
     # ------------------------------------------------------------------
     # Joint ranges measured on this hand
@@ -488,10 +496,7 @@ class OrcaHand(BaseHand):
         self._joint_ranges_measured_at = doc.get("measured_at")
 
     def _apply_measured_ranges(self) -> None:
-        config = _with_measured_ranges(self.config, self._joint_ranges)
-        applied = frozenset(self._joint_ranges) if config is not self.config else frozenset()
-        self._measured_range_joints = applied
-        self.config = config
+        self._rebuild_config(self.config.hardware_version)
 
     def _model_name(self) -> str:
         config_path = getattr(self.config, "config_path", "") or ""
