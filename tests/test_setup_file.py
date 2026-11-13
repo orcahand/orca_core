@@ -21,9 +21,9 @@ def test_the_file_is_parsed_once_until_it_changes(tmp_path, monkeypatch):
     config = SimpleNamespace(hand_dir=str(tmp_path))
     setup_file.write_section(config, "slack_tests", {"t": 1})
     parses = []
-    real_load = setup_file.yaml.load
+    real_read = setup_file.hand_store.read_doc
     monkeypatch.setattr(
-        setup_file.yaml, "load", lambda *a, **k: parses.append(1) or real_load(*a, **k))
+        setup_file.hand_store, "read_doc", lambda *a, **k: parses.append(1) or real_read(*a, **k))
 
     assert setup_file.read_section(config, "slack_tests") == {"t": 1}
     assert setup_file.read_section(config, "slack_tests") == {"t": 1}
@@ -34,6 +34,13 @@ def test_the_file_is_parsed_once_until_it_changes(tmp_path, monkeypatch):
     # Another process (a script beside the console) rewriting the file.
     write_yaml_atomic(str(tmp_path / "setup.yaml"), {"slack_tests": {"t": 3}})
     assert setup_file.read_section(config, "slack_tests") == {"t": 3}
+
+
+def test_a_file_from_a_newer_orca_core_is_read_and_said(tmp_path, caplog):
+    config = SimpleNamespace(hand_dir=str(tmp_path))
+    (tmp_path / "setup.yaml").write_text("schema: 7\nslack_tests: {t: 1}\n")
+    assert setup_file.read_section(config, "slack_tests") == {"t": 1}
+    assert "newer orca_core" in caplog.text
 
 
 def test_a_returned_section_is_the_callers_own_copy(tmp_path):

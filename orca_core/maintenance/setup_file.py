@@ -35,10 +35,8 @@ import threading
 import time
 from typing import Any, Callable, Iterator, Optional
 
-import yaml
 
 from .. import hand_store
-from ..utils.utils import write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +50,6 @@ _CONTENDED = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK}
 # Guards the parse cache; held only briefly, never while waiting for another process.
 _lock = threading.RLock()
 _writers: dict[str, "_Writer"] = {}
-# libyaml's loader where PyYAML was built with it: the same result, several times faster.
-_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 _parsed: dict[str, tuple[tuple[int, int, int], dict]] = {}
 """Per path: the (inode, mtime_ns, size) it was parsed at, and its content. Every
 write replaces the file, so the inode changes even where mtime is coarse. Callers
@@ -236,16 +232,7 @@ def _read(path: str, fresh: bool = False) -> dict:
     cached = _parsed.get(path)
     if not fresh and cached is not None and cached[0] == version:
         return cached[1]
-    try:
-        with open(path) as file:
-            data = yaml.load(file, Loader=_LOADER)
-    except (yaml.YAMLError, UnicodeDecodeError):
-        hand_store._set_aside(path, "not valid YAML")
-        return {}
-    if data is not None and not isinstance(data, dict):
-        hand_store._set_aside(path, "not a mapping")
-        return {}
-    data = data or {}
+    data = hand_store.read_doc(path, "setup")
     _parsed[path] = (version, data)
     return data
 
@@ -262,10 +249,7 @@ def _store(path: str, data: dict, name: str, value: Any) -> Any:
         for section, record_name, record in archive:
             hand_store.archive_record(folder, section, record_name, record)
         data[name] = value
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    schema = max(hand_store.SCHEMA, hand_store.schema_of(data))
-    write_yaml_atomic(path, {hand_store.SCHEMA_KEY: schema,
-                             **{k: v for k, v in data.items() if k != hand_store.SCHEMA_KEY}})
+    hand_store.write_doc(path, data)
     return value
 
 

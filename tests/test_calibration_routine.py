@@ -302,7 +302,7 @@ def test_write_yaml_atomic_failed_write_keeps_original(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(yaml, "dump", boom)
+    monkeypatch.setattr(yaml, "safe_dump", boom)
     with pytest.raises(RuntimeError, match="disk full"):
         write_yaml_atomic(str(path), {"calibrated": True})
 

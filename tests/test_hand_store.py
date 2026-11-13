@@ -91,6 +91,32 @@ class TestDocuments:
         assert [p.name for p in tmp_path.iterdir()] == ["doc.yaml"]
 
 
+    def test_a_utf_8_file_reads_whatever_the_platform_s_default_encoding(
+            self, tmp_path, monkeypatch):
+        import builtins
+
+        real_open = builtins.open
+
+        def windows_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
+            if "b" not in mode and encoding is None:
+                encoding = "cp1252"   # what Windows uses without UTF-8 mode
+            return real_open(file, mode, buffering, encoding, *args, **kwargs)
+
+        (tmp_path / "hand.yaml").write_text("schema: 1\nnickname: Álvaro\n", encoding="utf-8")
+        monkeypatch.setattr(builtins, "open", windows_open)
+        assert hand_store.read_hand(tmp_path)["nickname"] == "Álvaro"
+        assert [p.name for p in tmp_path.iterdir()] == ["hand.yaml"]
+
+    def test_values_are_written_as_plain_yaml_a_safe_read_takes_back(self, tmp_path):
+        import numpy as np
+
+        doc = {"pair": (1.0, 2.0), "scalar": np.float64(0.5), "nested": {"n": np.int64(3)}}
+        path = hand_store.write_doc(tmp_path / "doc.yaml", doc)
+        assert hand_store.read_doc(path, "x") == {
+            "schema": 1, "pair": [1.0, 2.0], "scalar": 0.5, "nested": {"n": 3}}
+        assert [p.name for p in tmp_path.iterdir()] == ["doc.yaml"]
+
+
 class TestHandRecord:
     def test_first_contact_writes_identity_and_both_stamps(self, tmp_path):
         doc = hand_store.record_contact(

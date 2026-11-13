@@ -142,10 +142,14 @@ def test_records_are_archived_before_setup_yaml_drops_them(config, monkeypatch):
     """A crash between the two writes leaves a record in both places, never in neither."""
     setup_file.write_section(config, "slack_tests", {"tests": {"t1": slack(1)}})
 
-    def crash(*args, **kwargs):
-        raise OSError("power cut")
+    write_doc = setup_file.hand_store.write_doc
 
-    monkeypatch.setattr(setup_file, "write_yaml_atomic", crash)
+    def crash(path, doc):
+        if str(path).endswith("setup.yaml"):
+            raise OSError("power cut")
+        return write_doc(path, doc)
+
+    monkeypatch.setattr(setup_file.hand_store, "write_doc", crash)
     with pytest.raises(OSError):
         setup_file.write_section(config, "slack_tests", {"tests": {"t1": slack(1), "t2": slack(2)}})
     assert setup_file.read_archive(config, "slack_tests") == {"t1": slack(1)}
