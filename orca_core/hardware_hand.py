@@ -24,6 +24,7 @@ from .calibration import (
     FINGERPRINT,
     CalibrationResult,
     JointEncoderCal,
+    _mismatched_joints,
     in_force,
     joint_fingerprints,
     result_from_mapping,
@@ -646,14 +647,45 @@ class OrcaHand(BaseHand):
 
     @calibration.setter
     def calibration(self, value: CalibrationResult) -> None:
-        # Taken as measured under the config in force now.
-        self._stored_calibration = value
-        self._stored_fingerprint = joint_fingerprints(self.config)
+        # Taken as measured under the config in force now, except limits this
+        # config dropped and ``value`` leaves untouched: those stay as stored.
+        fingerprint = joint_fingerprints(self.config)
+        stored = value
+        kept = self._dropped_limits_left_alone(value, fingerprint)
+        if kept:
+            fingerprint.update({joint: self._stored_fingerprint[joint] for joint in kept})
+            limits = {**value.motor_limits_dict, **dict(kept.values())}
+            stored = dataclasses.replace(value, motor_limits_dict=limits)
+            stored = dataclasses.replace(stored, calibrated=value.calibrated or all(
+                stored._motor_has_limits(m) for m in limits))
+        self._stored_calibration = stored
+        self._stored_fingerprint = fingerprint
         self._derived_for = self._derivation_key(self.config)
         self._calibration = value
         # Re-arm the warn-once set so a recalibration re-reports motors that
         # are still missing calibration data.
         self._uncalibrated_warned.clear()
+
+    def _dropped_limits_left_alone(self, value: CalibrationResult, fingerprint: dict) -> dict:
+        """``{joint: (motor_id, stored limits)}`` for joints the config in force
+        dropped (measured against another motor or direction) whose limits
+        ``value`` leaves as the dropped view had them: a calibration of other
+        joints neither erases them nor labels them as taken under this config."""
+        stored = getattr(self, "_stored_calibration", None)
+        in_force_now = getattr(self, "_calibration", None)
+        if stored is None or in_force_now is None:
+            return {}
+        kept = {}
+        for joint in _mismatched_joints(self._stored_fingerprint, fingerprint):
+            motor_id = self.config.joint_to_motor_map.get(joint)
+            limits = stored.motor_limits_dict.get(motor_id)
+            if joint not in self._stored_fingerprint or not limits or None in limits:
+                continue
+            if list(value.motor_limits_dict.get(motor_id) or [None, None]) != list(
+                    in_force_now.motor_limits_dict.get(motor_id) or [None, None]):
+                continue  # measured again
+            kept[joint] = (motor_id, list(limits))
+        return kept
 
     def _derivation_key(self, config: OrcaHandConfig):
         """What the calibration in force depends on besides the measurements."""
@@ -740,9 +772,13 @@ class OrcaHand(BaseHand):
         ``calibrated_at`` to now (a calibration run's later writes).
         ``in_progress`` marks a run's writes before its last."""
         path = self._calibration_file(create=True)
+        fingerprint = joint_fingerprints(self.config)
+        if result is self._calibration:
+            # The hand's own: written with the dropped limits it left alone.
+            result, fingerprint = self._stored_calibration, self._stored_fingerprint
         doc = calibration_store.save(
             path, result, include_encoder=include_encoder,
-            fingerprint=joint_fingerprints(self.config),
+            fingerprint=fingerprint,
             start_run=start_run, stamp=stamp, in_progress=in_progress,
         )
         self._calibration_doc_stamp = calibration_store.stamp_of(doc)

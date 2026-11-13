@@ -166,6 +166,28 @@ class TestFingerprint:
         assert fresh.calibrated
         assert all(fresh.calibration._motor_ready(m) for m in fresh.config.motor_ids)
 
+    def test_calibrating_other_joints_keeps_the_dropped_ones_as_measured(self, model_dir):
+        hand = MockOrcaHand(config_path=str(model_dir("orcahand-left") / "config.yaml"))
+        hand.set_hardware_version(210)
+        hand.connect()
+        hand.calibrate(persist=True)
+        measured = joint_fingerprints(hand.config)
+        thumbs = {j: hand.config.joint_to_motor_map[j] for j in ("thumb_mcp", "thumb_dip")}
+        limits = {j: hand.motor_limits_dict[m] for j, m in thumbs.items()}
+
+        hand.set_hardware_version(200)
+        hand.calibrate(persist=True, joints=["index_mcp"])
+        assert all(hand.motor_limits_dict[m] == [None, None] for m in thumbs.values())
+        doc = read_yaml(hand.config.calibration_path)
+        for joint, motor_id in thumbs.items():
+            assert doc["motor_limits"][motor_id] == limits[joint]
+            assert doc["fingerprint"][joint] == measured[joint]
+
+        hand.set_hardware_version(None)
+        hand.set_hardware_version(210)
+        assert hand.calibrated
+        assert {j: hand.motor_limits_dict[m] for j, m in thumbs.items()} == limits
+
 
 class TestOneCalibrationOfUndo:
     def calibrated_hand(self, folder):
