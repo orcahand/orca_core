@@ -197,7 +197,7 @@ class TestCreateHandFromArgs:
         cli, calls = self._recording_load_hand(monkeypatch)
         args = self._args(
             cli, ["cfg.yaml", "--mock", "--model-name", "orcahand-full-left",
-                  "--no-engage-feedback"],
+                  "--no-engage-feedback", "--motor-port", "/dev/cu.usbmodemXXXX"],
         )
 
         cli.create_hand_from_args(args)
@@ -205,7 +205,7 @@ class TestCreateHandFromArgs:
         assert calls == [dict(
             config_path="cfg.yaml", mock=True,
             model_name="orcahand-full-left", engage_feedback=False,
-            engage_sensors=True,
+            engage_sensors=True, motor_port="/dev/cu.usbmodemXXXX",
         )]
 
     def test_front_end_override_wins_over_the_flag(self, monkeypatch, capsys):

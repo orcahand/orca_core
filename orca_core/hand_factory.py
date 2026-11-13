@@ -55,6 +55,7 @@ from .hardware.sensing.serial_discovery import (
     ORCA_ID_PROBE_ATTEMPTS,
     OrcaBoardInfo,
     _tactile_responds_at,
+    canonical_port,
     detect_encoder_stream,
     find_tactile_port,
     oh_board_ports,
@@ -418,6 +419,7 @@ def load_hand(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     detected_hardware_version: int | None = None,
+    motor_port: str | None = None,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -450,6 +452,11 @@ def load_hand(
             and wins over a ``hardware_version`` pinned in config.yaml (the
             clash is logged). ``None`` lets detection answer, else the pin,
             else leaves the base map.
+        motor_port: The motor bus device to use, the only one a connect
+            tries. What detection learned from a board on another port (motor
+            family, hardware version) is not used; its model is kept as a
+            guess, and connect refuses a board on this port that reports the
+            other side.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -467,6 +474,14 @@ def load_hand(
                 ", ".join(detection.busy_ports), model_name,
             )
         _warn_on_capability_mismatch(detection)
+        if motor_port is not None and detection.motor_port is not None and \
+                canonical_port(detection.motor_port) != canonical_port(motor_port):
+            logger.warning(
+                "detection found a hand on %s, not on %s; its model %r is only a guess "
+                "for the hand on %s", detection.motor_port, motor_port, model_name, motor_port)
+            detection = dataclasses.replace(
+                detection, motor_port=None, sensing_port=None, identity=None,
+                motor_type=None, motor_baudrate=None)
 
     resolved_config_path = _resolve_config_path(
         config_path,
@@ -486,6 +501,8 @@ def load_hand(
     )
     if detection is not None:
         config = _pin_detected_ports(config, detection)
+    if motor_port is not None:
+        config = dataclasses.replace(config, port=motor_port)
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
         logger.warning(

@@ -65,6 +65,15 @@ class TestIdentityAtConnect:
         assert record["aliases"] == {"serial": ["ser-0000"], "board_id": ["0123456789ABCDEF"]}
         assert record["model"] == "orcahand-right"
 
+    def test_a_board_reporting_the_other_side_is_refused(self, model_dir, monkeypatch):
+        left = board_sync.BoardContact(info=OrcaBoardInfo(
+            role="motor", side="left", hw_version=210, serial="ser-0000"))
+        monkeypatch.setattr(BoardedHand, "contact", left)
+        hand = BoardedHand(config_path=str(model_dir / "config.yaml"))
+        ok, message = hand.connect()
+        assert not ok and not hand.is_connected()
+        assert hand.hand_id is None
+
     def test_a_board_without_a_serial_files_it_under_the_board_id(self, make_hand):
         assert make_hand(board(serial=None)).hand_id == "0123456789ABCDEF"
 

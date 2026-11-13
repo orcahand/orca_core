@@ -460,6 +460,26 @@ def test_load_hand_autodetects_and_pins_ports(monkeypatch):
     assert hand.config.sensor_port == "/dev/cu.s"
 
 
+def test_a_named_motor_port_takes_nothing_from_a_board_found_elsewhere(monkeypatch):
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    detection = hand_factory.HandDetection(
+        model_name="orcahand-left", side="left", has_tactile=False, has_encoders=False,
+        motor_port="/dev/cu.usbmodemAAAA", sensing_port="/dev/cu.usbmodemAAAB",
+        identity=OrcaBoardInfo(role="motor", side="left", hw_version=210, serial="ser-0001"),
+        motor_type="dynamixel", motor_baudrate=3_000_000,
+    )
+    monkeypatch.setattr(hand_factory, "detect_hand", lambda: detection)
+    hand = load_hand(motor_port="/dev/cu.usbmodemBBBB", engage_feedback=False)
+    assert hand.config.port == "/dev/cu.usbmodemBBBB"
+    assert hand._board_hint is None
+    assert hand.board_hardware_version is None
+    assert hand.config.baudrate != 3_000_000
+
+    same = load_hand(motor_port="/dev/cu.usbmodemAAAA", engage_feedback=False)
+    assert same.board_hardware_version == 210 and same._board_hint is not None
+
+
 def test_load_hand_detection_fallback_is_default_model(monkeypatch):
     _patch_hardware(monkeypatch)
     hand = load_hand()

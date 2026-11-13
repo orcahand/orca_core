@@ -527,6 +527,8 @@ class OrcaHand(BaseHand):
         Raises:
             ConnectionError: a controller board is there but never said which
                 hand it is; guessing would file this hand's files elsewhere.
+                Or its board reports the other side than this hand's model:
+                that model's map would drive it wrong.
         """
         if contact.silent_board:
             raise ConnectionError(
@@ -534,6 +536,12 @@ class OrcaHand(BaseHand):
                 "cannot be told apart from another hand's; reconnect the hand (unplug "
                 "it and plug it back in if this repeats)")
         info = contact.info
+        sides = ("left", "right")
+        if info is not None and info.side in sides and self.config.type in sides \
+                and info.side != self.config.type:
+            raise ConnectionError(
+                f"the board on this port reports a {info.side} hand, but {self._model_name()} "
+                f"is a {self.config.type} hand's model; load a {info.side} model")
         serial = info.serial if info is not None else None
         board_id = info.board_id if info is not None else None
         from_board = hand_store.resolve_hand_id(serial, board_id, contact.usb_serial)

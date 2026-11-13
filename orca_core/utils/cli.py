@@ -86,12 +86,13 @@ def create_hand(
     model_name: str | None = None,
     engage_feedback: bool = True,
     engage_sensors: bool = True,
+    motor_port: str | None = None,
 ) -> BaseHand:
     """Build the hand class matching the selected — or detected — model.
 
     With no ``config_path`` or ``model_name`` on a physical hand this probes
     the hardware, so the model matches what is actually plugged in rather than
-    the packaged default.
+    the packaged default. ``motor_port`` is the only motor bus a connect tries.
     """
     hand = load_hand(
         config_path=config_path,
@@ -99,6 +100,7 @@ def create_hand(
         model_name=model_name,
         engage_feedback=engage_feedback,
         engage_sensors=engage_sensors,
+        motor_port=motor_port,
     )
     print(f"Loaded {type(hand).__name__} from {hand.config.config_path}")
     return hand
@@ -117,15 +119,10 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
         "use_mock": args.mock,
         "model_name": args.model_name,
         "engage_feedback": getattr(args, "engage_feedback", True),
+        "motor_port": getattr(args, "motor_port", None) or None,
     }
     options.update(overrides)
     hand = create_hand(args.config_path, **options)
-    port = getattr(args, "motor_port", None)
-    if port:
-        import dataclasses
-
-        hand.config = dataclasses.replace(hand.config, port=port)
-        hand._board_hint = None
     version = getattr(args, "hardware_version", None)
     if version is not None:
         pin_hardware_version(hand, version)

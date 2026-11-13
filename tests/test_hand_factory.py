@@ -188,6 +188,7 @@ def test_create_hand_forwards_its_selection_arguments(monkeypatch):
         "model_name": "orcahand-left",
         "engage_feedback": False,
         "engage_sensors": True,
+        "motor_port": None,
     }
 
 
