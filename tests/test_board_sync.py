@@ -162,6 +162,32 @@ class TestTheBanner:
         hand.restore_previous_calibration()
         assert hand.calibration_info["calibrated_at"] == before["calibrated_at"]
 
+    def test_adopting_keeps_this_computer_s_tactile_zero(self, connect, config):
+        hand = self.computer_calibrated(connect, config, "2099-01-01T00:00:00Z")
+        path = hand.config.calibration_path
+        doc = read_yaml(path)
+        doc["sensor_offsets"] = {"thumb": [[1.0, 2.0, 3.0]]}
+        hand_store.write_doc(path, doc)
+        hand.adopt_board_calibration()
+        assert read_yaml(path)["sensor_offsets"] == {"thumb": [[1.0, 2.0, 3.0]]}
+        assert "drive_current_measured" not in read_yaml(path), "the calibration is the board's"
+
+    def test_adopting_over_a_stopped_run_keeps_the_last_complete_one_as_previous(
+            self, connect, config):
+        hand = self.computer_calibrated(connect, config, "2099-01-01T00:00:00Z")
+        complete = hand.calibration_info
+
+        def stop_after_a_step(event):
+            if event["event"] == "step_done":
+                hand._task_stop_event.set()
+
+        hand.calibrate(persist=True, progress_callback=stop_after_a_step)
+        hand._task_stop_event.clear()
+        assert read_yaml(hand.config.calibration_path)["in_progress"] is True
+        info = hand.adopt_board_calibration()
+        assert info["previous"] == {"sequence": complete["sequence"],
+                                    "calibrated_at": complete["calibrated_at"]}
+
     def test_adopting_with_nothing_on_the_board_is_refused(self, connect):
         with pytest.raises(RuntimeError):
             connect(None).adopt_board_calibration()

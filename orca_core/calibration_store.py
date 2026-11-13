@@ -57,6 +57,14 @@ SOURCE = "source"
 # Set while a calibration run is still writing; left set by a run that stopped.
 IN_PROGRESS = "in_progress"
 KIND = "calibration"
+ROM_FRAME = "rom_frame"
+# What one calibration is: replaced whole when another calibration is adopted.
+CALIBRATION_KEYS = frozenset({
+    MOTOR_LIMITS_DICT, WRIST_CALIBRATED, CALIBRATED, MOTOR_TRAVEL_MEASURED,
+    DRIVE_CURRENT_MEASURED, JOINT_ENCODER_CALIBRATION, JOINT_ROMS_MEASURED,
+    JOINT_TO_MOTOR_RATIOS, FINGERPRINT, SEQUENCE, CALIBRATED_AT, SOURCE, IN_PROGRESS,
+    ROM_FRAME,
+})
 
 
 def previous_path(path: str) -> str:
@@ -202,9 +210,7 @@ def save(
         check_writable(path)
     doc = read_document(path)
     if start_run:
-        if os.path.exists(path) and not doc.get(IN_PROGRESS):
-            with open(path, encoding="utf-8") as file:
-                write_text_atomic(previous_path(path), file.read())
+        _keep_as_previous(path, doc)
         doc[SEQUENCE] = stamp_of(doc)["sequence"] + 1
         doc.pop(SOURCE, None)
     if start_run or stamp:
@@ -221,22 +227,32 @@ def save(
     return doc
 
 
+def _keep_as_previous(path: str, current: Mapping[str, Any]) -> None:
+    """Copy the calibration at ``path`` (read as ``current``) to the previous
+    one, unless it is a run that stopped before it finished: the last
+    complete calibration stays the previous one then."""
+    if os.path.exists(path) and not current.get(IN_PROGRESS):
+        with open(path, encoding="utf-8") as file:
+            write_text_atomic(previous_path(path), file.read())
+
+
 def adopt(
     path: str, document: Mapping[str, Any], *, source: str, keep_sequence: bool = False
 ) -> Dict[str, Any]:
     """Make ``document`` (a whole calibration from elsewhere, e.g. a hand's board)
     the calibration at ``path``, keeping the one it replaces as previous.
 
-    Its ``calibrated_at`` is kept, and its ratios dropped. ``sequence`` counts
-    on from the higher of the two, or is kept as it is with ``keep_sequence``
-    (a first copy, where there is nothing here to count on from).
+    Its ``calibrated_at`` is kept, and its ratios dropped. Keys of the file
+    here that a calibration does not own (a tactile zero) stay unless
+    ``document`` has its own. ``sequence`` counts on from the higher of the
+    two, or is kept as it is with ``keep_sequence`` (a first copy, where there
+    is nothing here to count on from).
     """
     _refuse_packaged(path)
     current = read_document(path)
-    doc = {k: v for k, v in document.items() if k != JOINT_TO_MOTOR_RATIOS}
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as file:
-            write_text_atomic(previous_path(path), file.read())
+    doc = {k: v for k, v in current.items() if k not in CALIBRATION_KEYS}
+    doc.update({k: v for k, v in document.items() if k != JOINT_TO_MOTOR_RATIOS})
+    _keep_as_previous(path, current)
     theirs = stamp_of(document)["sequence"]
     doc[SEQUENCE] = theirs if keep_sequence else max(stamp_of(current)["sequence"], theirs) + 1
     doc[SOURCE] = source
