@@ -40,6 +40,7 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, TINY_SLEEP
 from .motor_reads import read_motor_pos_checked
+from .release import release_hand
 from .joint_motion import (
     POSE_MID,
     SENSES,
@@ -232,8 +233,8 @@ def run_tension_sweep(
     ``travel_deg``, ``groups``, ``parked`` per group), ``sweep_started`` / ``sweep_sample`` /
     ``sweep_done`` (``joint``, ``motor``, ``direction``, ``sense``, ``run``,
     ``index``, ``total``, ``group``; samples carry ``deg`` and ``current_ma``;
-    done carries the whole result, samples included), ``pose_short`` and
-    ``cleanup_failed``. A sweep ends when the motor is within 1° of the far
+    done carries the whole result, samples included), ``pose_short``,
+    ``cleanup_failed`` and ``torque_off_failed`` (``motors``, ``joints``). A sweep ends when the motor is within 1° of the far
     limit or has stopped moving there (``stall_deg`` over ``stall_hold_s``),
     so no motor sits against a stop at the sweep current. On any
     exit torque is off and the configured control mode and current limit are
@@ -279,8 +280,8 @@ def run_tension_sweep(
 
     def _restore() -> None:
         # A mode change leaves torque on, on every family: switch mode first.
-        hand.set_control_mode(control_mode, all_present)
-        hand.disable_torque()
+        release_hand(hand, lambda: hand.set_control_mode(control_mode, all_present),
+                     routine="tension sweep", progress_callback=progress_callback)
         hand.set_max_current(config.max_current)
 
     def _check() -> None:

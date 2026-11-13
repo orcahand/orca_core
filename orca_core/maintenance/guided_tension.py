@@ -55,6 +55,7 @@ import numpy as np
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from ..hand_config import format_hardware_version
 from .motor_reads import read_motor_pos_checked, read_motor_state_checked
+from .release import release_hand
 from .setup_file import read_section, update_section, write_section
 from .tensioning import (
     TENSION_EXTRA_DEG,
@@ -1071,28 +1072,10 @@ def run_guided_tension(
             config.tension_current if tension_current is None else tension_current
         )
 
-    def _torque_off() -> None:
-        still_on = list(config.motor_ids)
-        try:
-            still_on = list(hand.disable_torque() or [])
-        finally:
-            if still_on:
-                joint_of = config.motor_to_joint_dict
-                logger.error("guided tension could not switch torque off on motors %s", still_on)
-                _emit(
-                    progress_callback,
-                    "torque_off_failed",
-                    motors=still_on,
-                    joints=[joint_of.get(m) for m in still_on],
-                )
-
     def _restore() -> None:
-        # A mode change leaves torque on, on every family: switch mode first,
-        # and switch torque off even when the mode change raises.
-        try:
-            hand.set_control_mode(control_mode)
-        finally:
-            _torque_off()
+        # A mode change leaves torque on, on every family: switch mode first.
+        release_hand(hand, lambda: hand.set_control_mode(control_mode),
+                     routine="guided tension", progress_callback=progress_callback)
         hand.set_max_current(config.max_current)
 
     if scoring not in SCORINGS:

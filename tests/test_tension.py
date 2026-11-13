@@ -288,5 +288,26 @@ def test_run_tension_restore_failure_on_the_success_path_still_raises(connected_
             progress_callback=events.append, offset_deg=0.0,
         )
 
-    assert [e["event"] for e in events] == ["phase", "phase"]
-    assert [e["phase"] for e in events] == ["holding", "released"]
+    assert [e["event"] for e in events] == ["phase", "phase", "torque_off_failed"]
+    assert [e["phase"] for e in events[:2]] == ["holding", "released"]
+    assert events[2]["motors"] == list(connected_mock_hand.config.motor_ids)
+
+
+def test_torque_goes_off_when_the_exit_mode_change_raises(real_mode_change, connected_mock_hand,
+                                                         monkeypatch):
+    from orca_core.maintenance.tensioning import run_tension
+
+    hand = connected_mock_hand
+    set_mode, calls = hand.set_control_mode, []
+
+    def set_control_mode(mode, motor_ids=None):
+        calls.append(mode)
+        set_mode(mode, motor_ids)
+        if len(calls) > 1:
+            raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    with pytest.raises(OSError):
+        run_tension(hand, move_motors=False, should_stop=lambda: True, offset_deg=0.0)
+    assert len(calls) == 2
+    assert not any(hand.motor_client._torque_enabled.values())

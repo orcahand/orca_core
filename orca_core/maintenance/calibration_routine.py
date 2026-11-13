@@ -70,6 +70,7 @@ from ..hardware.joint_encoder_client import (
 from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV, ENCODER_LSB_DEG
 from .motor_reads import read_motor_pos_checked
 from .progress import ProgressCallback, ShouldStop, never_stop, progress_emitter
+from .release import release_hand
 from .motor_travel import motor_travel_deg, travel_deviation
 
 if TYPE_CHECKING:
@@ -241,7 +242,7 @@ def run_calibration(
             ``travel_retry_exhausted``, ``travel_retry_disabled``,
             ``travel_retry_unavailable``,
             ``step_done``, ``calibration_done``, ``calibration_aborted``,
-            ``cleanup_failed``). Called from the calibrating thread; must be
+            ``cleanup_failed``, ``torque_off_failed`` (``motors``, ``joints``)). Called from the calibrating thread; must be
             fast and non-blocking. Exceptions raised by the callback are
             swallowed.
         should_stop: Optional ``callable() -> bool`` polled between motor
@@ -289,8 +290,8 @@ def _release_after_abort(
     """Release torque and restore the configured current limit so the hand
     doesn't strain against a hardstop after an abnormal exit."""
     try:
-        hand.set_max_current(hand.config.max_current)
-        hand.disable_torque()
+        release_hand(hand, lambda: hand.set_max_current(hand.config.max_current),
+                     routine="calibration", progress_callback=progress_callback)
     except Exception as e:
         _report(
             progress_callback,

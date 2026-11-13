@@ -256,6 +256,27 @@ def test_failed_torque_release_skips_limit_capture(
     assert not any(e["event"] == "joint_calibrated" for e in events)
 
 
+def test_an_aborted_run_switches_torque_off_even_when_restoring_the_current_fails(
+    connected_hand, monkeypatch
+):
+    hand = connected_hand
+
+    def drive_then_fail(*args, **kwargs):
+        hand.enable_torque()
+        monkeypatch.setattr(hand, "set_max_current", failing_current)
+        raise OSError("port went away mid-run")
+
+    def failing_current(*args, **kwargs):
+        raise OSError("port went away mid-run")
+
+    monkeypatch.setattr(calibration_routine, "_drive_calibration", drive_then_fail)
+    events = []
+    with pytest.raises(OSError):
+        calibration_routine.run_calibration(hand, progress_callback=events.append)
+    assert not any(hand.motor_client._torque_enabled.values())
+    assert any(e["event"] == "cleanup_failed" for e in events)
+
+
 # ---------------------------------------------------------------------------
 # write_yaml_atomic
 # ---------------------------------------------------------------------------
