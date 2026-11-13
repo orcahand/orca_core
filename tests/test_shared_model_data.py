@@ -217,7 +217,11 @@ def right():
     return OrcaHandConfig.from_config_path(config_path=os.path.join(V2_MODELS, "orcahand-right", "config.yaml"))
 
 
-def test_measured_ranges_become_the_clamp(right):
+def test_measured_ranges_become_the_clamp(right, monkeypatch):
+    from orca_core import OrcaJointPositions
+
+    # Another test's hand may have registered a joint set without index_mcp.
+    monkeypatch.setattr(OrcaJointPositions, "_default_joint_ids", None)
     measured = right.with_measured_ranges({"index_mcp": [-10, 90], "wrist": (-50.5, 30)})
     assert measured.joint_roms_dict["index_mcp"] == [-10.0, 90.0]
     assert measured.joint_roms_dict["wrist"] == [-50.5, 30.0]
@@ -226,8 +230,6 @@ def test_measured_ranges_become_the_clamp(right):
     assert all(measured.joint_roms_dict[j] == right.joint_roms_dict[j]
                for j in right.joint_ids if j not in ("index_mcp", "wrist"))
     assert right.measured_joint_roms_dict == {} and right.joint_roms_dict["index_mcp"] == [-22.75, 103.69]
-
-    from orca_core import OrcaJointPositions
 
     clamped = measured.clamp_joint_positions(OrcaJointPositions.from_dict({"index_mcp": 100.0}))
     assert clamped.as_dict()["index_mcp"] == 90.0
