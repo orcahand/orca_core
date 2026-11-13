@@ -11,6 +11,8 @@ candidate", never stealing bytes from a link another client already holds.
 
 import errno
 import logging
+import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -326,6 +328,7 @@ def board_info_for_port(port: str) -> Optional[OrcaBoardInfo]:
     import serial.tools.list_ports
 
     entries = {p.device: p for p in serial.tools.list_ports.comports()}
+    port = canonical_port(port)
     mine = entries.get(port)
     if mine is None or mine.vid not in KNOWN_VIDS["oh_board"] or not mine.serial_number:
         return None
@@ -336,6 +339,21 @@ def board_info_for_port(port: str) -> Optional[OrcaBoardInfo]:
         if info is not None:
             return info
     return None
+
+
+def canonical_port(port: str) -> str:
+    """The name ``serial.tools.list_ports`` reports for ``port``: a symlink (a
+    Linux ``/dev/serial/by-id`` link) resolved, a macOS ``/dev/tty.*`` dial-in
+    name as its ``/dev/cu.*`` twin, and a Windows ``COM`` name in capitals."""
+    if not port:
+        return port
+    if re.fullmatch(r"(?i)com\d+", port):
+        return port.upper()
+    if os.name == "posix" and os.path.isabs(port):
+        port = os.path.realpath(port)
+    if port.startswith("/dev/tty."):
+        port = "/dev/cu." + port[len("/dev/tty."):]
+    return port
 
 
 def oh_board_ports() -> "list[str]":
@@ -354,6 +372,7 @@ def oh_board_usb_serial(port: str) -> Optional[str]:
     ``None`` for another device or a board that reports none."""
     import serial.tools.list_ports
 
+    port = canonical_port(port)
     for entry in serial.tools.list_ports.comports():
         if entry.device == port and entry.vid in KNOWN_VIDS["oh_board"]:
             return entry.serial_number or None

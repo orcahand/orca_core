@@ -57,10 +57,10 @@ IDENTITY_RETRY_S = 0.1
 
 def is_board_port(port: str) -> bool:
     """Whether ``port`` is presented by a hand's controller board (by its USB IDs)."""
-    from .hardware.sensing.serial_discovery import oh_board_ports
+    from .hardware.sensing.serial_discovery import canonical_port, oh_board_ports
 
     try:
-        return port in oh_board_ports()
+        return canonical_port(port) in oh_board_ports()
     except Exception as exc:
         logger.debug("could not list serial ports: %s", exc)
         return False
