@@ -10,17 +10,15 @@ Values that are the same for every v2 model live once, in `orca_core/models/v2/s
 
 When a packaged v2 model is loaded (also through a symlink), its generation's `shared.yaml` is merged under it: a value in `config.yaml` wins, and a mapping merges key by key, so a model can change one joint's range or add one joint's hold current and keep the rest. A merge cannot remove a key, so the per-joint maps (`joint_roms`, `joint_roms_v211`, `joint_motor_travel_v21`) are trimmed to the model's `joint_ids`: a model without a wrist simply leaves it out of `joint_ids`. `orca_core.load_config(path)` returns the merged document.
 
-Every other config (a v1 model, or any config outside the package) is read as written and must be complete; a `shared.yaml` near it is never merged, even a copy of the package's. To use a v2 model outside the package, write out its merged document:
+Every other config (a v1 model, or any config outside the package) is read as written and must be complete; a `shared.yaml` near it is never merged, even a copy of the package's. To use a v2 model outside the package, write a complete copy of it:
 
 ```python
-import yaml
-from orca_core import load_config
+from orca_core import write_standalone_config
 
-with open("my-hand/config.yaml", "w") as f:
-    yaml.safe_dump(load_config(model_name="orcahand-right"), f, sort_keys=False)
+write_standalone_config("my-hand/config.yaml", model_name="orcahand-right")
 ```
 
-Copying a model's `config.yaml` on its own does not work: it fails to load with an error that says so.
+Copying a model's `config.yaml` on its own does not work: it fails to load with an error naming the keys it lacks. A standalone v2 config that has `joint_roms` but lacks `calibration_current_v21` or `joint_motor_travel_v21` loads with a warning, and runs without those v2.1 defaults.
 
 !!! Warning
     Be careful when editing this file, incorrect settings can cause unexpected behavior and make debugging more difficult.

@@ -295,6 +295,63 @@ def load_config(
     )[1]
 
 
+def write_standalone_config(
+    destination: str,
+    config_path: str | None = None,
+    model_version: str | None = None,
+    model_name: str | None = None,
+) -> str:
+    """Write a model's effective config (:func:`load_config`) to ``destination``
+    as a complete ``config.yaml`` that loads the same anywhere, with no
+    ``shared.yaml``. ``destination`` is the file to write, or a folder to write
+    ``config.yaml`` into; missing folders are created. Returns the path written.
+
+    Raises:
+        ValueError: ``destination`` lies inside the package's models tree.
+    """
+    document = load_config(config_path, model_version=model_version, model_name=model_name)
+    path = os.path.join(destination, "config.yaml") if os.path.isdir(destination) else destination
+    if is_packaged_model_path(path):
+        raise ValueError(f"{path} is inside the package's models; write the copy somewhere else.")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    write_yaml_atomic(path, document)
+    return path
+
+
+@functools.lru_cache(maxsize=None)
+def _shared_keys() -> tuple[str, ...]:
+    """What the packaged ``shared.yaml`` gives a v2 model and no code default
+    stands in for (guided tensioning falls back to the packaged holds)."""
+    shared = _read_mapping(os.path.join(_get_models_dir(), LATEST_VERSION, SHARED_CONFIG_FILE))
+    return tuple(key for key in shared if key != GUIDED_TENSION_CURRENTS)
+
+
+_warned_incomplete: set = set()
+
+
+def _check_standalone(config_path: str, config: Dict, require_roms: bool = True) -> None:
+    """Refuse a config that takes nothing from ``shared.yaml`` and has no
+    ``joint_roms`` (with ``require_roms`` False, only a v2 one); warn once about
+    a v2 one missing the other shared keys, which leaves the v2.1 travel checks
+    or calibration currents off."""
+    if shared_config_path(config_path) is not None:
+        return
+    is_v2 = HARDWARE_VERSION in config
+    missing = [key for key in _shared_keys() if key not in config] if is_v2 else []
+    fix = ("Write a complete copy of its model with orca_core.write_standalone_config("
+           "<destination>, model_name=<model>) and carry this hand's own values over to it.")
+    if JOINT_ROM_DICT not in config and (require_roms or is_v2):
+        names = ", ".join(missing or [JOINT_ROM_DICT])
+        raise HandConfigValidationError(
+            f"{config_path} sets no {names}. Only a packaged model takes these from its "
+            f"generation's shared.yaml; a config outside the package must be complete. {fix}")
+    if JOINT_ROM_DICT in config and missing and config_path not in _warned_incomplete:
+        _warned_incomplete.add(config_path)
+        logging.getLogger(__name__).warning(
+            "%s sets no %s, so those v2 defaults are off for this hand. %s",
+            config_path, ", ".join(missing), fix)
+
+
 @functools.lru_cache(maxsize=None)
 def _default_guided_tension_currents() -> Dict:
     """The packaged ``shared.yaml``'s ``guided_tension_currents``: the hold
@@ -583,6 +640,8 @@ class BaseHandConfig:
             model_name=model_name,
         )
         config = _with_local_overrides(_load_config_documents(resolved_config_path)[1], resolved_config_path)
+        # Joint metadata alone (canonical_joint_ids) needs no ranges.
+        _check_standalone(resolved_config_path, config, require_roms=False)
 
         return cls(config_path=resolved_config_path, **_shared_hand_kwargs(config))
 
@@ -920,12 +979,7 @@ class OrcaHandConfig(BaseHandConfig):
                 f"config.yaml at {resolved_config_path} is empty. Restore it "
                 "from the bundled model or your hand's backup."
             )
-        if JOINT_ROM_DICT not in config:
-            raise HandConfigValidationError(
-                f"{resolved_config_path} sets no joint_roms. Only a packaged model takes them from "
-                "its generation's shared.yaml; a config outside the package must be complete: "
-                "write out orca_core.load_config(<packaged config>)."
-            )
+        _check_standalone(resolved_config_path, config)
 
         kwargs = {
             "config_path": resolved_config_path,

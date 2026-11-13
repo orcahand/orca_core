@@ -26,10 +26,6 @@ def fake_serial_port(device: str, vid: int):
 def copy_model_config(src, dst) -> None:
     """Write ``src``'s effective config (its ``shared.yaml`` merged in) to ``dst``:
     a standalone copy that loads the same with no ``shared.yaml`` beside it."""
-    from pathlib import Path
+    from orca_core import write_standalone_config
 
-    import yaml
-
-    from orca_core.hand_config import load_config
-
-    Path(dst).write_text(yaml.safe_dump(load_config(str(src)), sort_keys=False), encoding="utf-8")
+    write_standalone_config(str(dst), config_path=str(src))

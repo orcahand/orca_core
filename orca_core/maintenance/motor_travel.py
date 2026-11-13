@@ -87,9 +87,8 @@ def write_joint_motor_travel(
     if is_packaged_model_path(config_path):
         raise ValueError(
             f"{config_path} is a packaged model config. Measured travel is "
-            "hand-specific: write the model's effective config "
-            "(orca_core.load_config) to a config.yaml of its own and point "
-            "the script at that copy."
+            "hand-specific: write a complete copy of the model "
+            "(orca_core.write_standalone_config) and point the script at it."
         )
     doc = read_yaml(config_path) or {}
     stored = dict(doc.get(JOINT_MOTOR_TRAVEL) or {}) if merge else {}

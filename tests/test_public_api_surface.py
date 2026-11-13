@@ -59,6 +59,7 @@ PACKAGE_EXPORTS = frozenset({
     "frames",
     "load_config",
     "load_hand",
+    "write_standalone_config",
 })
 
 BASE_HAND = frozenset({

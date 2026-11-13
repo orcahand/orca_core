@@ -14,6 +14,7 @@ from .hand_config import OrcaHandConfig
 from .hand_config import OrcaHandTouchConfig
 from .hand_config import canonical_joint_ids
 from .hand_config import load_config
+from .hand_config import write_standalone_config
 from .hardware_hand import MockOrcaHand, OrcaHand
 from .hardware_hand_sensing import (
     JointFeedbackConnectError,
@@ -65,5 +66,6 @@ __all__ = [
     "frames",
     "canonical_joint_ids",
     "load_config",
+    "write_standalone_config",
     "LATEST_VERSION",
 ]

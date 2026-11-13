@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 import orca_core
-from orca_core import MockOrcaHand, OrcaHandConfig, OrcaHandTouchConfig, load_config
+from orca_core import BaseHandConfig, MockOrcaHand, OrcaHandConfig, OrcaHandTouchConfig, load_config, write_standalone_config
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
 from orca_core.hand_config import HandConfigValidationError, shared_config_path
 from orca_core.hardware.motor_factory import motor_client_class
@@ -271,11 +271,65 @@ def test_a_complete_config_elsewhere_loads_as_written(tmp_path):
     assert _effective(copy) == _effective(packaged)
 
 
-def test_a_slim_config_copied_alone_is_refused_with_the_way_out(tmp_path):
+@pytest.mark.parametrize("cls", [OrcaHandConfig, BaseHandConfig])
+def test_a_slim_config_copied_alone_is_refused_naming_what_it_lacks(tmp_path, cls):
     source = os.path.join(V2_MODELS, "orcahand-right", "config.yaml")
     (tmp_path / "config.yaml").write_text(open(source, encoding="utf-8").read())
-    with pytest.raises(HandConfigValidationError, match="shared.yaml.*load_config"):
+    with pytest.raises(HandConfigValidationError, match="write_standalone_config") as err:
+        cls.from_config_path(config_path=str(tmp_path / "config.yaml"))
+    assert "sets no joint_roms, calibration_current_v21, joint_motor_travel_v21." in str(err.value)
+
+
+def test_a_standalone_v2_config_missing_shared_keys_warns_once(tmp_path, caplog):
+    source = os.path.join(V2_MODELS, "orcahand-right", "config.yaml")
+    doc = _read(source)
+    doc["joint_roms"] = load_config(source)["joint_roms"]
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    path = str(tmp_path / "config.yaml")
+    with caplog.at_level("WARNING", logger="orca_core.hand_config"):
+        config = OrcaHandConfig.from_config_path(config_path=path).with_hardware_version(210)
+        OrcaHandConfig.from_config_path(config_path=path)
+    warnings = [r.getMessage() for r in caplog.records if "sets no" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "calibration_current_v21, joint_motor_travel_v21" in warnings[0]
+    assert config.expected_motor_travel_deg("index_mcp") is None
+
+
+def test_a_complete_v1_config_elsewhere_loads_without_a_warning(tmp_path, caplog):
+    write_standalone_config(str(tmp_path), config_path=os.path.join(V1_MODELS, "orcahand-right", "config.yaml"))
+    with caplog.at_level("WARNING", logger="orca_core.hand_config"):
         OrcaHandConfig.from_config_path(config_path=str(tmp_path / "config.yaml"))
+    assert not [r for r in caplog.records if "sets no" in r.getMessage()]
+
+
+# --- write_standalone_config -----------------------------------------------------
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_a_standalone_copy_loads_as_its_packaged_model(tmp_path, model, caplog):
+    source = os.path.join(V2_MODELS, model, "config.yaml")
+    with caplog.at_level("WARNING", logger="orca_core.hand_config"):
+        path = write_standalone_config(str(tmp_path / "hands" / "mine" / "config.yaml"), model_name=model)
+        assert path == str(tmp_path / "hands" / "mine" / "config.yaml")
+        assert shared_config_path(path) is None and load_config(path) == load_config(source)
+        for hardware_version in HARDWARE_VERSIONS:
+            assert _effective(_load(path, hardware_version)) == _effective(_load(source, hardware_version))
+    assert not [r for r in caplog.records if "sets no" in r.getMessage()]
+
+
+def test_a_standalone_copy_into_a_folder_is_its_config_yaml(tmp_path):
+    path = write_standalone_config(str(tmp_path), model_name="orcahand-touch-left")
+    assert path == os.path.join(str(tmp_path), "config.yaml")
+    assert _read(path) == load_config(model_name="orcahand-touch-left")
+
+
+def test_a_standalone_copy_never_lands_in_the_package(tmp_path):
+    with pytest.raises(ValueError, match="inside the package"):
+        write_standalone_config(os.path.join(V2_MODELS, "orcahand-right"), model_name="orcahand-right")
+    link = tmp_path / "link.yaml"
+    link.symlink_to(os.path.join(V2_MODELS, "orcahand-left", "config.yaml"))
+    with pytest.raises(ValueError, match="inside the package"):
+        write_standalone_config(str(link), model_name="orcahand-right")
 
 
 def test_a_shared_yaml_that_is_not_a_mapping_is_refused(packaged_tree):
