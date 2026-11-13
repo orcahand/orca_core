@@ -1016,6 +1016,36 @@ def test_motors_left_energized_at_the_exit_are_reported(connected_mock_hand, mon
     assert failed == [{"event": "torque_off_failed", "motors": [stuck], "joints": ["index_mcp"]}]
 
 
+def test_torque_goes_off_when_the_exit_mode_change_raises(connected_mock_hand, monkeypatch):
+    hand = connected_mock_hand
+    client = hand.motor_client
+    set_mode = hand.set_control_mode
+
+    def set_control_mode(mode, motor_ids=None):
+        if motor_ids is not None:
+            return set_mode(mode, motor_ids)
+        client.set_torque_enabled(hand.config.motor_ids, True)  # as a mode change leaves it
+        raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    answers = ["goto:score", FINISH_ANYWAY]
+    with pytest.raises(OSError):
+        run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0), persist=False)
+    assert not any(client._torque_enabled.values())
+
+    def disable_torque(motor_ids=None):
+        raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "disable_torque", disable_torque)
+    events = []
+    answers = ["goto:score", FINISH_ANYWAY]
+    with pytest.raises(OSError):
+        run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0),
+                           progress_callback=events.append, persist=False)
+    failed = [e for e in events if e["event"] == "torque_off_failed"]
+    assert failed and failed[0]["motors"] == list(hand.config.motor_ids)
+
+
 def test_an_unanswered_error_read_keeps_the_faults(connected_mock_hand):
     hand = connected_mock_hand
     client = hand.motor_client
