@@ -506,7 +506,8 @@ class OrcaHand(BaseHand):
 
     def _contact_board(self, port: str) -> "board_sync.BoardContact":
         hint = self._board_hint
-        if hint is not None and hint[0] == port and hint[1].info is None:
+        if hint is not None and hint[0] == port and hint[1].info is None \
+                and not board_sync.is_board_port(port):
             # Detection already found a plain adapter here: no board to ask.
             return hint[1]
         return board_sync.contact_board(port, cached_store=self._cached_board_store)
@@ -522,7 +523,17 @@ class OrcaHand(BaseHand):
             return None
 
     def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
-        """Decide which physical hand this is and point its files at its folder."""
+        """Decide which physical hand this is and point its files at its folder.
+
+        Raises:
+            ConnectionError: a controller board is there but never said which
+                hand it is; guessing would file this hand's files elsewhere.
+        """
+        if contact.silent_board:
+            raise ConnectionError(
+                "the hand's controller board did not report its identity, so its files "
+                "cannot be told apart from another hand's; reconnect the hand (unplug "
+                "it and plug it back in if this repeats)")
         info = contact.info
         serial = info.serial if info is not None else None
         board_id = info.board_id if info is not None else None

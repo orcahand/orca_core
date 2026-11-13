@@ -12,7 +12,9 @@ Asked over the motor port in the window after the motor driver is resolved
 and before the motor client takes the port: the board answers ``ORCA_INFO?``
 and ``ORCA_CAL?`` itself, without putting them on the motor wire. A plain USB
 adapter has no board to answer and its motors ignore the unframed queries, so
-silence is the answer. Nothing here can fail a connect.
+silence is the answer. The one answer that fails a connect is a controller
+board (known by its USB IDs) that stays silent through every retry: filing it
+as a board-less hand would put its files in a folder other hands share.
 
 The calibration store is read whole only when it differs from the copy last
 read (``board.bin`` in the hand's folder): the board reports the store's CRC
@@ -22,6 +24,7 @@ first, so an unchanged store costs one round trip.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -39,9 +42,37 @@ class BoardContact:
 
     info: Optional[OrcaBoardInfo] = None
     store: Optional[bytes] = None
+    # A controller board is behind the port but did not say who it is.
+    silent_board: bool = False
 
 
 NO_BOARD = BoardContact()
+
+# How often a controller board is asked for its identity before it counts as silent.
+IDENTITY_ATTEMPTS = 3
+IDENTITY_RETRY_S = 0.1
+
+
+def is_board_port(port: str) -> bool:
+    """Whether ``port`` is presented by a hand's controller board (by its USB IDs)."""
+    from .hardware.sensing.serial_discovery import oh_board_ports
+
+    try:
+        return port in oh_board_ports()
+    except Exception as exc:
+        logger.debug("could not list serial ports: %s", exc)
+        return False
+
+
+def _answers_legacy_id(link) -> bool:
+    """Whether a board too old to report an identity answers ``ORCA_ID?``."""
+    from .constants import (
+        ORCA_ID_PROBE_TIMEOUT_S, ORCA_ID_QUERY, ORCA_ID_RESP_MOTOR, ORCA_ID_RESP_SENSOR)
+    from .hardware.sensing.serial_discovery import _query_link
+
+    replies = (ORCA_ID_RESP_MOTOR, ORCA_ID_RESP_SENSOR)
+    return _query_link(link, ORCA_ID_PROBE_TIMEOUT_S, ORCA_ID_QUERY,
+                       lambda buf: any(r in buf for r in replies)) is not None
 
 
 def contact_board(
@@ -56,13 +87,22 @@ def contact_board(
     from .board_store import crc16
 
     info = None
+    board = is_board_port(port)
     try:
         import serial
 
         with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE,
                            timeout=0.05, exclusive=True) as link:
-            info = probe_orca_info_over_link(link)
+            for attempt in range(IDENTITY_ATTEMPTS if board else 1):
+                if attempt:
+                    time.sleep(IDENTITY_RETRY_S)
+                info = probe_orca_info_over_link(link)
+                if info is not None:
+                    break
             if info is None:
+                # Firmware older than ORCA_INFO? has no identity to give.
+                if board and not _answers_legacy_id(link):
+                    return BoardContact(silent_board=True)
                 return NO_BOARD
             metadata = board_store_link.read_metadata_over_link(link)
             if metadata is None:
@@ -75,4 +115,4 @@ def contact_board(
                                 store=board_store_link.read_store_over_link(link, metadata))
     except Exception as exc:
         logger.debug("board on %s: %s", port, exc)
-        return BoardContact(info=info)
+        return BoardContact(info=info, silent_board=board and info is None)

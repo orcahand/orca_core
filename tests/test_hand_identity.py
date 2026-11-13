@@ -321,3 +321,64 @@ class TestAskingTheBoard:
     def test_a_port_that_will_not_open_is_no_board_not_a_failure(self, serial_port):
         serial_port["error"] = OSError("busy")
         assert board_sync.contact_board("/dev/cu.usbmodemXXXX") == board_sync.NO_BOARD
+
+
+INFO_LINE = b"ORCA:MOTOR;SIDE=R;HW=210;SN=ser-0000;BID=0123456789ABCDEF\n"
+
+
+class FlakyLink(FakeLink):
+    """A board that drops its first ``drops`` identity replies; ``legacy``
+    answers only the old ORCA_ID? query."""
+
+    def __init__(self, drops, legacy=False):
+        super().__init__(INFO_LINE)
+        self.drops, self.legacy, self.asked = drops, legacy, 0
+
+    def write(self, data):
+        if data.strip() == b"ORCA_ID?" and self.legacy:
+            self.out = b"ORCA:MOTOR\n"
+        elif data.strip() == b"ORCA_INFO?" and not self.legacy:
+            self.asked += 1
+            if self.asked > self.drops:
+                self.out = self.reply
+
+
+class TestABoardThatDoesNotSayWhoItIs:
+    """A dropped identity reply must never file a boarded hand as board-less:
+    that folder is shared by every board-less hand of the model."""
+
+    @pytest.fixture
+    def board_port(self, serial_port, monkeypatch):
+        monkeypatch.setattr(board_sync, "is_board_port", lambda port: True)
+        monkeypatch.setattr(board_sync, "IDENTITY_RETRY_S", 0.0)
+        return serial_port
+
+    def test_a_dropped_reply_is_asked_again(self, board_port):
+        board_port["link"] = link = FlakyLink(drops=2)
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX").info.serial == "ser-0000"
+        assert link.asked == 3
+
+    def test_a_board_silent_every_time_is_reported_as_such(self, board_port):
+        board_port["link"] = FlakyLink(drops=99)
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX").silent_board
+
+    def test_a_board_port_that_will_not_open_is_not_taken_for_no_board(self, board_port):
+        board_port["error"] = OSError("busy")
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX").silent_board
+
+    def test_firmware_with_no_identity_to_give_is_still_a_board_less_hand(self, board_port):
+        board_port["link"] = FlakyLink(drops=0, legacy=True)
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX") == board_sync.NO_BOARD
+
+    def test_a_plain_adapter_is_asked_once(self, serial_port):
+        serial_port["link"] = link = FlakyLink(drops=99)
+        assert board_sync.contact_board("/dev/cu.usbmodemXXXX") == board_sync.NO_BOARD
+        assert link.asked == 1
+
+    def test_the_connect_fails_and_files_nothing(self, make_hand, model_dir, monkeypatch):
+        monkeypatch.setattr(BoardedHand, "contact", board_sync.BoardContact(silent_board=True))
+        hand = BoardedHand(config_path=str(model_dir / "config.yaml"))
+        ok, message = hand.connect()
+        assert not ok and "did not report its identity" in message
+        assert hand.hand_id is None
+        assert not hand_store.hand_dir("noboard-orcahand-right").exists()
