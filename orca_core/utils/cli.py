@@ -53,6 +53,13 @@ def add_hand_arguments(
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
     )
     parser.add_argument(
+        "--motor-port",
+        dest="motor_port",
+        default=None,
+        help="Motor bus device to use (e.g. /dev/cu.usbmodemXXXX) instead of detecting "
+             "it. Only that port is tried: if no motor answers there the run stops.",
+    )
+    parser.add_argument(
         "--hardware-version",
         dest="hardware_version",
         type=int,
@@ -113,6 +120,12 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
     }
     options.update(overrides)
     hand = create_hand(args.config_path, **options)
+    port = getattr(args, "motor_port", None)
+    if port:
+        import dataclasses
+
+        hand.config = dataclasses.replace(hand.config, port=port)
+        hand._board_hint = None
     version = getattr(args, "hardware_version", None)
     if version is not None:
         pin_hardware_version(hand, version)

@@ -768,11 +768,17 @@ class OrcaHand(BaseHand):
         """Open connection to the motor bus.
 
         Resolves (port, motor_type, baudrate) at connect time: the values in
-        ``config.yaml`` win when present; a missing port is auto-detected via
-        USB vendor ID (interactive picker as a last resort) and a missing
-        motor_type/baudrate is found by pinging each candidate family from
+        ``config.yaml`` win when present; ``port: auto`` is auto-detected via
+        the controller board's identity or the USB vendor ID (interactive
+        picker as a last resort) and a missing motor_type/baudrate is found by
+        pinging each candidate family from
         :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Nothing resolved here is
         written back, so every connect re-probes what the yaml leaves unset.
+
+        A port that was named (``port:`` in config.yaml, ``--motor-port``, a
+        board pinned by a front-end) is the only one tried: if no motor answers
+        there the connect fails, rather than auto-detection quietly finding a
+        different hand.
 
         Idempotent: calling ``connect()`` on an already-connected hand is a
         no-op that returns success. Call :meth:`disconnect` first to force a
@@ -780,8 +786,9 @@ class OrcaHand(BaseHand):
 
         Args:
             interactive: When ``False``, skip the terminal port picker that
-                otherwise runs as a last resort, so headless callers (servers,
-                GUIs) get a clean failure instead of a blocking prompt.
+                otherwise runs as a last resort for ``port: auto``, so headless
+                callers (servers, GUIs) get a clean failure instead of a
+                blocking prompt.
             engage_feedback: Accepted for signature parity with the
                 joint-feedback hands; this hand has no loop to engage, so the
                 value is ignored.
@@ -794,14 +801,16 @@ class OrcaHand(BaseHand):
             return True, "Already connected"
 
         existing_config = self.config
-
-        # ``port: auto`` keeps the tracked config hardware-agnostic; if no
-        # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
+        # A port detection found (load_hand) may still give way to the picker;
+        # one somebody named never does.
+        detected = self._board_hint is not None and self._board_hint[0] == first_port
+        named = first_port != "auto" and not detected
+
         unresolved = None
         if first_port == "auto":
-            detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
-            if detected is None:
+            found = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
+            if found is None:
                 # Opening the literal "auto" reports a missing-file error that
                 # reads like a config typo; name the real failure instead.
                 unresolved = (
@@ -810,7 +819,7 @@ class OrcaHand(BaseHand):
                     "(a port held open by another process cannot be probed)"
                 )
             else:
-                first_port = detected
+                first_port = found
 
         error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
@@ -823,14 +832,12 @@ class OrcaHand(BaseHand):
             # ports cannot fix that.
             return False, f"config.yaml is not valid for the motors on {first_port}: {error}"
         logger.warning("Connection failed on %s: %s", first_port, error)
-
-        chosen_port = auto_detect_port(self.config.motor_type)
-        if chosen_port and chosen_port != first_port:
-            if self._try_port(chosen_port, existing_config) is None:
-                return (
-                    True,
-                    f"Connection successful with auto-detected port {chosen_port}",
-                )
+        if named:
+            return False, (
+                f"Connection failed on the pinned port {first_port}: {error}. A pinned "
+                "port is never swapped for another, which could be a different hand; "
+                "check its power and cable, or set port: auto to detect it."
+            )
 
         if not interactive:
             return False, f"Connection failed on {first_port}: {str(error)}"
