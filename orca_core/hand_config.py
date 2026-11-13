@@ -587,7 +587,7 @@ class BaseHandConfig:
         for joint, rom in self.joint_roms_dict.items():
             if joint not in self.joint_ids:
                 raise HandConfigValidationError(f"Joint {joint} in ROMs is not defined.")
-            if len(rom) != 2 or rom[1] - rom[0] <= 0:
+            if not _valid_rom(rom):
                 raise HandConfigValidationError(f"ROM {rom} for joint {joint} is not valid.")
 
         for joint in self.neutral_position:
@@ -1164,7 +1164,7 @@ class OrcaHandConfig(BaseHandConfig):
         for joint, rom in self.joint_roms_v211_dict.items():
             if joint not in self.joint_ids:
                 raise HandConfigValidationError(f"{JOINT_ROMS_V211} names joint {joint!r}, which is not in joint_ids.")
-            if len(rom) != 2 or rom[1] - rom[0] <= 0:
+            if not _valid_rom(rom):
                 raise HandConfigValidationError(f"{JOINT_ROMS_V211}[{joint}] {rom} is not a valid ROM.")
         for key, travel_by_joint in ((JOINT_MOTOR_TRAVEL, self.joint_motor_travel_dict),
                                      (JOINT_MOTOR_TRAVEL_V21, self.joint_motor_travel_v21_dict)):

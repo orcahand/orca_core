@@ -157,6 +157,16 @@ def test_explicit_wrist_calibration_current_is_kept(tmp_path):
     assert config.wrist_calibration_current == 250
 
 
+@pytest.mark.parametrize("key", ["joint_roms", "joint_roms_v211"])
+@pytest.mark.parametrize("bound", [float("-inf"), float("nan")])
+def test_a_range_that_is_not_two_finite_numbers_is_rejected(tmp_path, key, bound):
+    raw = load_config(RIGHT_CONFIG)
+    path = _right_config_with(
+        tmp_path, **{key: {**(raw.get(key) or {}), "index_mcp": [bound, 90.0]}})
+    with pytest.raises(HandConfigValidationError):
+        OrcaHandConfig.from_config_path(config_path=path)
+
+
 @pytest.mark.parametrize(
     "field, value",
     [("calibration_current", 0), ("wrist_calibration_current", -5), ("max_current", 0)],
