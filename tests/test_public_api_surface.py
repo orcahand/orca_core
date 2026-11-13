@@ -85,6 +85,7 @@ ORCA_HAND = BASE_HAND | {
     "connect",
     "disable_torque",
     "disconnect",
+    "dismiss_legacy_files",
     "effective_joint_roms_dict",
     "enable_torque",
     "encoder_backed_joints",

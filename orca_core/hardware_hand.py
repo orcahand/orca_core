@@ -68,6 +68,9 @@ from .joint_position import OrcaJointPositions
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
+LEGACY_KEY = "legacy_files"
+"""hand.yaml key: older per-hand files found when the folder was created, until dismissed."""
+
 KEPT_KEY = "board_calibration_kept"
 """hand.yaml key: the board/computer stamps whose difference the user chose to keep."""
 
@@ -193,7 +196,6 @@ class OrcaHand(BaseHand):
         self._board_info = None
         # (port, BoardContact) already read by detection, so connect need not ask again.
         self._board_hint = None
-        self._legacy_files: list[str] = []
         self._board_store = None
         # Hardware version: what the board reported, what the operator chose for
         # this session (never saved), and a pin written into config.yaml.
@@ -247,9 +249,17 @@ class OrcaHand(BaseHand):
     def legacy_files(self) -> list[str]:
         """Per-hand files an older orca_core kept beside this hand's config,
         found when this hand's folder was first created here. They are not
-        read, copied or touched; list them once to say a fresh calibration is
-        needed. Empty on every later connect."""
-        return list(self._legacy_files)
+        read, copied or touched. Kept in ``hand.yaml`` until
+        :meth:`dismiss_legacy_files`, so whichever front-end comes along first
+        can say once that the hand needs calibrating again."""
+        if not self.hand_dir:
+            return []
+        return list(hand_store.read_hand(self.hand_dir).get(LEGACY_KEY) or [])
+
+    def dismiss_legacy_files(self) -> None:
+        """The notice about :attr:`legacy_files` was shown; stop listing them."""
+        if self.hand_dir and self.legacy_files:
+            hand_store.update_hand(self.hand_dir, **{LEGACY_KEY: []})
 
     @property
     def nickname(self) -> str | None:
@@ -529,15 +539,13 @@ class OrcaHand(BaseHand):
         self._apply_hardware_version()
         if created:
             config_dir = os.path.dirname(getattr(self.config, "config_path", "") or "")
-            self._legacy_files = hand_store.find_legacy_files(config_dir)
-            if self._legacy_files:
+            legacy = hand_store.find_legacy_files(config_dir)
+            if legacy:
+                hand_store.update_hand(folder, **{LEGACY_KEY: legacy})
                 logger.warning(
                     "found per-hand files from an older orca_core beside %s (%s); they are "
                     "not used: this hand's files now live in %s, so calibrate it again",
-                    config_dir, ", ".join(os.path.basename(p) for p in self._legacy_files),
-                    folder)
-        else:
-            self._legacy_files = []
+                    config_dir, ", ".join(os.path.basename(p) for p in legacy), folder)
         self._take_board_store(str(folder), contact.store)
         # The folder is the source of truth: another hand object (an operation's
         # fresh hand) may have calibrated this hand since it was last read.

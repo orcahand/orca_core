@@ -165,9 +165,17 @@ class TestLegacyFiles:
         assert "not used" in caplog.text
         assert not hand.calibrated, "an old calibration beside the config is never read"
         assert (model_dir / "calibration.yaml").read_text() == "calibrated: true\n"
-        hand.disconnect()
-        hand.connect()
-        assert hand.legacy_files == []
+        # Still listed for whichever front-end connects next, until dismissed.
+        again = make_hand(board())
+        assert len(again.legacy_files) == 2
+        again.dismiss_legacy_files()
+        assert make_hand(board()).legacy_files == []
+        assert (model_dir / "calibration.yaml").exists()
+
+    def test_only_looked_for_when_the_folder_is_created(self, make_hand, model_dir):
+        make_hand(board())
+        (model_dir / "setup.yaml").write_text("{}\n")
+        assert make_hand(board()).legacy_files == []
 
     def test_none_without_old_files(self, make_hand):
         assert make_hand(board()).legacy_files == []
