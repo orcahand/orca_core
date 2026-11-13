@@ -192,6 +192,39 @@ def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> Non
         prompt_hardware_version(hand, ask)
 
 
+def load_stored_calibration(hand, hand_id: str | None = None) -> str:
+    """Load a hand's stored calibration without connecting to it.
+
+    ``hand_id`` names the hand's folder; without it, the one hand of this model
+    with a calibration on this computer is used. Returns the hand id.
+
+    Raises:
+        ValueError: no such hand, or several to choose from (they are listed).
+    """
+    from orca_core import CalibrationResult, hand_store
+
+    if hand_id is None:
+        model = hand._model_name()
+        candidates = [
+            h["id"] for h in hand_store.known_hands()
+            if h.get("model") == model
+            and (hand_store.hand_dir(h["id"]) / hand_store.CALIBRATION_FILE).exists()
+        ]
+        if len(candidates) != 1:
+            known = ", ".join(candidates) or "none"
+            raise ValueError(
+                f"name the hand with --hand-id; calibrated {model} hands on this "
+                f"computer: {known}")
+        hand_id = candidates[0]
+    path = hand_store.hand_dir(hand_id) / hand_store.CALIBRATION_FILE
+    if not path.exists():
+        raise ValueError(f"no calibration kept for hand {hand_id} ({path})")
+    hand.calibration = CalibrationResult.from_calibration_path(
+        str(path), hand.config.motor_ids, config=hand.config)
+    print(f"Using the calibration of hand {hand_id} in {path}")
+    return hand_id
+
+
 def push_calibration_to_board(hand) -> bool:
     """Keep this hand's fresh calibration on the hand's own board too.
 

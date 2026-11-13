@@ -10,7 +10,7 @@ def main() -> int:
     parser.add_argument(
         "--force-calibrate",
         action="store_true",
-        help="Run calibration even if calibration.yaml already exists.",
+        help="Run calibration even if the hand is already calibrated.",
     )
     parser.add_argument("--num-steps", type=int, default=NUM_STEPS)
     parser.add_argument("--step-size", type=float, default=STEP_SIZE)
