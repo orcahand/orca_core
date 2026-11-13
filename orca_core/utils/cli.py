@@ -7,7 +7,6 @@
 # ==============================================================================
 """Shared CLI helpers for the operator scripts and examples."""
 
-import logging
 import sys
 import time
 from argparse import ArgumentParser, Namespace
@@ -22,8 +21,6 @@ from orca_core.hand_config import format_hardware_version
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import JointEncoderClient
 from orca_core.hardware.sensing.serial_discovery import board_info_for_port, resolve_sensing_ports
-
-logger = logging.getLogger(__name__)
 
 
 def add_hand_arguments(

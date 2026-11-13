@@ -200,7 +200,6 @@ class OrcaHand(BaseHand):
         self._measured_range_joints: frozenset = frozenset()
         self._hand_id: str | None = None
         self._board_hand_id: str | None = None
-        self._board_info = None
         # (port, BoardContact) already read by detection, so connect need not ask again.
         self._board_hint = None
         # config.port holds the device a connect resolved; what was configured
@@ -569,7 +568,7 @@ class OrcaHand(BaseHand):
             # A different hand: versions known for the last one are not this one's.
             self._hardware_version_override = None
             self._board_hardware_version = None
-        self._hand_id, self._board_hand_id, self._board_info = hand_id, from_board, info
+        self._hand_id, self._board_hand_id = hand_id, from_board
         if info is not None:
             self._board_hardware_version = normalize_hardware_version(info.hw_version)
         self._apply_hardware_version()
@@ -1055,7 +1054,7 @@ class OrcaHand(BaseHand):
 
     # Everything a connect derives from which hand it is talking to.
     _IDENTITY_STATE = (
-        "_hand_id", "_board_hand_id", "_board_info", "_board_store",
+        "_hand_id", "_board_hand_id", "_board_store",
         "_board_hardware_version", "_hardware_version_override",
         "_joint_ranges", "_joint_ranges_measured_at", "_measured_range_joints",
         "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
@@ -2472,7 +2471,7 @@ class MockMotorResolutionMixin:
         folder.mkdir(parents=True, exist_ok=True)
         if not (folder / hand_store.HAND_FILE).exists():
             hand_store.record_contact(folder, hand_id, model=self._model_name())
-        self._hand_id, self._board_hand_id, self._board_info = hand_id, None, None
+        self._hand_id, self._board_hand_id = hand_id, None
         self._use_folder(str(folder))
 
     def _install_mock_calibration(self) -> None:

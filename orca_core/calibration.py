@@ -9,7 +9,6 @@
 import dataclasses
 import math
 import numbers
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -18,8 +17,6 @@ from .utils.utils import read_yaml
 
 if TYPE_CHECKING:
     from .hand_config import OrcaHandConfig
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

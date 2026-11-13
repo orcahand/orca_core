@@ -44,7 +44,6 @@ calibration produced, with no digits lost in between.
 
 from __future__ import annotations
 
-import logging
 import struct
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -61,7 +60,6 @@ _SECTION_BYTES = struct.calcsize(_SECTION_FMT)
 # OpenRB-150 linker script, the authority). A packed store must fit one slot.
 SLOT_BYTES = 0x4000
 
-logger = logging.getLogger(__name__)
 
 FLAG_CALIBRATED = 1 << 0
 FLAG_WRIST_CALIBRATED = 1 << 1

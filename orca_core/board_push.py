@@ -55,7 +55,7 @@ class PushResult:
     blob: Optional[bytes] = None
 
 
-def firmware_tool(repo: Optional[Path] = None) -> Optional[Path]:
+def firmware_tool() -> Optional[Path]:
     """The firmware repo's store tool, if this machine has a checkout.
 
     ``ORCA_FIRMWARE_REPO`` points at one explicitly and is then the only place
@@ -63,7 +63,7 @@ def firmware_tool(repo: Optional[Path] = None) -> Optional[Path]:
     sibling repos sit on a dev machine. None when there is none -- the ordinary
     case for an installed wheel.
     """
-    pinned = repo if repo is not None else os.environ.get(FIRMWARE_REPO_ENV)
+    pinned = os.environ.get(FIRMWARE_REPO_ENV)
     if pinned:
         where = Path(pinned)
     else:
@@ -141,8 +141,6 @@ def push(
     hand_id: str,
     port: str,
     calibration: Mapping[str, Any],
-    *,
-    repo: Optional[Path] = None,
 ) -> PushResult:
     """Write ``calibration`` onto the board on ``port``, keyed as ``hand_id``.
 
@@ -151,7 +149,7 @@ def push(
     written is still a calibrated hand, and the reason comes back in the
     result for the caller to report.
     """
-    tool = firmware_tool(repo)
+    tool = firmware_tool()
     if tool is None:
         return PushResult(False, "no orca_firmware checkout on this computer")
 
@@ -198,7 +196,7 @@ def push(
     return PushResult(True, sequence=sequence + 1, size=len(blob), blob=blob)
 
 
-def push_for_hand(hand, *, repo: Optional[Path] = None) -> PushResult:
+def push_for_hand(hand) -> PushResult:
     """Write what this hand's calibration file says onto this hand's board.
 
     Skipped, not failed, when there is nothing to write to: a hand on a plain
@@ -217,7 +215,7 @@ def push_for_hand(hand, *, repo: Optional[Path] = None) -> PushResult:
         return PushResult(False, "there is no calibration to write")
     document = dict(document)
     document["joint_to_motor_ratios"] = dict(hand.calibration.joint_to_motor_ratios_dict)
-    result = push(hand.hand_id, port, document, repo=repo)
+    result = push(hand.hand_id, port, document)
     if result.written:
         hand._remember_board_store(result.blob)
     return result
