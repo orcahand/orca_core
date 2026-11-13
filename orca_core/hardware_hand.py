@@ -680,6 +680,9 @@ class OrcaHand(BaseHand):
         self._derived_for = self._derivation_key(self.config)
         self._calibration = result
         self._uncalibrated_warned.clear()
+        # Wrap offsets were judged against the limits in force before; the next
+        # motor conversion detects them again against these.
+        self._wrap_offsets_dict = None
 
     def _load_calibration(self, path: str | None) -> None:
         """Make the calibration document at ``path`` (none: empty) the stored
@@ -692,9 +695,6 @@ class OrcaHand(BaseHand):
         fingerprint = doc.get(FINGERPRINT)
         self._stored_fingerprint = fingerprint if isinstance(fingerprint, dict) else None
         self._derive_calibration()
-        # Wrap offsets were judged against the old limits; the next motor
-        # conversion detects them again against these.
-        self._wrap_offsets_dict = None
 
     def _calibration_file(self, create: bool = False) -> str:
         """The calibration file this hand reads and writes (``""`` while not

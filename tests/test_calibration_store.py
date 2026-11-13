@@ -223,6 +223,17 @@ class TestOneCalibrationOfUndo:
         hand.get_joint_position()
         assert set(hand._wrap_offsets_dict.values()) == {0.0}
 
+    def test_a_config_change_that_rederives_the_calibration_rechecks_wrap_offsets(
+            self, model_dir):
+        import math
+
+        hand = self.calibrated_hand(model_dir("orcahand-left"))
+        hand.calibrate(persist=True)
+        hand._wrap_offsets_dict = {m: 2 * math.pi for m in hand.config.motor_ids}
+        hand.set_hardware_version(210)
+        hand.get_joint_position()
+        assert set(hand._wrap_offsets_dict.values()) == {0.0}
+
     def test_with_nothing_to_restore_it_says_so(self, model_dir):
         hand = self.calibrated_hand(model_dir())
         hand.calibrate(persist=True)
