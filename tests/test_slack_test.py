@@ -150,6 +150,24 @@ def test_every_motor_is_off_while_a_joint_is_held_and_after_the_test(real_mode_c
     assert _torqued(hand) == []
 
 
+def test_torque_goes_off_when_the_exit_mode_change_raises(real_mode_change, spooled, monkeypatch):
+    hand, _ = spooled
+    set_mode, calls, events = hand.set_control_mode, [], []
+
+    def set_control_mode(mode, motor_ids=None):
+        calls.append(mode)
+        set_mode(mode, motor_ids)
+        if len(calls) > 1:
+            raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    with pytest.raises(OSError):
+        run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(),
+                       progress_callback=events.append)
+    assert len(calls) == 2
+    assert _torqued(hand) == []
+
+
 def test_a_feetech_spool_stopped_by_its_position_range_fails_instead_of_passing(
         connected_feetech_mock_hand, monkeypatch):
     hand, spools = _with_spools(connected_feetech_mock_hand, monkeypatch)

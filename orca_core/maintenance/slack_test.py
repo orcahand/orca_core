@@ -42,6 +42,7 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION
 from .motor_reads import read_motor_pos_checked
+from .release import release_hand
 from .joint_motion import DIRECTIONS, Clock, finger_joints, joint_sense
 
 if TYPE_CHECKING:
@@ -200,8 +201,8 @@ def run_slack_test(
 
     def _restore() -> None:
         # A mode change leaves torque on, on every family: switch mode first.
-        hand.set_control_mode(control_mode, all_present)
-        hand.disable_torque()
+        release_hand(hand, lambda: hand.set_control_mode(control_mode, all_present),
+                     routine="slack test", progress_callback=progress_callback)
         hand.set_max_current(config.max_current)
 
     def _check() -> None:
