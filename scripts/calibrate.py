@@ -9,6 +9,7 @@ from orca_core.utils.cli import (
     create_hand_from_args,
     open_encoder_stream,
     print_calibration_progress,
+    push_calibration_to_board,
     select_joints,
     shutdown_hand,
 )
@@ -81,6 +82,15 @@ def main():
         print(f"Failed to connect to the hand: {e}")
         sys.exit(1)
     print(f"Motor family: {hand.config.motor_type} @ {hand.config.baudrate} bps")
+    if hand.hand_id:
+        print(f"Calibrating hand {hand.hand_id} (files in {hand.hand_dir}).")
+
+    finished = []
+
+    def progress(event):
+        if event.get("event") == "calibration_done":
+            finished.append(event)
+        print_calibration_progress(event)
 
     client = None
     streams = ExitStack()
@@ -106,13 +116,18 @@ def main():
             force_wrist=args.force_wrist,
             joints=joints,
             joint_encoder_client=client,
-            progress_callback=print_calibration_progress,
+            progress_callback=progress,
         )
     except KeyboardInterrupt:
         print("\nCalibration interrupted.")
     finally:
         streams.close()
         shutdown_hand(hand)
+
+    # The board is written once the hand has let go of the port: the tool that
+    # writes it opens the port itself.
+    if finished and not args.mock:
+        push_calibration_to_board(hand)
 
 
 if __name__ == "__main__":

@@ -72,6 +72,8 @@ BASE_HAND = frozenset({
 ORCA_HAND = BASE_HAND | {
     "absent_joints",
     "absent_motor_ids",
+    "adopt_board_calibration",
+    "board_calibration_newer",
     "board_hand_id",
     "board_hardware_version",
     "calibrate",
@@ -103,6 +105,7 @@ ORCA_HAND = BASE_HAND | {
     "last_read_ok",
     "is_connected",
     "jitter",
+    "keep_computer_calibration",
     "joint_ranges_info",
     "legacy_files",
     "joint_to_motor_ratios_dict",

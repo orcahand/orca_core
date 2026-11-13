@@ -192,6 +192,25 @@ def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> Non
         prompt_hardware_version(hand, ask)
 
 
+def push_calibration_to_board(hand) -> bool:
+    """Keep this hand's fresh calibration on the hand's own board too.
+
+    Call once the hand has released its port, after a successful run on a real
+    hand. Needs an orca_firmware checkout (``ORCA_FIRMWARE_REPO``, or beside
+    orca_core); without one, or on a hand with no board, nothing is written and
+    the run is still complete: the hand's folder holds its calibration.
+    """
+    from ..board_push import push_for_hand
+
+    result = push_for_hand(hand)
+    if result.written:
+        print(f"Calibration also written to the hand's own board "
+              f"(store sequence {result.sequence}, {result.size} bytes).")
+    elif result.reason:
+        print(f"Calibration kept on this computer only: {result.reason}.")
+    return result.written
+
+
 def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
     """Connect, then settle the hardware version (see :func:`settle_hardware_version`)."""
     success, message = hand.connect(interactive=interactive)

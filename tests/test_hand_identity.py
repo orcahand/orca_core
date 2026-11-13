@@ -201,20 +201,20 @@ class TestMockHands:
 
 
 class TestDetectionIsReusedAtConnect:
-    def test_the_identity_detection_read_is_used_for_the_same_port(self, model_dir, monkeypatch):
-        def must_not_probe(port):
-            raise AssertionError("connect asked the board again")
+    def test_a_plain_adapter_detection_found_is_not_asked_again(self, model_dir, monkeypatch):
+        def must_not_probe(port, **kwargs):
+            raise AssertionError("connect asked a plain adapter for a board")
 
         monkeypatch.setattr(board_sync, "contact_board", must_not_probe)
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
-        hand._board_hint = ("/dev/cu.usbmodemXXXX", board())
-        assert hand._contact_board("/dev/cu.usbmodemXXXX").info.serial == "ser-0000"
+        hand._board_hint = ("/dev/cu.usbmodemXXXX", board_sync.NO_BOARD)
+        assert hand._contact_board("/dev/cu.usbmodemXXXX") == board_sync.NO_BOARD
 
-    def test_another_port_is_asked(self, model_dir, monkeypatch):
-        monkeypatch.setattr(board_sync, "contact_board", lambda port: board("ser-0009"))
+    def test_a_board_is_asked_again_for_its_calibration_store(self, model_dir, monkeypatch):
+        monkeypatch.setattr(board_sync, "contact_board", lambda port, **kw: board("ser-0009"))
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
         hand._board_hint = ("/dev/cu.usbmodemXXXX", board())
-        assert hand._contact_board("/dev/cu.usbmodemYYYY").info.serial == "ser-0009"
+        assert hand._contact_board("/dev/cu.usbmodemXXXX").info.serial == "ser-0009"
 
 
 class FakeLink:

@@ -140,18 +140,23 @@ def save(
     return doc
 
 
-def adopt(path: str, document: Mapping[str, Any], *, source: str) -> Dict[str, Any]:
+def adopt(
+    path: str, document: Mapping[str, Any], *, source: str, keep_sequence: bool = False
+) -> Dict[str, Any]:
     """Make ``document`` (a whole calibration from elsewhere, e.g. a hand's board)
     the calibration at ``path``, keeping the one it replaces as previous.
 
-    Its ``calibrated_at`` is kept; ``sequence`` continues this file's count.
+    Its ``calibrated_at`` is kept, and its ratios dropped. ``sequence`` counts
+    on from the higher of the two, or is kept as it is with ``keep_sequence``
+    (a first copy, where there is nothing here to count on from).
     """
     current = read_document(path)
     doc = {k: v for k, v in document.items() if k != JOINT_TO_MOTOR_RATIOS}
     if os.path.exists(path):
         with open(path, encoding="utf-8") as file:
             write_text_atomic(previous_path(path), file.read())
-    doc[SEQUENCE] = max(stamp_of(current)["sequence"], stamp_of(document)["sequence"]) + 1
+    theirs = stamp_of(document)["sequence"]
+    doc[SEQUENCE] = theirs if keep_sequence else max(stamp_of(current)["sequence"], theirs) + 1
     doc[SOURCE] = source
     write_doc(path, doc)
     return doc

@@ -10,16 +10,20 @@
 
 Asked over the motor port in the window after the motor driver is resolved
 and before the motor client takes the port: the board answers ``ORCA_INFO?``
-itself, without putting it on the motor wire. A plain USB adapter has no board
-to answer and its motors ignore the unframed query, so silence is the answer.
-Nothing here can fail a connect.
+and ``ORCA_CAL?`` itself, without putting them on the motor wire. A plain USB
+adapter has no board to answer and its motors ignore the unframed queries, so
+silence is the answer. Nothing here can fail a connect.
+
+The calibration store is read whole only when it differs from the copy last
+read (``board.bin`` in the hand's folder): the board reports the store's CRC
+first, so an unchanged store costs one round trip.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .constants import ORCA_ID_PROBE_BAUDRATE
 from .hardware.sensing.serial_discovery import OrcaBoardInfo, probe_orca_info_over_link
@@ -29,23 +33,46 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BoardContact:
-    """The board's identity (``None`` for no board) as read at connect."""
+    """What the board said at connect: its identity (``None`` for no board) and
+    the bytes of its calibration store (``None`` when it holds none, or could
+    not be read)."""
 
     info: Optional[OrcaBoardInfo] = None
+    store: Optional[bytes] = None
 
 
 NO_BOARD = BoardContact()
 
 
-def contact_board(port: str) -> BoardContact:
-    """Ask the board behind ``port`` who it is; :data:`NO_BOARD` when nothing answers."""
+def contact_board(
+    port: str, cached_store: Optional[Callable[[OrcaBoardInfo], Optional[bytes]]] = None
+) -> BoardContact:
+    """Ask the board behind ``port`` who it is and what calibration it holds.
+
+    ``cached_store(info)`` returns the store as last read for that board; when
+    its CRC matches what the board reports, it is used instead of a full read.
+    """
+    from . import board_store_link
+    from .board_store import crc16
+
+    info = None
     try:
         import serial
 
         with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE,
                            timeout=0.05, exclusive=True) as link:
             info = probe_orca_info_over_link(link)
+            if info is None:
+                return NO_BOARD
+            metadata = board_store_link.read_metadata_over_link(link)
+            if metadata is None:
+                return BoardContact(info=info)
+            cached = cached_store(info) if cached_store is not None else None
+            if cached is not None and len(cached) == metadata.length \
+                    and crc16(cached) == metadata.crc:
+                return BoardContact(info=info, store=cached)
+            return BoardContact(info=info,
+                                store=board_store_link.read_store_over_link(link, metadata))
     except Exception as exc:
-        logger.debug("no board identity on %s: %s", port, exc)
-        return NO_BOARD
-    return BoardContact(info=info)
+        logger.debug("board on %s: %s", port, exc)
+        return BoardContact(info=info)

@@ -286,6 +286,15 @@ def set_nickname(folder: os.PathLike | str, nickname: Optional[str]) -> Dict[str
     return doc
 
 
+def update_hand(folder: os.PathLike | str, **values: Any) -> Dict[str, Any]:
+    """Set keys of the ``hand.yaml`` in ``folder``, keeping the rest."""
+    folder = Path(folder)
+    doc = read_hand(folder)
+    doc.update(values)
+    write_doc(folder / HAND_FILE, doc)
+    return doc
+
+
 def known_hands() -> List[Dict[str, Any]]:
     """Every hand this computer has a folder for, as its ``hand.yaml`` (plus ``folder``)."""
     root = hands_dir()

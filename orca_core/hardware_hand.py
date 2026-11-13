@@ -68,6 +68,23 @@ from .joint_position import OrcaJointPositions
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
 
+KEPT_KEY = "board_calibration_kept"
+"""hand.yaml key: the board/computer stamps whose difference the user chose to keep."""
+
+
+def _instant(stamp: str):
+    """A ``calibrated_at`` stamp as something comparable."""
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return (0, str(stamp))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (1, when.timestamp())
+
+
 def _with_measured_ranges(config: OrcaHandConfig, roms: dict) -> OrcaHandConfig:
     """``config`` with the ranges measured on this hand in force for these joints,
     for both the clamp and the calibration mapping. The one call site of
@@ -177,6 +194,7 @@ class OrcaHand(BaseHand):
         # (port, BoardContact) already read by detection, so connect need not ask again.
         self._board_hint = None
         self._legacy_files: list[str] = []
+        self._board_store = None
         # Hardware version: what the board reported, what the operator chose for
         # this session (never saved), and a pin written into config.yaml.
         self._board_hardware_version: int | None = None
@@ -250,6 +268,114 @@ class OrcaHand(BaseHand):
         if not self.hand_dir:
             raise RuntimeError("connect the hand first: its folder is not known yet")
         return hand_store.set_nickname(self.hand_dir, nickname).get("nickname")
+
+    # ------------------------------------------------------------------
+    # The calibration kept on the hand's own board
+    # ------------------------------------------------------------------
+
+    def _take_board_store(self, folder: str, blob: bytes | None) -> None:
+        """Keep what the board held at connect, and on first contact with this
+        hand on this computer make the board's calibration this computer's."""
+        from . import board_store
+
+        self._board_store = None
+        if not blob:
+            return
+        try:
+            store = board_store.unpack(blob)
+        except board_store.BoardStoreError as exc:
+            logger.warning("the calibration store on this hand's board cannot be read "
+                           "by this orca_core (%s); it is not used", exc)
+            return
+        self._board_store = store
+        self._write_board_cache(folder, blob)
+        path = os.path.join(folder, hand_store.CALIBRATION_FILE)
+        if self._explicit_calibration or os.path.exists(path) \
+                or not store.calibration.get("motor_limits"):
+            return
+        calibration_store.adopt(path, store.calibration, source="board", keep_sequence=True)
+        logger.info("first contact with this hand here: its calibration was copied from "
+                    "its board into %s", path)
+
+    @staticmethod
+    def _write_board_cache(folder: str, blob: bytes) -> None:
+        from .utils.utils import write_bytes_atomic
+
+        cache = os.path.join(folder, hand_store.BOARD_STORE_FILE)
+        try:
+            with open(cache, "rb") as file:
+                if file.read() == blob:
+                    return
+        except OSError:
+            pass
+        try:
+            write_bytes_atomic(cache, blob)
+        except OSError as exc:
+            logger.debug("could not keep the board's store in %s: %s", cache, exc)
+
+    def _remember_board_store(self, blob: bytes) -> None:
+        """The board now holds ``blob`` (it was just written)."""
+        from . import board_store
+
+        self._board_store = board_store.unpack(blob)
+        if self.hand_dir:
+            self._write_board_cache(self.hand_dir, blob)
+
+    def _board_and_computer_stamps(self):
+        store = getattr(self, "_board_store", None)
+        if store is None:
+            return None
+        board = calibration_store.stamp_of(store.calibration)
+        if not board["calibrated_at"]:
+            return None
+        return {"board": board, "computer": dict(self._calibration_doc_stamp)}
+
+    def board_calibration_newer(self) -> dict | None:
+        """Whether the hand's board holds a newer calibration than this computer.
+
+        Answers from what the board held at connect; never talks to the board.
+        Returns ``{"board": {"sequence", "calibrated_at"}, "computer": {...}}``
+        when the board's ``calibrated_at`` is later than the computer's (or the
+        computer has none), else ``None``. Also ``None`` while
+        :meth:`keep_computer_calibration` has been chosen for exactly this pair.
+        """
+        stamps = self._board_and_computer_stamps()
+        if stamps is None:
+            return None
+        computer_at = stamps["computer"]["calibrated_at"]
+        if computer_at and _instant(stamps["board"]["calibrated_at"]) <= _instant(computer_at):
+            return None
+        if self.hand_dir and hand_store.read_hand(self.hand_dir).get(KEPT_KEY) == stamps:
+            return None
+        return stamps
+
+    def keep_computer_calibration(self) -> dict | None:
+        """Stop :meth:`board_calibration_newer` reporting this board calibration
+        until either side's calibration changes. Saves the pair of stamps in
+        ``hand.yaml`` and returns it (``None`` when the board has none)."""
+        stamps = self._board_and_computer_stamps()
+        if stamps is None or not self.hand_dir:
+            return None
+        hand_store.update_hand(self.hand_dir, **{KEPT_KEY: stamps})
+        return stamps
+
+    def adopt_board_calibration(self) -> dict:
+        """Make the calibration the board held at connect this computer's; the
+        one it replaces becomes the previous calibration. Returns
+        :attr:`calibration_info`.
+
+        Raises:
+            RuntimeError: the board held no calibration at connect.
+        """
+        store = getattr(self, "_board_store", None)
+        if store is None or not store.calibration.get("motor_limits"):
+            raise RuntimeError("this hand's board held no calibration when it connected")
+        path = self._calibration_file(create=True)
+        calibration_store.adopt(path, store.calibration, source="board")
+        self._load_calibration(path)
+        self._sanity_check()
+        logger.info("the board's calibration is now this hand's, in %s", path)
+        return self.calibration_info
 
     # ------------------------------------------------------------------
     # Hardware version
@@ -360,9 +486,20 @@ class OrcaHand(BaseHand):
 
     def _contact_board(self, port: str) -> "board_sync.BoardContact":
         hint = self._board_hint
-        if hint is not None and hint[0] == port:
+        if hint is not None and hint[0] == port and hint[1].info is None:
+            # Detection already found a plain adapter here: no board to ask.
             return hint[1]
-        return board_sync.contact_board(port)
+        return board_sync.contact_board(port, cached_store=self._cached_board_store)
+
+    @staticmethod
+    def _cached_board_store(info) -> bytes | None:
+        hand_id = hand_store.resolve_hand_id(info.serial, info.board_id)
+        if hand_id is None:
+            return None
+        try:
+            return (hand_store.hand_dir(hand_id) / hand_store.BOARD_STORE_FILE).read_bytes()
+        except OSError:
+            return None
 
     def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
         """Decide which physical hand this is and point its files at its folder."""
@@ -401,6 +538,7 @@ class OrcaHand(BaseHand):
                     folder)
         else:
             self._legacy_files = []
+        self._take_board_store(str(folder), contact.store)
         # The folder is the source of truth: another hand object (an operation's
         # fresh hand) may have calibrated this hand since it was last read.
         self._use_folder(str(folder), reload=True)
