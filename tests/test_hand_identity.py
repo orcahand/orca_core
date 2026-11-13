@@ -4,6 +4,7 @@ The hands here run the real identity path (the board's answer at connect)
 over mock motors, so no serial port is opened.
 """
 
+import dataclasses
 import functools
 import os
 from pathlib import Path
@@ -274,6 +275,37 @@ class TestACalibrationFromANewerOrcaCore:
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"), calibration_path=str(path))
         assert not hand.calibrated
         assert read_yaml(str(path))["calibrated"] is True
+
+
+class TestASensorsOnlyConnect:
+    """Motors unpowered: the board still says which hand it is on the motor port."""
+
+    @pytest.fixture
+    def touch_hand(self, tmp_path, monkeypatch):
+        from orca_core import OrcaHandTouch
+
+        folder = tmp_path / "orcahand-touch-right"
+        folder.mkdir()
+        copy_model_config(os.path.join(os.path.dirname(MODEL), "orcahand-touch-right",
+                                       "config.yaml"), folder / "config.yaml")
+        monkeypatch.setattr(OrcaHandTouch, "_connect_sensor_with_fallback",
+                            lambda self: (True, "Sensor connected"))
+        hand = OrcaHandTouch(config_path=str(folder / "config.yaml"))
+        hand.config = dataclasses.replace(hand.config, port="/dev/cu.usbmodemXXXX")
+        return hand
+
+    def test_settles_which_hand_it_is(self, touch_hand, monkeypatch):
+        monkeypatch.setattr(board_sync, "contact_board", lambda port, **kw: board("ser-0001"))
+        assert touch_hand.connect_sensors_only()[0]
+        assert touch_hand.hand_id == "ser-0001" and touch_hand.hardware_version == 210
+        assert touch_hand.config.calibration_path == str(
+            hand_store.hand_dir("ser-0001") / "calibration.yaml")
+
+    def test_a_silent_board_fails_it(self, touch_hand, monkeypatch):
+        monkeypatch.setattr(board_sync, "contact_board",
+                            lambda port, **kw: board_sync.BoardContact(silent_board=True))
+        ok, message = touch_hand.connect_sensors_only()
+        assert not ok and touch_hand.hand_id is None
 
 
 class TestExplicitCalibrationPath:

@@ -248,8 +248,15 @@ class OrcaHandTouch(OrcaHand):
 
         Useful for sensor bring-up and testing on a hand whose motors are not
         powered. After this call, tactile methods work; motor-control methods
-        will fail because the motor client is not initialised.
+        will fail because the motor client is not initialised. A hand that does
+        not know its folder yet asks its board which hand it is first, so its
+        tactile zero and calibration are read from (and kept in) its own folder.
         """
+        if not self.hand_dir:
+            try:
+                self._settle_identity_without_motors()
+            except ConnectionError as exc:
+                return False, str(exc)
         return self._connect_sensor_with_fallback()
 
     def disconnect(self) -> tuple[bool, str]:

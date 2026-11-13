@@ -575,6 +575,39 @@ def test_check_encoder_signs_runs_against_the_mock(monkeypatch, capsys):
     assert "Stopped." in out
 
 
+def test_check_encoder_signs_reads_the_anchors_once_connected(monkeypatch, capsys):
+    """A real hand reads its folder's calibration at connect, not before."""
+    import dataclasses
+
+    module = _load("scripts/check_encoder_signs.py")
+    monkeypatch.setattr(
+        sys, "argv", ["check_encoder_signs.py", "--mock", "--model-name", "orcahand-joint-right"]
+    )
+    build = module.create_hand_from_args
+
+    def create(args, **kwargs):
+        hand = build(args, **kwargs)
+        anchored = hand.calibration
+        hand.calibration = dataclasses.replace(anchored, joint_encoder_calibration_dict={})
+        open_bus = hand._create_motor_client
+
+        def read_the_folder_then_open_the_bus():
+            hand.calibration = anchored
+            return open_bus()
+
+        hand._create_motor_client = read_the_folder_then_open_the_bus
+        return hand
+
+    def stop(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module, "create_hand_from_args", create)
+    monkeypatch.setattr(module, "_render", lambda *a, **k: "")
+    monkeypatch.setattr(module, "time", SimpleNamespace(sleep=stop))
+    module.main()
+    assert "No encoder anchor" not in capsys.readouterr().out
+
+
 class TestEngageFlagsSelectTheClass:
     """The two engage_* flags are what a front-end uses to withhold a link it
     would otherwise open; they must actually change the class that is built."""

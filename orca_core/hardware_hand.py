@@ -569,6 +569,18 @@ class OrcaHand(BaseHand):
         # fresh hand) may have calibrated this hand since it was last read.
         self._use_folder(str(folder), reload=True)
 
+    def _settle_identity_without_motors(self) -> None:
+        """Settle which hand this is without opening the motor bus: the board
+        answers on the motor port whether or not the motors have power.
+
+        Raises:
+            ConnectionError: a controller board there never said which hand it is.
+        """
+        port = self.config.port
+        if port == "auto":
+            port = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
+        self._settle_identity(self._contact_board(port) if port else board_sync.NO_BOARD)
+
     def _use_stored_hand(self, hand_id: str) -> str:
         """Take the files of the hand filed under ``hand_id`` without connecting:
         its joint ranges and calibration, under the hardware version its board
