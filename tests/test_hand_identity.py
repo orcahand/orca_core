@@ -382,3 +382,38 @@ class TestABoardThatDoesNotSayWhoItIs:
         assert not ok and "did not report its identity" in message
         assert hand.hand_id is None
         assert not hand_store.hand_dir("noboard-orcahand-right").exists()
+
+
+class TestNowhereToKeepTheCalibration:
+    """An ORCA_HOME that cannot be written is said before a calibration moves
+    anything, not as an IsADirectoryError half way through it."""
+
+    @pytest.fixture
+    def unwritable_home(self, tmp_path, monkeypatch):
+        blocker = tmp_path / "not-a-folder"
+        blocker.write_text("")
+        monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(blocker))
+        return blocker
+
+    def test_calibrating_refuses_before_any_motion(self, make_hand, unwritable_home, monkeypatch,
+                                                    caplog):
+        from orca_core import hardware_hand
+
+        hand = make_hand(board())
+        assert hand.hand_dir is None and "will not be kept" in caplog.text
+        monkeypatch.setattr(hardware_hand, "run_calibration",
+                            lambda *a, **k: pytest.fail("the routine ran"))
+        with pytest.raises(OSError, match="ORCA_HOME"):
+            hand.calibrate(persist=True)
+        assert hand.hand_id is None, "a boarded hand is never re-filed as board-less"
+
+    def test_a_hand_that_never_connected_says_so_too(self, model_dir, unwritable_home):
+        hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
+        with pytest.raises(OSError, match="ORCA_HOME"):
+            hand.set_rom_frame("centered")
+
+    def test_an_explicit_file_in_a_folder_still_to_be_made_is_fine(self, make_hand, tmp_path):
+        target = tmp_path / "new" / "deeper" / "mine.yaml"
+        hand = make_hand(board(), calibration_path=str(target))
+        hand.calibrate(persist=True)
+        assert read_yaml(str(target))["calibrated"] is True

@@ -667,10 +667,29 @@ class OrcaHand(BaseHand):
     def _calibration_file(self, create: bool = False) -> str:
         """The calibration file this hand reads and writes (``""`` while not
         known). ``create`` settles the folder of a hand that never connected,
-        so a write always has somewhere to go."""
-        if create and not self.config.calibration_path:
+        so a write always has somewhere to go.
+
+        Raises:
+            OSError: with ``create``, when there is nowhere to write it (the
+                hand folder could not be made under ORCA_HOME, or the file's
+                folder is not writable).
+        """
+        if create and not self.config.calibration_path and not self.is_connected():
+            # A connected hand already tried its own folder; never re-file it as board-less.
             self._settle_identity(board_sync.NO_BOARD)
-        return self.config.calibration_path
+        path = self.config.calibration_path
+        if create:
+            folder = os.path.dirname(os.path.abspath(path)) if path else ""
+            existing = folder
+            while existing and not os.path.isdir(existing) and os.path.dirname(existing) != existing:
+                existing = os.path.dirname(existing)  # the write makes the folders below it
+            if not path or not os.access(existing, os.W_OK):
+                raise OSError(
+                    "this hand's calibration has nowhere to be kept: "
+                    f"{folder or 'no hand folder could be made under ' + str(hand_store.orca_home())}"
+                    " is not writable. Point ORCA_HOME at a writable folder (or pass a "
+                    "writable calibration_path) and reconnect.")
+        return path
 
     def _save_calibration(
         self,
@@ -1768,6 +1787,9 @@ class OrcaHand(BaseHand):
         """
         if persist is None:
             persist = self._persist_calibration
+        if persist:
+            # Before any motor moves: a run whose result cannot be kept is wasted.
+            self._calibration_file(create=True)
         self._dispatch_task(
             blocking,
             self._calibrate_and_apply,
