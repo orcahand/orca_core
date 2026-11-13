@@ -40,6 +40,23 @@ class TestWhere:
         with pytest.raises(ValueError, match="no hand folder"):
             setup_file.write_section(config, "last_tension", {"mode": "hold"})
 
+    @pytest.mark.parametrize("fields", [
+        {"hand_dir": "", "calibration_path": "calibration.yaml"},
+        {"hand_dir": "hand", "calibration_path": ""},
+        {"hand_dir": None, "calibration_path": None},
+        {},
+    ], ids=["bare file name", "relative folder", "none", "no fields"])
+    def test_never_the_current_directory(self, fields, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = SimpleNamespace(**fields)
+        with pytest.raises(ValueError, match="no hand folder"):
+            setup_file.write_section(config, "slack_tests", {"tests": {}})
+        with pytest.raises(ValueError, match="no hand folder"):
+            setup_file.update_section(config, "slack_tests", lambda data: data)
+        with pytest.raises(ValueError, match="no hand folder"):
+            setup_file.read_section(config, "slack_tests")
+        assert list(tmp_path.iterdir()) == []
+
     def test_nothing_is_ever_written_inside_the_package(self):
         packaged = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right")
         config = SimpleNamespace(hand_dir=packaged, calibration_path="")

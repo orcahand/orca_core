@@ -64,14 +64,15 @@ def setup_dir(config) -> str:
     """The folder holding ``config``'s hand's setup records: its hand folder,
     else (a config built outside any hand) the folder of its calibration file."""
     folder = getattr(config, "hand_dir", "") or ""
-    if folder:
-        return folder
-    calibration = getattr(config, "calibration_path", "") or ""
-    if calibration:
-        return os.path.dirname(calibration)
-    raise ValueError(
-        "this config belongs to no hand folder yet: connect the hand (or pass a "
-        "hand's config) before reading or writing its setup records")
+    if not folder:
+        calibration = getattr(config, "calibration_path", "") or ""
+        folder = os.path.dirname(calibration) if calibration else ""
+    # Never a relative folder: that would be wherever the process happens to run.
+    if not folder or not os.path.isabs(folder):
+        raise ValueError(
+            "this config belongs to no hand folder yet: connect the hand (or pass a "
+            "hand's config) before reading or writing its setup records")
+    return folder
 
 
 def setup_path(config) -> str:
