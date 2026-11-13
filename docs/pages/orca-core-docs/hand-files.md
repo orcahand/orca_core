@@ -22,11 +22,15 @@ Nothing is written into the installed package or beside a model's `config.yaml`.
 The hand's controller board is asked who it is when the hand connects. Its serial names the folder; a board with no
 serial yet uses its own board id, and that folder is renamed to the serial once the board reports one. A hand on a
 plain USB adapter, which reports nothing, is filed under `noboard-<model>`: every such hand of one model shares that
-folder. Mock hands use a temporary folder and never touch `~/.orca`.
+folder. A controller board that does not say who it is (asked three times) fails the connect with "reconnect the
+hand" rather than being filed there. Mock hands use a temporary folder and never touch `~/.orca`.
 
 In Python, `hand.hand_id` and `hand.hand_dir` say which folder a connected hand uses. Before it connects, a hand has no
 folder and no calibration loaded. Pass `calibration_path=` to `load_hand()` or `OrcaHand()` to read and write one
-specific calibration file instead; the hand's other files still go to its folder.
+specific calibration file instead; the hand's other files still go to its folder. A calibration file from orca_core
+0.13 or older can be named this way and is read correctly, but once this version writes to it, it no longer holds
+joint-to-motor ratios (they are worked out at load now), so an older orca_core reading it afterwards treats the hand as
+uncalibrated and calibrates it again.
 
 ## Calibration
 
@@ -64,5 +68,9 @@ connecting fails rather than finding another hand. Leave `port: auto` to have it
 
 Older versions kept `calibration.yaml`, `setup.yaml`, `local_config.yaml` and tensioning records beside the model's
 `config.yaml`. They are not read, moved or deleted. When a hand first connects they are named in the log, and listed
-in `hand.legacy_files` until a front-end has shown the notice (`hand.dismiss_legacy_files()`). Calibrate the hand again
-to give its folder a calibration.
+in `hand.legacy_files` until a front-end has shown the notice (`hand.dismiss_legacy_files()`).
+
+So the first time you use a hand after upgrading, it is uncalibrated: its new folder has no calibration yet (unless its
+board holds one, which is copied). Calibrate it once. Anything that calls `hand.init_joints()`, orca_teleop included,
+does this on its own: `init_joints()` runs a calibration whenever the hand is not calibrated, so expect the hand to
+move through its calibration the first time you start it.
