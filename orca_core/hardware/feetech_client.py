@@ -1497,6 +1497,7 @@ class FeetechClient(MotorClient):
             raise ValueError('motor_ids and positions must have the same length')
 
         with self._bus_lock:
+            self._reclaim_port()
             sync_write = self._sync_write(HLS.GOAL_POSITION, 2)
             sync_write.clearParam()
             for motor_id, pos_rad in zip(motor_ids, positions):
@@ -1534,6 +1535,7 @@ class FeetechClient(MotorClient):
         plan = self._goal_current_plan(motor_ids, currents)
 
         with self._bus_lock:
+            self._reclaim_port()
             sync_write = self._sync_write(HLS.GOAL_CURRENT, 2)
             sync_write.clearParam()
             failed_ids = []

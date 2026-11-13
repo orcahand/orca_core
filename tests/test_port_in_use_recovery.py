@@ -149,3 +149,20 @@ def test_a_sync_write_that_raised_does_not_resend_its_values():
     client.sync_write(IDS, [7, 8], TORQUE_ADDRESS, 1)
 
     assert bytes([IDS[0], 7, IDS[1], 8]) in port.sent[-1]
+
+
+@pytest.mark.parametrize("make", [_dynamixel, _feetech], ids=["dynamixel", "feetech"])
+def test_the_goal_write_after_one_that_raised_goes_out(make):
+    """A joint loop only writes goals: no read in between may be what frees the port."""
+    import numpy as np
+
+    client, _ = make()
+    port = client.port_handler
+    port.raise_next_write = True
+    with pytest.raises(serial.SerialException):
+        client.write_desired_pos(IDS, np.array([0.1, 0.2]))
+    port.sent.clear()
+
+    client.write_desired_pos(IDS, np.array([0.3, 0.4]))
+
+    assert len(port.sent) == 1 and not port.is_using

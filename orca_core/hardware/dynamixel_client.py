@@ -779,6 +779,7 @@ class DynamixelClient(MotorClient):
         """
         self.check_connected()
         with self._bus_lock:
+            self._reclaim_port()
             key = (address, size)
             if key not in self._sync_writers:
                 self._sync_writers[key] = self.dxl.GroupSyncWrite(
@@ -800,8 +801,15 @@ class DynamixelClient(MotorClient):
             if errored_ids:
                 logging.error('Sync write failed for: %s', str(errored_ids))
 
-            comm_result = sync_writer.txPacket()
-            self.handle_packet_result(comm_result, context='sync_write')
+            try:
+                comm_result = sync_writer.txPacket()
+            except Exception:
+                # Nothing answers a sync write, so nothing live owns the port now.
+                self._flush_input_buffer()
+                sync_writer.clearParam()
+                raise
+            if not self.handle_packet_result(comm_result, context='sync_write'):
+                self._flush_input_buffer()
 
             sync_writer.clearParam()
 
