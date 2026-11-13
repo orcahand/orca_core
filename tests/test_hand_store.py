@@ -238,3 +238,19 @@ class TestArchive:
 
     def test_an_empty_archive_reads_empty(self, tmp_path):
         assert hand_store.read_archive(tmp_path, "nothing") == {}
+
+    def test_records_are_parsed_again_only_once_their_file_changes(self, tmp_path, monkeypatch):
+        for n in range(3):
+            hand_store.archive_record(tmp_path, "s", f"n{n}", {"a": n})
+        parses = []
+        read_doc = hand_store.read_doc
+        monkeypatch.setattr(hand_store, "read_doc",
+                            lambda *a, **k: parses.append(a[0]) or read_doc(*a, **k))
+        assert hand_store.read_archive(tmp_path, "s") == {"n0": {"a": 0}, "n1": {"a": 1},
+                                                          "n2": {"a": 2}}
+        hand_store.read_archive(tmp_path, "s")["n0"]["a"] = 99   # the caller's own copy
+        assert hand_store.read_archive(tmp_path, "s", "n0") == {"a": 0}
+        assert len(parses) == 3
+
+        hand_store.write_doc(tmp_path / "archive" / "s" / "n1.yaml", {"name": "n1", "record": 7})
+        assert hand_store.read_archive(tmp_path, "s", "n1") == 7

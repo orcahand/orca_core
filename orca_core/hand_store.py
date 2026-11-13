@@ -34,6 +34,7 @@ and every write replaces the file atomically.
 from __future__ import annotations
 
 import atexit
+import copy
 import logging
 import os
 import re
@@ -413,6 +414,24 @@ def archive_record(folder: os.PathLike | str, section: str, name: Any, record: A
     raise HandStoreError(f"too many archived records named {name!r} in {section}")
 
 
+# Per archived file: the (inode, mtime_ns, size) it was parsed at, and its content.
+_archived: Dict[str, tuple] = {}
+
+
+def _read_archived(path: Path) -> Dict[str, Any]:
+    """The archived record at ``path``, parsed again only once the file changed."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    cached = _archived.get(str(path))
+    if cached is None or cached[0] != version:
+        cached = (version, read_doc(path, "archive"))
+        _archived[str(path)] = cached
+    return cached[1]
+
+
 def read_archive(folder: os.PathLike | str, section: str, name: Any = None) -> Any:
     """Archived records of ``section``: ``{name: record}`` for all of them, or
     the one record called ``name`` (``None`` when there is none). Where a name
@@ -430,9 +449,10 @@ def read_archive(folder: os.PathLike | str, section: str, name: Any = None) -> A
         paths = []
     records: Dict[str, Any] = {}
     for path in paths:
-        doc = read_doc(path, "archive")
+        doc = _read_archived(path)
         if "name" in doc:
             records[str(doc["name"])] = doc.get("record")
-    if name is None:
-        return records
-    return records.get(str(name))
+    if name is not None:
+        records = {str(name): records.get(str(name))}
+    records = copy.deepcopy(records)  # the cache's own records stay as read
+    return records if name is None else records[str(name)]
