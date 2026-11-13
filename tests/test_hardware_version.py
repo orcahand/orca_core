@@ -257,6 +257,21 @@ def test_the_board_s_version_at_connect_is_put_in_force(tmp_path):
     assert all(_inverted(hand)[j] != base[j] for j in FLIPPED)
 
 
+@pytest.mark.parametrize("folder_opens", [True, False])
+def test_a_pin_stays_in_force_for_a_hand_with_no_board(tmp_path, monkeypatch, folder_opens):
+    from orca_core import OrcaHand, board_sync, hand_store
+
+    if not folder_opens:
+        def no_folder(*args, **kwargs):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(hand_store, "open_hand_folder", no_folder)
+    hand = OrcaHand(config_path=_config_with(tmp_path, LEFT[0], hardware_version=210))
+    pinned = _inverted(hand)
+    hand._settle_identity(board_sync.NO_BOARD)
+    assert hand.board_hardware_version is None and hand.hardware_version == 210
+    assert _inverted(hand) == pinned
+
+
 # --- selecting the map --------------------------------------------------
 
 
