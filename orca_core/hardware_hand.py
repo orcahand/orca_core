@@ -572,6 +572,31 @@ class OrcaHand(BaseHand):
         # fresh hand) may have calibrated this hand since it was last read.
         self._use_folder(str(folder), reload=True)
 
+    def _use_stored_hand(self, hand_id: str) -> str:
+        """Take the files of the hand filed under ``hand_id`` without connecting:
+        its joint ranges and calibration, under the hardware version its board
+        reported when last read (unless this session chose one). Returns the folder."""
+        folder = str(hand_store.hand_dir(hand_id))
+        self._hand_id = hand_id
+        if self._board_hardware_version is None:
+            self._board_hardware_version = self._last_board_version(folder)
+        self._apply_hardware_version()
+        self._use_folder(folder, reload=True)
+        return folder
+
+    @staticmethod
+    def _last_board_version(folder: str) -> int | None:
+        """The hardware version in the board store last read for this hand."""
+        from . import board_store
+        from .constants import normalize_hardware_version
+
+        try:
+            with open(os.path.join(folder, hand_store.BOARD_STORE_FILE), "rb") as file:
+                identity = board_store.unpack(file.read()).identity
+        except (OSError, board_store.BoardStoreError):
+            return None
+        return normalize_hardware_version(identity.hw_version)
+
     def _use_folder(self, folder: str, reload: bool = False) -> None:
         """Read and write this hand's files in ``folder`` from now on."""
         calibration = (self.config.calibration_path if self._explicit_calibration

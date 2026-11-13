@@ -199,12 +199,15 @@ def load_stored_calibration(hand, hand_id: str | None = None) -> str:
     """Load a hand's stored calibration without connecting to it.
 
     ``hand_id`` names the hand's folder; without it, the one hand of this model
-    with a calibration on this computer is used. Returns the hand id.
+    with a calibration on this computer is used. The calibration is read the
+    way the hand reads it at connect: with that hand's joint ranges and ROM
+    frame, under the hardware version its board last reported (or
+    ``--hardware-version``). Returns the hand id.
 
     Raises:
         ValueError: no such hand, or several to choose from (they are listed).
     """
-    from orca_core import CalibrationResult, hand_store
+    from orca_core import hand_store
 
     if hand_id is None:
         model = hand._model_name()
@@ -222,9 +225,10 @@ def load_stored_calibration(hand, hand_id: str | None = None) -> str:
     path = hand_store.hand_dir(hand_id) / hand_store.CALIBRATION_FILE
     if not path.exists():
         raise ValueError(f"no calibration kept for hand {hand_id} ({path})")
-    hand.calibration = CalibrationResult.from_calibration_path(
-        str(path), hand.config.motor_ids, config=hand.config)
+    hand._use_stored_hand(hand_id)
     print(f"Using the calibration of hand {hand_id} in {path}")
+    if hand.hardware_version is None and hand.config.joint_to_motor_map_v21:
+        print("Its hardware version is not known here; pass --hardware-version if it is v2.1.")
     return hand_id
 
 

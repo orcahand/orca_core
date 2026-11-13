@@ -53,3 +53,36 @@ def test_with_several_the_hand_must_be_named(config_path):
 def test_a_hand_without_a_calibration_is_refused(config_path):
     with pytest.raises(ValueError):
         cli.load_stored_calibration(OrcaHand(config_path=config_path), "ser-0009")
+
+
+LEFT = os.path.join(os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-left", "config.yaml")
+
+
+def test_a_v21_hand_is_read_as_it_is_at_connect(tmp_path):
+    """Its board's version, so the remapped thumb joints keep their calibration,
+    and its ROM frame and stamp come with it."""
+    import dataclasses
+
+    from orca_core.board_store import BoardIdentity, pack
+
+    folder = tmp_path / "orcahand-left"
+    folder.mkdir()
+    shutil.copy(LEFT, folder / "config.yaml")
+    session = OrcaHand(config_path=str(folder / "config.yaml"))
+    session._settle_identity(board_sync.BoardContact(
+        info=OrcaBoardInfo(role="motor", serial="ser-0001", hw_version=210),
+        store=pack({}, identity=BoardIdentity(side="left", hw_version=210, serial="ser-0001"))))
+    assert session.hardware_version == 210
+    limits = {m: [0.0, 1.0] for m in session.config.motor_ids}
+    session.calibration = dataclasses.replace(
+        session.calibration, motor_limits_dict=limits, calibrated=True)
+    session._save_calibration(session.calibration, include_encoder=False, start_run=True)
+    session.set_rom_frame("centered")
+
+    fresh = OrcaHand(config_path=str(folder / "config.yaml"))
+    assert cli.load_stored_calibration(fresh, "ser-0001") == "ser-0001"
+    assert fresh.hardware_version == 210
+    assert fresh.calibrated, "thumb_mcp/thumb_dip were measured under the v2.1 map"
+    assert fresh.rom_frame == "centered"
+    assert fresh.calibration_info["sequence"] == 1
+    assert fresh.hand_id == "ser-0001"
