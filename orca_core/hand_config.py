@@ -1366,7 +1366,17 @@ class OrcaHandConfig(BaseHandConfig):
         onto, over the model's ranges and an encoder-measured span alike; the
         other joints keep theirs. Raises HandConfigValidationError for a joint
         the hand does not have or a range that is not ``[min, max]`` with
-        ``min < max``."""
+        ``min < max``.
+
+        Only the frame changes, not a stored joint-to-motor ratio: a calibration
+        run with these ranges in force fits its ratios to them, but one made
+        under other ranges keeps ratios fitted to those spans. Swapping this
+        config onto such a hand maps the new range with the old ratio, so a
+        command near either end lands short of or past the motor's calibrated
+        travel (a wider range overshoots into the hardstop by the ratio of the
+        spans). Calibrate again after applying measured ranges, unless the hand
+        derives its ratios from the ranges in force when its config changes.
+        """
         if not isinstance(roms, dict):
             raise HandConfigValidationError(
                 f"measured ranges must map a joint name to [min, max], got {roms!r}")
