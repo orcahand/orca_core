@@ -12,16 +12,18 @@ import math
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from threading import RLock
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 
-from . import board_sync, calibration_store, hand_store
+from . import board_store, board_sync, calibration_store, hand_store
 from .base_hand import BaseHand
 from .calibration import (
     FINGERPRINT,
     CalibrationResult,
+    JointEncoderCal,
     in_force,
     joint_fingerprints,
     result_from_mapping,
@@ -35,7 +37,26 @@ from .hardware.motor_client import (
     ServoGains,
     ServoProfile,
 )
+from .hardware.motor_faults import (
+    DISABLE_TORQUE,
+    ENABLE_TORQUE,
+    HOLD_OFF,
+    LOG,
+    NOTIFY,
+    REBOOT,
+    RELEASE,
+    MotorFaultPolicy,
+    MotorObservation,
+)
 from .hardware.motor_resolution import trial_probe
+from .hardware.joint_encoder_client import sample_anchor_count_from_client
+from .hardware.sensing.constants import (
+    AUTO_ENC_NUM_JOINTS,
+    ENCODER_JOINTS_ALL,
+    JOINT_TO_ENCODER_SLOT,
+    joint_encoder_polarity_for_side,
+)
+from .hardware.sensing.encoder_protocol import anchor_count_for_joint_angle, encoder_to_joint_angle
 from .hand_store import write_doc
 from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, run_jitter, run_tension
@@ -44,11 +65,13 @@ from .utils.utils import (
     find_single_usb_serial_port,
     get_and_choose_port,
     read_yaml,
+    write_bytes_atomic,
 )
 
 from .constants import (
     CALIBRATED,
     DYNAMIXEL,
+    HARDWARE_VERSION,
     MODE_MAP,
     MOTOR_BAUD_RATES,
     MIN_MOTOR_TRAVEL_RAD,
@@ -60,6 +83,7 @@ from .constants import (
     WRIST,
     NUM_STEPS,
     STEP_SIZE,
+    normalize_hardware_version,
 )
 
 from .joint_position import OrcaJointPositions
@@ -77,8 +101,6 @@ KEPT_KEY = "board_calibration_kept"
 
 def _instant(stamp: str):
     """A ``calibrated_at`` stamp as something comparable."""
-    from datetime import datetime, timezone
-
     try:
         when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
     except ValueError:
@@ -271,8 +293,6 @@ class OrcaHand(BaseHand):
     def _take_board_store(self, folder: str, blob: bytes | None) -> None:
         """Keep what the board held at connect, and on first contact with this
         hand on this computer make the board's calibration this computer's."""
-        from . import board_store
-
         self._board_store = None
         if not blob:
             return
@@ -294,8 +314,6 @@ class OrcaHand(BaseHand):
 
     @staticmethod
     def _write_board_cache(folder: str, blob: bytes) -> None:
-        from .utils.utils import write_bytes_atomic
-
         cache = os.path.join(folder, hand_store.BOARD_STORE_FILE)
         try:
             with open(cache, "rb") as file:
@@ -310,14 +328,12 @@ class OrcaHand(BaseHand):
 
     def _remember_board_store(self, blob: bytes) -> None:
         """The board now holds ``blob`` (it was just written)."""
-        from . import board_store
-
         self._board_store = board_store.unpack(blob)
         if self.hand_dir:
             self._write_board_cache(self.hand_dir, blob)
 
     def _board_and_computer_stamps(self):
-        store = getattr(self, "_board_store", None)
+        store = self._board_store
         if store is None:
             return None
         board = calibration_store.stamp_of(store.calibration)
@@ -362,7 +378,7 @@ class OrcaHand(BaseHand):
         Raises:
             RuntimeError: the board held no calibration at connect.
         """
-        store = getattr(self, "_board_store", None)
+        store = self._board_store
         if store is None or not store.calibration.get("motor_limits"):
             raise RuntimeError("this hand's board held no calibration when it connected")
         path = self._calibration_file(create=True)
@@ -401,8 +417,6 @@ class OrcaHand(BaseHand):
         Raises:
             ValueError: ``version`` is not a non-negative whole number.
         """
-        from .constants import normalize_hardware_version
-
         if version is not None and (
             isinstance(version, bool) or not isinstance(version, int) or version < 0
         ):
@@ -412,9 +426,7 @@ class OrcaHand(BaseHand):
         return self.hardware_version
 
     def _yaml_hardware_version_pin(self) -> int | None:
-        from .constants import HARDWARE_VERSION, normalize_hardware_version
-
-        config_path = getattr(self.config, "config_path", "") or ""
+        config_path = self.config.config_path or ""
         raw = load_config(config_path).get(HARDWARE_VERSION) if os.path.isfile(config_path) else None
         if isinstance(raw, int) and not isinstance(raw, bool):
             return normalize_hardware_version(raw)
@@ -481,11 +493,8 @@ class OrcaHand(BaseHand):
         self._joint_ranges = ranges
         self._joint_ranges_measured_at = doc.get("measured_at")
 
-    def _apply_measured_ranges(self) -> None:
-        self._rebuild_config(self.config.hardware_version)
-
     def _model_name(self) -> str:
-        config_path = getattr(self.config, "config_path", "") or ""
+        config_path = self.config.config_path or ""
         if config_path:
             return os.path.basename(os.path.dirname(os.path.abspath(config_path)))
         return str(getattr(self.config, "type", "") or "hand")
@@ -540,12 +549,10 @@ class OrcaHand(BaseHand):
             self._board_hardware_version = None
         self._hand_id, self._board_hand_id, self._board_info = hand_id, from_board, info
         if info is not None:
-            from .constants import normalize_hardware_version
-
             self._board_hardware_version = normalize_hardware_version(info.hw_version)
         self._apply_hardware_version()
         if created:
-            config_dir = os.path.dirname(getattr(self.config, "config_path", "") or "")
+            config_dir = os.path.dirname(self.config.config_path or "")
             legacy = hand_store.find_legacy_files(config_dir)
             if legacy:
                 hand_store.update_hand(folder, **{LEGACY_KEY: legacy})
@@ -573,9 +580,6 @@ class OrcaHand(BaseHand):
     @staticmethod
     def _last_board_version(folder: str) -> int | None:
         """The hardware version in the board store last read for this hand."""
-        from . import board_store
-        from .constants import normalize_hardware_version
-
         try:
             with open(os.path.join(folder, hand_store.BOARD_STORE_FILE), "rb") as file:
                 identity = board_store.unpack(file.read()).identity
@@ -590,7 +594,7 @@ class OrcaHand(BaseHand):
         moved = folder != self.config.hand_dir or calibration != self.config.calibration_path
         self.config = dataclasses.replace(self.config, hand_dir=folder, calibration_path=calibration)
         self._read_joint_ranges(folder)
-        self._apply_measured_ranges()
+        self._rebuild_config(self.config.hardware_version)
         if (moved or reload) and not self._explicit_calibration:
             self._load_calibration(calibration)
             self._sanity_check()
@@ -1434,11 +1438,6 @@ class OrcaHand(BaseHand):
         Returns the actions taken, so a front-end can report them to an
         operator without having to work out what happened.
         """
-        from .hardware.motor_faults import (
-            DISABLE_TORQUE, ENABLE_TORQUE, HOLD_OFF, LOG, MotorObservation,
-            NOTIFY, MotorFaultPolicy, REBOOT, RELEASE,
-        )
-
         client = self._motor_client
         if client is None:
             return []
@@ -1689,11 +1688,6 @@ class OrcaHand(BaseHand):
         config field is ``None``. The sentinel ``["all"]`` selects every
         slotted, motor-driven joint, wrist included.
         """
-        from .hardware.sensing.constants import (
-            ENCODER_JOINTS_ALL,
-            JOINT_TO_ENCODER_SLOT,
-        )
-
         configured = self.config.joint_encoder_joints
         if configured is None:
             return []
@@ -1716,13 +1710,6 @@ class OrcaHand(BaseHand):
         Raises ``ValueError`` when this hand's side has no validated encoder
         polarity table, so wrong-signed angles are never returned.
         """
-        from .hardware.sensing.constants import (
-            AUTO_ENC_NUM_JOINTS,
-            JOINT_TO_ENCODER_SLOT,
-            joint_encoder_polarity_for_side,
-        )
-        from .hardware.sensing.encoder_protocol import encoder_to_joint_angle
-
         raw_counts = np.asarray(raw_counts)
         if raw_counts.shape != (AUTO_ENC_NUM_JOINTS,):
             raise ValueError(
@@ -1869,14 +1856,6 @@ class OrcaHand(BaseHand):
             JointEncoderCalibrationError: the encoder stream produced no
                 valid samples.
         """
-        from .calibration import JointEncoderCal
-        from .hardware.joint_encoder_client import sample_anchor_count_from_client
-        from .hardware.sensing.constants import (
-            JOINT_TO_ENCODER_SLOT,
-            joint_encoder_polarity_for_side,
-        )
-        from .hardware.sensing.encoder_protocol import anchor_count_for_joint_angle
-
         if persist is None:
             persist = self._persist_calibration
         client = joint_encoder_client or getattr(self, "_encoder_client", None)
