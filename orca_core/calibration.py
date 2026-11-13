@@ -7,6 +7,8 @@
 # ==============================================================================
 
 import dataclasses
+import math
+import numbers
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -146,15 +148,30 @@ class CalibrationResult:
         return result
 
 
+def _limit_pair(motor_id, limits):
+    if limits is None:
+        return [None, None]
+    if isinstance(limits, (list, tuple)) and len(limits) == 2 and all(
+        value is None or (isinstance(value, numbers.Real) and not isinstance(value, bool)
+                          and math.isfinite(value))
+        for value in limits
+    ):
+        return list(limits)
+    raise ValueError(f"motor {motor_id}'s limits {limits!r} are not a pair of numbers")
+
+
 def result_from_mapping(calibration: Mapping, motor_ids: List[int]) -> CalibrationResult:
     """Parse a calibration document (from disk or a hand's board) into a result.
 
     Ratios are taken from the document only where an older one stored them; a
     hand replaces them with derived ones (:func:`in_force`).
+
+    Raises:
+        ValueError: a motor's limits are not a pair of numbers (or ``None``).
     """
     motor_limits_raw = calibration.get("motor_limits") or {}
     motor_limits_dict = {
-        mid: motor_limits_raw.get(mid, [None, None]) for mid in motor_ids
+        mid: _limit_pair(mid, motor_limits_raw.get(mid, [None, None])) for mid in motor_ids
     }
 
     ratios_raw = calibration.get("joint_to_motor_ratios") or {}

@@ -146,7 +146,7 @@ def stamp_of(doc: Mapping[str, Any]) -> Dict[str, Any]:
     """``{"sequence", "calibrated_at"}`` of a calibration document."""
     try:
         sequence = int(doc.get(SEQUENCE) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         sequence = 0
     calibrated_at = doc.get(CALIBRATED_AT)
     return {"sequence": sequence, "calibrated_at": str(calibrated_at) if calibrated_at else None}

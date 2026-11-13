@@ -193,7 +193,7 @@ def schema_of(doc: Dict[str, Any]) -> int:
     """The schema ``doc`` was written with; 0 for a document without one."""
     try:
         return int(doc.get(SCHEMA_KEY, 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

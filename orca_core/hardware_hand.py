@@ -486,9 +486,14 @@ class OrcaHand(BaseHand):
                 "joints": sorted(self._measured_range_joints)}
 
     def _read_joint_ranges(self, folder: str) -> None:
-        doc = hand_store.read_doc(os.path.join(folder, hand_store.JOINT_RANGES_FILE), "joint_ranges")
+        path = os.path.join(folder, hand_store.JOINT_RANGES_FILE)
+        doc = hand_store.read_doc(path, "joint_ranges")
+        roms = doc.get("joint_roms") or {}
+        if not isinstance(roms, dict):
+            hand_store._set_aside(path, "joint_roms is not a mapping of joint ranges")
+            doc, roms = {}, {}
         ranges = {}
-        for joint, rom in (doc.get("joint_roms") or {}).items():
+        for joint, rom in roms.items():
             if joint in self.config.joint_ids and _valid_rom(rom):
                 ranges[str(joint)] = [float(rom[0]), float(rom[1])]
             else:
@@ -742,8 +747,16 @@ class OrcaHand(BaseHand):
 
     def _load_calibration(self, path: str | None) -> None:
         """Make the calibration document at ``path`` (none: empty) the stored
-        calibration, and derive the one in force from it."""
+        calibration, and derive the one in force from it. A document whose
+        values are not a calibration's is set aside like an unreadable one."""
         doc = calibration_store.read_document(path)
+        try:
+            self._take_calibration_document(doc)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            hand_store._set_aside(path, f"not a calibration: {exc}")
+            self._take_calibration_document({})
+
+    def _take_calibration_document(self, doc: dict) -> None:
         self._calibration_doc_stamp = calibration_store.stamp_of(doc)
         frame = doc.get(ROM_FRAME_KEY)
         self._rom_frame = frame if frame in ROM_FRAMES else ROM_FRAME_ANCHOR

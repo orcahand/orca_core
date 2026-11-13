@@ -209,7 +209,11 @@ class TestAnUnreadableFileIsSetAside:
         assert hand_store.read_hand(folder)["aliases"]["serial"] == ["ser-0000"]
         assert "moved it to" in caplog.text
 
-    @pytest.mark.parametrize("damage", ["motor_limits: [unclosed\n", "- a list\n"])
+    @pytest.mark.parametrize("damage", [
+        "motor_limits: [unclosed\n", "- a list\n",
+        "motor_limits: [[0, 1]]\n", "motor_limits: {1: 5}\n", "motor_limits: {1: [a, b]}\n",
+        "joint_roms_measured: [[0, 1]]\n", "joint_encoder_calibration: {index_mcp: 5}\n",
+    ])
     def test_a_corrupt_calibration_yaml(self, make_hand, damage):
         hand = make_hand(board())
         hand.calibrate(persist=True)
@@ -220,6 +224,23 @@ class TestAnUnreadableFileIsSetAside:
         assert len(list(Path(hand.hand_dir).glob("calibration.yaml.corrupt-*"))) == 1
         hand.restore_previous_calibration()
         assert hand.calibrated
+
+
+    @pytest.mark.parametrize("damage", ["joint_roms: [[0, 90]]\n", "joint_roms: index_mcp\n"])
+    def test_a_joint_ranges_yaml_that_is_not_ranges(self, make_hand, damage):
+        folder = Path(make_hand(board()).hand_dir)
+        (folder / "joint_ranges.yaml").write_text(damage)
+        hand = make_hand(board())
+        assert hand.joint_ranges_info["source"] == "model"
+        assert len(list(folder.glob("joint_ranges.yaml.corrupt-*"))) == 1
+
+    def test_numbers_too_large_for_a_stamp_read_as_none(self, make_hand):
+        hand = make_hand(board())
+        hand.calibrate(persist=True)
+        path = Path(hand.config.calibration_path)
+        path.write_text(path.read_text().replace("sequence: 1", "sequence: .inf"))
+        again = make_hand(board())
+        assert again.calibrated and again.calibration_info["sequence"] == 0
 
 
 class TestAStoppedCalibration:
