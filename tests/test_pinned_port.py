@@ -132,3 +132,53 @@ def test_a_named_port_is_never_swapped_for_a_detected_one(config_path, monkeypat
     update_yaml(config_path, "port", "/dev/cu.usbmodemXXXX")
     ok, _ = OrcaHand(config_path=config_path).connect(interactive=False)
     assert not ok and tried == ["/dev/cu.usbmodemXXXX"]
+
+
+@pytest.fixture
+def one_live_port(monkeypatch):
+    """Motors answer only on ``state["live"]``; auto-detection finds it there."""
+    import dataclasses
+
+    state, tried = {"live": "/dev/cu.usbmodemAAAA"}, []
+
+    class Client:
+        is_connected = True
+
+        def disconnect(self):
+            pass
+
+    def connect_on_port(self, port, base_config=None):
+        tried.append(port)
+        if port != state["live"]:
+            raise ConnectionError("no motor responded")
+        self.config = dataclasses.replace(base_config or self.config, port=port)
+        self._motor_client = Client()
+
+    monkeypatch.setattr(OrcaHand, "_connect_on_port", connect_on_port)
+    monkeypatch.setattr(hardware_hand, "auto_detect_port", lambda *a, **k: state["live"])
+    monkeypatch.setattr(hardware_hand, "find_single_usb_serial_port", lambda: state["live"])
+    return state, tried
+
+
+def test_a_reconnect_detects_an_auto_port_again(config_path, one_live_port):
+    state, tried = one_live_port
+    hand = OrcaHand(config_path=config_path)
+    assert hand.connect(interactive=False)[0]
+    assert hand.config.port == "/dev/cu.usbmodemAAAA"
+    hand._motor_client = None
+    state["live"] = "/dev/cu.usbmodemBBBB"  # unplugged and back under another name
+    tried.clear()
+    assert hand.connect(interactive=False)[0]
+    assert tried == ["/dev/cu.usbmodemBBBB"]
+
+
+def test_a_reconnect_keeps_a_named_port_named(config_path, one_live_port):
+    state, tried = one_live_port
+    update_yaml(config_path, "port", "/dev/cu.usbmodemAAAA")
+    hand = OrcaHand(config_path=config_path)
+    assert hand.connect(interactive=False)[0]
+    hand._motor_client = None
+    state["live"] = "/dev/cu.usbmodemBBBB"
+    tried.clear()
+    assert not hand.connect(interactive=False)[0]
+    assert tried == ["/dev/cu.usbmodemAAAA"]

@@ -203,6 +203,10 @@ class OrcaHand(BaseHand):
         self._board_info = None
         # (port, BoardContact) already read by detection, so connect need not ask again.
         self._board_hint = None
+        # config.port holds the device a connect resolved; what was configured
+        # before it (e.g. "auto") is what a reconnect resolves again.
+        self._configured_port: str | None = None
+        self._resolved_port: str | None = None
         self._board_store = None
         # Hardware version: what the board reported, what the operator chose for
         # this session (never saved), and a pin written into config.yaml.
@@ -1091,6 +1095,9 @@ class OrcaHand(BaseHand):
 
         existing_config = self.config
         first_port = self.config.port
+        if self._resolved_port is not None and first_port == self._resolved_port:
+            first_port = self._configured_port
+        configured_port = first_port
         # A port detection found (load_hand) may still give way to the picker;
         # one somebody named never does.
         detected = self._board_hint is not None and self._board_hint[0] == first_port
@@ -1112,6 +1119,7 @@ class OrcaHand(BaseHand):
 
         error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
+            self._remember_ports(configured_port)
             return True, (
                 f"Connection successful ({self.config.motor_type} @ "
                 f"{self.config.port}, {self.config.baudrate} baud)"
@@ -1133,6 +1141,7 @@ class OrcaHand(BaseHand):
         if again and again != first_port:
             error = self._try_port(again, existing_config)
             if error is None:
+                self._remember_ports(configured_port)
                 return True, f"Connection successful with auto-detected port {again}"
             logger.warning("Connection failed on %s: %s", again, error)
 
@@ -1145,8 +1154,12 @@ class OrcaHand(BaseHand):
 
         error = self._try_port(chosen_port, existing_config)
         if error is None:
+            self._remember_ports(configured_port)
             return True, f"Connection successful with port {chosen_port}"
         return False, f"Connection failed with selected port: {str(error)}"
+
+    def _remember_ports(self, configured: str) -> None:
+        self._configured_port, self._resolved_port = configured, self.config.port
 
     def disconnect(self) -> tuple[bool, str]:
         """Disable torque (best-effort) and close the serial connection.
