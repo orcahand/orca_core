@@ -53,14 +53,21 @@ def test_base_hand_config_dispatches_config_file_path(kwargs, expected_path):
     assert Path(config.config_path) == expected_path
 
 
-def test_orca_hand_config_dispatches_calibration_path_for_selected_model():
+def test_a_model_config_names_no_calibration_file_beside_it():
+    """A hand's calibration lives in its own folder, not beside a shared model."""
     config = OrcaHandConfig.from_config_path(
         model_version="v1",
         model_name="orcahand-left",
     )
-    assert Path(config.calibration_path) == (
-        MODELS_DIR / "v1" / "orcahand-left" / "calibration.yaml"
+    assert config.calibration_path == ""
+
+
+def test_an_explicit_calibration_path_is_kept(tmp_path):
+    config = OrcaHandConfig.from_config_path(
+        model_version="v1", model_name="orcahand-left",
+        calibration_path=str(tmp_path / "mine.yaml"),
     )
+    assert Path(config.calibration_path) == tmp_path / "mine.yaml"
 
 
 def test_unknown_model_raises_file_not_found():

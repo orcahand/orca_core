@@ -17,9 +17,16 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 
+from . import board_sync, calibration_store, hand_store
 from .base_hand import BaseHand
-from .calibration import CalibrationResult
-from .hand_config import HandConfigValidationError, OrcaHandConfig
+from .calibration import (
+    FINGERPRINT,
+    CalibrationResult,
+    in_force,
+    joint_fingerprints,
+    result_from_mapping,
+)
+from .hand_config import HandConfigValidationError, OrcaHandConfig, load_config
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import (
     MotionTimeoutError,
@@ -29,14 +36,14 @@ from .hardware.motor_client import (
     ServoProfile,
 )
 from .hardware.motor_resolution import trial_probe
-from .maintenance.calibration_routine import persist_calibration, run_calibration
+from .hand_store import write_doc
+from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, run_jitter, run_tension
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
     get_and_choose_port,
     read_yaml,
-    update_yaml,
 )
 
 from .constants import (
@@ -60,6 +67,26 @@ from .joint_position import OrcaJointPositions
 # Motor-rad per joint-deg used to synthesise mock motor calibration. Sized so
 # the widest bundled joint ROM stays inside the mock motors' simulated travel.
 MOCK_JOINT_TO_MOTOR_RATIO = 0.007
+
+LEGACY_KEY = "legacy_files"
+"""hand.yaml key: older per-hand files found when the folder was created, until dismissed."""
+
+KEPT_KEY = "board_calibration_kept"
+"""hand.yaml key: the board/computer stamps whose difference the user chose to keep."""
+
+
+def _instant(stamp: str):
+    """A ``calibrated_at`` stamp as something comparable."""
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return (0, str(stamp))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (1, when.timestamp())
+
 
 # How encoder-measured joint travel is laid onto the config ROM (see
 # effective_joint_roms_dict). "anchor" pins the flex hardstop to the config
@@ -144,17 +171,431 @@ class OrcaHand(BaseHand):
         self._lock = threading.Lock()
         self._current_task = None
 
-        self.calibration = CalibrationResult.from_calibration_path(
-            self.config.calibration_path, self.config.motor_ids
-        )
-        stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
-            ROM_FRAME_KEY
-        )
-        self._rom_frame = (
-            stored_frame if stored_frame in ROM_FRAMES else ROM_FRAME_ANCHOR
-        )
+        self._rom_frame = ROM_FRAME_ANCHOR
+        # Ranges measured on this hand (joint_ranges.yaml), and the joints they are in force for.
+        self._joint_ranges: dict = {}
+        self._joint_ranges_measured_at = None
+        self._measured_range_joints: frozenset = frozenset()
+        self._hand_id: str | None = None
+        self._board_hand_id: str | None = None
+        self._board_info = None
+        # (port, BoardContact) already read by detection, so connect need not ask again.
+        self._board_hint = None
+        self._board_store = None
+        # Hardware version: what the board reported, what the operator chose for
+        # this session (never saved), and a pin written into config.yaml.
+        self._board_hardware_version: int | None = None
+        self._hardware_version_override: int | None = None
+        self._pinned_hardware_version = self._yaml_hardware_version_pin()
+        self._explicit_calibration = self._names_own_calibration_file(self.config)
+        if self.config.hand_dir:
+            # A config taken from a hand that already knew its folder (an
+            # operation building a fresh hand) stays on that folder.
+            self._hand_id = os.path.basename(os.path.normpath(self.config.hand_dir))
+        self._load_calibration(self.config.calibration_path or None)
+        self._settle_identity_at_construction()
         self._sanity_check()
-        self.is_calibrated(verbose=True)
+        if self.config.calibration_path:
+            self.is_calibrated(verbose=True)
+
+    @staticmethod
+    def _names_own_calibration_file(config: OrcaHandConfig) -> bool:
+        """Whether ``config`` names a calibration file other than its hand folder's."""
+        path = config.calibration_path
+        if not path:
+            return False
+        own = config.hand_dir and os.path.join(config.hand_dir, hand_store.CALIBRATION_FILE)
+        return not own or os.path.abspath(path) != os.path.abspath(own)
+
+    def _settle_identity_at_construction(self) -> None:
+        """A physical hand learns which hand it is at connect; mocks override."""
+
+    # ------------------------------------------------------------------
+    # Identity and the hand's folder
+    # ------------------------------------------------------------------
+
+    @property
+    def hand_id(self) -> str | None:
+        """What this hand's files are filed under: the board's serial, else its
+        board id, else ``noboard-<model>``. ``None`` until it has connected."""
+        return self._hand_id
+
+    @property
+    def board_hand_id(self) -> str | None:
+        """The id the hand's own board reported at connect; ``None`` without a board."""
+        return self._board_hand_id
+
+    @property
+    def hand_dir(self) -> str | None:
+        """This hand's folder (see :mod:`orca_core.hand_store`); ``None`` until known."""
+        return self.config.hand_dir or None
+
+    @property
+    def legacy_files(self) -> list[str]:
+        """Per-hand files an older orca_core kept beside this hand's config,
+        found when this hand's folder was first created here. They are not
+        read, copied or touched. Kept in ``hand.yaml`` until
+        :meth:`dismiss_legacy_files`, so whichever front-end comes along first
+        can say once that the hand needs calibrating again."""
+        if not self.hand_dir:
+            return []
+        return list(hand_store.read_hand(self.hand_dir).get(LEGACY_KEY) or [])
+
+    def dismiss_legacy_files(self) -> None:
+        """The notice about :attr:`legacy_files` was shown; stop listing them."""
+        if self.hand_dir and self.legacy_files:
+            hand_store.update_hand(self.hand_dir, **{LEGACY_KEY: []})
+
+    @property
+    def nickname(self) -> str | None:
+        """A display name for this physical hand, kept in its ``hand.yaml``."""
+        if not self.hand_dir:
+            return None
+        return hand_store.read_hand(self.hand_dir).get("nickname")
+
+    def set_nickname(self, nickname: str | None) -> str | None:
+        """Name this physical hand for display (``None`` or blank clears it).
+
+        Raises:
+            RuntimeError: the hand does not know its folder yet (connect first).
+            HandStoreError: the name is longer than 64 or has control characters.
+        """
+        if not self.hand_dir:
+            raise RuntimeError("connect the hand first: its folder is not known yet")
+        return hand_store.set_nickname(self.hand_dir, nickname).get("nickname")
+
+    # ------------------------------------------------------------------
+    # The calibration kept on the hand's own board
+    # ------------------------------------------------------------------
+
+    def _take_board_store(self, folder: str, blob: bytes | None) -> None:
+        """Keep what the board held at connect, and on first contact with this
+        hand on this computer make the board's calibration this computer's."""
+        from . import board_store
+
+        self._board_store = None
+        if not blob:
+            return
+        try:
+            store = board_store.unpack(blob)
+        except board_store.BoardStoreError as exc:
+            logger.warning("the calibration store on this hand's board cannot be read "
+                           "by this orca_core (%s); it is not used", exc)
+            return
+        self._board_store = store
+        self._write_board_cache(folder, blob)
+        path = os.path.join(folder, hand_store.CALIBRATION_FILE)
+        if self._explicit_calibration or os.path.exists(path) \
+                or not store.calibration.get("motor_limits"):
+            return
+        calibration_store.adopt(path, store.calibration, source="board", keep_sequence=True)
+        logger.info("first contact with this hand here: its calibration was copied from "
+                    "its board into %s", path)
+
+    @staticmethod
+    def _write_board_cache(folder: str, blob: bytes) -> None:
+        from .utils.utils import write_bytes_atomic
+
+        cache = os.path.join(folder, hand_store.BOARD_STORE_FILE)
+        try:
+            with open(cache, "rb") as file:
+                if file.read() == blob:
+                    return
+        except OSError:
+            pass
+        try:
+            write_bytes_atomic(cache, blob)
+        except OSError as exc:
+            logger.debug("could not keep the board's store in %s: %s", cache, exc)
+
+    def _remember_board_store(self, blob: bytes) -> None:
+        """The board now holds ``blob`` (it was just written)."""
+        from . import board_store
+
+        self._board_store = board_store.unpack(blob)
+        if self.hand_dir:
+            self._write_board_cache(self.hand_dir, blob)
+
+    def _board_and_computer_stamps(self):
+        store = getattr(self, "_board_store", None)
+        if store is None:
+            return None
+        board = calibration_store.stamp_of(store.calibration)
+        if not board["calibrated_at"]:
+            return None
+        return {"board": board, "computer": dict(self._calibration_doc_stamp)}
+
+    def board_calibration_newer(self) -> dict | None:
+        """Whether the hand's board holds a newer calibration than this computer.
+
+        Answers from what the board held at connect; never talks to the board.
+        Returns ``{"board": {"sequence", "calibrated_at"}, "computer": {...}}``
+        when the board's ``calibrated_at`` is later than the computer's (or the
+        computer has none), else ``None``. Also ``None`` while
+        :meth:`keep_computer_calibration` has been chosen for exactly this pair.
+        """
+        stamps = self._board_and_computer_stamps()
+        if stamps is None:
+            return None
+        computer_at = stamps["computer"]["calibrated_at"]
+        if computer_at and _instant(stamps["board"]["calibrated_at"]) <= _instant(computer_at):
+            return None
+        if self.hand_dir and hand_store.read_hand(self.hand_dir).get(KEPT_KEY) == stamps:
+            return None
+        return stamps
+
+    def keep_computer_calibration(self) -> dict | None:
+        """Stop :meth:`board_calibration_newer` reporting this board calibration
+        until either side's calibration changes. Saves the pair of stamps in
+        ``hand.yaml`` and returns it (``None`` when the board has none)."""
+        stamps = self._board_and_computer_stamps()
+        if stamps is None or not self.hand_dir:
+            return None
+        hand_store.update_hand(self.hand_dir, **{KEPT_KEY: stamps})
+        return stamps
+
+    def adopt_board_calibration(self) -> dict:
+        """Make the calibration the board held at connect this computer's; the
+        one it replaces becomes the previous calibration. Returns
+        :attr:`calibration_info`.
+
+        Raises:
+            RuntimeError: the board held no calibration at connect.
+        """
+        store = getattr(self, "_board_store", None)
+        if store is None or not store.calibration.get("motor_limits"):
+            raise RuntimeError("this hand's board held no calibration when it connected")
+        path = self._calibration_file(create=True)
+        calibration_store.adopt(path, store.calibration, source="board")
+        self._load_calibration(path)
+        self._sanity_check()
+        logger.info("the board's calibration is now this hand's, in %s", path)
+        return self.calibration_info
+
+    # ------------------------------------------------------------------
+    # Hardware version
+    # ------------------------------------------------------------------
+
+    @property
+    def hardware_version(self) -> int | None:
+        """The hardware version in force (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1),
+        ``None`` while unknown: the session override, else what the board
+        reported, else a pin in config.yaml."""
+        return self.config.hardware_version
+
+    @property
+    def board_hardware_version(self) -> int | None:
+        """The version the hand's board reported; ``None`` without a board."""
+        return self._board_hardware_version
+
+    @property
+    def hardware_version_override(self) -> int | None:
+        """The version chosen for this session with :meth:`set_hardware_version`."""
+        return self._hardware_version_override
+
+    def set_hardware_version(self, version: int | None) -> int | None:
+        """Use ``version`` for this hand for this session only; ``None`` goes back
+        to the board's (or config.yaml's). Never written anywhere, and cleared
+        when a different hand connects. Returns the version in force.
+
+        Raises:
+            ValueError: ``version`` is not a non-negative whole number.
+        """
+        from .constants import normalize_hardware_version
+
+        if version is not None and (
+            isinstance(version, bool) or not isinstance(version, int) or version < 0
+        ):
+            raise ValueError(f"a hardware version is a non-negative whole number, got {version!r}")
+        self._hardware_version_override = normalize_hardware_version(version)
+        self._apply_hardware_version()
+        return self.hardware_version
+
+    def _yaml_hardware_version_pin(self) -> int | None:
+        from .constants import HARDWARE_VERSION, normalize_hardware_version
+
+        config_path = getattr(self.config, "config_path", "") or ""
+        raw = load_config(config_path).get(HARDWARE_VERSION) if os.path.isfile(config_path) else None
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return normalize_hardware_version(raw)
+        return None
+
+    def _apply_hardware_version(self) -> None:
+        """Put the version in force: override, else the board's, else config.yaml's pin.
+
+        The board's version belongs to this physical hand and config.yaml's to
+        every hand loaded from it, so a pin only speaks for a hand with no board.
+        """
+        board = self._board_hardware_version
+        pinned = self._pinned_hardware_version
+        if self._hardware_version_override is None and pinned is not None \
+                and board is not None and board != pinned:
+            logger.warning(
+                "config.yaml pins hardware_version=%r but this hand's board reports %r; "
+                "the board's is used (a pin only applies to a hand with no board).",
+                pinned, board)
+        version = next((v for v in (self._hardware_version_override, board, pinned)
+                        if v is not None), None)
+        if version != self.config.hardware_version:
+            self._rebuild_config(version)
+
+    def _rebuild_config(self, version: int | None) -> None:
+        """Put ``version``'s map and ranges in force, rebuilt from the config's
+        base (never layered on the config in force), with the ranges measured
+        on this hand on top. Ranges that are gone from this hand's file, or
+        belonged to a hand connected earlier, are no longer in force."""
+        # Ranges put in force by a caller (with_measured_ranges) stay; those
+        # this hand's file put in force last time are replaced by its ranges now.
+        kept = {joint: rom for joint, rom in self.config.measured_joint_roms_dict.items()
+                if joint not in self._measured_range_joints}
+        base = dataclasses.replace(self.config, measured_joint_roms_dict={}).without_hardware_version()
+        config = base.with_hardware_version(version) if version is not None else base
+        measured = {**kept, **self._joint_ranges}
+        self._measured_range_joints = frozenset(self._joint_ranges)
+        self.config = config.with_measured_ranges(measured) if measured else config
+
+    # ------------------------------------------------------------------
+    # Joint ranges measured on this hand
+    # ------------------------------------------------------------------
+
+    @property
+    def joint_ranges_info(self) -> dict:
+        """Where this hand's joint ranges come from: ``{"source": "model",
+        "measured_at": None, "joints": []}``, or ``"measured"`` with the date
+        and the joints ``joint_ranges.yaml`` in its folder measured."""
+        if not self._measured_range_joints:
+            return {"source": "model", "measured_at": None, "joints": []}
+        return {"source": "measured", "measured_at": self._joint_ranges_measured_at,
+                "joints": sorted(self._measured_range_joints)}
+
+    def _read_joint_ranges(self, folder: str) -> None:
+        doc = hand_store.read_doc(os.path.join(folder, hand_store.JOINT_RANGES_FILE), "joint_ranges")
+        ranges = {}
+        for joint, rom in (doc.get("joint_roms") or {}).items():
+            valid = (joint in self.config.joint_ids and isinstance(rom, (list, tuple))
+                     and len(rom) == 2 and all(isinstance(v, (int, float)) for v in rom)
+                     and rom[0] < rom[1])
+            if valid:
+                ranges[str(joint)] = [float(rom[0]), float(rom[1])]
+            else:
+                logger.warning("ignoring joint range %s=%r in %s", joint, rom,
+                               os.path.join(folder, hand_store.JOINT_RANGES_FILE))
+        self._joint_ranges = ranges
+        self._joint_ranges_measured_at = doc.get("measured_at")
+
+    def _apply_measured_ranges(self) -> None:
+        self._rebuild_config(self.config.hardware_version)
+
+    def _model_name(self) -> str:
+        config_path = getattr(self.config, "config_path", "") or ""
+        if config_path:
+            return os.path.basename(os.path.dirname(os.path.abspath(config_path)))
+        return str(getattr(self.config, "type", "") or "hand")
+
+    def _contact_board(self, port: str) -> "board_sync.BoardContact":
+        hint = self._board_hint
+        if hint is not None and hint[0] == port and hint[1].info is None \
+                and not board_sync.is_board_port(port):
+            # Detection already found a plain adapter here: no board to ask.
+            return hint[1]
+        return board_sync.contact_board(port, cached_store=self._cached_board_store)
+
+    @staticmethod
+    def _cached_board_store(info) -> bytes | None:
+        hand_id = hand_store.resolve_hand_id(info.serial, info.board_id)
+        if hand_id is None:
+            return None
+        try:
+            return (hand_store.hand_dir(hand_id) / hand_store.BOARD_STORE_FILE).read_bytes()
+        except OSError:
+            return None
+
+    def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
+        """Decide which physical hand this is and point its files at its folder.
+
+        Raises:
+            ConnectionError: a controller board is there but never said which
+                hand it is; guessing would file this hand's files elsewhere.
+        """
+        if contact.silent_board:
+            raise ConnectionError(
+                "the hand's controller board did not report its identity, so its files "
+                "cannot be told apart from another hand's; reconnect the hand (unplug "
+                "it and plug it back in if this repeats)")
+        info = contact.info
+        serial = info.serial if info is not None else None
+        board_id = info.board_id if info is not None else None
+        from_board = hand_store.resolve_hand_id(serial, board_id)
+        hand_id = from_board or hand_store.no_board_hand_id(self._model_name())
+        try:
+            folder, created = hand_store.open_hand_folder(
+                hand_id, serial=serial, board_id=board_id)
+            hand_store.record_contact(
+                folder, hand_id, model=self._model_name(), serial=serial, board_id=board_id)
+        except OSError as exc:
+            logger.warning("cannot use the hand folder for %s under %s (%s); this "
+                           "hand's files will not be kept", hand_id, hand_store.orca_home(), exc)
+            return
+        if self._hand_id is not None and hand_id != self._hand_id:
+            # A different hand: versions known for the last one are not this one's.
+            self._hardware_version_override = None
+            self._board_hardware_version = None
+        self._hand_id, self._board_hand_id, self._board_info = hand_id, from_board, info
+        if info is not None:
+            from .constants import normalize_hardware_version
+
+            self._board_hardware_version = normalize_hardware_version(info.hw_version)
+        self._apply_hardware_version()
+        if created:
+            config_dir = os.path.dirname(getattr(self.config, "config_path", "") or "")
+            legacy = hand_store.find_legacy_files(config_dir)
+            if legacy:
+                hand_store.update_hand(folder, **{LEGACY_KEY: legacy})
+                logger.warning(
+                    "found per-hand files from an older orca_core beside %s (%s); they are "
+                    "not used: this hand's files now live in %s, so calibrate it again",
+                    config_dir, ", ".join(os.path.basename(p) for p in legacy), folder)
+        self._take_board_store(str(folder), contact.store)
+        # The folder is the source of truth: another hand object (an operation's
+        # fresh hand) may have calibrated this hand since it was last read.
+        self._use_folder(str(folder), reload=True)
+
+    def _use_stored_hand(self, hand_id: str) -> str:
+        """Take the files of the hand filed under ``hand_id`` without connecting:
+        its joint ranges and calibration, under the hardware version its board
+        reported when last read (unless this session chose one). Returns the folder."""
+        folder = str(hand_store.hand_dir(hand_id))
+        self._hand_id = hand_id
+        if self._board_hardware_version is None:
+            self._board_hardware_version = self._last_board_version(folder)
+        self._apply_hardware_version()
+        self._use_folder(folder, reload=True)
+        return folder
+
+    @staticmethod
+    def _last_board_version(folder: str) -> int | None:
+        """The hardware version in the board store last read for this hand."""
+        from . import board_store
+        from .constants import normalize_hardware_version
+
+        try:
+            with open(os.path.join(folder, hand_store.BOARD_STORE_FILE), "rb") as file:
+                identity = board_store.unpack(file.read()).identity
+        except (OSError, board_store.BoardStoreError):
+            return None
+        return normalize_hardware_version(identity.hw_version)
+
+    def _use_folder(self, folder: str, reload: bool = False) -> None:
+        """Read and write this hand's files in ``folder`` from now on."""
+        calibration = (self.config.calibration_path if self._explicit_calibration
+                       else os.path.join(folder, hand_store.CALIBRATION_FILE))
+        moved = folder != self.config.hand_dir or calibration != self.config.calibration_path
+        self.config = dataclasses.replace(self.config, hand_dir=folder, calibration_path=calibration)
+        self._read_joint_ranges(folder)
+        self._apply_measured_ranges()
+        if (moved or reload) and not self._explicit_calibration:
+            self._load_calibration(calibration)
+            self._sanity_check()
 
     def __del__(self):
         # Best-effort release of every link the subclass opened; a hand whose
@@ -169,16 +610,158 @@ class OrcaHand(BaseHand):
     # ------------------------------------------------------------------
 
     @property
+    def config(self) -> OrcaHandConfig:
+        """The hand's configuration. Replacing it with one whose joint map or
+        ranges differ re-derives the calibration in force from what was measured."""
+        return self._config
+
+    @config.setter
+    def config(self, value: OrcaHandConfig) -> None:
+        self._config = value
+        if getattr(self, "_stored_calibration", None) is not None and (
+            self._derivation_key(value) != self._derived_for
+        ):
+            self._derive_calibration()
+
+    @property
     def calibration(self) -> CalibrationResult:
         """The current :class:`~orca_core.calibration.CalibrationResult`."""
         return self._calibration
 
     @calibration.setter
     def calibration(self, value: CalibrationResult) -> None:
+        # Taken as measured under the config in force now.
+        self._stored_calibration = value
+        self._stored_fingerprint = joint_fingerprints(self.config)
+        self._derived_for = self._derivation_key(self.config)
         self._calibration = value
         # Re-arm the warn-once set so a recalibration re-reports motors that
         # are still missing calibration data.
         self._uncalibrated_warned.clear()
+
+    def _derivation_key(self, config: OrcaHandConfig):
+        """What the calibration in force depends on besides the measurements."""
+        return (
+            tuple(sorted(config.joint_to_motor_map.items())),
+            tuple(sorted(config.joint_inversion_dict.items())),
+            tuple(sorted((j, tuple(r)) for j, r in config.joint_roms_dict.items())),
+            tuple(sorted(config.measured_joint_roms_dict)),
+        )
+
+    def _derive_calibration(self) -> None:
+        """Rebuild the calibration in force from the stored measurements: ratios
+        from the limits and the ranges in force, and joints whose motor or
+        directions changed since they were measured dropped."""
+        result, dropped = in_force(
+            self._stored_calibration, self._stored_fingerprint, self.config,
+            prefer_config=self.config.measured_joint_roms_dict,
+        )
+        if dropped:
+            logger.warning(
+                "calibration of %s was taken with a different motor mapping or "
+                "calibration sequence than this config's; those joints read as "
+                "uncalibrated until they are calibrated again", ", ".join(dropped))
+        self._derived_for = self._derivation_key(self.config)
+        self._calibration = result
+        self._uncalibrated_warned.clear()
+
+    def _load_calibration(self, path: str | None) -> None:
+        """Make the calibration document at ``path`` (none: empty) the stored
+        calibration, and derive the one in force from it."""
+        doc = calibration_store.read_document(path)
+        self._calibration_doc_stamp = calibration_store.stamp_of(doc)
+        frame = doc.get(ROM_FRAME_KEY)
+        self._rom_frame = frame if frame in ROM_FRAMES else ROM_FRAME_ANCHOR
+        self._stored_calibration = result_from_mapping(doc, self.config.motor_ids)
+        fingerprint = doc.get(FINGERPRINT)
+        self._stored_fingerprint = fingerprint if isinstance(fingerprint, dict) else None
+        self._derive_calibration()
+        # Wrap offsets were judged against the old limits; the next motor
+        # conversion detects them again against these.
+        self._wrap_offsets_dict = None
+
+    def _calibration_file(self, create: bool = False) -> str:
+        """The calibration file this hand reads and writes (``""`` while not
+        known). ``create`` settles the folder of a hand that never connected,
+        so a write always has somewhere to go.
+
+        Raises:
+            OSError: with ``create``, when there is nowhere to write it (the
+                hand folder could not be made under ORCA_HOME, or the file's
+                folder is not writable).
+        """
+        if create and not self.config.calibration_path and not self.is_connected():
+            # A connected hand already tried its own folder; never re-file it as board-less.
+            self._settle_identity(board_sync.NO_BOARD)
+        path = self.config.calibration_path
+        if create:
+            folder = os.path.dirname(os.path.abspath(path)) if path else ""
+            existing = folder
+            while existing and not os.path.isdir(existing) and os.path.dirname(existing) != existing:
+                existing = os.path.dirname(existing)  # the write makes the folders below it
+            if not path or not os.access(existing, os.W_OK):
+                raise OSError(
+                    "this hand's calibration has nowhere to be kept: "
+                    f"{folder or 'no hand folder could be made under ' + str(hand_store.orca_home())}"
+                    " is not writable. Point ORCA_HOME at a writable folder (or pass a "
+                    "writable calibration_path) and reconnect.")
+        return path
+
+    def _save_calibration(
+        self,
+        result: CalibrationResult,
+        *,
+        include_encoder: bool,
+        start_run: bool = False,
+        stamp: bool = False,
+    ) -> str:
+        """Write ``result``'s measurements to this hand's calibration file and
+        return its path. ``start_run`` marks a new calibration: the replaced
+        file becomes the previous one and the sequence goes up. ``stamp`` sets
+        ``calibrated_at`` to now (a calibration run's later writes)."""
+        path = self._calibration_file(create=True)
+        doc = calibration_store.save(
+            path, result, include_encoder=include_encoder,
+            fingerprint=joint_fingerprints(self.config),
+            start_run=start_run, stamp=stamp,
+        )
+        self._calibration_doc_stamp = calibration_store.stamp_of(doc)
+        return path
+
+    @property
+    def calibration_info(self) -> dict:
+        """What the console shows about this hand's calibration.
+
+        ``path`` (the file read and written, ``None`` until the hand knows
+        where its files are), ``sequence`` (calibrations of this hand on this
+        computer), ``calibrated_at`` (UTC ISO, ``None`` if never), and
+        ``previous``: the ``{sequence, calibrated_at}`` that
+        :meth:`restore_previous_calibration` would bring back, or ``None``.
+        """
+        path = self._calibration_file() or None
+        previous = None
+        if path and os.path.exists(calibration_store.previous_path(path)):
+            previous = calibration_store.stamp_of(
+                calibration_store.read_document(calibration_store.previous_path(path)))
+        return {"path": path, **self._calibration_doc_stamp, "previous": previous}
+
+    def restore_previous_calibration(self) -> dict:
+        """Put the previous calibration back in force (and keep the one it
+        replaces as the previous, so restoring again undoes this).
+
+        Returns :attr:`calibration_info` afterwards.
+
+        Raises:
+            FileNotFoundError: no previous calibration is kept for this hand.
+        """
+        path = self._calibration_file()
+        if not path:
+            raise FileNotFoundError("this hand has no calibration file yet")
+        calibration_store.restore_previous(path)
+        self._load_calibration(path)
+        self._sanity_check()
+        logger.info("previous calibration restored in %s", path)
+        return self.calibration_info
 
     @property
     def motor_limits_dict(self) -> Dict[int, list]:
@@ -243,7 +826,14 @@ class OrcaHand(BaseHand):
         if persist is None:
             persist = self._persist_calibration
         if persist:
-            update_yaml(self.config.calibration_path, ROM_FRAME_KEY, mode)
+            self._update_calibration_file({ROM_FRAME_KEY: mode})
+
+    def _update_calibration_file(self, values: dict) -> None:
+        """Set top-level keys of this hand's calibration file, atomically."""
+        path = self._calibration_file(create=True)
+        doc = calibration_store.read_document(path)
+        doc.update(values)
+        write_doc(path, doc)
 
     @property
     def calibrated(self) -> bool:
@@ -329,6 +919,9 @@ class OrcaHand(BaseHand):
             raise ConnectionError(
                 f"no motor responded on {port} (check power and wiring)"
             )
+        # Before the motor client takes the port: the one window to ask the
+        # board which hand this is.
+        self._settle_identity(self._contact_board(port))
         self._motor_client = self._create_motor_client()
         # The family is known now, so a config that says "default" gets its
         # current limits before anything reads them.
@@ -351,13 +944,33 @@ class OrcaHand(BaseHand):
         ``base_config``, so every attempt in the cascade starts clean and a
         failed one can never leak an open (advisory-locked) port.
         """
+        settled = self._identity_state()
         try:
             self._connect_on_port(port, base_config)
             return None
         except Exception as e:
             self._discard_motor_client()
+            # Identity may have been settled before the failure: put back the
+            # hand, folder and calibration this hand had before the attempt.
+            self._restore_identity_state(settled)
             self.config = base_config
             return e
+
+    # Everything a connect derives from which hand it is talking to.
+    _IDENTITY_STATE = (
+        "_hand_id", "_board_hand_id", "_board_info", "_board_store",
+        "_board_hardware_version", "_hardware_version_override",
+        "_joint_ranges", "_joint_ranges_measured_at", "_measured_range_joints",
+        "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
+        "_calibration_doc_stamp", "_rom_frame", "_wrap_offsets_dict", "_config",
+    )
+
+    def _identity_state(self) -> dict:
+        return {name: getattr(self, name, None) for name in self._IDENTITY_STATE}
+
+    def _restore_identity_state(self, state: dict) -> None:
+        for name, value in state.items():
+            setattr(self, name, value)
 
     def _discard_motor_client(self) -> None:
         """Drop the motor client, best-effort closing it first so a failed
@@ -378,11 +991,17 @@ class OrcaHand(BaseHand):
         """Open connection to the motor bus.
 
         Resolves (port, motor_type, baudrate) at connect time: the values in
-        ``config.yaml`` win when present; a missing port is auto-detected via
-        USB vendor ID (interactive picker as a last resort) and a missing
-        motor_type/baudrate is found by pinging each candidate family from
+        ``config.yaml`` win when present; ``port: auto`` is auto-detected via
+        the controller board's identity or the USB vendor ID (interactive
+        picker as a last resort) and a missing motor_type/baudrate is found by
+        pinging each candidate family from
         :data:`~orca_core.constants.MOTOR_BAUD_RATES`. Nothing resolved here is
         written back, so every connect re-probes what the yaml leaves unset.
+
+        A port that was named (``port:`` in config.yaml, ``--motor-port``, a
+        board pinned by a front-end) is the only one tried: if no motor answers
+        there the connect fails, rather than auto-detection quietly finding a
+        different hand.
 
         Idempotent: calling ``connect()`` on an already-connected hand is a
         no-op that returns success. Call :meth:`disconnect` first to force a
@@ -390,8 +1009,9 @@ class OrcaHand(BaseHand):
 
         Args:
             interactive: When ``False``, skip the terminal port picker that
-                otherwise runs as a last resort, so headless callers (servers,
-                GUIs) get a clean failure instead of a blocking prompt.
+                otherwise runs as a last resort for ``port: auto``, so headless
+                callers (servers, GUIs) get a clean failure instead of a
+                blocking prompt.
             engage_feedback: Accepted for signature parity with the
                 joint-feedback hands; this hand has no loop to engage, so the
                 value is ignored.
@@ -404,14 +1024,16 @@ class OrcaHand(BaseHand):
             return True, "Already connected"
 
         existing_config = self.config
-
-        # ``port: auto`` keeps the tracked config hardware-agnostic; if no
-        # unique adapter is found the normal recovery cascade below runs.
         first_port = self.config.port
+        # A port detection found (load_hand) may still give way to the picker;
+        # one somebody named never does.
+        detected = self._board_hint is not None and self._board_hint[0] == first_port
+        named = first_port != "auto" and not detected
+
         unresolved = None
         if first_port == "auto":
-            detected = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
-            if detected is None:
+            found = auto_detect_port(self.config.motor_type) or find_single_usb_serial_port()
+            if found is None:
                 # Opening the literal "auto" reports a missing-file error that
                 # reads like a config typo; name the real failure instead.
                 unresolved = (
@@ -420,7 +1042,7 @@ class OrcaHand(BaseHand):
                     "(a port held open by another process cannot be probed)"
                 )
             else:
-                first_port = detected
+                first_port = found
 
         error = unresolved or self._try_port(first_port, existing_config)
         if error is None:
@@ -433,14 +1055,20 @@ class OrcaHand(BaseHand):
             # ports cannot fix that.
             return False, f"config.yaml is not valid for the motors on {first_port}: {error}"
         logger.warning("Connection failed on %s: %s", first_port, error)
-
-        chosen_port = auto_detect_port(self.config.motor_type)
-        if chosen_port and chosen_port != first_port:
-            if self._try_port(chosen_port, existing_config) is None:
-                return (
-                    True,
-                    f"Connection successful with auto-detected port {chosen_port}",
-                )
+        if named:
+            return False, (
+                f"Connection failed on the pinned port {first_port}: {error}. A pinned "
+                "port is never swapped for another, which could be a different hand; "
+                "check its power and cable, or set port: auto to detect it."
+            )
+        # A detected port can vanish when its board re-enumerates under another
+        # name; looking again finds it, also for a headless caller.
+        again = unresolved is None and auto_detect_port(self.config.motor_type)
+        if again and again != first_port:
+            error = self._try_port(again, existing_config)
+            if error is None:
+                return True, f"Connection successful with auto-detected port {again}"
+            logger.warning("Connection failed on %s: %s", again, error)
 
         if not interactive:
             return False, f"Connection failed on {first_port}: {str(error)}"
@@ -1184,6 +1812,9 @@ class OrcaHand(BaseHand):
         """
         if persist is None:
             persist = self._persist_calibration
+        if persist:
+            # Before any motor moves: a run whose result cannot be kept is wasted.
+            self._calibration_file(create=True)
         self._dispatch_task(
             blocking,
             self._calibrate_and_apply,
@@ -1287,11 +1918,7 @@ class OrcaHand(BaseHand):
             self.calibration, joint_encoder_calibration_dict=encoder_cal
         )
         if persist:
-            persist_calibration(
-                self.config.calibration_path,
-                result=self.calibration,
-                include_encoder=True,
-            )
+            self._save_calibration(self.calibration, include_encoder=True)
         logger.info(
             "joint %s manually re-anchored: count %d at %.2f deg -> anchor %d",
             joint, count_now, true_angle_deg, anchor,
@@ -1544,14 +2171,19 @@ class OrcaHand(BaseHand):
         """
         if all(self.calibration._motor_has_limits(m) for m in self.motor_limits_dict):
             return
-        self.calibration = dataclasses.replace(self.calibration, calibrated=False)
+        self._calibration = dataclasses.replace(self.calibration, calibrated=False)
+        stored = self._stored_calibration
+        if all(stored._motor_has_limits(m) for m in stored.motor_limits_dict):
+            # Only dropped for this config (a changed mapping): the file is right.
+            return
+        self._stored_calibration = dataclasses.replace(stored, calibrated=False)
         if not self._persist_calibration:
             return
-        calibration_path = self.config.calibration_path
-        if os.path.exists(calibration_path) and (
+        calibration_path = self._calibration_file()
+        if calibration_path and os.path.exists(calibration_path) and (
             (read_yaml(calibration_path) or {}).get(CALIBRATED)
         ):
-            update_yaml(calibration_path, CALIBRATED, False)
+            self._update_calibration_file({CALIBRATED: False})
 
     def tension(
         self,
@@ -1731,6 +2363,22 @@ class MockMotorResolutionMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._install_mock_calibration()
+
+    def _settle_identity_at_construction(self) -> None:
+        self._settle_identity(board_sync.NO_BOARD)
+
+    def _contact_board(self, port: str) -> "board_sync.BoardContact":
+        return board_sync.NO_BOARD
+
+    def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
+        """A mock is filed in a temporary folder, never under ``ORCA_HOME``."""
+        hand_id = hand_store.mock_hand_id(self._model_name())
+        folder = hand_store.mock_hand_dir(hand_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        if not (folder / hand_store.HAND_FILE).exists():
+            hand_store.record_contact(folder, hand_id, model=self._model_name())
+        self._hand_id, self._board_hand_id, self._board_info = hand_id, None, None
+        self._use_folder(str(folder))
 
     def _install_mock_calibration(self) -> None:
         """Fill in motor calibration that a mock has no way to measure.

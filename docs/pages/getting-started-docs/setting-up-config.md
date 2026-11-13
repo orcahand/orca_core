@@ -125,12 +125,12 @@ Which map is in force is decided once, when the config is built, from the hand's
 
 ```yaml
 hardware_version: auto     # take what the OH board reports (the packaged default)
-hardware_version: 21       # pin it: a hand on a plain adapter has no board to ask
+hardware_version: 210      # pin it: a hand on a plain adapter has no board to ask
 ```
 
-Precedence is the same as for `port` and `motor_type`: a value you write **wins** over what the board reports, and the clash is logged (`config.yaml pins hardware_version=21, so the detected 2 is not used`) so a stale copied config is never mistaken for a detection bug. `auto` defers to the board; with no board and no pin the base map runs.
+Unlike `port` and `motor_type`, the board **wins** over a value you write: the board's version belongs to that physical hand, while a config speaks for every hand loaded from it. A pin is used only when no board reports a version, and a clash is logged (`config.yaml pins hardware_version=200 but this hand's board reports 210; the board's is used`) so a stale copied config is never mistaken for a detection bug. With no board and no pin the base map runs. `--hardware-version` (or `hand.set_hardware_version()`) overrides both for the current run only.
 
-`load_hand()` reads the board through detection. A caller that loads by `config_path` skips detection and passes the board's value as `detected_hardware_version=` -- it ranks as detection, so a pin still wins. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual.
+`load_hand()` reads the board through detection. A caller that loads by `config_path` skips detection and passes the board's value as `detected_hardware_version=` -- it ranks as detection, so it wins over a pin too. Everything downstream then reads `joint_to_motor_map` and `joint_inversion` as usual.
 
 Whichever map is chosen goes through the same checks as the base map (every joint defined, every motor in `motor_ids`). The two maps are hand-maintained copies, so keep them in step by hand. Right-hand v2 models carry no `_v21` map: the wiring change was a left-hand change. The version still matters on both sides, because it also decides whether the motor-travel features below apply.
 
@@ -287,14 +287,14 @@ python scripts/measure_travel.py /path/to/orcahand-right/config.yaml
 
 That drives every joint onto both hardstops, prints the measured travel per
 joint, and writes the block. Add `--dry-run` to review the numbers first, or
-`--from-calibration` to derive them from an existing clean `calibration.yaml`
+`--from-calibration` to derive them from the hand's existing clean calibration
 without moving the hand. Compare joints that share a design — the four `_pip`
 joints, the four `_mcp` joints — as a cross-check: one that reads well below its
 siblings is usually over-tensioned rather than genuinely shorter.
 
-Each calibration run also writes what it actually measured to
-`calibration.yaml` under `motor_travel_measured:`, so successive runs can be
-compared.
+Each calibration run also writes what it actually measured to the hand's
+`calibration.yaml` (in its own folder) under `motor_travel_measured:`, so
+successive runs can be compared.
 
 A joint with no baseline has its travel measured and logged,
 but not checked, and is never re-driven.

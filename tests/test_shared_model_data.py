@@ -17,6 +17,7 @@ import yaml
 
 import orca_core
 from orca_core import BaseHandConfig, MockOrcaHand, OrcaHandConfig, OrcaHandTouchConfig, load_config, write_standalone_config
+from orca_core.calibration import joint_fingerprints
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
 from orca_core.hand_config import HandConfigValidationError, shared_config_path
 from orca_core.hardware.motor_factory import motor_client_class
@@ -78,6 +79,8 @@ def test_every_v2_model_loads_as_0_13_did(model, hardware_version):
     old = _load(os.path.join(REFERENCE, model, "config.yaml"), hardware_version)
     assert type(new) is type(old)
     assert _effective(new) == _effective(old)
+    # A calibration stored under 0.13's config keeps every joint.
+    assert joint_fingerprints(new) == joint_fingerprints(old)
 
 
 @pytest.mark.parametrize("model", MODELS)

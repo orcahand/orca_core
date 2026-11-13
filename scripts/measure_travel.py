@@ -23,6 +23,7 @@ from orca_core.utils.cli import (
     connect_hand,
     add_hand_arguments,
     create_hand_from_args,
+    load_stored_calibration,
     print_calibration_progress,
     shutdown_hand,
 )
@@ -61,8 +62,14 @@ def main():
     parser.add_argument(
         "--from-calibration",
         action="store_true",
-        help="Derive the baseline from the stored calibration.yaml without "
-        "moving the hand. Only trustworthy if that calibration was clean.",
+        help="Derive the baseline from a hand's stored calibration without "
+        "moving or connecting to it. Only trustworthy if that calibration was clean.",
+    )
+    parser.add_argument(
+        "--hand-id",
+        default=None,
+        help="With --from-calibration: the hand whose calibration to use "
+        "(needed when this computer has several of this model).",
     )
     parser.add_argument(
         "--current",
@@ -93,7 +100,13 @@ def main():
 
     # Deriving from the stored calibration moves nothing, so it must not need
     # the motor bus - it is the mode to reach for when the hand is unplugged.
-    if not args.from_calibration:
+    if args.from_calibration:
+        try:
+            load_stored_calibration(hand, args.hand_id)
+        except ValueError as e:
+            print(e)
+            sys.exit(1)
+    else:
         try:
             connect_hand(hand, interactive=False)
         except RuntimeError as e:

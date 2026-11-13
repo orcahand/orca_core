@@ -273,3 +273,17 @@ def real_mode_change(monkeypatch):
         self.set_torque_enabled(list(motor_ids), True)
 
     monkeypatch.setattr(MockDynamixelClient, "set_operating_mode", set_operating_mode)
+
+
+@pytest.fixture(autouse=True)
+def _orca_home_is_never_the_real_one(tmp_path_factory, monkeypatch):
+    """Every test gets its own ORCA_HOME and mock-hand folder.
+
+    A hand reads and writes the folder filed under its id; pointed at the real
+    home, a test would load somebody's calibration, and a mock hand that
+    persists would write its synthesized one over it.
+    """
+    from orca_core import hand_store
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path_factory.mktemp("orca_home")))
+    monkeypatch.setattr(hand_store, "_mock_root", tmp_path_factory.mktemp("mock_hands"))

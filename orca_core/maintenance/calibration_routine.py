@@ -45,42 +45,29 @@ from typing import Callable, Dict, Optional, TYPE_CHECKING
 
 import numpy as np
 
-from ..calibration import (
-    CalibrationResult,
-    JointEncoderCal,
-    joint_encoder_calibration_to_yaml,
-)
+from ..calibration import CalibrationResult, JointEncoderCal
 from ..constants import (
-    CALIBRATED,
     CURRENT_BASED_POSITION,
-    DRIVE_CURRENT_MEASURED,
     DRIVE_STEP_TIMEOUT_S,
     MAX_DRIVE_TURNS,
     OVERRUN_BASELINE_SCALE,
     WRIST_PWM_RETRY_SCALE,
     EXTEND,
     FLEX,
-    JOINT_ENCODER_CALIBRATION,
-    JOINT_ROMS_MEASURED,
-    JOINT_TO_MOTOR_RATIOS,
     JOINTS,
     MIN_MOTOR_TRAVEL_RAD,
     MIN_TRAVEL_FRACTION,
-    MOTOR_LIMITS_DICT,
-    MOTOR_TRAVEL_MEASURED,
     NUM_STEPS,
     STEP,
     STEP_SIZE,
     TINY_SLEEP,
     WRIST,
-    WRIST_CALIBRATED,
 )
 from ..hardware.joint_encoder_client import (
     JointEncoderCalibrationError,
     sample_anchor_count_from_client,
 )
 from ..hardware.sensing.constants import ENCODER_COUNTS_PER_REV, ENCODER_LSB_DEG
-from ..utils.utils import read_yaml, write_yaml_atomic
 from .motor_reads import read_motor_pos_checked
 from .progress import ProgressCallback, ShouldStop, never_stop, progress_emitter
 from .motor_travel import motor_travel_deg, travel_deviation
@@ -342,42 +329,6 @@ def _build_calibration_result(
         },
     )
     return dataclasses.replace(result, calibrated=result._all_motors_ready())
-
-
-def persist_calibration(
-    calibration_path: str, *, result: CalibrationResult, include_encoder: bool
-) -> None:
-    """Persist ``result`` to ``calibration.yaml`` in one atomic replace.
-
-    The whole document is rewritten at once so an interrupted write can never
-    leave the file truncated or with mismatched keys (e.g. new ratios paired
-    with old limits). Keys not owned by the calibration routine are preserved.
-    """
-    doc = read_yaml(calibration_path) or {}
-    doc[JOINT_TO_MOTOR_RATIOS] = dict(result.joint_to_motor_ratios_dict)
-    doc[MOTOR_LIMITS_DICT] = {
-        motor_id: list(limits) for motor_id, limits in result.motor_limits_dict.items()
-    }
-    doc[WRIST_CALIBRATED] = result.wrist_calibrated
-    doc[CALIBRATED] = result.calibrated
-    doc[MOTOR_TRAVEL_MEASURED] = {
-        joint: round(float(travel), 2)
-        for joint, travel in result.motor_travel_measured_dict.items()
-        if travel is not None
-    }
-    doc[DRIVE_CURRENT_MEASURED] = {
-        joint: {direction: round(float(current), 1)
-                for direction, current in sorted(per_direction.items())}
-        for joint, per_direction in sorted(result.drive_current_measured_dict.items())
-    }
-    if include_encoder:
-        doc[JOINT_ENCODER_CALIBRATION] = joint_encoder_calibration_to_yaml(
-            result.joint_encoder_calibration_dict
-        )
-        doc[JOINT_ROMS_MEASURED] = {
-            joint: list(rom) for joint, rom in result.joint_roms_measured_dict.items()
-        }
-    write_yaml_atomic(calibration_path, doc)
 
 
 def _skips_torque_release(hand: "OrcaHand", motor_id: int) -> bool:
@@ -1275,10 +1226,16 @@ def _drive_calibration(
         joints=sorted({j for step in calibration_sequence for j in step[JOINTS]}),
     )
 
+    saved_to: list[str] = []
+
     def commit_result(
         drive_current_measured: Dict[str, Dict[str, float]] | None = None,
     ) -> CalibrationResult:
-        """Build the result from the run's state, apply it to the hand and persist it."""
+        """Build the result from the run's state, apply it to the hand and persist it.
+
+        The run's first write starts a new calibration on disk (the one it
+        replaces is kept as the previous); later writes update it in place.
+        """
         result = _build_calibration_result(
             motor_limits=motor_limits,
             joint_to_motor_ratios=joint_to_motor_ratios,
@@ -1290,11 +1247,13 @@ def _drive_calibration(
         )
         hand.calibration = result
         if persist:
-            persist_calibration(
-                hand.config.calibration_path,
-                result=result,
-                include_encoder=encoder_pass_active,
-            )
+            path = hand._save_calibration(
+                result, include_encoder=encoder_pass_active,
+                start_run=not saved_to, stamp=True)
+            if not saved_to:
+                saved_to.append(path)
+                _report(progress_callback, "calibration_file", logging.INFO,
+                        "calibration is being written to %s", path, path=path)
         return result
 
     # An index rather than a for loop: a manual run can step back to re-capture
@@ -1517,9 +1476,12 @@ def _drive_calibration(
         logger.info(table)
         _emit(progress_callback, "drive_currents_measured", table=table)
 
+    if saved_to:
+        logger.info("calibration written to %s", saved_to[0])
     _emit(
         progress_callback,
         "calibration_done",
+        calibration_path=saved_to[0] if saved_to else None,
         boosted_joints=dict(boosted_joints),
         motor_travel_deg=dict(motor_travel_measured),
         drive_current_ma=dict(drive_current_measured),

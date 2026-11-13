@@ -14,7 +14,7 @@ import yaml
 from orca_core import MockOrcaHand
 from orca_core.maintenance import calibration_routine, motor_reads
 from orca_core.utils.utils import read_yaml, write_yaml_atomic
-from tests._helpers import copy_model_config
+from tests._helpers import copy_model_config, hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -112,7 +112,7 @@ def test_initial_offset_failure_skips_joint_and_keeps_limits(
     hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
 
     assert hand.motor_limits_dict[target_motor] == pre[target_motor]
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["motor_limits"][target_motor] == pre[target_motor]
     failures = [e for e in events if e["event"] == "offset_calibration_failed"]
     assert failures and all(e["motor"] == target_motor for e in failures)
@@ -144,7 +144,7 @@ def test_wrist_offset_failure_keeps_wrist_uncalibrated_and_recoverable(
     hand.calibrate(joints=["wrist"], progress_callback=events.append, persist=True)
 
     assert not hand.calibration.wrist_calibrated
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["wrist_calibrated"] is False
     assert raw["calibrated"] is False
     assert any(
@@ -161,7 +161,7 @@ def test_wrist_offset_failure_keeps_wrist_uncalibrated_and_recoverable(
     assert not any(e["event"] == "wrist_skipped" for e in events)
     assert hand.calibration.wrist_calibrated
     assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
-    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+    assert read_yaml(str(hand_calibration_file(calib_dir)))["wrist_calibrated"] is True
 
 
 def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir):
@@ -186,7 +186,7 @@ def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir)
     assert not any(e["event"] == "wrist_skipped" for e in events)
     assert hand.calibration.wrist_calibrated
     assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
-    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+    assert read_yaml(str(hand_calibration_file(calib_dir)))["wrist_calibrated"] is True
 
 
 def test_final_offset_failure_records_no_limit(connected_hand, monkeypatch):
@@ -248,7 +248,7 @@ def test_failed_torque_release_skips_limit_capture(
     hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
 
     assert hand.motor_limits_dict[target_motor] == pre[target_motor]
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["motor_limits"][target_motor] == pre[target_motor]
     failures = [e for e in events if e["event"] == "torque_release_failed"]
     assert failures and all(e["motor"] == target_motor for e in failures)

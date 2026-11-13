@@ -252,6 +252,27 @@ def write_text_atomic(file_path, text: str) -> None:
         raise
 
 
+def write_bytes_atomic(file_path, data: bytes) -> None:
+    """Write ``data`` to ``file_path`` via a same-directory temp file and ``os.replace``."""
+    real_path = os.path.realpath(file_path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(real_path) or ".", prefix=".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, real_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def write_yaml_atomic(file_path, data):
     """Replace a YAML file with ``data`` as its complete document, atomically.
 

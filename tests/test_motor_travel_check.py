@@ -23,7 +23,7 @@ from orca_core.maintenance.motor_travel import (
     write_joint_motor_travel,
 )
 from orca_core.utils.utils import read_yaml
-from tests._helpers import copy_model_config
+from tests._helpers import copy_model_config, hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -644,7 +644,7 @@ def test_calibration_records_the_mean_current_per_direction(model_dir):
         assert all(value > 0 for value in per_direction.values()), joint
 
     # Persisted under its own key, and read back by from_calibration_path.
-    doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+    doc = read_yaml(str(hand_calibration_file(model_dir)))
     assert doc["drive_current_measured"]["index_mcp"].keys() == {"extend", "flex"}
 
     reloaded = MockOrcaHand(config_path=path)
@@ -711,9 +711,9 @@ def test_the_table_shows_the_change_against_the_previous_run(model_dir, caplog):
         hand.calibrate(joints=["index_mcp"], persist=True)
         stored = hand.calibration.drive_current_measured_dict["index_mcp"]["flex"]
         # Halve the stored figure, so the next run has a change to report.
-        doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+        doc = read_yaml(str(hand_calibration_file(model_dir)))
         doc["drive_current_measured"]["index_mcp"]["flex"] = stored / 2
-        (model_dir / "calibration.yaml").write_text(yaml.dump(doc, sort_keys=False))
+        hand_calibration_file(model_dir).write_text(yaml.dump(doc, sort_keys=False))
 
         reloaded = MockOrcaHand(config_path=path)
         reloaded.connect()

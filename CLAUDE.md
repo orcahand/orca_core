@@ -151,7 +151,7 @@ the source of truth for everything else.
 family into one. A value a human writes into a config is a deliberate override and wins over what
 was detected. Whenever a pin displaces a detected value, log it at warning level naming the field,
 the pinned value and the detected one: a silent override is indistinguishable from broken
-autodetection. Detection results are never written back to any config - every connect re-probes what
+autodetection. (`hardware_version` is the one exception: the board's wins, see Configuration.) Detection results are never written back to any config - every connect re-probes what
 the yaml leaves unset.
 
 **Front-ends.** Scripts and examples carry no logic. Use the shared argparse and lifecycle helpers in
@@ -268,8 +268,10 @@ All hand-specific settings are in `config.yaml`:
   lacks; a v2 one missing only the v2.1 keys loads with a warning. Read a model's ranges or
   travel through `load_config()` or the config object, never from the raw yaml.
   `OrcaHandConfig.with_measured_ranges()` puts ranges measured on one hand in force as both the
-  clamp and the calibration frame (`measured_joint_roms_dict`); it does not refit a stored
-  joint-to-motor ratio.
+  clamp and the calibration frame (`measured_joint_roms_dict`), over an encoder-measured span. A
+  hand derives its ratios from the ranges in force whenever its config changes, so assigning such
+  a config to `hand.config` remaps a calibrated hand; at connect a hand lays its folder's
+  `joint_ranges.yaml` on this way, and the measured ranges survive a hardware-version change.
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
 - `max_current` / `calibration_current` / `wrist_calibration_current` - `default` (what the
   packaged configs say) resolves to the connected motor family's own values, the
@@ -312,16 +314,18 @@ All hand-specific settings are in `config.yaml`:
   config, both sides) picks which map and whether the travel features apply: `auto` (the packaged default) takes the version the OH board reports (`HW=210`; one
   byte, `major*100 + minor*10 + patch`, so 210 = v2.1.0 and 211 = v2.1.1; boards provisioned earlier report
   `21`/`2`, which `normalize_hardware_version()` reads as 210/200). Every v2.1.x counts as v2.1
-  (`config.is_v21`); a v2.1.1 hand also lays `joint_roms_v211:` over `joint_roms`; a pinned integer is for a hand on a plain adapter with no board to
-  ask, wins over the board, and logs the clash - same rule as `port` and `motor_type`. A pin written
-  at runtime (the console's picker, `write_hardware_version()`) goes into the hand's
-  `local_config.yaml` beside config.yaml, never into the packaged config; `from_config_path()`
-  applies that file's whitelisted keys (`LOCAL_CONFIG_KEYS`) on top of the yaml and logs a
-  value it displaces. Scripts share this through `utils/cli.py`: `--hardware-version N` pins
-  for the run and writes the sidecar, and `connect_hand()` asks interactively when the version is
-  still unknown after connecting. A caller
-  that loads by path hands the board's value to `load_hand(detected_hardware_version=)`, which
-  ranks as detection. Consumers read `joint_to_motor_map` / `joint_inversion_dict` as before.
+  (`config.is_v21`); a v2.1.1 hand also lays `joint_roms_v211:` over `joint_roms`. The version in
+  force on a hand: the session override (`hand.set_hardware_version()`, `--hardware-version`; held
+  in memory only, cleared when a different hand connects), else the board's, else a pinned integer
+  in config.yaml. The board beats a pin and the clash is logged - the one exception to "config
+  beats detection", because the board's version is provisioned into that physical hand while a
+  config speaks for every hand loaded from it; the pin is for a hand on a plain adapter with no
+  board to ask. Nothing writes a version anywhere (`local_config.yaml` is neither read nor
+  written). Scripts share this through `utils/cli.py`: `connect_hand()` asks the board on its other
+  port when the motor port did not answer, and asks the operator, for the run only, only when no
+  board answered and nothing is pinned. A caller that loads by path hands the board's value to
+  `load_hand(detected_hardware_version=)`, which ranks as detection. Consumers read
+  `joint_to_motor_map` / `joint_inversion_dict` as before.
 - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
 - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
 - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)

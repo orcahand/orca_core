@@ -29,3 +29,18 @@ def copy_model_config(src, dst) -> None:
     from orca_core import write_standalone_config
 
     write_standalone_config(str(dst), config_path=str(src))
+
+
+def hand_calibration_file(config_dir):
+    """The calibration file a mock hand built from ``config_dir/config.yaml`` uses:
+    its hand folder's, never one beside the config. The folder is created so a
+    test can seed the file before building the hand."""
+    import os
+    from pathlib import Path
+
+    from orca_core import hand_store
+
+    name = os.path.basename(os.path.abspath(str(config_dir)))
+    folder = hand_store.mock_hand_dir(hand_store.mock_hand_id(name))
+    folder.mkdir(parents=True, exist_ok=True)
+    return Path(folder) / hand_store.CALIBRATION_FILE

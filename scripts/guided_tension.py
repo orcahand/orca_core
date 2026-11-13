@@ -156,11 +156,12 @@ def main() -> int:
     args = parser.parse_args()
 
     hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
-    last = read_last_tension(hand.config)
-    if last:
-        print(f"Last successful tension: {last.get('completed_at')}")
     try:
         connect_hand(hand)
+        # The hand's records are in its folder, known once it has connected.
+        last = read_last_tension(hand.config)
+        if last:
+            print(f"Last successful tension: {last.get('completed_at')}")
         result = run_guided_tension(
             hand,
             prompt_callback=_prompt,

@@ -18,7 +18,7 @@ import yaml
 
 from orca_core import BaseHand, load_hand
 from orca_core.constants import normalize_hardware_version
-from orca_core.hand_config import format_hardware_version, write_hardware_version
+from orca_core.hand_config import format_hardware_version
 from orca_core.hardware.hand_serial_link import HandSerialLink
 from orca_core.hardware.joint_encoder_client import JointEncoderClient
 from orca_core.hardware.sensing.serial_discovery import board_info_for_port, resolve_sensing_ports
@@ -53,14 +53,21 @@ def add_hand_arguments(
         help="Bundled model to load (e.g. orcahand-full-left) instead of autodetecting.",
     )
     parser.add_argument(
+        "--motor-port",
+        dest="motor_port",
+        default=None,
+        help="Motor bus device to use (e.g. /dev/cu.usbmodemXXXX) instead of detecting "
+             "it. Only that port is tried: if no motor answers there the run stops.",
+    )
+    parser.add_argument(
         "--hardware-version",
         dest="hardware_version",
         type=int,
         default=None,
         metavar="N",
-        help="Pin the hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1) for a hand whose "
-             "controller board cannot report it; written to its local_config.yaml, "
-             "as the console's picker does. Without it an interactive run asks.",
+        help="The hand's hardware version (200 = v2.0.0, 210 = v2.1.0, 211 = v2.1.1) for this "
+             "run only, over what its board reports; never saved. Without it a hand "
+             "with no board to ask is asked about interactively.",
     )
     if feedback_flag:
         parser.add_argument(
@@ -113,28 +120,33 @@ def create_hand_from_args(args: Namespace, **overrides) -> BaseHand:
     }
     options.update(overrides)
     hand = create_hand(args.config_path, **options)
+    port = getattr(args, "motor_port", None)
+    if port:
+        import dataclasses
+
+        hand.config = dataclasses.replace(hand.config, port=port)
+        hand._board_hint = None
     version = getattr(args, "hardware_version", None)
     if version is not None:
         pin_hardware_version(hand, version)
     return hand
 
 
-def pin_hardware_version(hand, version: int) -> str:
-    """Put ``version`` in force for this run and keep it in the hand's
-    ``local_config.yaml``, so the next run (script or console) starts with it.
-    Returns the path written."""
-    path = write_hardware_version(hand.config.config_path, int(version))
-    hand.config = hand.config.with_hardware_version(int(version))
-    print(f"Hardware version pinned to {format_hardware_version(int(version))} in {path}")
-    return path
+def pin_hardware_version(hand, version: int) -> int | None:
+    """Use ``version`` for this hand for this run only; nothing is saved.
+    Returns the version in force."""
+    in_force = hand.set_hardware_version(int(version))
+    print(f"Hardware version {format_hardware_version(in_force)} for this run "
+          "(not saved; the board's version is used when it reports one).")
+    return in_force
 
 
 def prompt_hardware_version(hand, ask=input) -> "int | None":
-    """Ask which revision a hand of unknown version is, and pin the answer.
+    """Ask which revision a hand of unknown version is, for this run.
 
-    Reached only when neither a controller board nor a pin said: a plain
+    Reached only when neither a controller board nor config.yaml said: a plain
     adapter. Enter keeps the version unknown for this run (v2.0 behaviour:
-    base map, no travel features).
+    base map, no travel features). The answer is never saved.
     """
     print(
         "Hardware version unknown: no controller board answered and none is pinned.\n"
@@ -149,39 +161,113 @@ def prompt_hardware_version(hand, ask=input) -> "int | None":
             print("Continuing with the hardware version unknown (v2.0 behaviour).")
             return None
         if answer.isdigit():
-            pin_hardware_version(hand, int(answer))
-            return hand.config.hardware_version
+            return pin_hardware_version(hand, int(answer))
         print("Please enter a whole number (200, 210 or 211) or press Enter.")
 
 
 def settle_hardware_version(hand, *, interactive: bool = True, ask=input) -> None:
     """Decide the connected hand's hardware version the way the console does.
 
-    A pin (config.yaml or the hand's local_config.yaml) wins and a disagreeing
-    board is logged. Otherwise the controller board behind the motor port
-    decides, however the hand was loaded (a config path skips core's
-    detection, so the board is asked here). Only with no board at all is the
-    operator asked, and only when a terminal can answer.
+    ``--hardware-version`` or the board's answer at connect settle it. A board
+    whose motor port did not answer is asked on its other port. Then a pin in
+    config.yaml applies, and only with neither is the operator asked, for this
+    run only, and only when a terminal can answer.
     """
-    pinned = normalize_hardware_version(getattr(hand.config, "hardware_version", None))
-    board = board_info_for_port(getattr(hand.config, "port", "") or "")
-    reported = board.hw_version if board is not None else None
-    if pinned is not None:
-        if reported is not None and reported != pinned:
-            logger.warning(
-                "the config pins hardware_version=%r (config.yaml or local_config.yaml), "
-                "so the board's %r is not used. Lift the pin to take the board's value.",
-                pinned, reported)
+    if hand.hardware_version_override is not None:
         return
+    if hand.board_hardware_version is not None:
+        print("Controller board reports hardware version "
+              f"{format_hardware_version(hand.board_hardware_version)}.")
+        return
+    board = board_info_for_port(getattr(hand.config, "port", "") or "")
+    reported = normalize_hardware_version(board.hw_version) if board is not None else None
     if reported is not None:
-        hand.config = hand.config.with_hardware_version(reported)
+        hand._board_hardware_version = reported
+        hand._apply_hardware_version()
         print(f"Controller board reports hardware version {format_hardware_version(reported)}.")
+        return
+    if hand.hardware_version is not None:
         return
     # Only a terminal can answer: a piped or captured stdin keeps the version
     # unknown rather than blocking (or failing) the run.
     can_ask = ask is not input or sys.stdin.isatty()
     if interactive and can_ask:
         prompt_hardware_version(hand, ask)
+
+
+def load_stored_calibration(hand, hand_id: str | None = None) -> str:
+    """Load a hand's stored calibration without connecting to it.
+
+    ``hand_id`` names the hand's folder; without it, the one hand of this model
+    with a calibration on this computer is used. The calibration is read the
+    way the hand reads it at connect: with that hand's joint ranges and ROM
+    frame, under the hardware version its board last reported (or
+    ``--hardware-version``). Returns the hand id.
+
+    Raises:
+        ValueError: no such hand, or several to choose from (they are listed).
+    """
+    from orca_core import hand_store
+
+    if hand_id is None:
+        model = hand._model_name()
+        candidates = [
+            h["id"] for h in hand_store.known_hands()
+            if h.get("model") == model
+            and (hand_store.hand_dir(h["id"]) / hand_store.CALIBRATION_FILE).exists()
+        ]
+        if len(candidates) != 1:
+            known = ", ".join(candidates) or "none"
+            raise ValueError(
+                f"name the hand with --hand-id; calibrated {model} hands on this "
+                f"computer: {known}")
+        hand_id = candidates[0]
+    path = hand_store.hand_dir(hand_id) / hand_store.CALIBRATION_FILE
+    if not path.exists():
+        raise ValueError(f"no calibration kept for hand {hand_id} ({path})")
+    hand._use_stored_hand(hand_id)
+    print(f"Using the calibration of hand {hand_id} in {path}")
+    if hand.hardware_version is None and hand.config.joint_to_motor_map_v21:
+        print("Its hardware version is not known here; pass --hardware-version if it is v2.1.")
+    return hand_id
+
+
+def board_store_problem(hand) -> "str | None":
+    """Why this hand's calibration could not be kept on its board, said before a
+    run rather than after it; ``None`` when it can (or there is no board)."""
+    from ..board_store import BoardStoreError, check_packable
+
+    if not getattr(hand, "board_hand_id", None):
+        return None
+    try:
+        check_packable(hand.config.joint_ids, hand.config.motor_ids)
+    except BoardStoreError as exc:
+        print(f"Note: this hand's calibration will be kept on this computer only: {exc}.")
+        return str(exc)
+    return None
+
+
+def push_calibration_to_board(hand) -> bool:
+    """Keep this hand's fresh calibration on the hand's own board too.
+
+    Call once the hand has released its port, after a successful run on a real
+    hand. Needs an orca_firmware checkout (``ORCA_FIRMWARE_REPO``, or beside
+    orca_core); without one, or on a hand with no board, nothing is written and
+    the run is still complete: the hand's folder holds its calibration.
+    """
+    from ..board_push import push_for_hand
+
+    try:
+        result = push_for_hand(hand)
+    except Exception as exc:
+        print(f"Calibration kept on this computer only: the board was not written ({exc}).")
+        return False
+    if result.written:
+        print(f"Calibration also written to the hand's own board "
+              f"(store sequence {result.sequence}, {result.size} bytes).")
+    elif result.reason:
+        print(f"Calibration kept on this computer only: {result.reason}.")
+    return result.written
 
 
 def connect_hand(hand, *, interactive: bool = True, ask=input) -> None:
@@ -306,6 +392,8 @@ def print_calibration_progress(event: dict) -> None:
             f"Calibrating {len(event['joints'])} joint(s) "
             f"over {event['steps']} step(s)..."
         )
+    elif name == "calibration_file":
+        print(f"Writing this calibration to {event['path']}")
     elif name == "step_started":
         joints = ", ".join(f"{j} ({d})" for j, d in event["joints"].items())
         print(f"[step {event['index'] + 1}/{event['total']}] {joints}")
@@ -472,6 +560,8 @@ def print_calibration_progress(event: dict) -> None:
             )
             print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
+        if event.get("calibration_path"):
+            print(f"Calibration written to {event['calibration_path']}")
     elif name == "drive_currents_measured":
         print(event["table"])
     elif name == "calibration_aborted":
