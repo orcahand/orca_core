@@ -306,6 +306,8 @@ def print_calibration_progress(event: dict) -> None:
             f"Calibrating {len(event['joints'])} joint(s) "
             f"over {event['steps']} step(s)..."
         )
+    elif name == "calibration_file":
+        print(f"Writing this calibration to {event['path']}")
     elif name == "step_started":
         joints = ", ".join(f"{j} ({d})" for j, d in event["joints"].items())
         print(f"[step {event['index'] + 1}/{event['total']}] {joints}")
@@ -472,6 +474,8 @@ def print_calibration_progress(event: dict) -> None:
             )
             print(f"Needed a higher-current re-drive: {joints}")
         print("Calibration complete.")
+        if event.get("calibration_path"):
+            print(f"Calibration written to {event['calibration_path']}")
     elif name == "drive_currents_measured":
         print(event["table"])
     elif name == "calibration_aborted":

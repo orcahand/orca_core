@@ -43,9 +43,11 @@ def check_calibrated(hand, calib_path):
     motor_limits = hand.motor_limits_dict
     assert motor_limits == motor_limits_file, "Motor limits do not match between hand and calibration file"
 
-    joint_to_motor_ratios_file = calib.get('joint_to_motor_ratios', {})
+    assert "joint_to_motor_ratios" not in calib, "ratios are derived at load, never stored"
+    reloaded = CalibrationResult.from_calibration_path(
+        str(calib_path), hand.config.motor_ids, config=hand.config)
     joint_to_motor_ratios = hand.joint_to_motor_ratios_dict
-    assert joint_to_motor_ratios == joint_to_motor_ratios_file, "Joint to motor ratios do not match between hand and calibration file"
+    assert reloaded.joint_to_motor_ratios_dict == pytest.approx(joint_to_motor_ratios)
 
     for mid, ratio in joint_to_motor_ratios.items():
         assert ratio != 0, f"Joint to motor ratio for motor {mid} should not be 0"

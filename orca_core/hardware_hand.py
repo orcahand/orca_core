@@ -17,8 +17,15 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 
+from . import calibration_store
 from .base_hand import BaseHand
-from .calibration import CalibrationResult
+from .calibration import (
+    FINGERPRINT,
+    CalibrationResult,
+    in_force,
+    joint_fingerprints,
+    result_from_mapping,
+)
 from .hand_config import HandConfigValidationError, OrcaHandConfig
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import (
@@ -29,14 +36,14 @@ from .hardware.motor_client import (
     ServoProfile,
 )
 from .hardware.motor_resolution import trial_probe
-from .maintenance.calibration_routine import persist_calibration, run_calibration
+from .hand_store import write_doc
+from .maintenance.calibration_routine import run_calibration
 from .maintenance.tensioning import TENSION_EXTRA_DEG, TENSION_OFFSET_DEG, run_jitter, run_tension
 from .utils.utils import (
     auto_detect_port,
     find_single_usb_serial_port,
     get_and_choose_port,
     read_yaml,
-    update_yaml,
 )
 
 from .constants import (
@@ -144,15 +151,10 @@ class OrcaHand(BaseHand):
         self._lock = threading.Lock()
         self._current_task = None
 
-        self.calibration = CalibrationResult.from_calibration_path(
-            self.config.calibration_path, self.config.motor_ids
-        )
-        stored_frame = (read_yaml(self.config.calibration_path) or {}).get(
-            ROM_FRAME_KEY
-        )
-        self._rom_frame = (
-            stored_frame if stored_frame in ROM_FRAMES else ROM_FRAME_ANCHOR
-        )
+        self._rom_frame = ROM_FRAME_ANCHOR
+        # Joints whose range was measured on this hand (joint_ranges.yaml).
+        self._measured_range_joints: frozenset = frozenset()
+        self._load_calibration(self.config.calibration_path)
         self._sanity_check()
         self.is_calibrated(verbose=True)
 
@@ -169,16 +171,132 @@ class OrcaHand(BaseHand):
     # ------------------------------------------------------------------
 
     @property
+    def config(self) -> OrcaHandConfig:
+        """The hand's configuration. Replacing it with one whose joint map or
+        ranges differ re-derives the calibration in force from what was measured."""
+        return self._config
+
+    @config.setter
+    def config(self, value: OrcaHandConfig) -> None:
+        self._config = value
+        if getattr(self, "_stored_calibration", None) is not None and (
+            self._derivation_key(value) != self._derived_for
+        ):
+            self._derive_calibration()
+
+    @property
     def calibration(self) -> CalibrationResult:
         """The current :class:`~orca_core.calibration.CalibrationResult`."""
         return self._calibration
 
     @calibration.setter
     def calibration(self, value: CalibrationResult) -> None:
+        # Taken as measured under the config in force now.
+        self._stored_calibration = value
+        self._stored_fingerprint = joint_fingerprints(self.config)
+        self._derived_for = self._derivation_key(self.config)
         self._calibration = value
         # Re-arm the warn-once set so a recalibration re-reports motors that
         # are still missing calibration data.
         self._uncalibrated_warned.clear()
+
+    def _derivation_key(self, config: OrcaHandConfig):
+        """What the calibration in force depends on besides the measurements."""
+        return (
+            tuple(sorted(config.joint_to_motor_map.items())),
+            tuple(sorted(config.joint_inversion_dict.items())),
+            tuple(sorted((j, tuple(r)) for j, r in config.joint_roms_dict.items())),
+            tuple(sorted(self._measured_range_joints)),
+        )
+
+    def _derive_calibration(self) -> None:
+        """Rebuild the calibration in force from the stored measurements: ratios
+        from the limits and the ranges in force, and joints whose motor or
+        directions changed since they were measured dropped."""
+        result, dropped = in_force(
+            self._stored_calibration, self._stored_fingerprint, self.config,
+            prefer_config=self._measured_range_joints,
+        )
+        if dropped:
+            logger.warning(
+                "calibration of %s was taken with a different motor mapping or "
+                "calibration sequence than this config's; those joints read as "
+                "uncalibrated until they are calibrated again", ", ".join(dropped))
+        self._derived_for = self._derivation_key(self.config)
+        self._calibration = result
+        self._uncalibrated_warned.clear()
+
+    def _load_calibration(self, path: str | None) -> None:
+        """Make the calibration document at ``path`` (none: empty) the stored
+        calibration, and derive the one in force from it."""
+        doc = calibration_store.read_document(path)
+        self._calibration_doc_stamp = calibration_store.stamp_of(doc)
+        frame = doc.get(ROM_FRAME_KEY)
+        self._rom_frame = frame if frame in ROM_FRAMES else ROM_FRAME_ANCHOR
+        self._stored_calibration = result_from_mapping(doc, self.config.motor_ids)
+        fingerprint = doc.get(FINGERPRINT)
+        self._stored_fingerprint = fingerprint if isinstance(fingerprint, dict) else None
+        self._derive_calibration()
+
+    def _calibration_file(self) -> str:
+        """The calibration file this hand reads and writes."""
+        return self.config.calibration_path
+
+    def _save_calibration(
+        self,
+        result: CalibrationResult,
+        *,
+        include_encoder: bool,
+        start_run: bool = False,
+        stamp: bool = False,
+    ) -> str:
+        """Write ``result``'s measurements to this hand's calibration file and
+        return its path. ``start_run`` marks a new calibration: the replaced
+        file becomes the previous one and the sequence goes up. ``stamp`` sets
+        ``calibrated_at`` to now (a calibration run's later writes)."""
+        path = self._calibration_file()
+        doc = calibration_store.save(
+            path, result, include_encoder=include_encoder,
+            fingerprint=joint_fingerprints(self.config),
+            start_run=start_run, stamp=stamp,
+        )
+        self._calibration_doc_stamp = calibration_store.stamp_of(doc)
+        return path
+
+    @property
+    def calibration_info(self) -> dict:
+        """What the console shows about this hand's calibration.
+
+        ``path`` (the file read and written, ``None`` until the hand knows
+        where its files are), ``sequence`` (calibrations of this hand on this
+        computer), ``calibrated_at`` (UTC ISO, ``None`` if never), and
+        ``previous``: the ``{sequence, calibrated_at}`` that
+        :meth:`restore_previous_calibration` would bring back, or ``None``.
+        """
+        path = self._calibration_file() or None
+        previous = None
+        if path and os.path.exists(calibration_store.previous_path(path)):
+            previous = calibration_store.stamp_of(
+                calibration_store.read_document(calibration_store.previous_path(path)))
+        return {"path": path, **self._calibration_doc_stamp, "previous": previous}
+
+    def restore_previous_calibration(self) -> dict:
+        """Put the previous calibration back in force (and keep the one it
+        replaces as the previous, so restoring again undoes this).
+
+        Returns :attr:`calibration_info` afterwards.
+
+        Raises:
+            FileNotFoundError: no previous calibration is kept for this hand.
+        """
+        path = self._calibration_file()
+        if not path:
+            raise FileNotFoundError("this hand has no calibration file yet")
+        calibration_store.restore_previous(path)
+        self._load_calibration(path)
+        self._sanity_check()
+        logger.info("previous calibration restored in %s", path)
+        return self.calibration_info
 
     @property
     def motor_limits_dict(self) -> Dict[int, list]:
@@ -242,7 +360,14 @@ class OrcaHand(BaseHand):
         if persist is None:
             persist = self._persist_calibration
         if persist:
-            update_yaml(self.config.calibration_path, ROM_FRAME_KEY, mode)
+            self._update_calibration_file({ROM_FRAME_KEY: mode})
+
+    def _update_calibration_file(self, values: dict) -> None:
+        """Set top-level keys of this hand's calibration file, atomically."""
+        path = self._calibration_file()
+        doc = calibration_store.read_document(path)
+        doc.update(values)
+        write_doc(path, doc)
 
     @property
     def calibrated(self) -> bool:
@@ -1286,11 +1411,7 @@ class OrcaHand(BaseHand):
             self.calibration, joint_encoder_calibration_dict=encoder_cal
         )
         if persist:
-            persist_calibration(
-                self.config.calibration_path,
-                result=self.calibration,
-                include_encoder=True,
-            )
+            self._save_calibration(self.calibration, include_encoder=True)
         logger.info(
             "joint %s manually re-anchored: count %d at %.2f deg -> anchor %d",
             joint, count_now, true_angle_deg, anchor,
@@ -1543,14 +1664,19 @@ class OrcaHand(BaseHand):
         """
         if all(self.calibration._motor_has_limits(m) for m in self.motor_limits_dict):
             return
-        self.calibration = dataclasses.replace(self.calibration, calibrated=False)
+        self._calibration = dataclasses.replace(self.calibration, calibrated=False)
+        stored = self._stored_calibration
+        if all(stored._motor_has_limits(m) for m in stored.motor_limits_dict):
+            # Only dropped for this config (a changed mapping): the file is right.
+            return
+        self._stored_calibration = dataclasses.replace(stored, calibrated=False)
         if not self._persist_calibration:
             return
-        calibration_path = self.config.calibration_path
-        if os.path.exists(calibration_path) and (
+        calibration_path = self._calibration_file()
+        if calibration_path and os.path.exists(calibration_path) and (
             (read_yaml(calibration_path) or {}).get(CALIBRATED)
         ):
-            update_yaml(calibration_path, CALIBRATED, False)
+            self._update_calibration_file({CALIBRATED: False})
 
     def tension(
         self,
