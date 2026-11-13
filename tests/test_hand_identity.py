@@ -241,7 +241,7 @@ class TestMockHands:
         hand.connect()
         hand.calibrate(persist=True)
         assert hand.hand_id == "mock-orcahand-right"
-        assert not hand_store.hands_dir().exists()
+        assert not hand_store._hands_dir().exists()
         assert not hand.hand_dir.startswith(str(hand_store.orca_home()))
 
     def test_mocks_of_one_model_share_their_temporary_folder(self, model_dir):

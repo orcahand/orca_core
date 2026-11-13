@@ -159,10 +159,10 @@ def test_a_hardware_version_change_keeps_the_measured_range(tmp_path):
     model_rom = load_config(MODEL)["joint_roms"]["index_mcp"]
     assert config.base_joint_roms_dict["index_mcp"] == model_rom
     assert config.with_hardware_version(211).joint_roms_dict["index_mcp"] == MEASURED
-    assert config.without_hardware_version().joint_roms_dict["index_mcp"] == MEASURED
+    assert config._without_hardware_version().joint_roms_dict["index_mcp"] == MEASURED
     fresh = OrcaHandConfig.from_config_path(config_path=MODEL).with_measured_ranges({"index_mcp": MEASURED})
     assert fresh.base_joint_roms_dict["index_mcp"] == model_rom
-    assert dataclasses.replace(fresh, measured_joint_roms_dict={}).without_hardware_version() \
+    assert dataclasses.replace(fresh, measured_joint_roms_dict={})._without_hardware_version() \
         .joint_roms_dict["index_mcp"] == model_rom
 
 

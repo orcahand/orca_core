@@ -237,7 +237,7 @@ SHARED_CONFIG_FILE = "shared.yaml"
 _SHARED_JOINT_MAPS = (JOINT_ROM_DICT, JOINT_ROMS_V211, JOINT_MOTOR_TRAVEL_V21)
 
 
-def shared_config_path(config_path: str) -> str | None:
+def _shared_config_path(config_path: str) -> str | None:
     """The ``shared.yaml`` the config at ``config_path`` builds on, or None.
 
     Only a packaged model has one: its generation's ``models/<version>/shared.yaml``,
@@ -272,7 +272,7 @@ def _read_mapping(path: str) -> Dict:
 def _load_config_documents(config_path: str) -> tuple[Dict, Dict]:
     """``(config.yaml as written, the effective document)`` for ``config_path``."""
     own = _read_mapping(config_path)
-    shared_path = shared_config_path(config_path)
+    shared_path = _shared_config_path(config_path)
     if shared_path is None:
         return own, own
     shared = _read_mapping(shared_path)
@@ -339,7 +339,7 @@ def _check_standalone(config_path: str, config: Dict, require_roms: bool = True)
     ``joint_roms`` (with ``require_roms`` False, only a v2 one); warn once about
     a v2 one missing the other shared keys, which leaves the v2.1 travel checks
     or calibration currents off."""
-    if shared_config_path(config_path) is not None:
+    if _shared_config_path(config_path) is not None:
         return
     is_v2 = HARDWARE_VERSION in config
     missing = [key for key in _shared_keys() if key not in config] if is_v2 else []
@@ -657,10 +657,10 @@ class OrcaHandConfig(BaseHandConfig):
     # Ranges measured on this hand (with_measured_ranges), already in joint_roms_dict. They win
     # over every packaged range and over a calibration's encoder-measured span.
     measured_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict)
-    # The signed map and ranges before any hardware version was applied, kept by
+    # Internal: the signed map and ranges before any hardware version was applied, kept by
     # with_hardware_version so another version (or none) can be put in force later.
-    base_joint_to_motor_map: Dict[str, int] = field(default_factory=dict)
-    base_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict)
+    base_joint_to_motor_map: Dict[str, int] = field(default_factory=dict, repr=False)
+    base_joint_roms_dict: Dict[str, List[float]] = field(default_factory=dict, repr=False)
     calibration_current: int | str = _FAMILY_DEFAULT
     # None follows calibration_current: the wrist gets what the fingers get
     # unless a config says otherwise.
@@ -1285,7 +1285,7 @@ class OrcaHandConfig(BaseHandConfig):
         if hardware_version is None:
             return self
         hardware_version = normalize_hardware_version(hardware_version)
-        base = self.without_hardware_version()
+        base = self._without_hardware_version()
         changes = {
             "hardware_version": hardware_version,
             "base_joint_to_motor_map": base.base_joint_to_motor_map,
@@ -1301,7 +1301,7 @@ class OrcaHandConfig(BaseHandConfig):
             }
         return dataclasses.replace(base, **changes)
 
-    def without_hardware_version(self) -> "OrcaHandConfig":
+    def _without_hardware_version(self) -> "OrcaHandConfig":
         """This config with no hardware version in force: the base map and
         ranges, with the ranges measured on this hand still on top."""
         recorded = self._with_base_recorded()
@@ -1345,7 +1345,7 @@ class OrcaHandConfig(BaseHandConfig):
         hand: :class:`~orca_core.OrcaHand` derives them from its motor limits
         and the ranges in force whenever its config is replaced, so the named
         joints' ends land on the calibrated motor limits. The ranges stay in
-        force across :meth:`with_hardware_version` / :meth:`without_hardware_version`.
+        force across :meth:`with_hardware_version`.
         """
         if not isinstance(roms, dict):
             raise HandConfigValidationError(

@@ -92,7 +92,7 @@ def orca_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".orca"
 
 
-def hands_dir() -> Path:
+def _hands_dir() -> Path:
     return orca_home() / HANDS_DIR
 
 
@@ -107,7 +107,7 @@ def valid_hand_id(hand_id: Optional[str]) -> bool:
     )
 
 
-def check_hand_id(hand_id: str) -> str:
+def _check_hand_id(hand_id: str) -> str:
     if not valid_hand_id(hand_id):
         raise HandStoreError(
             f"{hand_id!r} cannot be a hand id: 1-64 characters of [0-9A-Za-z._-], "
@@ -118,7 +118,7 @@ def check_hand_id(hand_id: str) -> str:
 
 def hand_dir(hand_id: str) -> Path:
     """The folder of the hand filed under ``hand_id`` (not created)."""
-    return hands_dir() / check_hand_id(hand_id)
+    return _hands_dir() / _check_hand_id(hand_id)
 
 
 def _slug(name: str) -> str:
@@ -131,7 +131,7 @@ def no_board_hand_id(model_name: str) -> str:
     return NO_BOARD_PREFIX + _slug(model_name)
 
 
-def mock_hand_id(model_name: str) -> str:
+def _mock_hand_id(model_name: str) -> str:
     return MOCK_PREFIX + _slug(model_name)
 
 
@@ -146,7 +146,7 @@ def resolve_hand_id(serial: Optional[str], board_id: Optional[str]) -> Optional[
 _mock_root: Optional[Path] = None
 
 
-def mock_hands_dir() -> Path:
+def _mock_hands_dir() -> Path:
     """A temporary folder for this process's mock hands, removed at exit.
 
     One per process, so the fresh mock hand an operation builds finds what the
@@ -159,8 +159,8 @@ def mock_hands_dir() -> Path:
     return _mock_root
 
 
-def mock_hand_dir(hand_id: str) -> Path:
-    return mock_hands_dir() / check_hand_id(hand_id)
+def _mock_hand_dir(hand_id: str) -> Path:
+    return _mock_hands_dir() / _check_hand_id(hand_id)
 
 
 # --- documents ------------------------------------------------------------------
@@ -272,7 +272,7 @@ def update_hand(folder: os.PathLike | str, **values: Any) -> Dict[str, Any]:
 
 def known_hands() -> List[Dict[str, Any]]:
     """Every hand this computer has a folder for, as its ``hand.yaml`` (plus ``folder``)."""
-    root = hands_dir()
+    root = _hands_dir()
     try:
         entries = sorted(p for p in root.iterdir() if p.is_dir() and valid_hand_id(p.name))
     except OSError:

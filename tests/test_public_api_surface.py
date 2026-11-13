@@ -262,7 +262,6 @@ ORCA_HAND_CONFIG = BASE_HAND_CONFIG | {
     "with_family_currents",
     "with_hardware_version",
     "with_measured_ranges",
-    "without_hardware_version",
     "wrist_calibration_current",
 }
 

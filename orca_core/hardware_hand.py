@@ -461,7 +461,7 @@ class OrcaHand(BaseHand):
         # this hand's file put in force last time are replaced by its ranges now.
         kept = {joint: rom for joint, rom in self.config.measured_joint_roms_dict.items()
                 if joint not in self._measured_range_joints}
-        base = dataclasses.replace(self.config, measured_joint_roms_dict={}).without_hardware_version()
+        base = dataclasses.replace(self.config, measured_joint_roms_dict={})._without_hardware_version()
         config = base.with_hardware_version(version) if version is not None else base
         measured = {**kept, **self._joint_ranges}
         self._measured_range_joints = frozenset(self._joint_ranges)
@@ -2349,8 +2349,8 @@ class MockMotorResolutionMixin:
 
     def _settle_identity(self, contact: "board_sync.BoardContact") -> None:
         """A mock is filed in a temporary folder, never under ``ORCA_HOME``."""
-        hand_id = hand_store.mock_hand_id(self._model_name())
-        folder = hand_store.mock_hand_dir(hand_id)
+        hand_id = hand_store._mock_hand_id(self._model_name())
+        folder = hand_store._mock_hand_dir(hand_id)
         folder.mkdir(parents=True, exist_ok=True)
         if not (folder / hand_store.HAND_FILE).exists():
             hand_store.record_contact(folder, hand_id, model=self._model_name())

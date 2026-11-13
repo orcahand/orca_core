@@ -41,6 +41,6 @@ def hand_calibration_file(config_dir):
     from orca_core import hand_store
 
     name = os.path.basename(os.path.abspath(str(config_dir)))
-    folder = hand_store.mock_hand_dir(hand_store.mock_hand_id(name))
+    folder = hand_store._mock_hand_dir(hand_store._mock_hand_id(name))
     folder.mkdir(parents=True, exist_ok=True)
     return Path(folder) / hand_store.CALIBRATION_FILE

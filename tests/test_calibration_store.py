@@ -13,9 +13,9 @@ import yaml
 import orca_core
 from orca_core import CalibrationResult, MockOrcaHand, OrcaHand, calibration_store
 from orca_core.calibration import (
-    derive_joint_to_motor_ratios,
+    _derive_joint_to_motor_ratios,
     joint_fingerprints,
-    mismatched_joints,
+    _mismatched_joints,
 )
 from orca_core.utils import read_yaml
 from tests._helpers import copy_model_config
@@ -97,7 +97,7 @@ class TestRatiosAreDerivedAtLoad:
         assert hand.joint_to_motor_ratios_dict[motor_id] == pytest.approx(2 * before)
 
     def test_no_ratio_without_both_limits_or_a_range(self):
-        ratios = derive_joint_to_motor_ratios(
+        ratios = _derive_joint_to_motor_ratios(
             {1: [0.0, 1.0], 2: [None, None], 3: [0.0, 1.0], 4: [0.0, 1.0]},
             {"a": 1, "b": 2, "c": 3},
             {"a": [0, 10], "b": [0, 10], "c": [5, 5]},
@@ -121,7 +121,7 @@ class TestFingerprint:
         assert prints["ring_mcp"].startswith("-7 ")
 
     def test_a_file_without_one_is_trusted(self):
-        assert mismatched_joints(None, {"a": "+1 flex"}) == []
+        assert _mismatched_joints(None, {"a": "+1 flex"}) == []
 
     def test_a_changed_mapping_drops_exactly_the_affected_joints(self, model_dir):
         folder = model_dir()

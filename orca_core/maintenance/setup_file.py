@@ -60,7 +60,7 @@ write replaces the file, so the inode changes even where mtime is coarse. Caller
 hold ``_lock`` and never hand out or mutate the cached dict itself."""
 
 
-def setup_dir(config) -> str:
+def _setup_dir(config) -> str:
     """The folder holding ``config``'s hand's setup records: its hand folder."""
     folder = getattr(config, "hand_dir", "") or ""
     # Never a relative folder: that would be wherever the process happens to run.
@@ -72,7 +72,7 @@ def setup_dir(config) -> str:
 
 
 def setup_path(config) -> str:
-    return os.path.join(setup_dir(config), SETUP_FILE)
+    return os.path.join(_setup_dir(config), SETUP_FILE)
 
 
 def read_archive(config, section: str, name: Any = None) -> Any:
@@ -80,7 +80,7 @@ def read_archive(config, section: str, name: Any = None) -> Any:
     or the one record called ``name`` (``None`` if there is none). Sections with
     two kinds of record archive them as ``travel_baselines-snapshots`` and
     ``travel_baselines-baselines``."""
-    return hand_store.read_archive(setup_dir(config), section, name)
+    return hand_store.read_archive(_setup_dir(config), section, name)
 
 
 def _newest(records: dict) -> Optional[str]:

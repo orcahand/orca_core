@@ -19,7 +19,7 @@ def hand_with_ranges(tmp_path):
     folder = tmp_path / "orcahand-left"
     folder.mkdir()
     copy_model_config(MODEL, folder / "config.yaml")
-    mock_folder = hand_store.mock_hand_dir(hand_store.mock_hand_id("orcahand-left"))
+    mock_folder = hand_store._mock_hand_dir(hand_store._mock_hand_id("orcahand-left"))
     hand_store.write_doc(mock_folder / "joint_ranges.yaml", {
         "measured_at": "2026-11-01T10:00:00Z", "source": "camera rig",
         "joint_roms": {"index_mcp": MEASURED, "not_a_joint": [0, 1], "index_pip": [5, 1],

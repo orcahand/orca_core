@@ -18,7 +18,7 @@ import orca_core
 from orca_core import BaseHandConfig, MockOrcaHand, OrcaHandConfig, OrcaHandTouchConfig, load_config, write_standalone_config
 from orca_core.calibration import joint_fingerprints
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
-from orca_core.hand_config import HandConfigValidationError, shared_config_path
+from orca_core.hand_config import HandConfigValidationError, _shared_config_path
 from orca_core.hardware.motor_factory import motor_client_class
 from tests._helpers import copy_model_config
 
@@ -178,7 +178,7 @@ def test_shared_yaml_merges_under_the_model_and_the_model_wins(packaged_tree):
         {"a": 1, "roms": {"x": [0, 1], "y": [0, 2]}, "nested": {"f": {"hold": {"abd": 1, "mcp": 2}}}},
         {"a": 2, "roms": {"y": [5, 6]}, "nested": {"f": {"hold": {"mcp": 9, "thumb": 3}}}, "b": None},
     )
-    assert shared_config_path(path) == str(tmp_path / "models" / "shared.yaml")
+    assert _shared_config_path(path) == str(tmp_path / "models" / "shared.yaml")
     merged = load_config(path)
     assert merged == {
         "a": 2,
@@ -230,7 +230,7 @@ def test_a_symlinked_packaged_config_takes_its_shared_yaml(tmp_path):
     (tmp_path / "hand").mkdir()
     link = tmp_path / "hand" / "config.yaml"
     link.symlink_to(source)
-    assert shared_config_path(str(link)) == os.path.realpath(os.path.join(V2_MODELS, "shared.yaml"))
+    assert _shared_config_path(str(link)) == os.path.realpath(os.path.join(V2_MODELS, "shared.yaml"))
     assert load_config(str(link)) == load_config(source)
     OrcaHandConfig.from_config_path(config_path=str(link)).validate()
 
@@ -244,7 +244,7 @@ def test_a_shared_yaml_outside_the_package_is_never_merged(tmp_path):
     source = os.path.join(V2_MODELS, "orcahand-right", "config.yaml")
     copy_model_config(source, root / "hand" / "config.yaml")
     path = str(root / "hand" / "config.yaml")
-    assert shared_config_path(path) is None
+    assert _shared_config_path(path) is None
     assert load_config(path) == load_config(source)
 
     (root / "hand" / "config.yaml").write_text(open(source, encoding="utf-8").read())
@@ -256,7 +256,7 @@ def test_a_shared_yaml_outside_the_package_is_never_merged(tmp_path):
 @pytest.mark.parametrize("model", ["orcahand-left", "orcahand-right"])
 def test_v1_models_are_read_as_written(model):
     path = os.path.join(V1_MODELS, model, "config.yaml")
-    assert shared_config_path(path) is None
+    assert _shared_config_path(path) is None
     assert load_config(path) == _read(path)
 
 
@@ -313,7 +313,7 @@ def test_a_standalone_copy_loads_as_its_packaged_model(tmp_path, model, caplog):
     with caplog.at_level("WARNING", logger="orca_core.hand_config"):
         path = write_standalone_config(str(tmp_path / "hands" / "mine" / "config.yaml"), model_name=model)
         assert path == str(tmp_path / "hands" / "mine" / "config.yaml")
-        assert shared_config_path(path) is None and load_config(path) == load_config(source)
+        assert _shared_config_path(path) is None and load_config(path) == load_config(source)
         for hardware_version in HARDWARE_VERSIONS:
             assert _effective(_load(path, hardware_version)) == _effective(_load(source, hardware_version))
     assert not [r for r in caplog.records if "sets no" in r.getMessage()]

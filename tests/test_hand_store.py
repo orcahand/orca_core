@@ -39,7 +39,7 @@ class TestWhereHandsLive:
         assert hand_store.valid_hand_id(hand_store.no_board_hand_id("orcahand-touch-right"))
 
     def test_mock_hands_live_outside_orca_home(self):
-        folder = hand_store.mock_hand_dir(hand_store.mock_hand_id("orcahand-right"))
+        folder = hand_store._mock_hand_dir(hand_store._mock_hand_id("orcahand-right"))
         assert hand_store.orca_home() not in folder.parents
 
 

@@ -51,7 +51,7 @@ class CalibrationResult:
         joint_to_motor_ratios_dict: Maps motor ID → motor-rad per joint-deg
             gear ratio. Zero before calibration. Derived, never stored: a hand
             computes it from the motor limits and the joint ranges in force
-            (see :func:`derive_joint_to_motor_ratios`).
+            (see :func:`_derive_joint_to_motor_ratios`).
         joint_encoder_calibration_dict: Maps joint name → :class:`JointEncoderCal`.
             Empty for hands without joint encoders.
         joint_roms_measured_dict: Maps joint name → ``[lower, upper]`` joint ROM
@@ -254,7 +254,7 @@ def joint_fingerprints(config: "OrcaHandConfig") -> Dict[str, str]:
     return prints
 
 
-def mismatched_joints(
+def _mismatched_joints(
     stored: Optional[Mapping[str, str]], current: Mapping[str, str]
 ) -> List[str]:
     """Joints whose stored fingerprint differs from ``current``. A calibration
@@ -264,7 +264,7 @@ def mismatched_joints(
     return sorted(joint for joint, value in current.items() if stored.get(joint) != value)
 
 
-def derive_joint_to_motor_ratios(
+def _derive_joint_to_motor_ratios(
     motor_limits_dict: Mapping[int, Optional[List]],
     joint_to_motor_map: Mapping[str, int],
     joint_roms: Mapping[str, List[float]],
@@ -285,7 +285,7 @@ def derive_joint_to_motor_ratios(
     return ratios
 
 
-def ratio_roms(
+def _ratio_roms(
     config: "OrcaHandConfig",
     joint_roms_measured: Mapping[str, List[float]],
     prefer_config: Iterable[str] = (),
@@ -314,17 +314,17 @@ def in_force(
     ratio is derived from the limits and the ranges in force, so a calibration
     made under other joint ranges still maps correctly.
     """
-    dropped = mismatched_joints(stored_fingerprint, joint_fingerprints(config))
+    dropped = _mismatched_joints(stored_fingerprint, joint_fingerprints(config))
     limits = {motor_id: list(value) if value is not None else [None, None]
               for motor_id, value in stored.motor_limits_dict.items()}
     for joint in dropped:
         motor_id = config.joint_to_motor_map.get(joint)
         if motor_id in limits:
             limits[motor_id] = [None, None]
-    ratios = derive_joint_to_motor_ratios(
+    ratios = _derive_joint_to_motor_ratios(
         limits,
         config.joint_to_motor_map,
-        ratio_roms(config, stored.joint_roms_measured_dict, prefer_config),
+        _ratio_roms(config, stored.joint_roms_measured_dict, prefer_config),
     )
     result = dataclasses.replace(
         stored,

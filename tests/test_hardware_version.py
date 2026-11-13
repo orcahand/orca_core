@@ -129,7 +129,7 @@ def test_a_pinned_config_still_knows_its_base_map(tmp_path):
     base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
     assert pinned.base_joint_to_motor_map
     assert pinned.with_hardware_version(200).joint_inversion_dict == base.joint_inversion_dict
-    assert pinned.without_hardware_version().joint_inversion_dict == base.joint_inversion_dict
+    assert pinned._without_hardware_version().joint_inversion_dict == base.joint_inversion_dict
 
 
 def test_a_session_choice_on_a_pinned_hand_puts_that_version_s_map_in_force(tmp_path):
