@@ -107,6 +107,11 @@ KNOWN_VIDS: dict[str, list[int]] = {
     ],
 }
 
+# The USB product and manufacturer strings ORCA's board firmware reports; a
+# stock board with the same USB IDs (an OpenRB-150) reports its maker's.
+ORCA_USB_STRINGS = frozenset({"ORCA Hand", "ORCA Dexterity"})
+
+
 def motor_family_vids() -> "set[int]":
     """USB vendor IDs of every supported motor family's adapters."""
     return {vid for family in SUPPORTED_MOTOR_TYPES for vid in KNOWN_VIDS.get(family, [])}

@@ -13,8 +13,10 @@ and before the motor client takes the port: the board answers ``ORCA_INFO?``
 and ``ORCA_CAL?`` itself, without putting them on the motor wire. A plain USB
 adapter has no board to answer and its motors ignore the unframed queries, so
 silence is the answer. The one answer that fails a connect is a controller
-board (known by its USB IDs) that stays silent through every retry: filing it
-as a board-less hand would put its files in a folder other hands share.
+board (known by its USB IDs and ORCA's USB product string) that stays silent
+through every retry: filing it as a board-less hand would put its files in a
+folder other hands share. A stock board with the same USB IDs (an OpenRB-150
+running its maker's firmware) answers nothing either, and is a plain adapter.
 
 The calibration store is read whole only when it differs from the copy last
 read (``board.bin`` in the hand's folder): the board reports the store's CRC
@@ -61,6 +63,16 @@ def is_board_port(port: str) -> bool:
 
     try:
         return canonical_port(port) in oh_board_ports()
+    except Exception as exc:
+        logger.debug("could not list serial ports: %s", exc)
+        return False
+
+
+def _says_orca(port: str) -> bool:
+    from .hardware.sensing.serial_discovery import oh_board_says_orca
+
+    try:
+        return oh_board_says_orca(port)
     except Exception as exc:
         logger.debug("could not list serial ports: %s", exc)
         return False
@@ -117,7 +129,7 @@ def contact_board(
                 if not board:
                     return NO_BOARD
                 if not _answers_legacy_id(link):
-                    return BoardContact(silent_board=True)
+                    return BoardContact(silent_board=_says_orca(port))
                 # Firmware older than ORCA_INFO? has no identity to give.
                 return _old_firmware_contact(port)
             metadata = board_store_link.read_metadata_over_link(link)
@@ -131,4 +143,4 @@ def contact_board(
                                 store=board_store_link.read_store_over_link(link, metadata))
     except Exception as exc:
         logger.debug("board on %s: %s", port, exc)
-        return BoardContact(info=info, silent_board=board and info is None)
+        return BoardContact(info=info, silent_board=board and info is None and _says_orca(port))

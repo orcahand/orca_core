@@ -379,6 +379,21 @@ def oh_board_usb_serial(port: str) -> Optional[str]:
     return None
 
 
+def oh_board_says_orca(port: str) -> bool:
+    """Whether the board presenting ``port`` reports ORCA's USB product or
+    manufacturer string. Some hosts (Windows) report neither for any board."""
+    import serial.tools.list_ports
+
+    from ...constants import ORCA_USB_STRINGS
+
+    port = canonical_port(port)
+    for entry in serial.tools.list_ports.comports():
+        if entry.device == port and entry.vid in KNOWN_VIDS["oh_board"]:
+            names = {getattr(entry, "product", None), getattr(entry, "manufacturer", None)}
+            return bool(names & ORCA_USB_STRINGS)
+    return False
+
+
 def find_tactile_port() -> Optional[str]:
     """Return the dedicated tactile adapter's device path, or None if zero or >1 match."""
     import serial.tools.list_ports

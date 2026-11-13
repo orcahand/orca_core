@@ -484,6 +484,7 @@ class TestABoardThatDoesNotSayWhoItIs:
     @pytest.fixture
     def board_port(self, serial_port, monkeypatch):
         monkeypatch.setattr(board_sync, "is_board_port", lambda port: True)
+        monkeypatch.setattr(board_sync, "_says_orca", lambda port: True)
         monkeypatch.setattr(board_sync, "IDENTITY_RETRY_S", 0.0)
         return serial_port
 
@@ -514,6 +515,26 @@ class TestABoardThatDoesNotSayWhoItIs:
 
         patch_comports([SimpleNamespace(device=port, vid=vid, serial_number=None)])
         assert board_sync.contact_board(port) == board_sync.NO_BOARD
+
+    @pytest.mark.parametrize("product, manufacturer, silent", [
+        ("ORCA Hand", "ORCA Dexterity", True),
+        ("OpenRB-150", "ROBOTIS", False),
+    ])
+    def test_only_a_board_that_says_it_is_orca_s_counts_as_silent(
+        self, serial_port, patch_comports, monkeypatch, product, manufacturer, silent
+    ):
+        """A stock board with the same USB IDs, used as a plain adapter, answers nothing."""
+        from orca_core.constants import KNOWN_VIDS
+
+        monkeypatch.setattr(board_sync, "IDENTITY_RETRY_S", 0.0)
+        port = "/dev/cu.usbmodemXXXX"
+        patch_comports([SimpleNamespace(
+            device=port, vid=next(iter(KNOWN_VIDS["oh_board"])), serial_number="0123ABCD",
+            product=product, manufacturer=manufacturer)])
+        serial_port["link"] = FlakyLink(drops=99)
+        assert board_sync.contact_board(port).silent_board is silent
+        serial_port["error"] = OSError("busy")
+        assert board_sync.contact_board(port).silent_board is silent
 
     def test_a_hand_named_by_its_usb_serial_gets_its_own_folder(self, make_hand):
         assert make_hand(board_sync.BoardContact(usb_serial="0123ABCD")).hand_id == "usb-0123ABCD"
