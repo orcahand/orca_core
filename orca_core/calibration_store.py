@@ -66,12 +66,25 @@ CALIBRATION_KEYS = frozenset({
     JOINT_TO_MOTOR_RATIOS, FINGERPRINT, SEQUENCE, CALIBRATED_AT, SOURCE, IN_PROGRESS,
     ROM_FRAME,
 })
+# The tactile zero: the results of one zero run on this computer, kept or replaced whole.
+TACTILE_ZERO_KEYS = ("sensor_offsets", "resultant_offsets", "taxel_noise_gates")
 
 
 def _not_calibration(doc: Mapping[str, Any]) -> Dict[str, Any]:
     """What other routines keep in the file (the tactile zero): this computer's,
     so restoring or adopting a calibration never changes it."""
     return {k: v for k, v in doc.items() if k not in CALIBRATION_KEYS and k != SCHEMA_KEY}
+
+
+def _kept_here(path: str) -> Dict[str, Any]:
+    """:func:`_not_calibration` of the file at ``path``. From a newer orca_core's
+    file only the tactile zero, whose format does not change with the schema."""
+    if not os.path.exists(path):
+        return {}
+    doc = _read(path)
+    if schema_of(doc) > SCHEMA:
+        return {k: doc[k] for k in TACTILE_ZERO_KEYS if k in doc}
+    return _not_calibration(doc)
 
 
 def previous_path(path: str) -> str:
@@ -280,7 +293,7 @@ def restore_previous(path: str) -> Dict[str, Any]:
     previous = previous_path(path)
     if not os.path.exists(previous):
         raise FileNotFoundError(f"no previous calibration kept beside {path}")
-    kept = _not_calibration(read_document(path)) if os.path.exists(path) else {}
+    kept = _kept_here(path)
     # Three renames, each atomic: every state in between is whole, and
     # recover_swap puts an interrupted one right on the next read.
     if os.path.exists(path):

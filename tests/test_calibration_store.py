@@ -385,6 +385,17 @@ class TestTheTactileZeroStaysWithTheComputer:
         calibration_store.restore_previous(str(path))
         assert "sensor_offsets" not in read_yaml(str(path))
 
+    def test_restoring_over_a_newer_orca_core_s_file_keeps_its_zero(self, tmp_path):
+        from orca_core.hand_store import SCHEMA, write_doc
+        path = tmp_path / "calibration.yaml"
+        self._write(calibration_store.previous_path(str(path)), "old", zero={"index": [[9.0, 9.0, 9.0]]})
+        write_doc(str(path), {"schema": SCHEMA + 1, "calibrated_at": "newer", "sequence": 2,
+                              "sensor_offsets": {"index": [[1.0, 2.0, 3.0]]}})
+        calibration_store.restore_previous(str(path))
+        doc = read_yaml(str(path))
+        assert doc["calibrated_at"] == "old"
+        assert doc["sensor_offsets"] == {"index": [[1.0, 2.0, 3.0]]}
+
     def test_adopting_keeps_a_zero_here_and_takes_the_board_s_only_when_none(self, tmp_path):
         from orca_core.constants import MOTOR_LIMITS_DICT
         board = {"calibrated_at": "board", "sequence": 3, MOTOR_LIMITS_DICT: {1: [0.1, 1.0]},
