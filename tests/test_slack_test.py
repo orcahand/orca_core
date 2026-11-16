@@ -166,6 +166,22 @@ def test_torque_goes_off_when_the_exit_mode_change_raises(real_mode_change, spoo
                        progress_callback=events.append)
     assert len(calls) == 2
     assert _torqued(hand) == []
+    assert [e for e in events if e["event"] == "torque_off_failed"] == []
+
+
+def test_a_motor_left_holding_at_the_exit_is_reported(spooled, monkeypatch):
+    hand, _ = spooled
+    stuck = hand.config.joint_to_motor_map["index_pip"]
+    disable, events = hand.disable_torque, []
+
+    def disable_torque(motor_ids=None):
+        failed = disable(motor_ids)
+        return failed if motor_ids is not None else [stuck]  # all off: this one did not ack
+
+    monkeypatch.setattr(hand, "disable_torque", disable_torque)
+    run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(), progress_callback=events.append)
+    failed = [e for e in events if e["event"] == "torque_off_failed"]
+    assert failed == [{"event": "torque_off_failed", "motors": [stuck], "joints": ["index_pip"]}]
 
 
 def test_a_feetech_spool_stopped_by_its_position_range_fails_instead_of_passing(

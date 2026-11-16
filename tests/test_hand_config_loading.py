@@ -193,3 +193,15 @@ def test_a_bad_sensors_baudrate_is_reported_after_any_base_field_error(tmp_path,
 
     with pytest.raises(error, match=match):
         OrcaHandTouchConfig.from_config_path(config_path=str(config_path))
+
+
+def test_a_packaged_model_under_another_spelling_still_builds_on_shared_yaml():
+    path = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right", "config.yaml")
+    variant = os.path.join(REPO_ROOT, "orca_core", "MODELS", "v2", "orcahand-right", "config.yaml")
+    if not os.path.isfile(variant):
+        pytest.skip("a case-sensitive file system has no other spelling of the package")
+    with open(path, encoding="utf-8") as file:
+        own = yaml.safe_load(file)
+    merged = load_config(config_path=variant)
+    assert merged == load_config(config_path=path) and set(merged) > set(own)
+    OrcaHandConfig.from_config_path(config_path=variant)
