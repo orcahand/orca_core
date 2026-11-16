@@ -355,3 +355,44 @@ class TestASwapCutShort:
         assert self.stamps(pair) == (1, 2)
         assert sorted(os.listdir(os.path.dirname(pair))) == [
             "calibration.previous.yaml", "calibration.yaml"]
+
+
+class TestTheTactileZeroStaysWithTheComputer:
+    """Restoring or adopting a calibration never changes the tactile zero in force."""
+
+    def _write(self, path, when, zero=None):
+        from orca_core.constants import MOTOR_LIMITS_DICT
+        from orca_core.hand_store import write_doc
+        doc = {"calibrated_at": when, "sequence": 1, MOTOR_LIMITS_DICT: {1: [0.0, 1.0]}}
+        if zero is not None:
+            doc["sensor_offsets"] = zero
+        write_doc(str(path), doc)
+
+    def test_restoring_keeps_the_zero_in_force_both_ways(self, tmp_path):
+        path = tmp_path / "calibration.yaml"
+        self._write(calibration_store.previous_path(str(path)), "old", zero={"index": [[9.0, 9.0, 9.0]]})
+        self._write(path, "new", zero={"index": [[1.0, 2.0, 3.0]]})
+        for expected in ("old", "new"):
+            calibration_store.restore_previous(str(path))
+            doc = read_yaml(str(path))
+            assert doc["calibrated_at"] == expected
+            assert doc["sensor_offsets"] == {"index": [[1.0, 2.0, 3.0]]}
+
+    def test_restoring_brings_no_old_zero_back_after_a_reset(self, tmp_path):
+        path = tmp_path / "calibration.yaml"
+        self._write(calibration_store.previous_path(str(path)), "old", zero={"index": [[9.0, 9.0, 9.0]]})
+        self._write(path, "new")
+        calibration_store.restore_previous(str(path))
+        assert "sensor_offsets" not in read_yaml(str(path))
+
+    def test_adopting_keeps_a_zero_here_and_takes_the_board_s_only_when_none(self, tmp_path):
+        from orca_core.constants import MOTOR_LIMITS_DICT
+        board = {"calibrated_at": "board", "sequence": 3, MOTOR_LIMITS_DICT: {1: [0.1, 1.0]},
+                 "sensor_offsets": {"thumb": [[5.0, 5.0, 5.0]]}}
+        here = tmp_path / "here" / "calibration.yaml"
+        self._write(here, "here", zero={"thumb": [[1.0, 1.0, 1.0]]})
+        calibration_store.adopt(str(here), board, source="board")
+        assert read_yaml(str(here))["sensor_offsets"] == {"thumb": [[1.0, 1.0, 1.0]]}
+        first = tmp_path / "first" / "calibration.yaml"
+        calibration_store.adopt(str(first), board, source="board", keep_sequence=True)
+        assert read_yaml(str(first))["sensor_offsets"] == {"thumb": [[5.0, 5.0, 5.0]]}

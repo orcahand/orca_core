@@ -41,6 +41,7 @@ from .hand_store import (
     CALIBRATION_FILE,
     PREVIOUS_CALIBRATION_FILE,
     SCHEMA,
+    SCHEMA_KEY,
     _refuse_packaged,
     now_iso,
     read_doc,
@@ -65,6 +66,12 @@ CALIBRATION_KEYS = frozenset({
     JOINT_TO_MOTOR_RATIOS, FINGERPRINT, SEQUENCE, CALIBRATED_AT, SOURCE, IN_PROGRESS,
     ROM_FRAME,
 })
+
+
+def _not_calibration(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    """What other routines keep in the file (the tactile zero): this computer's,
+    so restoring or adopting a calibration never changes it."""
+    return {k: v for k, v in doc.items() if k not in CALIBRATION_KEYS and k != SCHEMA_KEY}
 
 
 def previous_path(path: str) -> str:
@@ -243,15 +250,16 @@ def adopt(
     the calibration at ``path``, keeping the one it replaces as previous.
 
     Its ``calibrated_at`` is kept, and its ratios dropped. Keys of the file
-    here that a calibration does not own (a tactile zero) stay unless
-    ``document`` has its own. ``sequence`` counts on from the higher of the
-    two, or is kept as it is with ``keep_sequence`` (a first copy, where there
-    is nothing here to count on from).
+    here that a calibration does not own (a tactile zero) are kept; the
+    document's own are used only where this file has none (a first copy).
+    ``sequence`` counts on from the higher of the two, or is kept as it is
+    with ``keep_sequence`` (a first copy, where there is nothing here to count
+    on from).
     """
     _refuse_packaged(path)
     current = read_document(path)
-    doc = {k: v for k, v in current.items() if k not in CALIBRATION_KEYS}
-    doc.update({k: v for k, v in document.items() if k != JOINT_TO_MOTOR_RATIOS})
+    doc = {k: v for k, v in document.items() if k not in (JOINT_TO_MOTOR_RATIOS, SCHEMA_KEY)}
+    doc.update(_not_calibration(current))
     _keep_as_previous(path, current)
     theirs = stamp_of(document)["sequence"]
     doc[SEQUENCE] = theirs if keep_sequence else max(stamp_of(current)["sequence"], theirs) + 1
@@ -262,7 +270,8 @@ def adopt(
 
 def restore_previous(path: str) -> Dict[str, Any]:
     """Swap the calibration at ``path`` with its previous one, so restoring
-    twice gets back where it started. Returns the stamp now in force.
+    twice gets back where it started. Keys a calibration does not own (a
+    tactile zero) stay as they were in force. Returns the stamp now in force.
 
     Raises:
         FileNotFoundError: there is no previous calibration to restore.
@@ -271,6 +280,7 @@ def restore_previous(path: str) -> Dict[str, Any]:
     previous = previous_path(path)
     if not os.path.exists(previous):
         raise FileNotFoundError(f"no previous calibration kept beside {path}")
+    kept = _not_calibration(read_document(path)) if os.path.exists(path) else {}
     # Three renames, each atomic: every state in between is whole, and
     # recover_swap puts an interrupted one right on the next read.
     if os.path.exists(path):
@@ -278,4 +288,8 @@ def restore_previous(path: str) -> Dict[str, Any]:
     os.replace(previous, path)
     if os.path.exists(swap_path(path)):
         os.replace(swap_path(path), previous)
+    restored = read_document(path)
+    if restored and _not_calibration(restored) != kept:
+        # The zero in force before the swap stays in force, in one atomic replace.
+        write_doc(path, {**{k: v for k, v in restored.items() if k in CALIBRATION_KEYS}, **kept})
     return stamp_of(read_document(path))

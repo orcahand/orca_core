@@ -44,7 +44,8 @@ changed since, those joints read as uncalibrated until you calibrate them again.
 A new calibration keeps the one it replaces as `calibration.previous.yaml`, unless that one is a run stopped before it
 finished, which is simply replaced. `hand.restore_previous_calibration()` swaps
 the two back, and `hand.calibration_info` gives the file in use, its `calibrated_at` and `sequence`, and the previous
-one's. A calibration run says which file it wrote.
+one's. A calibration run says which file it wrote. The tactile zero kept in the same file belongs to this computer:
+restoring the previous calibration or taking the board's leaves the zero in force as it is.
 
 ## The hand's board
 
