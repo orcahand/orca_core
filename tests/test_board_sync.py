@@ -382,7 +382,16 @@ class TestWritingTheBoard:
     def test_without_a_firmware_checkout_nothing_is_written(self, connect, config, monkeypatch, tmp_path):
         monkeypatch.setenv(board_push.FIRMWARE_REPO_ENV, str(tmp_path / "nowhere"))
         result = board_push.push_for_hand(self.calibrated(connect, config))
-        assert not result.written and "orca_firmware" in result.reason
+        assert not result.written and "no orca_firmware checkout at" in result.reason
+        assert str(tmp_path / "nowhere") in result.reason
+
+    def test_a_checkout_without_the_store_tool_is_named_as_such(self, connect, config, monkeypatch, tmp_path):
+        (tmp_path / "orca_firmware" / "tools" / "bench").mkdir(parents=True)
+        monkeypatch.setenv(board_push.FIRMWARE_REPO_ENV, str(tmp_path / "orca_firmware"))
+        result = board_push.push_for_hand(self.calibrated(connect, config))
+        assert not result.written
+        assert result.reason == (f"the orca_firmware checkout at {tmp_path / 'orca_firmware'} "
+                                 "has no tools/bench/cal_store.py")
 
     def test_a_tool_failure_is_reported_not_raised(self, connect, config, firmware):
         (firmware / "orca_firmware" / "tools" / "bench" / "rc").write_text("3")

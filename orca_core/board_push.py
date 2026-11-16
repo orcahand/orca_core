@@ -63,14 +63,25 @@ def firmware_tool() -> Optional[Path]:
     sibling repos sit on a dev machine. None when there is none -- the ordinary
     case for an installed wheel.
     """
+    tool = firmware_checkout() / TOOL_RELATIVE_PATH
+    return tool if tool.is_file() else None
+
+
+def firmware_checkout() -> Path:
+    """Where the orca_firmware checkout is looked for: ``ORCA_FIRMWARE_REPO``, else beside orca_core."""
     pinned = os.environ.get(FIRMWARE_REPO_ENV)
     if pinned:
-        where = Path(pinned)
-    else:
-        # orca_core/orca_core/board_push.py -> the checkout's parent
-        where = Path(__file__).resolve().parents[2] / "orca_firmware"
-    tool = where / TOOL_RELATIVE_PATH
-    return tool if tool.is_file() else None
+        return Path(pinned)
+    # orca_core/orca_core/board_push.py -> the checkout's parent
+    return Path(__file__).resolve().parents[2] / "orca_firmware"
+
+
+def _missing_tool_reason() -> str:
+    """Why there is no tool: no checkout where one was looked for, or one without the store tool."""
+    where = firmware_checkout()
+    if not where.is_dir():
+        return f"no orca_firmware checkout at {where}"
+    return f"the orca_firmware checkout at {where} has no {TOOL_RELATIVE_PATH.as_posix()}"
 
 
 # How often the board is asked who it is before a write is refused.
@@ -151,7 +162,7 @@ def push(
     """
     tool = firmware_tool()
     if tool is None:
-        return PushResult(False, "no orca_firmware checkout on this computer")
+        return PushResult(False, _missing_tool_reason())
 
     try:
         identity, sequence = board_state(port)
