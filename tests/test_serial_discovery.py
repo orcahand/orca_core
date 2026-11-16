@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import sys
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -501,3 +502,42 @@ def test_resolve_explicit_ports_and_baud_probe_nothing():
     assert ports == SensingPorts("/dev/x", "/dev/y", 921600)
     ser.assert_not_called()
     comports.assert_not_called()
+
+
+class TestABoardNamedByAnAlias:
+    """The OS opens several names for one device; list_ports reports one of them."""
+
+    @pytest.fixture
+    def listed(self, patch_comports):
+        from orca_core.constants import KNOWN_VIDS
+
+        vid = next(iter(KNOWN_VIDS["oh_board"]))
+
+        def listed(device):
+            patch_comports([SimpleNamespace(device=device, vid=vid, serial_number="0123ABCD")])
+        return listed
+
+    def test_a_dial_in_name_is_its_callout_twin(self, listed):
+        from orca_core import board_sync
+        from orca_core.hardware.sensing.serial_discovery import oh_board_usb_serial
+
+        listed("/dev/cu.usbmodemXXXX")
+        assert board_sync.is_board_port("/dev/tty.usbmodemXXXX")
+        assert oh_board_usb_serial("/dev/tty.usbmodemXXXX") == "0123ABCD"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_a_link_is_the_device_it_points_at(self, listed, tmp_path):
+        from orca_core import board_sync
+
+        device = tmp_path / "ttyACM0"
+        device.write_text("")
+        link = tmp_path / "usb-ORCA_Hand_0123ABCD-if00"
+        link.symlink_to(device)
+        listed(str(device.resolve()))
+        assert board_sync.is_board_port(str(link))
+
+    def test_a_com_port_in_any_case(self, listed):
+        from orca_core import board_sync
+
+        listed("COM3")
+        assert board_sync.is_board_port("com3")

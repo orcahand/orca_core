@@ -7,6 +7,7 @@ deliberately, bump the minor version, and run scripts/check_downstream.py to
 find the callers.
 """
 
+import dataclasses
 import inspect
 
 import pytest
@@ -14,11 +15,14 @@ import pytest
 import orca_core
 from orca_core import (
     BaseHand,
+    BaseHandConfig,
     CalibrationResult,
     OrcaHand,
     OrcaHandFull,
+    OrcaHandConfig,
     OrcaHandJointFeedback,
     OrcaHandTouch,
+    OrcaHandTouchConfig,
     OrcaJointPositions,
 )
 
@@ -53,7 +57,9 @@ PACKAGE_EXPORTS = frozenset({
     "canonical_joint_ids",
     "detect_hand",
     "frames",
+    "load_config",
     "load_hand",
+    "write_standalone_config",
 })
 
 BASE_HAND = frozenset({
@@ -72,13 +78,20 @@ BASE_HAND = frozenset({
 ORCA_HAND = BASE_HAND | {
     "absent_joints",
     "absent_motor_ids",
+    "adopt_board_calibration",
+    "board_calibration_newer",
+    "board_hand_id",
+    "board_hardware_version",
     "calibrate",
     "calibrate_joint_encoder_manual",
     "calibrated",
     "calibration",
+    "calibration_info",
+    "config",
     "connect",
     "disable_torque",
     "disconnect",
+    "dismiss_legacy_files",
     "effective_joint_roms_dict",
     "enable_torque",
     "encoder_backed_joints",
@@ -88,21 +101,32 @@ ORCA_HAND = BASE_HAND | {
     "get_motor_temp",
     "clear_fault_record",
     "fault_records",
+    "hand_dir",
+    "hand_id",
+    "hardware_version",
+    "hardware_version_override",
     "init_joints",
     "poll_faults",
+    "restore_previous_calibration",
     "is_calibrated",
     "last_read_ok",
     "is_connected",
     "jitter",
+    "keep_computer_calibration",
+    "joint_ranges_info",
+    "legacy_files",
     "joint_to_motor_ratios_dict",
     "motor_client",
     "motor_limits_dict",
+    "nickname",
     "get_servo_gains",
     "get_servo_profile",
     "rom_frame",
     "set_rom_frame",
     "set_control_mode",
+    "set_hardware_version",
     "set_max_current",
+    "set_nickname",
     "set_servo_gains",
     "set_servo_profile",
     "stop_task",
@@ -161,6 +185,92 @@ CALIBRATION_RESULT = frozenset({
     "from_calibration_path",
 })
 
+# Configs are read by every front-end: their fields and methods are API too.
+BASE_HAND_CONFIG = frozenset({
+    "clamp_joint_positions",
+    "config_path",
+    "from_config_path",
+    "joint_ids",
+    "joint_roms_dict",
+    "model_path",
+    "neutral_position",
+    "type",
+    "validate",
+})
+
+ORCA_HAND_CONFIG = BASE_HAND_CONFIG | {
+    "base_joint_roms_dict",
+    "base_joint_to_motor_map",
+    "baudrate",
+    "calibration_current",
+    "calibration_current_for",
+    "calibration_current_v21_dict",
+    "calibration_group_currents",
+    "calibration_max_current",
+    "calibration_num_stable",
+    "calibration_path",
+    "calibration_retry_current",
+    "calibration_retry_current_for",
+    "calibration_retry_current_resolved",
+    "calibration_sequence",
+    "calibration_step_period",
+    "calibration_step_size",
+    "calibration_threshold",
+    "calibration_travel_margin",
+    "calibration_travel_retries",
+    "control_mode",
+    "currents_resolved",
+    "encoder_baudrate",
+    "encoder_serial_port",
+    "expected_motor_travel_deg",
+    "guided_tension_currents_dict",
+    "guided_tension_currents_for",
+    "hand_dir",
+    "hardware_version",
+    "has_joint_encoders",
+    "is_v21",
+    "joint_encoder_joints",
+    "joint_feedback_enabled",
+    "joint_gains_all",
+    "joint_gains_baseline",
+    "joint_gains_dict",
+    "joint_gains_for",
+    "joint_gains_overrides",
+    "joint_inversion_dict",
+    "joint_motor_travel_dict",
+    "joint_motor_travel_v21_dict",
+    "joint_roms_v211_dict",
+    "joint_to_motor_map",
+    "joint_to_motor_map_v21",
+    "manual_calibration_sequence",
+    "max_current",
+    "measured_joint_roms_dict",
+    "motor_id_to_idx_dict",
+    "motor_ids",
+    "motor_to_joint_dict",
+    "motor_type",
+    "port",
+    "retry_current_for_attempt",
+    "retry_steps_by_default",
+    "tension_current",
+    "tension_hold_current_for",
+    "tension_hold_joint_currents",
+    "use_joint_feedback",
+    "uses_motor_travel",
+    "validate_config",
+    "validate_control_mode",
+    "with_family_currents",
+    "with_hardware_version",
+    "with_measured_ranges",
+    "wrist_calibration_current",
+}
+
+ORCA_HAND_TOUCH_CONFIG = ORCA_HAND_CONFIG | {
+    "finger_to_sensor_id",
+    "sensor_baudrate",
+    "sensor_port",
+}
+
 
 def public_names(cls) -> frozenset:
     return frozenset(name for name, _ in inspect.getmembers(cls) if not name.startswith("_"))
@@ -185,6 +295,20 @@ def test_package_exports_are_pinned():
 )
 def test_public_method_surface_is_pinned(cls, expected):
     assert public_names(cls) == expected
+
+
+@pytest.mark.parametrize(
+    "cls, expected",
+    [
+        (BaseHandConfig, BASE_HAND_CONFIG),
+        (OrcaHandConfig, ORCA_HAND_CONFIG),
+        (OrcaHandTouchConfig, ORCA_HAND_TOUCH_CONFIG),
+    ],
+    ids=lambda value: getattr(value, "__name__", ""),
+)
+def test_config_surface_is_pinned(cls, expected):
+    fields = frozenset(f.name for f in dataclasses.fields(cls))
+    assert public_names(cls) | fields == expected
 
 
 def test_full_hand_adds_nothing_beyond_its_capabilities():

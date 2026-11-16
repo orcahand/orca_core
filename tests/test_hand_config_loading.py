@@ -1,7 +1,6 @@
 """Config-loading edge cases: empty config files and sensors.baudrate values."""
 
 import os
-import shutil
 
 import pytest
 import yaml
@@ -11,6 +10,8 @@ from orca_core.hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
 )
+from tests._helpers import copy_model_config
+from orca_core.hand_config import load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOUCH_CONFIG = os.path.join(
@@ -34,7 +35,7 @@ def test_comments_only_config_yaml_raises_clear_error(tmp_path):
 
 def _touch_config_with_baudrate(tmp_path, baudrate):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(TOUCH_CONFIG, config_path)
+    copy_model_config(TOUCH_CONFIG, config_path)
     with open(config_path) as f:
         doc = yaml.safe_load(f)
     doc.setdefault("sensors", {})["baudrate"] = baudrate
@@ -70,8 +71,7 @@ RIGHT_CONFIG = os.path.join(
 
 
 def _right_config_with(tmp_path, **overrides):
-    with open(RIGHT_CONFIG, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_config(RIGHT_CONFIG)
     raw.update(overrides)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
@@ -157,6 +157,16 @@ def test_explicit_wrist_calibration_current_is_kept(tmp_path):
     assert config.wrist_calibration_current == 250
 
 
+@pytest.mark.parametrize("key", ["joint_roms", "joint_roms_v211"])
+@pytest.mark.parametrize("bound", [float("-inf"), float("nan")])
+def test_a_range_that_is_not_two_finite_numbers_is_rejected(tmp_path, key, bound):
+    raw = load_config(RIGHT_CONFIG)
+    path = _right_config_with(
+        tmp_path, **{key: {**(raw.get(key) or {}), "index_mcp": [bound, 90.0]}})
+    with pytest.raises(HandConfigValidationError):
+        OrcaHandConfig.from_config_path(config_path=path)
+
+
 @pytest.mark.parametrize(
     "field, value",
     [("calibration_current", 0), ("wrist_calibration_current", -5), ("max_current", 0)],
@@ -183,3 +193,15 @@ def test_a_bad_sensors_baudrate_is_reported_after_any_base_field_error(tmp_path,
 
     with pytest.raises(error, match=match):
         OrcaHandTouchConfig.from_config_path(config_path=str(config_path))
+
+
+def test_a_packaged_model_under_another_spelling_still_builds_on_shared_yaml():
+    path = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right", "config.yaml")
+    variant = os.path.join(REPO_ROOT, "orca_core", "MODELS", "v2", "orcahand-right", "config.yaml")
+    if not os.path.isfile(variant):
+        pytest.skip("a case-sensitive file system has no other spelling of the package")
+    with open(path, encoding="utf-8") as file:
+        own = yaml.safe_load(file)
+    merged = load_config(config_path=variant)
+    assert merged == load_config(config_path=path) and set(merged) > set(own)
+    OrcaHandConfig.from_config_path(config_path=variant)

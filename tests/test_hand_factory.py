@@ -8,10 +8,10 @@
 
 import logging
 import os
-import shutil
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from orca_core import load_hand
 from orca_core.hand_config import HandConfigValidationError, OrcaHandConfig
@@ -22,6 +22,8 @@ from orca_core.hardware_hand_sensing import (
     MockOrcaHandJointFeedback,
 )
 from orca_core.utils import update_yaml
+from tests._helpers import copy_model_config
+from orca_core.hand_config import load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2")
@@ -105,8 +107,8 @@ def test_load_hand_warns_on_side_without_a_polarity_table(
     (connect() gates the loop), but the factory must warn and name the escape
     hatch."""
     config_path = tmp_path / "config.yaml"
-    with open(_config(model)) as f:
-        config_path.write_text(f.read().replace("type: left", "type: middle"))
+    config_path.write_text(
+        yaml.safe_dump(load_config(_config(model)), sort_keys=False).replace("type: left", "type: middle"))
     with caplog.at_level(logging.WARNING, logger="orca_core.hand_factory"):
         hand = load_hand(config_path=str(config_path), mock=True)
     assert type(hand) is expected
@@ -137,7 +139,7 @@ def test_load_hand_carries_full_config_when_feedback_suppressed(tmp_path):
     """engage_feedback=False still loads the encoder declaration so the
     calibration encoder pass can run."""
     config_path = tmp_path / "config.yaml"
-    shutil.copy(JOINT_CONFIG, config_path)
+    copy_model_config(JOINT_CONFIG, config_path)
     hand = load_hand(config_path=str(config_path), mock=True, engage_feedback=False)
     assert type(hand) is MockOrcaHand
     assert hand.config.has_joint_encoders
@@ -146,7 +148,7 @@ def test_load_hand_carries_full_config_when_feedback_suppressed(tmp_path):
 
 def test_load_hand_respects_explicit_feedback_override(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(JOINT_CONFIG, config_path)
+    copy_model_config(JOINT_CONFIG, config_path)
     update_yaml(str(config_path), "use_joint_feedback", False)
     hand = load_hand(config_path=str(config_path), mock=True)
     assert type(hand) is MockOrcaHand
@@ -186,6 +188,7 @@ def test_create_hand_forwards_its_selection_arguments(monkeypatch):
         "model_name": "orcahand-left",
         "engage_feedback": False,
         "engage_sensors": True,
+        "motor_port": None,
     }
 
 
@@ -222,7 +225,7 @@ def test_add_hand_arguments_defaults_to_autodetection():
 )
 def test_joint_feedback_enabled_with_encoders(tmp_path, use_joint_feedback, expected):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(JOINT_CONFIG, config_path)
+    copy_model_config(JOINT_CONFIG, config_path)
     update_yaml(str(config_path), "use_joint_feedback", use_joint_feedback)
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.has_joint_encoders is True
@@ -231,7 +234,7 @@ def test_joint_feedback_enabled_with_encoders(tmp_path, use_joint_feedback, expe
 
 def test_joint_feedback_disabled_without_encoders(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(JOINT_CONFIG, config_path)
+    copy_model_config(JOINT_CONFIG, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", None)
     update_yaml(str(config_path), "use_joint_feedback", None)
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
@@ -241,7 +244,7 @@ def test_joint_feedback_disabled_without_encoders(tmp_path):
 
 def test_use_joint_feedback_true_without_encoders_is_rejected(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(JOINT_CONFIG, config_path)
+    copy_model_config(JOINT_CONFIG, config_path)
     update_yaml(str(config_path), "joint_encoder_joints", None)
     update_yaml(str(config_path), "use_joint_feedback", True)
     with pytest.raises(HandConfigValidationError, match="requires joint_encoder_joints"):

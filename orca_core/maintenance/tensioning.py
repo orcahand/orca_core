@@ -27,6 +27,7 @@ import numpy as np
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from .motor_reads import read_motor_pos_checked
 from .progress import ProgressCallback, ShouldStop, never_stop, progress_emitter
+from .release import release_hand
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -203,7 +204,8 @@ def run_tension(
         progress_callback: Optional ``callable(dict)`` invoked with
             structured progress events (``phase`` with
             winding/ramp/holding/released, ``winding_progress``, ``pulled``
-            with ``total_deg``, ``cleanup_failed``). Must be fast and non-blocking; exceptions
+            with ``total_deg``, ``cleanup_failed``, ``torque_off_failed`` with
+            ``motors`` and ``joints`` left energized). Must be fast and non-blocking; exceptions
             it raises are swallowed.
         should_stop: Optional ``callable() -> bool`` polled between motor
             commands; return ``True`` to leave the hold cooperatively.
@@ -213,9 +215,11 @@ def run_tension(
     control_mode = hand.config.control_mode
 
     def _restore_hand() -> None:
-        hand.set_max_current(hand.config.max_current)
-        hand.set_control_mode(control_mode)
-        hand.disable_torque()
+        def restore() -> None:
+            hand.set_max_current(hand.config.max_current)
+            hand.set_control_mode(control_mode)
+
+        release_hand(hand, restore, routine="tensioning", progress_callback=progress_callback)
 
     hand.set_control_mode(CURRENT_BASED_POSITION)
     completed = False

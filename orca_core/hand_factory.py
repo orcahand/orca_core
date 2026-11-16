@@ -45,6 +45,7 @@ from .hand_config import (
     OrcaHandConfig,
     OrcaHandTouchConfig,
     _resolve_config_path,
+    load_config,
 )
 from .hardware.sensing.constants import (
     DEFAULT_ENCODER_BAUDRATE,
@@ -54,6 +55,7 @@ from .hardware.sensing.serial_discovery import (
     ORCA_ID_PROBE_ATTEMPTS,
     OrcaBoardInfo,
     _tactile_responds_at,
+    canonical_port,
     detect_encoder_stream,
     find_tactile_port,
     oh_board_ports,
@@ -69,7 +71,6 @@ from .hardware_hand_sensing import (
     OrcaHandJointFeedback,
     OrcaHandTouch,
 )
-from .utils.utils import read_yaml
 
 
 logger = logging.getLogger(__name__)
@@ -318,37 +319,13 @@ def detect_hand() -> HandDetection:
     )
 
 
-def _resolve_hardware_version(config, detection, detected: int | None) -> int | None:
-    """A yaml pin, else what the board reported, else unknown.
-
-    The board's value reaches here two ways that rank the same: read by
-    :func:`detect_hand`, or handed in as ``detected`` by a caller that loaded
-    by ``config_path`` and so skipped detection. A pin is a deliberate
-    override -- the only way a hand on a plain adapter, with no board to ask,
-    can say which revision it is -- and wins over the board; the clash is
-    logged by :func:`_overridden` so a stale copied config is never mistaken
-    for a detection bug. ``None`` leaves the config on its base map.
-    """
-    if detected is None and detection is not None and detection.identity is not None:
-        detected = detection.identity.hw_version
-    detected = normalize_hardware_version(detected)
-    pinned = normalize_hardware_version(config.hardware_version)
-    if pinned is not None:
-        # Only a *disagreeing* board is worth a warning. No board at all is
-        # the normal case for a pinned config -- that is what the pin is for.
-        if detected is not None:
-            _overridden("hardware_version", pinned, detected)
-        return pinned
-    return detected
-
-
 def _overridden(field: str, configured, detected) -> bool:
     """Whether ``config.yaml`` pins ``field`` to something other than what was
     detected. Logs the clash so a pin is never mistaken for a detection bug."""
     if configured in (None, "auto") or configured == detected:
         return False
     logger.warning(
-        "the config pins %s=%r (config.yaml or local_config.yaml), so the "
+        "the config pins %s=%r in config.yaml, so the "
         "detected %r is not used. Set it to 'auto' (or lift the pin) to autodetect.",
         field, configured, detected,
     )
@@ -442,6 +419,7 @@ def load_hand(
     engage_feedback: bool = True,
     engage_sensors: bool = True,
     detected_hardware_version: int | None = None,
+    motor_port: str | None = None,
 ) -> OrcaHand:
     """Construct the hand class that matches a model's declared capabilities.
 
@@ -469,11 +447,16 @@ def load_hand(
             encoders can share one CDC, so a caller that opens its own reader
             on the sensing port must not have the hand open it too.
         detected_hardware_version: The hardware revision the controller
-            board reported (2 for v2.0, 21 for v2.1), for a caller that loads
-            by ``config_path`` and so skipped detection. Ranks as detection:
-            a ``hardware_version`` pinned in config.yaml still wins, and the
-            clash is logged. ``None`` lets detection answer, or leaves the
-            base map when there is no board.
+            board reported (200 for v2.0, 210 for v2.1), for a caller that loads
+            by ``config_path`` and so skipped detection. Ranks as detection,
+            and wins over a ``hardware_version`` pinned in config.yaml (the
+            clash is logged). ``None`` lets detection answer, else the pin,
+            else leaves the base map.
+        motor_port: The motor bus device to use, the only one a connect
+            tries. What detection learned from a board on another port (motor
+            family, hardware version) is not used; its model is kept as a
+            guess, and connect refuses a board on this port that reports the
+            other side.
 
     Returns:
         A constructed (not yet connected) hand instance.
@@ -491,13 +474,21 @@ def load_hand(
                 ", ".join(detection.busy_ports), model_name,
             )
         _warn_on_capability_mismatch(detection)
+        if motor_port is not None and detection.motor_port is not None and \
+                canonical_port(detection.motor_port) != canonical_port(motor_port):
+            logger.warning(
+                "detection found a hand on %s, not on %s; its model %r is only a guess "
+                "for the hand on %s", detection.motor_port, motor_port, model_name, motor_port)
+            detection = dataclasses.replace(
+                detection, motor_port=None, sensing_port=None, identity=None,
+                motor_type=None, motor_baudrate=None)
 
     resolved_config_path = _resolve_config_path(
         config_path,
         model_version=model_version,
         model_name=model_name,
     )
-    raw = read_yaml(resolved_config_path) or {}
+    raw = load_config(resolved_config_path)
     declares_tactile = "sensors" in raw
     # The config keeps its sensor declaration either way; only the class that
     # would open the link is withheld, mirroring engage_feedback.
@@ -510,12 +501,8 @@ def load_hand(
     )
     if detection is not None:
         config = _pin_detected_ports(config, detection)
-    config = config.with_hardware_version(
-        _resolve_hardware_version(config, detection, detected_hardware_version)
-    )
-    if config.is_v21 and config.joint_to_motor_map_v21:
-        logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
-
+    if motor_port is not None:
+        config = dataclasses.replace(config, port=motor_port)
     feedback = engage_feedback and config.joint_feedback_enabled
     if feedback and config.type not in JOINT_ENCODER_POLARITY_BY_SIDE:
         logger.warning(
@@ -535,4 +522,21 @@ def load_hand(
         config = config.with_family_currents(family_cls)
 
     hand_cls = _CLASS_MATRIX[(bool(feedback), tactile, bool(mock))]
-    return hand_cls(config=config)
+    hand = hand_cls(config=config)
+    # The board's version, read by detection or handed in by a caller that
+    # loaded by path (the same source two ways), is put in force by the hand.
+    board_version = detected_hardware_version
+    if board_version is None and detection is not None and detection.identity is not None:
+        board_version = detection.identity.hw_version
+    board_version = normalize_hardware_version(board_version)
+    if board_version is not None:
+        hand._board_hardware_version = board_version
+        hand._apply_hardware_version()
+    if hand.config.is_v21 and hand.config.joint_to_motor_map_v21:
+        logger.info("hardware v2.1: joint_to_motor_map_v21 in force")
+    if detection is not None and detection.motor_port is not None:
+        from .board_sync import BoardContact
+
+        # Detection already asked the board who it is; connect reuses that.
+        hand._board_hint = (detection.motor_port, BoardContact(info=detection.identity))
+    return hand

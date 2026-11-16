@@ -435,14 +435,15 @@ class DynamixelClient(MotorClient):
 
         The port is always closed and the client deregistered, even when the
         final torque-disable raises (e.g. the serial link is already gone);
-        that exception propagates after cleanup.
+        that exception propagates after cleanup. Takes the bus lock first, so
+        it waits out an in-flight transaction instead of refusing.
         """
         if not self.is_connected:
             return
-        if self.port_handler.is_using:
-            logging.error('Port handler in use; cannot disconnect.')
-            return
         with self._bus_lock:
+            if not self.is_connected:  # a concurrent disconnect got the lock first
+                return
+            self._reclaim_port()
             try:
                 # Ensure motors are disabled at the end.
                 self.set_torque_enabled(self.motor_ids, False, retries=0)
@@ -467,32 +468,8 @@ class DynamixelClient(MotorClient):
         return self._transport_bauds
 
     def disconnect_fixed_lock_order(self) -> None:
-        """Disconnect, waiting for the bus rather than giving up on it.
-
-        ``disconnect`` reads ``port_handler.is_using`` *before* taking the bus
-        lock, and returns when it finds it set -- so a sampler legitimately
-        mid-transaction makes the teardown silently not happen, with no retry.
-        The port stays open, the client stays registered, and a reconnect
-        cannot replace the handler. A momentary condition becomes permanent.
-
-        Taking the lock first waits for any in-flight exchange to finish,
-        after which no live transaction can hold the flag, so the check is
-        unnecessary rather than skipped.
-
-        Deliberately a separate method. ``disconnect`` is on every consumer's
-        path and changing its locking is its own change with its own testing;
-        this exists so the behaviour can be proven in the one place that
-        provokes the race -- a reconnect triggered by a bus transaction --
-        before it is merged into the shared path.
-        """
-        if not self.is_connected:
-            return
-        with self._bus_lock:
-            try:
-                self.set_torque_enabled(self.motor_ids, False, retries=0)
-            finally:
-                self.port_handler.closePort()
-                self.OPEN_CLIENTS.discard(self)
+        """Same as :meth:`disconnect`, which waits for the bus rather than giving up on it."""
+        self.disconnect()
 
     def set_torque_enabled(self,
                            motor_ids: Sequence[int],
@@ -513,14 +490,22 @@ class DynamixelClient(MotorClient):
         Returns:
             A list of motor IDs that could not be set.
         """
+        self.check_connected()
         with self._bus_lock:
+            self._reclaim_port()
             remaining_ids = self._present(motor_ids)
             while remaining_ids:
-                remaining_ids = self.write_byte(
-                    remaining_ids,
-                    int(enabled),
-                    ADDR_TORQUE_ENABLE,
-                )
+                failed_ids = []
+                for motor_id in remaining_ids:
+                    try:
+                        failed_ids += self.write_byte(
+                            [motor_id], int(enabled), ADDR_TORQUE_ENABLE)
+                    except Exception as e:
+                        # A write that raises counts as failed; the motors after it still get theirs.
+                        logging.error('Torque write to motor %d raised: %s', motor_id, e)
+                        self._flush_input_buffer()
+                        failed_ids.append(motor_id)
+                remaining_ids = failed_ids
                 if not remaining_ids:
                     break
                 logging.error('Could not set torque %s for IDs: %s',
@@ -592,8 +577,9 @@ class DynamixelClient(MotorClient):
         for motor_id, goal in zip(motor_ids, positions):
             self._goal_positions[int(motor_id)] = float(goal)
 
-        # Convert to Dynamixel position space.
-        positions = positions / DEFAULT_POS_SCALE
+        # To the nearest step: sync_write truncates, which would put a read-back
+        # position written as a goal one step off and make the motor push against it.
+        positions = np.round(np.asarray(positions, dtype=float) / DEFAULT_POS_SCALE)
         self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
                         LEN_GOAL_POSITION)
 
@@ -793,11 +779,14 @@ class DynamixelClient(MotorClient):
         """
         self.check_connected()
         with self._bus_lock:
+            self._reclaim_port()
             key = (address, size)
             if key not in self._sync_writers:
                 self._sync_writers[key] = self.dxl.GroupSyncWrite(
                     self.port_handler, self.packet_handler, address, size)
             sync_writer = self._sync_writers[key]
+            # Cleared first too, so a txPacket that raised cannot leave its values to go out with these.
+            sync_writer.clearParam()
             errored_ids = []
             present = set(self._present(motor_ids))
             for motor_id, desired_pos in zip(motor_ids, values):
@@ -812,8 +801,15 @@ class DynamixelClient(MotorClient):
             if errored_ids:
                 logging.error('Sync write failed for: %s', str(errored_ids))
 
-            comm_result = sync_writer.txPacket()
-            self.handle_packet_result(comm_result, context='sync_write')
+            try:
+                comm_result = sync_writer.txPacket()
+            except Exception:
+                # Nothing answers a sync write, so nothing live owns the port now.
+                self._flush_input_buffer()
+                sync_writer.clearParam()
+                raise
+            if not self.handle_packet_result(comm_result, context='sync_write'):
+                self._flush_input_buffer()
 
             sync_writer.clearParam()
 
@@ -914,9 +910,9 @@ class DynamixelClient(MotorClient):
         with self._bus_lock:
             value, result, error = reader(
                 self.port_handler, int(motor_id), entry.address)
-        if result != self.dxl.COMM_SUCCESS or error != 0:
-            self._flush_input_buffer()
-            return None
+            if result != self.dxl.COMM_SUCCESS or error != 0:
+                self._flush_input_buffer()
+                return None
         return entry.from_raw(int(value))
 
     def write_config_register(self, motor_id: int, key: str,

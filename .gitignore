@@ -133,6 +133,7 @@ calibration.yaml
 calibration_auto.yaml
 calibration_manual.yaml
 setup.yaml
+setup.yaml.lock
 # Before setup.yaml these were separate files; still read until rewritten.
 slack_tests.yaml
 tension_probes.yaml

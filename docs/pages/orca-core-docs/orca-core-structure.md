@@ -22,7 +22,7 @@ This document outlines the general structure of the `orca_core` repository.
 
     *   **`models/`**: Stores configuration files specific to different hand models, versioned as `v1/` and `v2/` with one directory per variant and side (e.g. `v2/orcahand-right/`). Each model directory contains:
         *   `config.yaml`: Defines static parameters of the hand, such as motor IDs, joint IDs, control modes, calibration sequences, and neutral positions.
-        *   `calibration.yaml`: Stores calibration data, such as motor limits and joint-to-motor ratios, generated during the calibration process.
+        Calibration and setup records are not kept here but in each hand's own folder; see [Where a hand's files live](hand-files.md).
         
     *   **`utils/`**: Contains utility modules with helper functions.
 

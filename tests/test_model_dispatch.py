@@ -1,4 +1,3 @@
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from orca_core.constants import DEFAULT_MODEL_NAME
 from orca_core.hand_config import BaseHandConfig, OrcaHandConfig
 from orca_core.utils import get_model_path, update_yaml
 from orca_core.utils.utils import read_yaml
+from tests._helpers import copy_model_config
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,14 +53,21 @@ def test_base_hand_config_dispatches_config_file_path(kwargs, expected_path):
     assert Path(config.config_path) == expected_path
 
 
-def test_orca_hand_config_dispatches_calibration_path_for_selected_model():
+def test_a_model_config_names_no_calibration_file_beside_it():
+    """A hand's calibration lives in its own folder, not beside a shared model."""
     config = OrcaHandConfig.from_config_path(
         model_version="v1",
         model_name="orcahand-left",
     )
-    assert Path(config.calibration_path) == (
-        MODELS_DIR / "v1" / "orcahand-left" / "calibration.yaml"
+    assert config.calibration_path == ""
+
+
+def test_an_explicit_calibration_path_is_kept(tmp_path):
+    config = OrcaHandConfig.from_config_path(
+        model_version="v1", model_name="orcahand-left",
+        calibration_path=str(tmp_path / "mine.yaml"),
     )
+    assert Path(config.calibration_path) == tmp_path / "mine.yaml"
 
 
 def test_unknown_model_raises_file_not_found():
@@ -70,14 +77,14 @@ def test_unknown_model_raises_file_not_found():
 
 def test_encoder_serial_port_defaults_to_auto_when_yaml_omits_it(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
+    copy_model_config(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "auto"
 
 
 def test_encoder_serial_port_round_trips_explicit_value(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
+    copy_model_config(MODELS_DIR / "v2" / "orcahand-right" / "config.yaml", config_path)
     update_yaml(str(config_path), "encoder_serial_port", "/dev/ttyACM2")
     config = OrcaHandConfig.from_config_path(config_path=str(config_path))
     assert config.encoder_serial_port == "/dev/ttyACM2"

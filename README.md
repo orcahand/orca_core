@@ -10,6 +10,20 @@
 
 Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration, tensioning and to control the hand with simple high-level control methods in joint space. While working directly with core will let you interact with your ORCA Hand on a deep level, the Orca Ui repository (found at: https://github.com/orcahand/orca_ui) can let users get started right away, helping you setup/maintain your hand, tune its performance, and better understand its capabilities. 
 
+## What's new in 0.14.0
+
+- **Stop after a motor-bus error:** a USB error in the middle of a motor transaction no longer leaves the port marked busy
+  ("Port is in use"), so Stop and disconnect still switch torque off and close the port.
+- **Holding in place:** goal positions are rounded to the nearest motor step instead of cut off, so a motor told to hold
+  where it is no longer pushes against a goal one step away and heats up.
+- **Guided tensioning** reports when its live readings stop (`sampler_failed`) or torque can't be switched off at the end
+  (`torque_off_failed`), and the terminal script prints these and motor faults. Asking to test a joint again is saved
+  even when you go straight to the score.
+- **`setup.yaml`:** writes from several programs on the same hand (the console and a script) no longer overwrite each
+  other; they take turns through `setup.yaml.lock` beside it.
+- **Manual calibration** asks for one joint at a time on configs without `manual_calibration_sequence:`, and
+  calibration's drive-current table only lists joints measured in that run.
+
 ## What's new in 0.13.0
 
 - **Guided tensioning** (`scripts/guided_tension.py`, v2.1 hands): motors pull at `max_current`, settle where they stopped, then
@@ -74,6 +88,9 @@ To get started with Orca Core, follow these steps:
 1. **Check the configuration file**:
 
     - Review the config file (e.g., `orca_core/models/v2/orcahand-right/config.yaml`) and make sure it matches your hardware setup.
+      Joint ranges and the guided-tensioning currents every v2 model shares are in `orca_core/models/v2/shared.yaml`,
+      merged under each model's `config.yaml`. To keep a model outside the package, write a complete
+      copy with `orca_core.write_standalone_config("my-hand/config.yaml", model_name="orcahand-right")`.
 
 2. **Run the tension and calibration scripts**:
 
@@ -87,8 +104,8 @@ To get started with Orca Core, follow these steps:
     model's folder. Guided tensioning needs v2.1 hardware; on v2.0, use `scripts/tension.py` instead. Tension first and
     calibrate last.
 
-    Calibration and tensioning records are saved beside the `config.yaml` you load. With more than one hand of the same model,
-    give each hand its own copy of the config and point every script at it, including teleoperation's `--model_path`.
+    Calibration and tensioning records are saved in the hand's own folder, `~/.orca/hands/<hand id>/` (see
+    [Where a hand's files live](#where-a-hands-files-live)), so several hands of one model can share its config.
 
 3. **Move the hand to the neutral position**:
 
@@ -97,6 +114,12 @@ To get started with Orca Core, follow these steps:
     ```
 
 ---
+
+## Where a hand's files live
+
+Each physical hand keeps its own files (calibration, setup records, identity) in `~/.orca/hands/<hand id>/` (set
+`ORCA_HOME` to move `~/.orca`); a model's `config.yaml` is only ever read. Files older versions kept beside `config.yaml`
+are no longer read; calibrate each hand once. Details: [docs/pages/orca-core-docs/hand-files.md](docs/pages/orca-core-docs/hand-files.md).
 
 ## Troubleshooting
 

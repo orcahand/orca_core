@@ -74,14 +74,6 @@ def main():
         print(f"FAIL: {e}")
         sys.exit(1)
 
-    anchored = hand.calibration.joint_encoder_calibration_dict
-    missing = [j for j in joints if j not in anchored]
-    if missing:
-        print(f"No encoder anchor for {', '.join(missing)} — run scripts/calibrate.py.")
-        joints = [j for j in joints if j in anchored]
-        if not joints:
-            sys.exit(1)
-
     try:
         connect_hand(hand)
     except RuntimeError as e:
@@ -90,6 +82,14 @@ def main():
 
     stream = ExitStack()
     try:
+        # The anchors are this hand's once connecting has settled which hand it is.
+        anchored = hand.calibration.joint_encoder_calibration_dict
+        missing = [j for j in joints if j not in anchored]
+        if missing:
+            print(f"No encoder anchor for {', '.join(missing)} — run scripts/calibrate.py.")
+            joints = [j for j in joints if j in anchored]
+            if not joints:
+                sys.exit(1)
         if args.mock:
             client = hand._encoder_client
         else:
