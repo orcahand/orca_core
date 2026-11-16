@@ -263,16 +263,22 @@ def adopt(
     the calibration at ``path``, keeping the one it replaces as previous.
 
     Its ``calibrated_at`` is kept, and its ratios dropped. Keys of the file
-    here that a calibration does not own (a tactile zero) are kept; the
-    document's own are used only where this file has none (a first copy).
+    here that a calibration does not own (a tactile zero) are kept. The
+    document's tactile zero is taken, whole, only when there is no file here
+    yet (first contact): never after a Reset Zero, never mixed with one here.
     ``sequence`` counts on from the higher of the two, or is kept as it is
     with ``keep_sequence`` (a first copy, where there is nothing here to count
     on from).
     """
     _refuse_packaged(path)
     current = read_document(path)
-    doc = {k: v for k, v in document.items() if k not in (JOINT_TO_MOTOR_RATIOS, SCHEMA_KEY)}
-    doc.update(_not_calibration(current))
+    # Checked after the read, which finishes a restore that was cut short.
+    first_contact = not os.path.exists(path)
+    doc = {k: v for k, v in document.items()
+           if k not in (JOINT_TO_MOTOR_RATIOS, SCHEMA_KEY, *TACTILE_ZERO_KEYS)}
+    if first_contact:
+        doc.update({k: document[k] for k in TACTILE_ZERO_KEYS if k in document})
+    doc.update(_kept_here(path))
     _keep_as_previous(path, current)
     theirs = stamp_of(document)["sequence"]
     doc[SEQUENCE] = theirs if keep_sequence else max(stamp_of(current)["sequence"], theirs) + 1

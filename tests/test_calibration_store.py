@@ -396,14 +396,27 @@ class TestTheTactileZeroStaysWithTheComputer:
         assert doc["calibrated_at"] == "old"
         assert doc["sensor_offsets"] == {"index": [[1.0, 2.0, 3.0]]}
 
-    def test_adopting_keeps_a_zero_here_and_takes_the_board_s_only_when_none(self, tmp_path):
+    BOARD_ZERO = {"sensor_offsets": {"thumb": [[5.0, 5.0, 5.0]]},
+                  "resultant_offsets": {"thumb": [5.0, 5.0, 5.0]},
+                  "taxel_noise_gates": {"thumb": [7.0]}}
+
+    def _adopt(self, path, **kwargs):
         from orca_core.constants import MOTOR_LIMITS_DICT
         board = {"calibrated_at": "board", "sequence": 3, MOTOR_LIMITS_DICT: {1: [0.1, 1.0]},
-                 "sensor_offsets": {"thumb": [[5.0, 5.0, 5.0]]}}
-        here = tmp_path / "here" / "calibration.yaml"
+                 **self.BOARD_ZERO}
+        calibration_store.adopt(str(path), board, source="board", **kwargs)
+        doc = read_yaml(str(path))
+        return {k: doc[k] for k in calibration_store.TACTILE_ZERO_KEYS if k in doc}
+
+    def test_adopting_keeps_a_partial_zero_here_whole_with_none_of_the_board_s(self, tmp_path):
+        here = tmp_path / "calibration.yaml"
         self._write(here, "here", zero={"thumb": [[1.0, 1.0, 1.0]]})
-        calibration_store.adopt(str(here), board, source="board")
-        assert read_yaml(str(here))["sensor_offsets"] == {"thumb": [[1.0, 1.0, 1.0]]}
-        first = tmp_path / "first" / "calibration.yaml"
-        calibration_store.adopt(str(first), board, source="board", keep_sequence=True)
-        assert read_yaml(str(first))["sensor_offsets"] == {"thumb": [[5.0, 5.0, 5.0]]}
+        assert self._adopt(here) == {"sensor_offsets": {"thumb": [[1.0, 1.0, 1.0]]}}
+
+    def test_adopting_after_a_reset_zero_brings_no_zero_back(self, tmp_path):
+        here = tmp_path / "calibration.yaml"
+        self._write(here, "here")
+        assert self._adopt(here) == {}
+
+    def test_first_contact_takes_the_board_s_zero_whole(self, tmp_path):
+        assert self._adopt(tmp_path / "calibration.yaml", keep_sequence=True) == self.BOARD_ZERO
