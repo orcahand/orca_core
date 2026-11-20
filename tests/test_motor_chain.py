@@ -1042,34 +1042,40 @@ def test_bus_surveys_leave_a_stranded_motor_alone_until_the_gap_closes(monkeypat
     bus, client = _wire_real(monkeypatch, plan, [motor(3, "XC330", plan.target_baud),
                                                  motor(2, "XC330", plan.target_baud)])
     motor_3 = bus.motors[0]
-    out = {"scans": None}
+    surveys = {"while_waiting_for_3": None}
 
-    def scan(*a, **k):
-        if out["scans"] is not None:
-            out["scans"] += 1
-            if out["scans"] == 80:   # several surveys into the wait for slot 3
+    def scan(motor_type, port, baudrate, id_range):
+        if surveys["while_waiting_for_3"] is not None and id_range == (1, plan.total_motors):
+            surveys["while_waiting_for_3"] += 1
+            if surveys["while_waiting_for_3"] == 3:
                 bus.motors.append(motor_3)
-        return FakeBus.scan(bus, *a, **k)
+        return FakeBus.scan(bus, motor_type, port, baudrate, id_range)
 
     monkeypatch.setattr(mc, "scan_motors", scan)
     events = []
 
     def operator(e):
         events.append(e)
-        if e["event"] == "awaiting_motor" and e["target_id"] == 1:
-            if out["scans"] is None:
-                bus.motors.remove(motor_3)
-                out["scans"] = 0
-            elif motor_3 in bus.motors:
-                bus.motors.append(motor(1, "XC430", plan.default_baud))
+        if e["event"] != "awaiting_motor":
+            return
+        if e["target_id"] == 3 and surveys["while_waiting_for_3"] is None:
+            surveys["while_waiting_for_3"] = 0
+        elif e["target_id"] == 1 and surveys["while_waiting_for_3"] is None:
+            bus.motors.remove(motor_3)
+        elif e["target_id"] == 1:
+            bus.motors.append(motor(1, "XC430", plan.default_baud))
 
-    polls = iter(range(2000))
-    with contextlib.suppress(mc.MotorChainError):   # the poll cap ends a run that never recovers
+    stops = iter(range(2000))   # a cap, so a regression fails instead of hanging
+    error = None
+    try:
         mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0,
-                                 should_stop=lambda: next(polls) == 1999)
+                                 should_stop=lambda: next(stops) == 1999)
+    except mc.MotorChainError as exc:
+        error = exc
 
     names = [e["event"] for e in events]
     assert "stray_motor_reset" not in names
+    assert error is None, f"{error}; last events: {names[-8:]}"
     assert "chain_shortened" in names and "configured_motor_returned" in names
     assert events[-1]["event"] == "chain_done" and events[-1]["configured_ids"] == [3, 2, 1]
     assert [c for c in client.calls if c[0] == "id" and c[1] == 2] == [], "motor 2 untouched"
@@ -1089,21 +1095,73 @@ def test_a_fresh_motor_is_never_given_an_id_that_still_answers(monkeypatch):
     assert client.calls == []
 
 
-def test_the_survey_resets_no_motor_the_run_placed_unless_the_model_is_wrong(monkeypatch):
-    """Motor 2, behind a gap, is no stray even "at" another rate (a link that
-    missed the chain-rate scan); the wrong model at placed ID 3 is."""
+def test_a_slot_seen_only_by_its_own_ping_is_waited_on_not_spun_on(monkeypatch):
+    """On a flaky link motor 3 answers its own ping but drops out of every
+    chain-wide read: the run keeps one wait going, pausing every poll, and
+    programs nothing onto ID 3."""
     plan = small_plan()
-    bus, client = _wire_real(monkeypatch, plan, [motor(2, "XC330", 2_000_000)])
+    bus, client = _wire_real(monkeypatch, plan, [motor(3, "XC330", plan.target_baud),
+                                                 motor(1, "XC330", plan.default_baud)])
+
+    def flaky(motor_type, port, baudrate, id_range):
+        found = FakeBus.scan(bus, motor_type, port, baudrate, id_range)
+        return found if id_range == (3, 3) else [m for m in found if m["id"] != 3]
+
+    monkeypatch.setattr(mc, "scan_motors", flaky)
+    pauses = []
+    monkeypatch.setattr(mc.time, "sleep", pauses.append)
+    events = []
+    stops = iter(range(50))
+    with pytest.raises(mc.MotorChainError, match="cancelled"):
+        mc.configure_motor_chain(plan, progress_callback=events.append, poll_interval=1,
+                                 should_stop=lambda: next(stops) == 49)
+
+    assert [e["event"] for e in events].count("awaiting_motor") == 1
+    assert pauses.count(1) > 40
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("model", ["XC330", "XC430"])
+def test_no_id_write_lands_on_a_slot_that_answers_again(monkeypatch, model):
+    """Motor 3, or a wrong model at its ID, answers while the fresh motor's baud
+    is written: the ID write is refused and the fresh motor stays at the
+    default ID for the next slot."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(1, "XC330", plan.default_baud)])
+    write_baud = client.change_motor_baudrate
+
+    def slot_answers_mid_write(motor_id, new_baud):
+        bus.motors.append(motor(3, model, plan.target_baud))
+        return write_baud(motor_id, new_baud)
+
+    client.change_motor_baudrate = slot_answers_mid_write
+    with pytest.raises(mc.SlotTaken):
+        mc.configure_default_motor(plan, 3)
+    assert [c for c in client.calls if c[0] == "id"] == []
+    assert bus.at(1, plan.target_baud)
+
+
+def test_the_survey_resets_no_motor_the_run_placed_unless_it_is_wrong(monkeypatch):
+    """Motor 2, behind a gap, is no stray even "at" another rate (a link that
+    missed the chain-rate scan). The wrong model at a placed ID is, at any rate,
+    and so is a spare at the awaited slot's ID off the chain's rate."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(2, "XC430", 2_000_000)])
     events = []
 
     def survey():
+        events.clear()
         mc._census(plan, [], 3, events.append, tier=2, state={"skip_bauds": set()},
                    validated={3, 2})
         return [e["motor"]["id"] for e in events if e["event"] == "stray_motor_reset"]
 
-    assert survey() == []
+    assert survey() == [2], "wrong model at a placed ID, another rate"
+    bus.motors.append(motor(2, "XC330", 2_000_000))
+    assert survey() == [], "placed motor 2 seen at another rate"
+    bus.motors.append(motor(3, "XC330", 2_000_000))
+    assert survey() == [3], "a spare at the awaited slot's ID, another rate"
     bus.motors.append(motor(3, "XC430", plan.target_baud))
-    assert survey() == [3]
+    assert survey() == [3], "wrong model at the awaited slot's ID"
     assert bus.at(2, 2_000_000), "motor 2 untouched"
 
 
