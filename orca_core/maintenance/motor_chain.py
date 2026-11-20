@@ -702,17 +702,20 @@ def _is_phantom(plan: MotorChainPlan, motor: dict, at_target: list[dict]) -> boo
 
 def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             progress_callback: Optional[ProgressCallback], tier: int = 1,
-            state: Optional[dict] = None) -> dict:
+            state: Optional[dict] = None,
+            validated: "set[int] | frozenset[int]" = frozenset()) -> dict:
     """Survey the bus for anything that is not the chain so far.
 
     A motor at the target baud with an ID the chain has not configured, and any
     motor at another baud, is a stray: reset to factory defaults in place so the
     poll finds and programs it — one per survey, so two strays never meet at
-    the default ID. Two exceptions: the motor at the factory-default ID at the
-    default or target baud is left to the poll, and a right-model motor already
+    the default ID. Three exceptions: the motor at the factory-default ID at the
+    default or target baud is left to the poll, a right-model motor already
     carrying ``target_id`` — the slot being waited for — is one that came back
     (reconnected after it dropped off), reported as ``returned`` so the caller
-    re-reads the chain. A motor "at" another baud whose ID also answers at the
+    re-reads the chain, and a motor at a ``validated`` ID, one this run already
+    placed, is stranded behind a gap and left alone at any baud unless the wrong
+    model answers there. A motor "at" another baud whose ID also answers at the
     chain's baud is the chain seen through a bridge that ignored that rate; the
     rate is reported (``phantom_baud``) and skipped for the rest of the run.
     ``tier`` widens the survey (see the tier constants). Returns the IDs seen at
@@ -736,6 +739,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
         if m["id"] == target_id and _model_matches(plan, m, plan.model_for(target_id)):
             returned = True
             continue
+        if m["id"] in validated and _model_matches(plan, m, plan.model_for(m["id"])):
+            continue
         strays.append(m)
     other_bauds = _bauds_to_survey(plan, state) if tier >= 2 else []
     id_range = chain_ids
@@ -747,7 +752,7 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             _emit(progress_callback, "phantom_baud", baudrate=baud,
                   motor_ids=[m["id"] for m in phantoms])
             continue
-        strays.extend(found)
+        strays.extend(m for m in found if m["id"] not in validated)
     if strays and not returned:
         _reset_stray(plan, strays[0], progress_callback)
     if other_bauds:
@@ -793,6 +798,7 @@ def _wait_for_default_motor(
     should_stop: Optional[ShouldStop],
     poll_interval: float,
     state: Optional[dict] = None,
+    validated: "set[int] | frozenset[int]" = frozenset(),
 ) -> Optional[tuple[dict, int]]:
     """Poll until a motor at the factory-default ID is on the bus.
 
@@ -827,6 +833,11 @@ def _wait_for_default_motor(
                           should_stop=should_stop)
             return None
         try:
+            if target_id != plan.default_id and any(
+                    _model_matches(plan, m, expected_model) for m in
+                    scan_motors(plan.motor_type, plan.port, plan.target_baud, (target_id, target_id))):
+                _emit(progress_callback, "configured_motor_returned", target_id=target_id)
+                return None  # the slot is taken: never program a second motor onto it
             for baud in dict.fromkeys((plan.default_baud, plan.target_baud)):
                 motor = find_default_motor(plan, expected_model, progress_callback, baud=baud)
                 if motor is not None:
@@ -838,7 +849,8 @@ def _wait_for_default_motor(
             polls += 1
             if polls % CENSUS_EVERY_POLLS == 0:
                 seen = _census(plan, configured, target_id, progress_callback,
-                               tier=_census_tier(time.monotonic() - started), state=state)
+                               tier=_census_tier(time.monotonic() - started), state=state,
+                               validated=validated)
                 checked = seen["checked"]
                 if seen["returned"]:
                     _emit(progress_callback, "configured_motor_returned", target_id=target_id)
@@ -1020,7 +1032,7 @@ def configure_motor_chain(
               expected_model=expected_model)
         found = _wait_for_default_motor(plan, target_id, expected_model, configured,
                                         progress_callback, should_stop, poll_interval,
-                                        state=bus_state)
+                                        state=bus_state, validated=validated)
         if found is None:
             continue  # the port came back: re-read the chain before touching anything
         motor, at_baud = found
