@@ -1034,6 +1034,79 @@ def test_motors_stranded_behind_a_gap_are_kept_and_rejoin(monkeypatch):
     assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]
 
 
+def test_bus_surveys_leave_a_stranded_motor_alone_until_the_gap_closes(monkeypatch):
+    """Motor 3 drops off and nothing is plugged in while the run waits for its
+    slot. The surveys during that wait must not reset motor 2, behind the gap:
+    reset, it would be programmed as 3 and the chain would hold two 3s."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(3, "XC330", plan.target_baud),
+                                                 motor(2, "XC330", plan.target_baud)])
+    motor_3 = bus.motors[0]
+    out = {"scans": None}
+
+    def scan(*a, **k):
+        if out["scans"] is not None:
+            out["scans"] += 1
+            if out["scans"] == 80:   # several surveys into the wait for slot 3
+                bus.motors.append(motor_3)
+        return FakeBus.scan(bus, *a, **k)
+
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "awaiting_motor" and e["target_id"] == 1:
+            if out["scans"] is None:
+                bus.motors.remove(motor_3)
+                out["scans"] = 0
+            elif motor_3 in bus.motors:
+                bus.motors.append(motor(1, "XC430", plan.default_baud))
+
+    polls = iter(range(2000))
+    with contextlib.suppress(mc.MotorChainError):   # the poll cap ends a run that never recovers
+        mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0,
+                                 should_stop=lambda: next(polls) == 1999)
+
+    names = [e["event"] for e in events]
+    assert "stray_motor_reset" not in names
+    assert "chain_shortened" in names and "configured_motor_returned" in names
+    assert events[-1]["event"] == "chain_done" and events[-1]["configured_ids"] == [3, 2, 1]
+    assert [c for c in client.calls if c[0] == "id" and c[1] == 2] == [], "motor 2 untouched"
+    assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]
+
+
+def test_a_fresh_motor_is_never_given_an_id_that_still_answers(monkeypatch):
+    """Motor 3 is back by the time a fresh motor is found for its slot: the run
+    re-reads the chain instead of programming a second motor 3."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(3, "XC330", plan.target_baud),
+                                                 motor(1, "XC330", plan.default_baud)])
+    events = []
+    assert mc._wait_for_default_motor(plan, 3, "XC330", [], events.append, None, 0,
+                                      state={"skip_bauds": set()}) is None
+    assert [e["event"] for e in events] == ["configured_motor_returned"]
+    assert client.calls == []
+
+
+def test_the_survey_resets_no_motor_the_run_placed_unless_the_model_is_wrong(monkeypatch):
+    """Motor 2, behind a gap, is no stray even "at" another rate (a link that
+    missed the chain-rate scan); the wrong model at placed ID 3 is."""
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(2, "XC330", 2_000_000)])
+    events = []
+
+    def survey():
+        mc._census(plan, [], 3, events.append, tier=2, state={"skip_bauds": set()},
+                   validated={3, 2})
+        return [e["motor"]["id"] for e in events if e["event"] == "stray_motor_reset"]
+
+    assert survey() == []
+    bus.motors.append(motor(3, "XC430", plan.target_baud))
+    assert survey() == [3]
+    assert bus.at(2, 2_000_000), "motor 2 untouched"
+
+
 def test_verify_tolerates_validated_motors_rejoining(monkeypatch):
     plan = small_plan()
     FakeBus([motor(3, "XC330", plan.target_baud), motor(2, "XC330", plan.target_baud)], plan)\
