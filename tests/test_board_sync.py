@@ -476,6 +476,23 @@ class TestWritingTheBoard:
         assert sent.joint_ranges == self.RIG_RANGES
         assert sent.calibration["motor_limits"] == read_yaml(hand.config.calibration_path)["motor_limits"]
 
+    def test_a_store_that_cannot_be_read_is_not_written_over(self, connect, config, firmware,
+                                                            board, monkeypatch):
+        """Its ranges could not be carried forward, so the write would erase them."""
+        hand = self.calibrated(connect, config)
+        board.store = held = pack({"calibrated": True, "motor_limits": {1: [0.0, 1.0]}},
+                                  identity=BoardIdentity(side="right", serial="ser-0000"),
+                                  sequence=6, joint_ranges=self.RIG_RANGES)
+
+        def times_out(link, metadata):
+            raise TimeoutError("no reply")
+
+        monkeypatch.setattr(board_store_link, "read_store_over_link", times_out)
+        result = board_push.push_for_hand(hand)
+        assert not result.written and "could not be read" in result.reason
+        assert not (firmware / "tool.log").exists()
+        assert board.store == held
+
     def test_the_hand_s_file_replaces_the_board_s_ranges(self, connect, config, firmware, board):
         hand = self.calibrated(connect, config)
         board.store = pack({}, identity=BoardIdentity(side="right", serial="ser-0000"),
