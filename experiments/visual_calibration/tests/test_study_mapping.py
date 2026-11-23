@@ -143,7 +143,11 @@ def test_night_archives_the_hand_folder_and_checks_it(tmp_path, monkeypatch):
     assert {p.name for p in out.iterdir()} == {"calibration.yaml", "joint_ranges.yaml", HAND_MAP}
     n.check_archive(out)                                   # matches the live estimate
     live["index_mcp"] = 43.0
-    with pytest.raises(night.Abort, match="live estimate"):
+    with pytest.raises(night.Abort, match="live estimate") as e:
+        n.check_archive(out)
+    assert "reconnect" not in str(e.value)
+    (folder / "joint_ranges.yaml").write_text(yaml.safe_dump({"schema": 1, "joint_roms": {"index_mcp": [-5.0, 85.0]}}))
+    with pytest.raises(night.Abort, match="reconnect the hand"):   # new ranges on file, not in force yet
         n.check_archive(out)
 
 

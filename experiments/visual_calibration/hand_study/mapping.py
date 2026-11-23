@@ -70,15 +70,25 @@ def stored_ranges(folder: Path, model: str) -> dict[str, list[float]]:
     return doc.get("joint_roms") or {}
 
 
+def measured_in_force(ran: dict) -> dict[str, list[float]]:
+    """The measured ranges a hand_map.yaml records in force: its joints whose range is not the model's."""
+    model = orca_core_config(ran["model"]).joint_roms_dict
+    return {j: [float(v) for v in r["rom"]] for j, r in ran["joints"].items()
+            if j in model and not np.allclose(r["rom"], model[j], atol=1e-6)}
+
+
+def same_ranges(a: dict, b: dict) -> bool:
+    return set(a) == set(b) and all(np.allclose(a[j], b[j], atol=1e-6) for j in a)
+
+
 class LinearMap:
     def __init__(self, run_dir: Path):
         run_dir = Path(run_dir)
         cal = _read(run_dir / "calibration.yaml")
         if (run_dir / HAND_MAP).exists():
             ran = _read(run_dir / HAND_MAP)
+            measured = measured_in_force(ran)
             model = orca_core_config(ran["model"])
-            measured = {j: [float(v) for v in r["rom"]] for j, r in ran["joints"].items()
-                        if j in model.joint_roms_dict and not np.allclose(r["rom"], model.joint_roms_dict[j], atol=1e-6)}
             config = model.with_measured_ranges(measured) if measured else model
             self._in_force(cal, config, list(ran["joints"]))
             off = [j for j, v in ran["joints"].items() if (abs(int(v["motor"])), bool(v["inverted"])) != (self.motor[j], self.inverted[j])

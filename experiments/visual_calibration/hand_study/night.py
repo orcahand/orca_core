@@ -302,8 +302,9 @@ class Night:
     def snapshot(self, step: dict) -> None:
         """The hand's current orca_core calibration archived as calib_<run> (no new calibration),
         checked: the linear map from those files must give orca_core's live estimate."""
+        from hand_study.mapping import HAND_MAP
         out = STUDY / f"calib_{step['run']}"
-        if not (out / "calibration.yaml").exists():
+        if not (out / HAND_MAP).exists():                   # written last: the archive is complete
             self.archive_hand(out)
         self.check_archive(out)
         self.log(f"calibration archived as calib_{step['run']} (matches the live estimate)")
@@ -333,7 +334,23 @@ class Night:
         live = Hand(self.stream).estimate()
         off = {j: round(mine[j] - live[j], 2) for j in mine if j in live and abs(mine[j] - live[j]) > 0.5}
         if off or not live:
-            raise Abort(f"{out.name} does not match the live estimate: {off or 'no estimate'}")
+            raise Abort(f"{out.name} does not match the live estimate: {off or 'no estimate'}{self.not_in_force(out)}")
+
+    @staticmethod
+    def not_in_force(out: Path) -> str:
+        """Why an archive may not match: the hand's files changed since it connected (new joint ranges
+        or calibration on file are put in force at the next connect)."""
+        import yaml
+        from hand_study.mapping import HAND_MAP, measured_in_force, same_ranges, stored_ranges
+        ran = yaml.safe_load((out / HAND_MAP).read_text()) or {}
+        try:
+            on_file = stored_ranges(Path(ran["folder"]), ran["model"])
+        except (KeyError, TypeError, ValueError, OSError):
+            return ""
+        if same_ranges(on_file, measured_in_force(ran)):
+            return ""
+        return ("; the joint ranges on file for this hand are not the ones in force yet: reconnect the hand "
+                "in orca-ui (they take effect at connect), then run again")
 
     def mount(self, step: dict) -> None:
         """The baseline pose's solved mount, fixed in every later block's plan."""
