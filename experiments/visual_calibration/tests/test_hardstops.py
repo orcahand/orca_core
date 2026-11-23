@@ -21,11 +21,25 @@ def test_identifiable_stops_go_to_the_hand_s_joint_ranges(tmp_path, monkeypatch)
     hand_store.hand_dir("ser-0001").mkdir(parents=True)
     stops = {"index_mcp": {"new": [-12.0, 95.5], "identifiable": True},
              "index_pip": {"new": [-15.0, 107.0], "identifiable": False}}
-    path = hardstops.record_ranges("ser-0001", stops, "camera rig, sessions s1, calibration run2")
-    doc = hand_store.read_doc(path, "joint_ranges")
-    assert path == hand_store.hand_dir("ser-0001") / "joint_ranges.yaml"
+    rec = hardstops.record_ranges("ser-0001", stops, "camera rig, sessions s1, calibration run2")
+    doc = hand_store.read_doc(rec["path"], "joint_ranges")
+    assert rec["path"] == str(hand_store.hand_dir("ser-0001") / "joint_ranges.yaml") and rec["recorded"] == ["index_mcp"]
     assert doc["joint_roms"] == {"index_mcp": [-12.0, 95.5]} and doc["source"].startswith("camera rig")
-    assert hardstops.record_ranges("ser-0001", {"index_pip": stops["index_pip"]}, "x") is None
+    assert hardstops.record_ranges("ser-0001", {"index_pip": stops["index_pip"]}, "x")["path"] is None
+
+
+def test_a_fit_that_is_not_a_range_is_left_out_and_the_file_says_what_it_lost(capsys):
+    """lo >= hi would make orca_core refuse the whole file: that joint is left out with a warning.
+    The file is replaced whole, and the joints it no longer holds are named."""
+    hand_store.hand_dir("ser-0001").mkdir(parents=True)
+    hardstops.record_ranges("ser-0001", {"index_mcp": {"new": [-12.0, 95.5], "identifiable": True},
+                                         "ring_mcp": {"new": [-20.0, 100.0], "identifiable": True}}, "first")
+    rec = hardstops.record_ranges("ser-0001", {"index_mcp": {"new": [-10.0, 90.0], "identifiable": True},
+                                               "wrist": {"new": [30.0, 30.0], "identifiable": True}}, "second")
+    assert rec["recorded"] == ["index_mcp"] and list(rec["rejected"]) == ["wrist"] and rec["gone"] == ["ring_mcp"]
+    assert "wrist left out" in capsys.readouterr().err
+    summary = hardstops.ranges_summary(rec)
+    assert "left out: wrist" in summary and "no longer in the file (back to the model's): ring_mcp" in summary
 
 
 def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch):
@@ -61,6 +75,8 @@ def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch)
     monkeypatch.setattr(hardstops, "OUT", run / "proposed")
     out = hardstops.main([session], "q1", hand_id="ser-0001")
     doc = hand_store.read_doc(folder / "joint_ranges.yaml", "joint_ranges")
-    assert doc["joint_roms"]["index_mcp"] == [-15.0, 95.0] and out["joint_ranges"] == str(folder / "joint_ranges.yaml")
+    assert doc["joint_roms"]["index_mcp"] == [-15.0, 95.0] and out["joint_ranges"]["path"] == str(folder / "joint_ranges.yaml")
+    saved = json.loads((run / "proposed" / "hardstops.json").read_text())
+    assert saved["joint_ranges"]["recorded"] == out["joint_ranges"]["recorded"]
     assert doc["source"].startswith(f"camera rig rig-1, run {run.name}, sessions t-N07-short, calibration q1")
     assert "joint_roms.index_mcp[0]: -22.75 -> -15" in (run / "proposed" / "config.diff.txt").read_text()

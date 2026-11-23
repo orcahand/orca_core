@@ -94,7 +94,11 @@ def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, mot
     state = read_json(run / "night" / f"{tag}.state.json")
     out = read_json(run / "proposed" / "hardstops.json")
     print(f"night {state.get('state')}" + (f": {state.get('error')}" if state.get("error") else ""))
-    print(f"joint ranges: {out.get('joint_ranges') or 'none recorded'}")
+    if out.get("joint_ranges"):
+        from hand_study.hardstops import ranges_summary
+        print(ranges_summary(out["joint_ranges"]))
+    else:
+        print("joint ranges: none recorded")
     if state.get("state") != "done":
         print(f"resume: {paths.RUN_ENV}={run} STUDY_ROM_CONFIG={cfg} python -m hand_study.night {tag} --workers")
     return run

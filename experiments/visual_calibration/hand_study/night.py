@@ -468,10 +468,8 @@ class Night:
         sessions = [Path(s) for s in step["from"]]
         self.wait_for_solves(sessions, "ranges")
         res = hardstops.main(sessions, step["run"], hand_id=self.spec["hand"])
-        kept = sorted(j for j, s in res["stops"].items() if s["identifiable"])
-        self.log(f"joint ranges of {len(kept)} joints from {res['n']} poses -> {res['joint_ranges']}" if res["joint_ranges"]
-                 else f"no joint ranges recorded: no joint identifiable in {res['n']} poses")
-        self.note(f"joint ranges recorded for {self.spec['hand']}: {', '.join(kept) or 'none'}")
+        self.log(f"{res['n']} poses: {hardstops.ranges_summary(res['joint_ranges'])}")
+        self.note(f"joint ranges recorded for {self.spec['hand']}: {', '.join(res['joint_ranges']['recorded']) or 'none'}")
 
     def refit(self, step: dict) -> None:
         """The hand's own hard stops from the short block (hardstops.fit), written into its
