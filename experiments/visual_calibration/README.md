@@ -85,6 +85,17 @@ session `sweep --quick` checks one frame per camera at the park stop: over 1 px,
 rotation session with the lens and tiles held (`Session.create(..., "rotation", hold=True)`).
 The hand fit (live_fit, hand_study) adds every calibrated camera's views (meta.json `camera`).
 
+Who owns the cameras (2026-11-23): one Python process on the rig Mac, the console's backend
+(`visual_calibration/rig_cameras.py`, served by orca_ui under `/api/visual-calibration/cameras`).
+Both cameras are required (b `enabled: true`). Each is opened once (capture.SharedCamera), its
+OpenCV index found from `uvc.device.serial` (AVFoundation order), and a preflight proves it
+before any still is handed out: each camera's exposure is cut through uvcc and exactly one
+stream must darken; with the tower on the plate each camera's PnP height must match its mount
+(A ~250 mm, B ~470 mm). Swapped, missing or silent cameras: refused. The console's 1a/1b
+sweeps store a photo from every camera at each stop (`/sessions/<id>/capture`), the page only
+shows the backend's preview; the hand run (hand_study.collect) takes every camera's still from
+the backend at each plate stop (`v<stop>.jpg`, `v<stop>_b.jpg`).
+
 ## Hand model (starting point)
 
 The source of truth is **`orcahand_description`** (`../orcahand_description`,
