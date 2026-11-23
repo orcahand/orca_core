@@ -7,8 +7,12 @@ with t = (m - m0) / (m1 - m0):   joint = lo (1 - t) + hi t   (inverted: hi (1 - 
 linear in (lo, hi). Note: the new numbers act fully only after a calibration with the new
 config (it recomputes the ratio); without one only the offset moves.
 
-    python -m hand_study.hardstops SESSION... [--run run2]    # proposed/ config + diff + accuracy
+    python -m hand_study.hardstops SESSION... [--run run2]    # proposed/ stops + diff + accuracy
         [--hand-id ID]     # and the hand's joint_ranges.yaml on this computer (in force at its next connect)
+
+Run with the run's STUDY_RUN (hand_study.paths), so the archived calibration and proposed/ are the
+run's own. A run archived from orca_core 0.14 holds no config.yaml: the stops are the result, and
+proposed/config.yaml is written only for an older run's full config.
 """
 
 from __future__ import annotations
@@ -17,12 +21,14 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 from orca_core import hand_store
+from orca_core.utils.utils import read_yaml
 
-from hand_study import analysis
+from hand_study import analysis, paths
 from hand_study.configs import JOINTS
 from hand_study.mapping import LinearMap
 
@@ -39,6 +45,8 @@ def good(R: list[dict]) -> list[dict]:
 
 
 def t_of(L: LinearMap, j: str, m: float) -> float:
+    if not L.calibrated(j):
+        raise ValueError(f"{j} is not calibrated in this run")
     lo, hi = L.limits[L.motor[j]]
     return (L.unwrap(j, m) - lo) / (hi - lo)
 
@@ -48,6 +56,10 @@ def fit(R: list[dict], run: str) -> dict[str, dict]:
     out = {}
     rr = [r for r in good(R) if r["run"] == run]
     for j in JOINTS:
+        if not L.calibrated(j):                 # orca_core holds it uncalibrated: no stops to fit
+            out[j] = {"old": list(L.rom[j]), "new": list(L.rom[j]), "n": 0, "dropped": 0, "t_span": None,
+                      "identifiable": False, "fit": None, "rms": None, "uncalibrated": True}
+            continue
         t = np.array([t_of(L, j, r["motor"][j]) for r in rr])
         y = np.array([r["measured"][j] for r in rr])
         A = np.c_[t, 1 - t] if L.inverted[j] else np.c_[1 - t, t]
@@ -90,7 +102,11 @@ def accuracy(R: list[dict], predict) -> dict:
     """Per joint and overall RMS and max |true - predicted| (deg)."""
     out, allerr = {}, []
     for j in JOINTS:
-        e = np.array([r["measured"][j] - predict(r, j) for r in R if (r.get("split") or {}).get(j, 0.0) <= SPLIT_MAX_DEG])
+        try:
+            e = np.array([r["measured"][j] - predict(r, j) for r in R if (r.get("split") or {}).get(j, 0.0) <= SPLIT_MAX_DEG])
+        except ValueError:                      # an uncalibrated joint: nothing to predict
+            out[j] = None
+            continue
         allerr.append(e)
         out[j] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2),
                   "mean": round(float(e.mean()), 2)} if len(e) else None
@@ -146,12 +162,42 @@ def proposed_config(config: Path, stops: dict[str, dict]) -> tuple[str, list[str
     return "".join(out), diff
 
 
-def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> Path | None:
-    """The fitted stops as the hand's joint_ranges.yaml in its orca_core folder; None when no joint has one."""
+def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> dict:
+    """The fitted stops as the hand's joint_ranges.yaml in its orca_core folder, replacing the whole
+    file. Returns {path (None: nothing to record), recorded, rejected: {joint: why}, gone: the joints
+    the file held before that it no longer does}."""
     # TODO(quality gate): which joints may be recorded is not decided yet; until it is, every
-    # joint the fit identifies (motor span >= MIN_SPAN) is.
-    roms = {j: s["new"] for j, s in stops.items() if s["identifiable"]}
-    return hand_store.write_joint_ranges(hand_folder(hand_id), roms, source=source) if roms else None
+    # joint the fit identifies (motor span >= MIN_SPAN) is, unless its fit is not a range.
+    roms, rejected = {}, {}
+    for j, s in stops.items():
+        if not s["identifiable"]:
+            continue
+        lo, hi = s["new"]
+        if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
+            roms[j] = s["new"]
+        else:
+            rejected[j] = f"the fit gives [{lo}, {hi}], not a range"
+            print(f"warning: {j} left out of the joint ranges: {rejected[j]}", file=sys.stderr)
+    folder = hand_folder(hand_id)
+    before = set((read_yaml(folder / hand_store.JOINT_RANGES_FILE) or {}).get("joint_roms") or {})
+    path = hand_store.write_joint_ranges(folder, roms, source=source) if roms else None
+    return {"path": str(path) if path else None, "recorded": sorted(roms), "rejected": rejected,
+            "gone": sorted(before - set(roms)) if path else []}
+
+
+def ranges_summary(rec: dict) -> str:
+    """One line for the operator: what joint_ranges.yaml holds now and what it no longer holds."""
+    if not rec["path"]:
+        return "no joint ranges recorded" + (f" (left out: {', '.join(rec['rejected'])})" if rec["rejected"] else "")
+    return (f"joint ranges recorded in {rec['path']} for {', '.join(rec['recorded'])}"
+            + (f"; left out: {', '.join(rec['rejected'])}" if rec["rejected"] else "")
+            + (f"; no longer in the file (back to the model's): {', '.join(rec['gone'])}" if rec["gone"] else ""))
+
+
+def measured_by() -> str:
+    """What measured the stops, for joint_ranges.yaml's source: the rig and the run."""
+    info = paths.run_info()
+    return f"camera rig {info['rig']}, run {STUDY.name}" if info.get("rig") else "camera rig"
 
 
 def hand_folder(hand_id: str) -> Path:
@@ -168,8 +214,13 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
     stops = fit(R, run)
     L = LinearMap(STUDY / f"calib_{run}")
     OUT.mkdir(exist_ok=True)
-    text, diff = proposed_config(STUDY / f"calib_{run}" / "config.yaml", stops)
-    (OUT / "config.yaml").write_text(text)
+    cfg = STUDY / f"calib_{run}" / "config.yaml"
+    if cfg.exists():
+        text, diff = proposed_config(cfg, stops)
+        (OUT / "config.yaml").write_text(text)
+    else:
+        diff = [f"joint_roms.{j}[{k}]: {s['old'][k]:g} -> {s['new'][k]:g}" for j, s in stops.items()
+                for k in (0, 1) if abs(s["new"][k] - s["old"][k]) >= 0.05]
     (OUT / "config.diff.txt").write_text("\n".join(diff) + "\n")
     lut = None
     if lut_path and lut_path.exists():
@@ -177,11 +228,11 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
         lut = Lut.load(lut_path)
     out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "stops": stops, "diff": diff,
            "train": compare(R, stops, lut), "inverted": L.inverted}
-    if hand_id:
-        source = f"camera rig, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
-        written = record_ranges(hand_id, stops, source)
-        out["joint_ranges"] = str(written) if written else None
     (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
+    if hand_id:
+        source = f"{measured_by()}, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
+        out["joint_ranges"] = record_ranges(hand_id, stops, source)
+        (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
     return out
 
 
@@ -198,4 +249,4 @@ if __name__ == "__main__":
     print("old", o["train"]["a_old"]["all"], "new", o["train"]["b_new_stops"]["all"])
     print("\n".join(o["diff"]))
     if a.hand_id:
-        print(f"joint ranges recorded in {o['joint_ranges']}" if o["joint_ranges"] else "no joint ranges to record")
+        print(ranges_summary(o["joint_ranges"]))

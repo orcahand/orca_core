@@ -163,12 +163,28 @@ def test_stops_show_every_side_for_any_mounting():
     assert few["mountings"][0.0] == [0, "1 or 3"] and few["warnings"]
 
 
+def _rig_seeing(cam, path):
+    """A copy of the rig whose camera "a" is where `synthetic` put it (the real one moves with the mount)."""
+    import shutil
+
+    import yaml
+    from visual_calibration.rig_config import get_rig_path
+    if not path.exists():
+        shutil.copytree(get_rig_path(), path)
+        (path / "calibration.yaml").write_text("calibrated_at: null\nhistory: []\n")
+        c = yaml.safe_load((path / "config.yaml").read_text())
+        c["cameras"]["a"]["nominal_pose"] = {"position": cam.translation.round(3).tolist(), "look_at": [0.0, 0.0, 246.33]}
+        (path / "config.yaml").write_text(yaml.safe_dump(c))
+    return RigConfig.load(path=str(path))
+
+
 def test_sessions_camera_then_rotation_then_apply(tmp_path, monkeypatch):
     from visual_calibration.rig_config import RigConfig
     from visual_calibration.session import Session
 
     _, photos, cam, *_ = synthetic(np.random.default_rng(6), stops=tuple(30.0 * k for k in range(11)))
     monkeypatch.setattr(Session, "photos", lambda self: photos)
+    monkeypatch.setattr(Session, "rig", property(lambda self: _rig_seeing(cam, tmp_path / "rig")))
     rotation = Session.create(tmp_path, "rotation")
     rotation.meta["image_size"] = list(SIZE)
     with pytest.raises(ValueError, match="camera step first"):

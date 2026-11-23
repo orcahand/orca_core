@@ -28,6 +28,7 @@ under one turn. Plate angles in degrees, positive away from the stop.
 """
 from __future__ import annotations
 
+import os
 import signal
 import threading
 import time
@@ -185,9 +186,11 @@ class Turntable:
 
     @classmethod
     def open(cls, cfg: Mapping, mock: bool = False, port: str | None = None, motor_id: int | None = None,
-             calibration_path: str | None = None, torque: bool | None = None) -> Turntable:
+             calibration_path: str | None = None, torque: bool | None = None,
+             save_path: str | None = None) -> Turntable:
         """torque=False (the default with hold_after_move off): connected to read the angle only, the
-        plate stays free; a move turns the torque on for its run."""
+        plate stays free; a move turns the torque on for its run. The motor calibration is read from
+        calibration_path and saved to save_path (default: the same file)."""
         _, motor, _ = _merged(cfg)
         cal = (read_yaml(calibration_path) or {}) if calibration_path and not mock else {}
         if mock:
@@ -199,7 +202,7 @@ class Turntable:
             bus = find_rig_bus(cfg, port, motor_id, cal)
             t = cls(create_motor_client(motor["type"], [bus.motor_id], bus.port, bus.baudrate), bus.motor_id, cfg,
                     bus=bus, calibration=cal)
-        t.calibration_path = calibration_path
+        t.calibration_path = save_path or calibration_path
         t.client.connect()
         try:
             t.client.set_torque_enabled([t.motor_id], False)
@@ -413,6 +416,7 @@ class Turntable:
             history = list(old.pop("history", None) or [])
             if old:
                 history.insert(0, old)
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             write_yaml_atomic(path, {**result, "history": history[:10]})
         return result
 
@@ -421,7 +425,7 @@ def main() -> None:
     import argparse
     import json
 
-    from visual_calibration.rig_config import RigConfig
+    from visual_calibration.rig_config import TURNTABLE_CALIBRATION_FILE, RigConfig
 
     ap = argparse.ArgumentParser(description="The rig's turntable motor (turntable.yaml).")
     ap.add_argument("action", choices=["find", "home", "calibrate", "state", "move"])
@@ -440,7 +444,8 @@ def main() -> None:
         return
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     t = Turntable.open(cfg, mock=args.mock, port=args.port, motor_id=args.id,
-                       calibration_path=rig.turntable_calibration_path)
+                       calibration_path=rig.turntable_calibration_path,
+                       save_path=rig.own_file(TURNTABLE_CALIBRATION_FILE))
     try:
         out = {"home": lambda: t.home().as_dict(), "calibrate": lambda: t.calibrate(save=not args.mock),
                "state": lambda: t.state().as_dict(), "move": lambda: t.move(args.angle).as_dict()}[args.action]()

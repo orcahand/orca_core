@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from hand_study.configs import JOINTS, REST, ROM, Collider
+from hand_study.paths import STUDY
 
 ANGLES = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0]
 PARTS = {"A": ["wrist", "thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip", "index_abd", "index_mcp", "index_pip",
@@ -20,7 +21,6 @@ PARTS = {"A": ["wrist", "thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip", "ind
          "B": ["ring_abd", "ring_mcp", "ring_pip", "pinky_abd", "pinky_mcp", "pinky_pip"]}
 ABDS = ("index_abd", "middle_abd", "ring_abd", "pinky_abd")
 APPROACH_DEG = 15.0
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 
 
 def points(j: str) -> list[float]:

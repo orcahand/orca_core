@@ -22,8 +22,8 @@ import numpy as np
 from hand_study import hw
 from hand_study.configs import JOINTS, ROM
 from hand_study.hw import Hand, Turntable, beat, call
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 VIEW_DEG = 112.5               # a side view (the fingers' flexion in the image plane)
 AMP_MOTOR_DEG = 8.0
 MOTOR_DEG_S = 4.0

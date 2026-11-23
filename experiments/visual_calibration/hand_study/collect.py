@@ -20,8 +20,8 @@ import numpy as np
 from hand_study import hw
 from hand_study.hw import Camera, Hand, MotorFault, Stream, Turntable, beat, call, recover
 from hand_study.mapping import LinearMap
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 
 SETTLE_S = 1.0
 HOLD_STUCK = os.environ.get("STUDY_HOLD_STUCK", "0") == "1"

@@ -78,11 +78,13 @@ def test_save_calibration_keeps_history(rig_copy):
 
 
 def test_camera_pose_follows_the_mount_holes(rig_copy):
-    rig = RigConfig.load()
-    assert rig.camera_nominal["position"] == [246.5, 0.0, 269.25]      # the 270 hole
+    """The rig's own holes (not the ones the real camera sits in today): lens at the mount + lens_offset."""
+    _edit(rig_copy, lambda c: c["cameras"]["a"]["mount"].update(distance=240.0, height=270.0, lens_offset=[6.5, -0.75]))
+    rig = RigConfig.load(path=str(rig_copy))
+    assert rig.camera_nominal["position"] == [246.5, 0.0, 269.25]      # the 240 / 270 holes
     assert abs(rig.camera_nominal["look_at"][2] - (269.25 - 246.5 * np.tan(np.radians(rig.raw["camera"]["mount"]["tilt"])))) < 0.01
-    _edit(rig_copy, lambda c: c["camera"]["mount"].update(distance=230.0))
+    _edit(rig_copy, lambda c: c["cameras"]["a"]["mount"].update(distance=230.0))
     assert RigConfig.load(path=str(rig_copy)).camera_nominal["position"] == [236.5, 0.0, 269.25]
-    _edit(rig_copy, lambda c: c["camera"]["mount"].update(distance=235.0))
+    _edit(rig_copy, lambda c: c["cameras"]["a"]["mount"].update(distance=235.0))
     with pytest.raises(RigConfigError, match="not a hole"):
         RigConfig.load(path=str(rig_copy))

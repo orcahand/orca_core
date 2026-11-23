@@ -1,11 +1,11 @@
 """A stand-in for orca-ui for dry runs of the night runner: the REST calls and websocket topics
-hand_study uses, a simulated hand (motor positions follow the targets through the bench's linear
-map) and turntable, orca_core's calibration as a copy of the packaged calibration.yaml, and
-injected faults (a motor error, overheating, a turntable miss) to exercise the recovery.
-Nothing touches hardware.
+hand_study uses, a simulated hand (motor positions follow the targets through orca_core's linear
+map of the hand's folder) and turntable, orca_core's calibration as a copy of the packaged
+calibration.yaml, and injected faults (a motor error, overheating, a turntable miss) to exercise
+the recovery. Nothing touches hardware.
 
-    python -m hand_study.mock_ui --port 5091 --bench DIR --calibration PACKAGED_CALIBRATION.yaml \\
-        [--faults error@40,hot@90,plate@25] [--hand ser-7841]
+    python -m hand_study.mock_ui --port 5091 --bench HAND_FOLDER --calibration PACKAGED_CALIBRATION.yaml \\
+        [--faults error@40,hot@90,plate@25] [--hand ser-0001] [--model orcahand-right]
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 
 from hand_study.mapping import LinearMap
+from hand_study.paths import STUDY
 
 app = FastAPI()
 S: dict = {}
@@ -31,7 +32,7 @@ LOCK = threading.Lock()
 
 def lm() -> LinearMap | None:
     b = S["bench"]
-    return LinearMap(b) if (b / "calibration.yaml").exists() else None
+    return LinearMap.of_hand(b, S["model"]) if (b / "calibration.yaml").exists() else None
 
 
 def estimate() -> dict:
@@ -50,8 +51,28 @@ def fault(kind: str) -> bool:
 
 @app.get("/api/status")
 def status():
-    return {"state": "connected", "torque_enabled": S["torque"], "leaving_maintenance": False, "model": "orcahand-right",
+    return {"state": "connected", "torque_enabled": S["torque"], "leaving_maintenance": False, "model": S["model"],
             "board_pinned": "mock", "message": "mock"}
+
+
+@app.get("/api/hand/info")
+def hand_info():
+    """orca-ui's hand block and joint table: the hand's folder is the bench."""
+    L = lm()
+    joints = [{"id": j, "motor_id": L.motor[j], "inverted": L.inverted[j], "rom": list(L.rom[j])}
+              for j in L.joints] if L else []
+    measured = (S["bench"] / "joint_ranges.yaml").exists()
+    return {"model_name": S["model"], "joints": joints,
+            "hand": {"id": S["hand"], "folder": str(S["bench"]),
+                     "joint_ranges": {"source": "measured" if measured else "model"}}}
+
+
+@app.get("/api/visual-calibration/status")
+def rig_status():
+    """The rig calibration in force, as orca-ui reports it (the same files as the runner's)."""
+    from visual_calibration.rig_config import RigConfig
+    rig = RigConfig.load()
+    return {"calibrated_at": rig.load_calibration().get("calibrated_at"), "calibration_path": rig.calibration_path}
 
 
 @app.get("/api/visual-calibration/study-map")
@@ -269,7 +290,8 @@ def main() -> None:
     p.add_argument("--port", type=int, default=5091)
     p.add_argument("--bench", type=Path, required=True)
     p.add_argument("--calibration", type=Path, required=True)
-    p.add_argument("--hand", default="ser-7841")
+    p.add_argument("--hand", default="ser-0001")
+    p.add_argument("--model", default="orcahand-right")
     p.add_argument("--faults", default="", help="kind@n,...: error (motor 7), hot (motor 9), plate (a 3° miss)")
     a = p.parse_args()
     faults: dict = {}
@@ -279,12 +301,12 @@ def main() -> None:
     cal = LinearMap.__new__(LinearMap)
     import yaml
     limits = yaml.safe_load(a.calibration.read_text())["motor_limits"]
-    S.update(bench=a.bench, packaged_cal=a.calibration, hand=a.hand, torque=False, angle=0.0, tt_torque=False,
+    S.update(bench=a.bench, packaged_cal=a.calibration, hand=a.hand, model=a.model, torque=False, angle=0.0, tt_torque=False,
              pos={int(k): float(v[0]) + 0.3 * (float(v[1]) - float(v[0])) for k, v in limits.items()},
              temp={int(k): 35.0 for k in limits}, err={int(k): 0 for k in limits}, faults=faults, count={},
              calibrations=[], plate_moves=0, violations=0, target_t=0.0, plate_t=0.0, caps={}, cur={}, cap_calls=0,
              notes={}, pairs={})
-    pf = Path.home() / ".orca_ui/visual_calibration/hand_study/collision_pairs.json"
+    pf = STUDY / "collision_pairs.json"
     if pf.exists():
         for p in json.loads(pf.read_text()):
             S["pairs"].setdefault(p["joint"], []).append(p)
