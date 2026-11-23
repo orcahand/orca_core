@@ -178,6 +178,40 @@ def test_load_frames_with_a_camera_field(tmp_path):
     assert key_name(("b", 45.4)) == "b:45.4" and len(load_frames(tmp_path, cameras=["a"])) == 2
 
 
+def test_hand_run_photographs_every_camera(tmp_path, monkeypatch):
+    """The hand run through orca-ui's cameras: the preflight names them, each stop writes one view per
+    camera, a still refused after a replug (409) re-runs the preflight once; the fit reads both."""
+    import cv2
+
+    from hand_study import hw
+    from hand_study.collect import photograph
+    from hand_study.estimate import load_frames
+    monkeypatch.delenv("STUDY_FAKE_CAMERA", raising=False)
+    calls, refuse = [], {"b": 1}
+
+    def call(path, body=None, timeout=120.0):
+        calls.append(path)
+        assert path == "/visual-calibration/cameras/preflight" and body == {"tiles": False}
+        return {"indices": {"a": 1, "b": 0}, "identified_by": "serial"}
+
+    def fetch(path, timeout=60.0):
+        cam = path.split("/")[-2]
+        if refuse.get(cam):
+            refuse[cam] -= 1
+            raise hw.ApiError(f"{path}: 409 not checked")
+        return cv2.imencode(".jpg", np.full((6, 8, 3), 50 if cam == "a" else 200, np.uint8))[1].tobytes()
+
+    monkeypatch.setattr(hw, "call", call)
+    monkeypatch.setattr(hw, "fetch", fetch)
+    cam = hw.Camera()
+    views = photograph(cam, tmp_path, 45.0, 45.3) + photograph(cam, tmp_path, 90.0, 89.8)
+    assert [v["file"] for v in views] == ["v045.jpg", "v045_b.jpg", "v090.jpg", "v090_b.jpg"]
+    assert calls.count("/visual-calibration/cameras/preflight") == 2       # once more after the 409
+    (tmp_path / "meta.json").write_text(__import__("json").dumps({"views": views}))
+    f = load_frames(tmp_path)
+    assert [x[2] if len(x) > 2 else "a" for x in f] == ["a", "b", "a", "b"] and f[1][1].mean() > 150
+
+
 def test_overlay_and_quick_check_per_camera(two_camera_rig):
     from visual_calibration.checks import quick_check, solve_warnings
     from visual_calibration.overlay import camera_model, object_in_plate, plate_in_rig
