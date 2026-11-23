@@ -6,7 +6,7 @@ import pytest
 import yaml
 from orca_core import hand_store
 
-from hand_study import hardstops, paths
+from hand_study import hardstops, paths, quick
 from hand_study.mapping import HAND_MAP, LinearMap
 from visual_calibration.rig_config import RigConfig
 
@@ -64,3 +64,7 @@ def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch)
     assert doc["joint_roms"]["index_mcp"] == [-15.0, 95.0] and out["joint_ranges"] == str(folder / "joint_ranges.yaml")
     assert doc["source"].startswith(f"camera rig rig-1, run {run.name}, sessions t-N07-short, calibration q1")
     assert "joint_roms.index_mcp[0]: -22.75 -> -15" in (run / "proposed" / "config.diff.txt").read_text()
+
+    # The accuracy step (the same poses standing in for the validation block): before vs after the new stops.
+    acc = quick.check(session, "q1", out["stops"])
+    assert acc["n"] == 5 and acc["after"]["index_mcp"]["rms"] < 0.1 < acc["before"]["index_mcp"]["rms"]

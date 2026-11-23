@@ -473,6 +473,19 @@ class Night:
                  else f"no joint ranges recorded: no joint identifiable in {res['n']} poses")
         self.note(f"joint ranges recorded for {self.spec['hand']}: {', '.join(kept) or 'none'}")
 
+    def accuracy(self, step: dict) -> None:
+        """The hand's accuracy on the validation block before and after the ranges step's stops
+        (quick.check), as proposed/accuracy.json beside its hardstops.json."""
+        from hand_study import hardstops, quick
+        val = Path(step["from"])
+        self.wait_for_solves([val], "accuracy")
+        stops = json.loads((hardstops.OUT / "hardstops.json").read_text())["stops"]
+        res = quick.check(val, step["run"], stops)
+        (hardstops.OUT / "accuracy.json").write_text(json.dumps(res, indent=1))
+        a, b = res["before"]["all"] or {}, res["after"]["all"] or {}
+        self.log(f"accuracy on {res['n']} validation poses: rms {a.get('rms')} -> {b.get('rms')} deg, "
+                 f"max {a.get('max')} -> {b.get('max')} deg")
+
     def refit(self, step: dict) -> None:
         """The hand's own hard stops from the short block (hardstops.fit), written into its
         config.yaml (joint_roms only; the old one kept as config.<backup>.yaml), orca-ui restarted."""

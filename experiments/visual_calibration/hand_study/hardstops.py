@@ -190,7 +190,7 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
     if lut_path and lut_path.exists():
         from hand_study.lut import Lut
         lut = Lut.load(lut_path)
-    out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "stops": stops, "diff": diff,
+    out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "min_span": MIN_SPAN, "stops": stops, "diff": diff,
            "train": compare(R, stops, lut), "inverted": L.inverted}
     if hand_id:
         source = f"{measured_by()}, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
