@@ -17,7 +17,7 @@ cameras:
     diagonal_fov_deg: 90.0     # the BRIO mode (Logi Tune: 65 / 78 / 90): the nominal lens until 1a has run (1a: fx 2272 px = 88°)
     autofocus: false
     stabilization: false
-    index: 0                 # OpenCV device index, used only without a serial (one camera); else found from uvc.device.serial
+    index: 0                 # unused on the rig: the OpenCV index is found from uvc.device.serial (only --mock reads it)
     # The mount (calibration_rig, Shea 2026-11-06; lowered 30 mm, re-tilted). Set distance and height to the
     # holes the camera is bolted in; the CAD pose below follows from them.
     mount:
