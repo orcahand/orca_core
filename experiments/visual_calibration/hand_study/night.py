@@ -446,23 +446,39 @@ class Night:
         self.reconnect_plate()
         self.log(f"orca-ui back after {time.time() - t0:.0f} s")
 
-    def refit(self, step: dict) -> None:
-        """The hand's own hard stops from the short block (hardstops.fit), written into its
-        config.yaml (joint_roms only; the old one kept as config.<backup>.yaml), orca-ui restarted."""
-        from hand_study import analysis, hardstops
-        sessions = [Path(s) for s in step["from"]]
+    def wait_for_solves(self, sessions: list[Path], what: str) -> None:
+        """Until the solve workers have done (or failed) 97% of the poses of `sessions`, at most 60 min."""
         t0 = time.time()
         while True:
             n_meta = sum(len(list((s / "configs").glob("*/meta.json"))) for s in sessions)
             n_est = sum(len(list((s / "configs").glob("*/est.json"))) + len(list((s / "configs").glob("*/est.json.error")))
                         for s in sessions)
             if n_meta and n_est >= 0.97 * n_meta:
-                break
+                return
             if time.time() - t0 > 3600:
-                self.log(f"refit: only {n_est}/{n_meta} solved after 60 min, fitting with those")
-                break
-            beat(f"refit: waiting for solves {n_est}/{n_meta}")
+                self.log(f"{what}: only {n_est}/{n_meta} solved after 60 min, fitting with those")
+                return
+            beat(f"{what}: waiting for solves {n_est}/{n_meta}")
             time.sleep(15)
+
+    def ranges(self, step: dict) -> None:
+        """The hand's own hard stops from the short block (hardstops), recorded as its joint_ranges.yaml
+        in its folder on this computer (in force at its next connect); proposed/ keeps the fit."""
+        from hand_study import hardstops
+        sessions = [Path(s) for s in step["from"]]
+        self.wait_for_solves(sessions, "ranges")
+        res = hardstops.main(sessions, step["run"], hand_id=self.spec["hand"])
+        kept = sorted(j for j, s in res["stops"].items() if s["identifiable"])
+        self.log(f"joint ranges of {len(kept)} joints from {res['n']} poses -> {res['joint_ranges']}" if res["joint_ranges"]
+                 else f"no joint ranges recorded: no joint identifiable in {res['n']} poses")
+        self.note(f"joint ranges recorded for {self.spec['hand']}: {', '.join(kept) or 'none'}")
+
+    def refit(self, step: dict) -> None:
+        """The hand's own hard stops from the short block (hardstops.fit), written into its
+        config.yaml (joint_roms only; the old one kept as config.<backup>.yaml), orca-ui restarted."""
+        from hand_study import analysis, hardstops
+        sessions = [Path(s) for s in step["from"]]
+        self.wait_for_solves(sessions, "refit")
         out = Path(self.spec["protocol_dir"]) if self.spec.get("protocol_dir") else STUDY / "proposed"
         out.mkdir(parents=True, exist_ok=True)
         R = analysis.rows(sessions)

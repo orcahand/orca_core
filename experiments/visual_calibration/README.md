@@ -25,6 +25,14 @@ is the rig board's rig ID (`rig-...`) if it has one, else its USB serial (pinned
 `turntable.yaml`). A file still left in `rigs/v1/camera-rig/` is read, with a warning,
 until the rig has its own; nothing moves it.
 
+**Measuring a hand** (orca-ui running with the hand connected, the rig calibrated):
+`python -m hand_study.run_hand` makes a run folder for the connected hand, plans over its
+ranges in force (a standalone copy of its model, the packaged config is never edited),
+archives its calibration from its folder in the hand store, collects the short block and the
+validation set with the solve workers beside it, and records the fitted hard stops as the
+hand's `joint_ranges.yaml` (in force at its next connect). `--dry` builds and lists the run;
+`--hand-id` names the hand instead.
+
 ## Step 1 in two parts (2026-11-06)
 
 The motor turns the plate (`visual_calibration/turntable.py`: XC430, multi-turn
