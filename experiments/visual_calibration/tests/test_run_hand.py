@@ -21,3 +21,15 @@ def test_the_run_plans_over_the_ranges_the_hand_has(tmp_path):
     assert cfg["joint_roms"]["wrist"] == packaged["wrist"] and cfg["joint_to_motor_map"]
     with pytest.raises(SystemExit, match="connect it once"):
         run_hand.the_hand("ser-0002")
+
+
+def test_a_hand_whose_board_holds_its_ranges_is_planned_over_them():
+    from orca_core import board_store
+    from orca_core.board_store import BoardIdentity
+    folder = hand_store.hand_dir("ser-0001")
+    folder.mkdir(parents=True)
+    (folder / "hand.yaml").write_text(yaml.safe_dump({"schema": 1, "id": "ser-0001", "model": MODEL}))
+    (folder / hand_store.BOARD_STORE_FILE).write_bytes(board_store.pack(
+        {"motor_limits": {1: [0.0, 1.0]}}, identity=BoardIdentity(side="right", serial="ser-0001"),
+        joint_ranges={"joint_roms": {"index_mcp": [-12.5, 91.25]}}))
+    assert run_hand.the_hand("ser-0001")[2]["index_mcp"] == [-12.5, 91.25]

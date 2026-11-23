@@ -53,11 +53,47 @@ def test_ratios_come_from_orca_core_and_follow_the_measured_ranges(tmp_path):
 
 
 def test_an_archive_orca_core_would_map_otherwise_is_refused(tmp_path):
-    """The joint ranges the hand ran with, but no joint_ranges.yaml archived: the frame is unknown."""
-    d = _archive(tmp_path / "a", roms={"index_mcp": [-10.0, 90.0]})
-    (d / "joint_ranges.yaml").unlink()
+    d = _archive(tmp_path / "a")
+    m = yaml.safe_load((d / HAND_MAP).read_text())
+    m["joints"]["index_mcp"]["inverted"] = True
+    (d / HAND_MAP).write_text(yaml.safe_dump(m))
     with pytest.raises(ValueError, match="index_mcp"):
         LinearMap(d)
+
+
+def test_ranges_held_on_the_board_are_the_frame(tmp_path):
+    """A hand with no joint_ranges.yaml whose board holds ranges (section 16): orca-ui reports them in
+    force, the archive records them, and both the run's map and the hand's own map use them."""
+    import numpy as np
+    from orca_core import board_store, hand_store
+    from orca_core.board_store import BoardIdentity
+    from orca_core.hardware_hand import MockOrcaHand
+    from hand_study.mapping import stored_ranges
+    folder, limits = _stored_hand("ser-0001")
+    held = {"measured_at": "2026-11-20T10:00:00Z", "source": "camera rig", "joint_roms": {"index_mcp": [-12.5, 91.25]}}
+    (folder / hand_store.BOARD_STORE_FILE).write_bytes(board_store.pack(
+        yaml.safe_load((folder / "calibration.yaml").read_text()),
+        identity=BoardIdentity(side="right", serial="ser-0001"), joint_ranges=held))
+    hand = MockOrcaHand(model_name=MODEL)
+    hand._use_stored_hand("ser-0001")
+    hand._wrap_offsets_dict = {}
+    assert hand.joint_ranges_info["stored_on"] == "board"
+    assert stored_ranges(folder, MODEL) == {"index_mcp": [-12.5, 91.25]}
+    c = hand.config                                          # what orca-ui's /api/hand/info reports
+    info = {"model_name": MODEL, "hand": {"id": "ser-0001", "folder": str(folder), "joint_ranges": {"source": "measured"}},
+            "joints": [{"id": j, "motor_id": c.joint_to_motor_map[j], "inverted": c.joint_inversion_dict[j],
+                        "rom": list(c.joint_roms_dict[j])} for j in c.joint_ids]}
+    run = tmp_path / "calib_q1"
+    run.mkdir()
+    (run / "calibration.yaml").write_text((folder / "calibration.yaml").read_text())
+    (run / HAND_MAP).write_text(yaml.safe_dump(hand_map(info)))
+    ids = c.motor_ids
+    pos = np.array([limits[m][0] + 0.7 * (limits[m][1] - limits[m][0]) for m in ids])
+    runtime = hand._motor_to_joint_pos(pos)
+    for L in (LinearMap(run), LinearMap.of_hand(folder, MODEL)):
+        assert L.rom["index_mcp"] == (-12.5, 91.25)
+        mine = L.joints_of(ids, list(pos))
+        assert max(abs(mine[j] - runtime[j]) for j in runtime) < 1e-9
 
 
 def test_an_old_archive_s_ratios_come_from_orca_core_too(tmp_path):

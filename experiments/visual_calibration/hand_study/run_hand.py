@@ -41,13 +41,13 @@ def the_hand(hand_id: str | None) -> tuple[str, str, dict[str, list[float]]]:
         if not hand_id:
             raise SystemExit("orca-ui has no hand: connect it, or name it with --hand-id")
         return hand_id, info["model_name"], {j["id"]: list(j["rom"]) for j in info["joints"]}
-    from hand_study.mapping import orca_core_config
+    from hand_study.mapping import orca_core_config, stored_ranges
     folder = hand_store.hand_dir(hand_id)
     model = (read_yaml(folder / hand_store.HAND_FILE) or {}).get("model")
     if not model:
         raise SystemExit(f"no hand {hand_id} with a model on this computer ({folder}): connect it once first")
-    measured = (read_yaml(folder / hand_store.JOINT_RANGES_FILE) or {}).get("joint_roms")
-    return hand_id, model, {j: list(r) for j, r in orca_core_config(model, measured).joint_roms_dict.items()}
+    config = orca_core_config(model, stored_ranges(folder, model))
+    return hand_id, model, {j: list(r) for j, r in config.joint_roms_dict.items()}
 
 
 def run_config(run: Path, model: str, roms: dict[str, list[float]]) -> Path:

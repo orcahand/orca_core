@@ -2,9 +2,9 @@
 so each run's assumed mapping can be compared offline.
 
 A run archived from orca_core 0.14 on holds ``hand_map.yaml`` (the hand's model and, per joint,
-the motor, direction and range it ran with; see ``hand_map``) and the hand folder's
-``calibration.yaml`` (motor limits) and ``joint_ranges.yaml`` (ranges measured on the hand); an
-older run holds a full ``config.yaml`` instead. Limits, ratios and the
+the motor, direction and range in force when it ran, wherever the ranges came from: its
+joint_ranges.yaml, its board, the model; see ``hand_map``) and the hand folder's
+``calibration.yaml``; an older run holds a full ``config.yaml`` instead. Limits, ratios and the
 frame they map onto come from orca_core, as the hand puts them in force at connect (ratios an
 older calibration.yaml stored are not read), and an archive whose map orca_core would not give is
 refused. A joint orca_core holds uncalibrated is left out of ``joints_of``, as the hand reads it
@@ -55,18 +55,36 @@ def orca_core_config(model: str, joint_ranges: dict | None = None):
     return config.with_measured_ranges(joint_ranges) if joint_ranges else config
 
 
+def stored_ranges(folder: Path, model: str) -> dict[str, list[float]]:
+    """The measured ranges the hand filed in `folder` has in force, as orca_core picks them: its
+    joint_ranges.yaml, else those its board held when last read (board.bin)."""
+    from orca_core import board_store, hand_store
+    ids = orca_core_config(model).joint_ids
+    doc = hand_store.read_joint_ranges(folder, ids)
+    if not doc:
+        try:
+            held = board_store.unpack((Path(folder) / hand_store.BOARD_STORE_FILE).read_bytes()).joint_ranges
+        except (OSError, board_store.BoardStoreError):
+            held = None
+        doc = hand_store.applicable_joint_ranges(held, ids, "the board store last read")
+    return doc.get("joint_roms") or {}
+
+
 class LinearMap:
     def __init__(self, run_dir: Path):
         run_dir = Path(run_dir)
         cal = _read(run_dir / "calibration.yaml")
         if (run_dir / HAND_MAP).exists():
             ran = _read(run_dir / HAND_MAP)
-            config = orca_core_config(ran["model"], _read(run_dir / "joint_ranges.yaml").get("joint_roms"))
+            model = orca_core_config(ran["model"])
+            measured = {j: [float(v) for v in r["rom"]] for j, r in ran["joints"].items()
+                        if j in model.joint_roms_dict and not np.allclose(r["rom"], model.joint_roms_dict[j], atol=1e-6)}
+            config = model.with_measured_ranges(measured) if measured else model
             self._in_force(cal, config, list(ran["joints"]))
             off = [j for j, v in ran["joints"].items() if (abs(int(v["motor"])), bool(v["inverted"])) != (self.motor[j], self.inverted[j])
                    or not np.allclose(v["rom"], config.joint_roms_dict[j], atol=1e-6)]
             if off:
-                raise ValueError(f"{run_dir}: orca_core's {ran['model']} with the archived joint ranges maps "
+                raise ValueError(f"{run_dir}: orca_core's {ran['model']} with the ranges in force maps "
                                  f"{', '.join(off)} otherwise than the hand ran")
             return
         cfg = _read(run_dir / "config.yaml")
@@ -85,11 +103,10 @@ class LinearMap:
 
     @classmethod
     def of_hand(cls, folder: Path, model: str) -> LinearMap:
-        """The map a hand of `model` runs with, from its folder's calibration.yaml and joint_ranges.yaml."""
+        """The map a hand of `model` filed in `folder` runs with: its calibration.yaml, the ranges in force."""
         self = cls.__new__(cls)
         folder = Path(folder)
-        self._in_force(_read(folder / "calibration.yaml"),
-                       orca_core_config(model, _read(folder / "joint_ranges.yaml").get("joint_roms")))
+        self._in_force(_read(folder / "calibration.yaml"), orca_core_config(model, stored_ranges(folder, model)))
         return self
 
     def _in_force(self, cal: dict, config, joints: list[str] | None = None) -> None:
