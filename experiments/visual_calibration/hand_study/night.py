@@ -293,32 +293,47 @@ class Night:
             raise Abort("the hand did not come back after orca_core's calibration")
         log = call("/operation/log")
         out = STUDY / f"calib_{run}"
-        out.mkdir(exist_ok=True)
-        for f in ("calibration.yaml", "config.yaml", "setup.yaml"):
-            if (BENCH / f).exists():
-                shutil.copy2(BENCH / f, out / f)
+        self.archive_hand(out)
         (out / "operation_log.json").write_text(json.dumps(log, indent=1))
+        self.check_archive(out)
         call("/torque/disable", {})
         self.log(f"orca_core calibration done in {time.time() - t0:.0f} s -> calib_{run}")
 
     def snapshot(self, step: dict) -> None:
         """The hand's current orca_core calibration archived as calib_<run> (no new calibration),
         checked: the linear map from those files must give orca_core's live estimate."""
-        from hand_study.mapping import LinearMap
         out = STUDY / f"calib_{step['run']}"
         if not (out / "calibration.yaml").exists():
-            out.mkdir(exist_ok=True)
-            for f in ("calibration.yaml", "config.yaml", "setup.yaml"):
-                if (BENCH / f).exists():
-                    shutil.copy2(BENCH / f, out / f)
+            self.archive_hand(out)
+        self.check_archive(out)
+        self.log(f"calibration archived as calib_{step['run']} (matches the live estimate)")
+
+    def archive_hand(self, out: Path) -> None:
+        """The connected hand's calibration as orca_core uses it, into `out`: hand_map.yaml (each
+        joint's motor, direction and range in force, from orca-ui's /hand/info) and the files of the
+        hand's folder (orca_core 0.14 keeps them in <ORCA_HOME>/hands/<id>/; the config is the
+        packaged model's and holds no hand's numbers)."""
+        import yaml
+        from hand_study.mapping import HAND_FILES, HAND_MAP, hand_map
+        m = hand_map(call("/hand/info"))
+        if not m["folder"] or not (Path(m["folder"]) / "calibration.yaml").exists():
+            raise Abort(f"no calibration on file for the connected hand ({m['hand']}, folder {m['folder']})")
+        out.mkdir(parents=True, exist_ok=True)
+        for f in HAND_FILES:
+            if (Path(m["folder"]) / f).exists():
+                shutil.copy2(Path(m["folder"]) / f, out / f)
+        (out / HAND_MAP).write_text(yaml.safe_dump(m, sort_keys=False))
+
+    def check_archive(self, out: Path) -> None:
+        """The linear map rebuilt from the archive must give orca_core's live estimate."""
+        from hand_study.mapping import LinearMap
         L = LinearMap(out)
         m = call("/motors/direct")["motors"]
         mine = L.joints_of([x["id"] for x in m], [x["position"] for x in m])
         live = Hand(self.stream).estimate()
         off = {j: round(mine[j] - live[j], 2) for j in mine if j in live and abs(mine[j] - live[j]) > 0.5}
         if off or not live:
-            raise Abort(f"calib_{step['run']} does not match the live estimate: {off or 'no estimate'}")
-        self.log(f"calibration archived as calib_{step['run']} from {BENCH} (matches the live estimate)")
+            raise Abort(f"{out.name} does not match the live estimate: {off or 'no estimate'}")
 
     def mount(self, step: dict) -> None:
         """The baseline pose's solved mount, fixed in every later block's plan."""
@@ -355,7 +370,7 @@ class Night:
         """The hand the spec names is the one connected, every motor answers without error, the
         plate and camera are there, the disk has room."""
         st = call("/status")
-        hand = call("/visual-calibration/study-map").get("hand")       # the config's ~/orca_bench folder
+        hand = (call("/hand/info").get("hand") or {}).get("id")         # orca_core's hand id (its folder's name)
         if call("/visual-calibration/study-map").get("enabled"):         # a study must see orca_core's own map
             call("/visual-calibration/study-map", {"mode": "off"})
             self.log("preflight: the study map was on in orca-ui; switched to standard")
