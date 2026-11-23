@@ -8,6 +8,7 @@ linear in (lo, hi). Note: the new numbers act fully only after a calibration wit
 config (it recomputes the ratio); without one only the offset moves.
 
     python -m hand_study.hardstops SESSION... [--run run2]    # proposed/ config + diff + accuracy
+        [--hand-id ID]     # and the hand's joint_ranges.yaml on this computer (in force at its next connect)
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import re
 from pathlib import Path
 
 import numpy as np
+from orca_core import hand_store
 
 from hand_study import analysis
 from hand_study.configs import JOINTS
@@ -144,7 +146,24 @@ def proposed_config(config: Path, stops: dict[str, dict]) -> tuple[str, list[str
     return "".join(out), diff
 
 
-def main(sessions: list[Path], run: str, lut_path: Path | None = None) -> dict:
+def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> Path | None:
+    """The fitted stops as the hand's joint_ranges.yaml in its orca_core folder; None when no joint has one."""
+    # TODO(quality gate): which joints may be recorded is not decided yet; until it is, every
+    # joint the fit identifies (motor span >= MIN_SPAN) is.
+    roms = {j: s["new"] for j, s in stops.items() if s["identifiable"]}
+    return hand_store.write_joint_ranges(hand_folder(hand_id), roms, source=source) if roms else None
+
+
+def hand_folder(hand_id: str) -> Path:
+    folder = hand_store.hand_dir(hand_id)
+    if not folder.is_dir():
+        raise ValueError(f"no hand {hand_id} on this computer ({folder}): connect it once first")
+    return folder
+
+
+def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: str | None = None) -> dict:
+    if hand_id:
+        hand_folder(hand_id)
     R = analysis.rows(sessions)
     stops = fit(R, run)
     L = LinearMap(STUDY / f"calib_{run}")
@@ -158,6 +177,10 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None) -> dict:
         lut = Lut.load(lut_path)
     out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "stops": stops, "diff": diff,
            "train": compare(R, stops, lut), "inverted": L.inverted}
+    if hand_id:
+        source = f"camera rig, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
+        written = record_ranges(hand_id, stops, source)
+        out["joint_ranges"] = str(written) if written else None
     (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
     return out
 
@@ -167,9 +190,12 @@ if __name__ == "__main__":
     p.add_argument("sessions", type=Path, nargs="+")
     p.add_argument("--run", default="run2")
     p.add_argument("--lut", type=Path)
+    p.add_argument("--hand-id", help="record the stops as this hand's joint_ranges.yaml on this computer")
     a = p.parse_args()
-    o = main(a.sessions, a.run, a.lut)
+    o = main(a.sessions, a.run, a.lut, a.hand_id)
     for j, s in o["stops"].items():
         print(f"{j:12s} {s['old']} -> {s['new']}  rms {s['rms']}  n {s['n']}  t {s['t_span']}")
     print("old", o["train"]["a_old"]["all"], "new", o["train"]["b_new_stops"]["all"])
     print("\n".join(o["diff"]))
+    if a.hand_id:
+        print(f"joint ranges recorded in {o['joint_ranges']}" if o["joint_ranges"] else "no joint ranges to record")
