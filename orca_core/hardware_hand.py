@@ -301,18 +301,24 @@ class OrcaHand(BaseHand):
     # The calibration kept on the hand's own board
     # ------------------------------------------------------------------
 
-    def _take_board_store(self, folder: str, blob: bytes | None) -> None:
+    def _take_board_store(self, folder: str, blob: bytes | None, unread: bool = False) -> None:
         """Keep what the board held at connect, and on first contact with this
-        hand on this computer make the board's calibration this computer's."""
+        hand on this computer make the board's calibration this computer's.
+
+        ``unread``: the board holds a store that could not be read now; the
+        joint ranges in the copy last read (``board.bin``) stay in force."""
         self._board_store = None
         self._board_joint_ranges = None
         if not blob:
+            if unread:
+                self._keep_last_board_ranges(folder)
             return
         try:
             store = board_store.unpack(blob)
         except board_store.BoardStoreError as exc:
             logger.warning("the calibration store on this hand's board cannot be read "
                            "by this orca_core (%s); it is not used", exc)
+            self._keep_last_board_ranges(folder)
             return
         self._board_store = store
         self._board_joint_ranges = store.joint_ranges
@@ -324,6 +330,13 @@ class OrcaHand(BaseHand):
         calibration_store.adopt(path, store.calibration, source="board", keep_sequence=True)
         logger.info("first contact with this hand here: its calibration was copied from "
                     "its board into %s", path)
+
+    def _keep_last_board_ranges(self, folder: str) -> None:
+        last = self._last_board_store(folder)
+        self._board_joint_ranges = last.joint_ranges if last else None
+        if self._board_joint_ranges:
+            logger.info("the joint ranges on this hand's board are taken from the copy of its "
+                        "store last read, in %s", folder)
 
     @staticmethod
     def _write_board_cache(folder: str, blob: bytes) -> None:
@@ -599,7 +612,7 @@ class OrcaHand(BaseHand):
                     "found per-hand files from an older orca_core beside %s (%s); they are "
                     "not used: this hand's files now live in %s, so calibrate it again",
                     config_dir, ", ".join(os.path.basename(p) for p in legacy), folder)
-        self._take_board_store(str(folder), contact.store)
+        self._take_board_store(str(folder), contact.store, unread=contact.store_unread)
         # The folder is the source of truth: another hand object (an operation's
         # fresh hand) may have calibrated this hand since it was last read.
         self._use_folder(str(folder), reload=True)

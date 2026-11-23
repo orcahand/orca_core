@@ -317,6 +317,26 @@ class TestTheBoardsJointRanges:
         assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
         assert hand.joint_ranges_info["stored_on"] == "board"
 
+    def test_a_store_that_could_not_be_read_now_keeps_the_last_read_copy_s(
+            self, connect, config, model_dir, monkeypatch):
+        connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        monkeypatch.setattr(BoardedHand, "contact",
+                            board_sync.BoardContact(info=INFO, store_unread=True))
+        hand = BoardedHand(config_path=str(model_dir / "config.yaml"))
+        assert hand.connect()[0]
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand.joint_ranges_info["stored_on"] == "board"
+
+    def test_a_store_this_version_cannot_decode_keeps_the_last_read_copy_s(self, connect, config):
+        connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        hand = connect(b"OHC1" + b"\x00" * 40)
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+
+    def test_a_board_that_says_it_holds_no_store_has_no_ranges(self, connect, config):
+        connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        hand = connect(None)
+        assert hand.joint_ranges_info["source"] == "model"
+
     def test_a_stored_hand_takes_them_from_the_store_last_read(self, connect, config, model_dir):
         connect(board_blob(config, joint_ranges=BOARD_RANGES))
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
@@ -386,6 +406,18 @@ class TestReadingTheBoardAtConnect:
     def test_a_board_without_a_store_still_names_its_hand(self, port):
         contact = board_sync.contact_board("/dev/cu.usbmodemXXXX")
         assert contact.info.serial == "ser-0000" and contact.store is None
+        assert not contact.store_unread
+
+    def test_a_store_read_that_fails_is_told_from_no_store(self, port, config, monkeypatch):
+        port.store = board_blob(config)
+
+        def times_out(link, metadata):
+            raise TimeoutError("no reply")
+
+        monkeypatch.setattr(board_store_link, "read_store_over_link", times_out)
+        contact = board_sync.contact_board("/dev/cu.usbmodemXXXX", cached_store=lambda info: None)
+        assert contact.info.serial == "ser-0000"
+        assert contact.store is None and contact.store_unread
 
 
 class TestWritingTheBoard:
