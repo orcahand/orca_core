@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hand Calibration Study</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Hand calibration study</h1>
+    <p class="sub">ORCA hands on the camera rig. Joint angles are measured from photos of every pose (several plate stops) and compared with what orca_core's motor calibration assumes.</p>
+  </div>
+  <div id="chips" class="chips"></div>
+</header>
+<nav id="toc"></nav>
+<main>
+  <section id="protocol" hidden>
+    <h2>Protocol: night run</h2>
+    <div class="sel-row"><label>night <select id="pr-tag"></select></label> <span id="pr-upd" class="cap"></span></div>
+    <div id="pr-answer"></div>
+    <div id="pr-head" class="pr-head"></div>
+    <div id="pr-phases"></div>
+    <div id="pr-numbers"></div>
+    <h3>Runner log</h3>
+    <pre id="pr-log" class="log"></pre>
+  </section>
+  <section id="live">
+    <h2>Live</h2>
+    <p class="cap" id="live-cap">The newest solved pose. Outlines: <span class="key k-meas">measured (vision)</span> and <span class="key k-ass">assumed by orca_core</span>, drawn on each photo.</p>
+    <div class="live-grid">
+      <div><img id="live-big" alt="newest pose with model outlines"><div id="thumbs" class="thumbs"></div></div>
+      <div id="live-table"></div>
+    </div>
+  </section>
+  <section id="hand" hidden>
+    <h2>ser-7577 · per-joint curve and coupled table</h2>
+    <p class="cap" id="hand-cap"></p>
+    <div id="hand-table"></div>
+    <div id="hand-bars" class="chart"></div>
+    <p class="cap">Per joint: the angle <span class="key k-meas">measured</span> from the photos (filled = training poses, hollow = held-out poses) against what orca_core's standard linear map estimates with the hand's current config and calibration. Dashed: <span class="key k-ass">linear</span> (true = estimate, the standard map). Purple line: the regularised <b>per-joint curve</b> (true = estimate + a smooth correction, shrunk to the linear map where data is thin). Dashed horizontals: the configured joint limits.</p>
+    <div id="hand-grid" class="grid"></div>
+  </section>
+  <section id="advanced" hidden>
+    <h2>Advanced calibration: physical model vs the other maps</h2>
+    <p class="cap">The advanced model (ADVANCED_CALIBRATION.md, <code>advanced.py</code>) adds to the hand's standard map x, per joint: a smooth curve (Legendre P0–P3 over the ROM), tendon coupling to the joints its tendon crosses (seeded, then fitted), tendon stretch with the motor current, and backlash by the approach direction. Fitted by regularised least squares, evaluated on held-out poses only. Errors in degrees, true (vision) − map.</p>
+    <div class="sel-row"><label>hand <select id="adv-hand"><option>ser-7577</option><option>ser-4485</option></select></label></div>
+    <div id="adv-body"></div>
+  </section>
+  <section id="solver">
+    <h2>Solver results and inputs</h2>
+    <p class="cap">One tile per pose of the selected session, two side views (plate 112° and 292°) each with three panels: <b>1</b> the photo with the URDF outline at the <span class="key k-solved">solved</span> angles and at the <span class="key k-ass">assumed orca_core</span> angles; <b>2</b> the mask the solver fitted to (cyan, over the darkened photo) and the image edges it uses (yellow); <b>3</b> the mask against the model silhouette at the solution: grey = both, <span style="color:#e63c3c">red</span> = mask only (not explained by the model: rods, cables, shadows), <span style="color:#2878e6">blue</span> = model only (the mask misses it). Click a tile to enlarge it.</p>
+    <div class="sel-row"><label>session <select id="solver-session"></select></label> <a id="contact-link" target="_blank">contact sheet (JPG)</a> <span id="excluded-note" class="cap"></span></div>
+    <div id="tiles" class="tiles"></div>
+    <details class="how">
+      <summary>What exactly is optimised</summary>
+      <div class="cap">
+      <p><b>Parameters.</b> The 17 joint angles (URDF limits as bounds: MCP −25…100°, PIP/DIP −15…107°, abductions about ±27°, wrist −65…35°, thumb CMC −45…33°, thumb ABD −18…55°). The hand's mount on the plate (3 rotations, 3 translations) is <b>fixed</b> to the baseline: solved once together with the joints from 15 views of the zero pose (fit 8.2 px). The camera, lens and plate angles come from the rig calibration (1a/1b); each photo's plate angle is the turntable read-back.</p>
+      <p><b>Views.</b> All photos of the pose (sparse run: plate 45, 112.5, 180, 225, 292.5°; pilot: 0…315° every 45°), at 960 px wide (the 3840 px photo / 4). The cost is summed over all views.</p>
+      <p><b>Mask.</b> Per view: GrabCut (OpenCV, 3 iterations, colour Gaussian mixtures learned from this photo, no fixed threshold or stored background) on a crop of the model's box + 40 px. Seeds: “probably hand” within 5 px of the model rendered at the current estimate (first round: orca_core's assumed angles; second round: the first round's result), “probably background” elsewhere, “surely background” beyond 35 px of the model and on the crop border. Then a 3×3 opening. Note the seed comes from the model, so a wrong start can pull the mask; panel 3 shows where it happened.</p>
+      <p><b>Edges.</b> Canny (thresholds 30/90) on the blurred grey image, kept only within 2 px of the mask.</p>
+      <p><b>Cost</b> (squared residuals, px at 960 width):<br>
+      1. <i>inside</i>: 60 surface points per link (240 on palm and tower) projected; each residual = distance to the mask (0 inside), capped at 12 px. Keeps the model inside the hand.<br>
+      2. <i>cover</i>: 3000 mask pixels; each residual = distance to the model silhouette, capped at 12 px. Makes the model cover the hand.<br>
+      3. <i>edges</i>: 600 edge pixels; each residual = 0.7 × distance to the nearest model outline (silhouette or the border between two links, nearest link in front), capped at 4 px. Pins the fingers' outlines and the folds between phalanges.<br>
+      4. <i>priors</i> (n = number of image residuals): joints 0.02·√n·angle/30° (barely there), and against over-extension of the flexion joints 0.5·√n·min(angle,0)/30°.</p>
+      <p><b>Search.</b> Two rounds, each: per finger a grid over its two flexion joints (MCP −20…80, PIP −10…90, 20° steps; the others held), then bounded Levenberg–Marquardt with a numeric Jacobian (12 iterations, 1.5° steps). <b>Quality numbers:</b> “fit px” = RMS of the inside + cover residuals in 3840-px pixels; the <i>split</i> solves the pose again from the even and the odd views alone, and their difference is the per-joint noise used on this page.</p>
+      <p><b>Suspect masks</b> (excluded from every graph): a view where over 15 % of the mask is not explained by the model at the solution, or the mask misses over 25 % of the model's fingers.</p>
+      </div>
+    </details>
+  </section>
+  <div id="zoom" class="zoom" hidden><img alt="enlarged tile"></div>
+  <section id="night" hidden>
+    <h2>Overnight study</h2>
+    <div id="night-body"></div>
+  </section>
+  <section id="mount">
+    <h2>Mount: baseline only → pooled over all poses</h2>
+    <div id="mount-body"><p class="cap">Shown once the poses are re-solved with the pooled mount.</p></div>
+  </section>
+  <section id="summary">
+    <h2>Error per joint</h2>
+    <div id="err-bars" class="chart"></div>
+    <p class="cap" id="err-cap"></p>
+  </section>
+  <section id="maps">
+    <h2>1 · Motor position → joint angle</h2>
+    <p class="cap">Each panel is one joint. <b>Top:</b> joint angle against motor position: <span class="key k-meas">measured</span> points, the <span class="key k-ass">orca_core linear map</span> (the line between the two hard stops found by calibration), and the configured joint limits (dashed). The ◆ markers are where the joint actually ended up when commanded to a configured limit, i.e. the real hard stops. <b>Bottom:</b> residual (measured − assumed) against motor position. A flat residual at 0 means the linear map is right. A slope means a wrong gain, an offset means a wrong zero, and a curve means the joint is not linear in the motor.</p>
+    <div id="map-grid" class="grid"></div>
+  </section>
+  <section id="deps">
+    <h2>2 · Cross-joint dependencies</h2>
+    <p class="cap">Partial correlation between a joint's error (row) and another joint's measured angle (column), with the part explained by the row joint's own angle removed. Blue = error grows with the other joint, red = shrinks; ● marks |t| ≥ 3 (significant). Coupling through shared tendon paths (e.g. the wrist, or MCP → PIP) shows up here.</p>
+    <div id="dep-heat" class="chart"></div>
+    <p class="cap" id="dep-cap"></p>
+    <div id="dep-grid" class="grid"></div>
+  </section>
+  <section id="repeat">
+    <h2>3 · Repeatability and hysteresis</h2>
+    <p class="cap">The same commanded pose visited several times, approached from below (−15°) and from above (+15°). The spread is the noise floor any calibration can reach. The above − below difference is hysteresis (tendon friction, backlash) that a static lookup table cannot remove.</p>
+    <div id="rep-table"></div>
+    <div id="hyst-grid" class="grid"></div>
+  </section>
+  <section id="vision">
+    <h2>4 · Vision quality</h2>
+    <p class="cap">How far to trust a measured difference. <b>Split</b> = |estimate from the even views − estimate from the odd views| (4 photos each); <b>σ</b> = the fit's 1-σ from its Jacobian. Differences between the measured and assumed angles smaller than these are not real.</p>
+    <div id="vis-bars" class="chart"></div>
+    <div id="view-bars" class="chart" style="max-width:560px"></div>
+  </section>
+  <section id="lut">
+    <h2>5 · Lookup-table calibration</h2>
+    <div id="lut-body"><p class="cap">Fitted once enough data is collected: a commanded → true map per joint with cross-joint terms, checked on held-out poses.</p></div>
+  </section>
+</main>
+<div id="tip" class="tip" hidden></div>
+<script src="/web/charts.js"></script>
+<script src="/web/app.js"></script>
+</body>
+</html>
