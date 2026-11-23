@@ -147,7 +147,7 @@ calibration_object:
 # Which tile seats the tower has: v1 = the calibration_object block above (8 tiles), or one
 # of towers: (its keys replace those of calibration_object). Same marker ids (the 12-seat
 # set), so the detector does not change; only the seats do.
-tower: v1
+tower: v2
 towers:
   # Two cameras (Shea calibration_rig_330, 2026-11-09, "12-tile tower proposal", tower12g()):
   # row 0 tilted 37.5° UP on all 4 sides (top edge on the wall at z 198, flares to r 93.5,

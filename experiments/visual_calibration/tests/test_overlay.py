@@ -12,8 +12,8 @@ def test_nominal_overlay_shows_side_0_upright_at_its_stop(uncalibrated):
     facing = {t["tile"]: np.array(t["outline"]) for t in o["tiles"] if t["facing"]}
     assert {"tile_r0_s0", "tile_r1_s0", "tile_r2_s0"} <= set(facing)
     w, h = o["lens"]["size"]
-    for uv in facing.values():
-        assert (uv > 0).all() and (uv < [w, h]).all()                           # in the frame (90° mode)
+    for tile in ("tile_r1_s0", "tile_r2_s0"):                                   # row 0 tilts up, for camera b
+        assert (facing[tile] > 0).all() and (facing[tile] < [w, h]).all()      # in the frame (90° mode)
     # turned 90° clockwise for display, row 2 must be above row 0: raw x smaller (left = up)
     assert facing["tile_r2_s0"][:, 0].mean() < facing["tile_r0_s0"][:, 0].mean()
 

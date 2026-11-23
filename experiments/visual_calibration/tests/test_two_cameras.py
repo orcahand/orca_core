@@ -238,7 +238,7 @@ def test_old_single_camera_config_loads_as_camera_a(tmp_path):
     old = RigConfig.load(path=str(path))
     assert list(old.cameras) == ["a"] and old.active_cameras == ["a"]
     assert old.camera_nominal == new.camera_nominal and old.raw["camera"] == new.raw["camera"]
-    assert old.raw["calibration_object"] == new.raw["calibration_object"]
+    assert old.raw["calibration_object"] == cfg["calibration_object"]          # no tower: key, the v1 seats
 
 
 def test_uvcc_selects_a_brio_by_serial():
