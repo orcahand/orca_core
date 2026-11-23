@@ -379,6 +379,48 @@ class TestWritingTheBoard:
             (firmware / "sent.bin").read_bytes()
         assert hand.board_calibration_newer() is None
 
+    RIG_RANGES = {"measured_at": "2026-11-20T09:30:00Z", "source": "camera rig, run2",
+                  "joint_roms": {"index_mcp": [-12.5, 91.25], "wrist": [-40.0, 30.0]}}
+
+    def test_the_hand_s_measured_ranges_go_onto_its_board(self, connect, config, firmware):
+        hand = self.calibrated(connect, config)
+        hand_store.write_joint_ranges(hand.hand_dir, self.RIG_RANGES["joint_roms"],
+                                      source=self.RIG_RANGES["source"],
+                                      measured_at=self.RIG_RANGES["measured_at"],
+                                      joint_ids=hand.config.joint_ids)
+        assert board_push.push_for_hand(hand).written
+        sent = board_store.unpack((firmware / "sent.bin").read_bytes())
+        assert sent.joint_ranges == self.RIG_RANGES
+        assert "joint_ranges" not in sent.calibration
+
+    def test_a_recalibration_keeps_the_ranges_the_board_holds(self, connect, config, firmware,
+                                                              board):
+        hand = self.calibrated(connect, config)
+        board.store = pack({"calibrated": True, "motor_limits": {1: [0.0, 1.0]}},
+                           identity=BoardIdentity(side="right", serial="ser-0000"),
+                           sequence=6, joint_ranges=self.RIG_RANGES)
+        assert not os.path.exists(os.path.join(hand.hand_dir, "joint_ranges.yaml"))
+        assert board_push.push_for_hand(hand).written
+        sent = board_store.unpack((firmware / "sent.bin").read_bytes())
+        assert sent.joint_ranges == self.RIG_RANGES
+        assert sent.calibration["motor_limits"] == read_yaml(hand.config.calibration_path)["motor_limits"]
+
+    def test_the_hand_s_file_replaces_the_board_s_ranges(self, connect, config, firmware, board):
+        hand = self.calibrated(connect, config)
+        board.store = pack({}, identity=BoardIdentity(side="right", serial="ser-0000"),
+                           sequence=6, joint_ranges=self.RIG_RANGES)
+        hand_store.write_joint_ranges(hand.hand_dir, {"index_pip": [0.0, 95.0]},
+                                      source="camera rig, run3", joint_ids=hand.config.joint_ids)
+        assert board_push.push_for_hand(hand).written
+        sent = board_store.unpack((firmware / "sent.bin").read_bytes())
+        assert sent.joint_ranges["joint_roms"] == {"index_pip": [0.0, 95.0]}
+        assert sent.joint_ranges["source"] == "camera rig, run3"
+
+    def test_with_ranges_nowhere_the_board_holds_none(self, connect, config, firmware):
+        hand = self.calibrated(connect, config)
+        assert board_push.push_for_hand(hand).written
+        assert board_store.unpack((firmware / "sent.bin").read_bytes()).joint_ranges is None
+
     def test_without_a_firmware_checkout_nothing_is_written(self, connect, config, monkeypatch, tmp_path):
         monkeypatch.setenv(board_push.FIRMWARE_REPO_ENV, str(tmp_path / "nowhere"))
         result = board_push.push_for_hand(self.calibrated(connect, config))
