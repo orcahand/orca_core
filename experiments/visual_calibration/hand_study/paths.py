@@ -38,8 +38,18 @@ STUDY = study_dir()
 def new_run(rig, hand_id: str, **info) -> Path:
     """A new, empty run folder for `hand_id` on `rig` (a RigConfig), its run.yaml naming both."""
     started = datetime.now(timezone.utc).astimezone()
-    d = Path(rig.own_file("runs")) / hand_store.hand_dir(hand_id).name / started.strftime("%Y%m%d-%H%M%S")
-    d.mkdir(parents=True)
+    stamp = started.strftime("%Y%m%d-%H%M%S")
+    hand = Path(rig.own_file("runs")) / hand_store.hand_dir(hand_id).name
+    hand.mkdir(parents=True, exist_ok=True)
+    for k in range(1, 1000):                    # two runs in one second each get their own
+        d = hand / (stamp if k == 1 else f"{stamp}-{k}")
+        try:
+            d.mkdir()
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(f"no free run folder for {stamp} in {hand}")
     write_yaml_atomic(d / RUN_FILE, {"rig": Path(rig.home).name, "hand": hand_id,
                                      "started": started.isoformat(timespec="seconds"), **info})
     return d

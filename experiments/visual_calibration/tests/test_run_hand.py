@@ -52,3 +52,17 @@ def test_preflight_needs_the_rig_calibration_orca_ui_uses(monkeypatch):
         n.check_rig()
     ui["calibrated_at"] = "2026-11-20T10:00:00+00:00"
     assert n.check_rig() == "rig calibrated 2026-11-20T10:00:00+00:00"
+
+
+def test_the_run_reaches_every_process_of_it(tmp_path, orca_home):
+    """The workers and the fit, started with the run's environment, work in the run's folder."""
+    import subprocess
+    import sys
+    run = tmp_path / "run"
+    cfg = run_hand.run_config(run, MODEL, {})
+    env = run_hand.run_env(run, cfg)
+    assert env["ORCA_HOME"] == str(orca_home) and env["STUDY_ROM_CONFIG"] == str(cfg)
+    out = subprocess.run([sys.executable, "-c", "from hand_study import worker, hardstops, paths; "
+                          "print(worker.STUDY, hardstops.OUT, paths.SHARED, sep='\\n')"],
+                         cwd=run_hand.HERE, env=env, capture_output=True, text=True, check=True).stdout.split("\n")
+    assert out[:2] == [str(run), str(run / "proposed")] and out[2].startswith(str(orca_home))

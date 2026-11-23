@@ -19,3 +19,9 @@ def test_a_run_is_filed_under_its_rig_and_hand(orca_home, monkeypatch):
     assert paths.study_dir() == paths.SHARED == paths.UI_STATE / "visual_calibration" / "hand_study"
     with pytest.raises(ValueError):
         paths.new_run(rig, "../ser-0001")
+
+
+def test_two_runs_in_one_second_get_their_own_folders(orca_home):
+    rig = RigConfig.load(rig_id="rig-1")
+    runs = {paths.new_run(rig, "ser-0001") for _ in range(3)}
+    assert len(runs) == 3 and all(paths.run_info(r)["hand"] == "ser-0001" for r in runs)

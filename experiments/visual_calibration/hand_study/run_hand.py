@@ -6,11 +6,12 @@ built and run with its solve workers, and the fitted hard stops recorded as the 
 joint_ranges.yaml in its folder (in force at its next connect).
 
     python -m hand_study.run_hand [--hand-id ID] [--tag TAG] [--workers 2] [--limit N] [--dry]
+    python -m hand_study.run_hand --resume RUN_FOLDER [--workers 2]     # go on where it stopped
 
 The hand is the one connected to orca-ui (/api/hand/info), or --hand-id, a hand with a folder in
 orca_core's hand store on this computer (preflight then checks it is the one connected). The
 plans are built in a child process: they read the run's config when imported (STUDY_ROM_CONFIG).
-A run that stopped resumes with the command it prints.
+A run that stopped resumes with --resume (the command it prints).
 """
 
 from __future__ import annotations
@@ -59,17 +60,24 @@ def run_config(run: Path, model: str, roms: dict[str, list[float]]) -> Path:
     return path
 
 
+def run_env(run: Path, cfg: Path) -> dict:
+    """The environment of every process of the run: its folder, its config, this ORCA_HOME (absolute,
+    so a child started elsewhere agrees on it) and this experiment on the path."""
+    return {**os.environ, paths.RUN_ENV: str(run), "STUDY_ROM_CONFIG": str(cfg),
+            hand_store.ORCA_HOME_ENV: str(hand_store.orca_home()),
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
+
+
 def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, motors: str, hours: float,
          limit: int | None, dry: bool) -> Path:
     hand, model, roms = the_hand(hand_id)
     run = paths.new_run(RigConfig.load(), hand, protocol="night_quick", model=model)
     tag = tag or f"{hand}-{run.name}"
+    write_yaml_atomic(run / paths.RUN_FILE, {**paths.run_info(run), "tag": tag})
     cfg = run_config(run, model, roms)
-    env = {**os.environ, paths.RUN_ENV: str(run), "STUDY_ROM_CONFIG": str(cfg),
-           "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
-    py = [sys.executable, "-m"]
-    subprocess.run([*py, "hand_study.night_quick", tag, "--run", "q" + run.name, "--bench", str(cfg.parent),
-                    "--hand", hand, "--motors", motors], cwd=HERE, env=env, check=True)
+    env = run_env(run, cfg)
+    subprocess.run([sys.executable, "-m", "hand_study.night_quick", tag, "--run", "q" + run.name, "--bench",
+                    str(cfg.parent), "--hand", hand, "--motors", motors], cwd=HERE, env=env, check=True)
     spec_path = run / "night" / f"{tag}.json"
     spec = json.loads(spec_path.read_text())
     if limit:                                   # a dry run: a few poses per block
@@ -78,16 +86,24 @@ def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, mot
                 s["limit"] = limit
         spec_path.write_text(json.dumps(spec, indent=1))
     print(f"run {run}\ntag {tag}", flush=True)
-    night = [*py, "hand_study.night", tag, "--hours", str(hours)]
     if dry:
-        subprocess.run([*night, "--dry"], cwd=HERE, env=env, check=True)
+        subprocess.run([sys.executable, "-m", "hand_study.night", tag, "--dry"], cwd=HERE, env=env, check=True)
         return run
-    procs = [subprocess.Popen([*py, "hand_study.worker", *spec["sessions"], "--follow"], cwd=HERE,
+    return go(run, workers, segmenter, hours)
+
+
+def go(run: Path, workers: int, segmenter: str, hours: float) -> Path:
+    """Run (or resume) the run's night with its solve workers; then say what came of it."""
+    info = paths.run_info(run)
+    tag = info["tag"]
+    env = run_env(run, run / "bench" / info["model"] / "config.yaml")
+    spec = json.loads((run / "night" / f"{tag}.json").read_text())
+    procs = [subprocess.Popen([sys.executable, "-m", "hand_study.worker", *spec["sessions"], "--follow"], cwd=HERE,
                               env={**env, "STUDY_SEGMENTER": segmenter}, stderr=subprocess.STDOUT,
                               stdout=(run / "night" / f"{tag}-worker{i}.log").open("a"))
              for i in range(workers)]
     try:
-        subprocess.run(night, cwd=HERE, env=env)
+        subprocess.run([sys.executable, "-m", "hand_study.night", tag, "--hours", str(hours)], cwd=HERE, env=env)
     finally:
         for p in procs:
             p.send_signal(signal.SIGTERM)
@@ -100,7 +116,9 @@ def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, mot
     else:
         print("joint ranges: none recorded")
     if state.get("state") != "done":
-        print(f"resume: {paths.RUN_ENV}={run} STUDY_ROM_CONFIG={cfg} python -m hand_study.night {tag} --workers")
+        print(f"resume: cd {HERE} && {hand_store.ORCA_HOME_ENV}={env[hand_store.ORCA_HOME_ENV]} "
+              f"PYTHONPATH={env['PYTHONPATH']} {sys.executable} -m hand_study.run_hand --resume {run} "
+              f"--workers {workers} --segmenter {segmenter}")
     return run
 
 
@@ -118,5 +136,9 @@ if __name__ == "__main__":
     p.add_argument("--hours", type=float, default=3.0)
     p.add_argument("--limit", type=int, help="dry run: poses per block")
     p.add_argument("--dry", action="store_true", help="build the run and list its steps; nothing moves")
+    p.add_argument("--resume", type=Path, help="a run folder: go on where its night stopped")
     a = p.parse_args()
-    main(a.hand_id, a.tag, a.workers, a.segmenter, a.motors, a.hours, a.limit, a.dry)
+    if a.resume:
+        go(a.resume.expanduser().absolute(), a.workers, a.segmenter, a.hours)
+    else:
+        main(a.hand_id, a.tag, a.workers, a.segmenter, a.motors, a.hours, a.limit, a.dry)
