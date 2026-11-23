@@ -384,20 +384,28 @@ def read_joint_ranges(folder: os.PathLike | str, joint_ids: List[str]) -> Dict[s
     with ``min < max`` (any other is logged and ignored). ``{}`` when there is
     no file or no range in it to apply. A ``joint_roms`` that is not a mapping
     sets the file aside."""
-    from .hand_config import _valid_rom
-
     path = Path(folder) / JOINT_RANGES_FILE
     doc = read_doc(path, "joint_ranges")
-    roms = doc.get("joint_roms") or {}
-    if not isinstance(roms, dict):
+    if not isinstance(doc.get("joint_roms") or {}, dict):
         _set_aside(path, "joint_roms is not a mapping of joint ranges")
         return {}
+    return applicable_joint_ranges(doc, joint_ids, str(path))
+
+
+def applicable_joint_ranges(doc: Optional[Dict[str, Any]], joint_ids: List[str],
+                            where: str) -> Dict[str, Any]:
+    """``doc`` (shaped like a ``joint_ranges.yaml``) keeping only the ranges a
+    hand with ``joint_ids`` applies; ``{}`` when none. Each range dropped is
+    logged against ``where``."""
+    from .hand_config import _valid_rom
+
+    roms = (doc or {}).get("joint_roms") or {}
     ranges = {}
-    for joint, rom in roms.items():
+    for joint, rom in (roms.items() if isinstance(roms, dict) else ()):
         if joint in joint_ids and _valid_rom(rom):
             ranges[str(joint)] = [float(rom[0]), float(rom[1])]
         else:
-            logger.warning("ignoring joint range %s=%r in %s", joint, rom, path)
+            logger.warning("ignoring joint range %s=%r in %s", joint, rom, where)
     if not ranges:
         return {}
     return {"measured_at": doc.get("measured_at"), "source": doc.get("source"),

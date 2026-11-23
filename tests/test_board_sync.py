@@ -36,7 +36,7 @@ class BoardedHand(MockOrcaHand):
 
 
 def board_blob(config, *, calibrated_at="2026-11-10T08:00:00Z", sequence=3, limit=0.4,
-               ratios=None):
+               ratios=None, joint_ranges=None):
     """What a board calibrated elsewhere holds for this hand."""
     from orca_core.calibration import joint_fingerprints
 
@@ -47,7 +47,8 @@ def board_blob(config, *, calibrated_at="2026-11-10T08:00:00Z", sequence=3, limi
         "joint_to_motor_ratios": ratios or {m: 99.0 for m in config.motor_ids},
         "sequence": sequence, "calibrated_at": calibrated_at,
         "fingerprint": joint_fingerprints(config),
-    }, identity=BoardIdentity(side="right", hw_version=210, serial="ser-0000"), sequence=9)
+    }, identity=BoardIdentity(side="right", hw_version=210, serial="ser-0000"), sequence=9,
+        joint_ranges=joint_ranges)
 
 
 @pytest.fixture
@@ -239,6 +240,76 @@ class TestKeepingTheComputersCalibration:
 
     def test_with_no_board_calibration_there_is_nothing_to_keep(self, connect):
         assert connect(None).keep_computer_calibration() is None
+
+
+BOARD_RANGES = {"measured_at": "2026-11-20T09:30:00Z", "source": "camera rig, run2",
+                "joint_roms": {"index_mcp": [-12.5, 91.25], "wrist": [-40.0, 30.0]}}
+
+
+class TestTheBoardsJointRanges:
+    """Ranges measured on the hand that its board holds are in force while this
+    computer has no joint_ranges.yaml for it, and are never written to one."""
+
+    def test_they_are_in_force_and_said_to_come_from_the_board(self, connect, config):
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand.config.joint_roms_dict["wrist"] == [-40.0, 30.0]
+        assert hand.joint_ranges_info == {"source": "board", "measured_at": "2026-11-20T09:30:00Z",
+                                          "joints": ["index_mcp", "wrist"]}
+
+    def test_they_are_not_copied_into_a_file(self, connect, config):
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        assert not os.path.exists(os.path.join(hand.hand_dir, "joint_ranges.yaml"))
+        assert "joint_ranges" not in read_yaml(hand.config.calibration_path)
+
+    def test_the_ratio_is_fitted_to_them(self, connect, config):
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        motor = hand.config.joint_to_motor_map["index_mcp"]
+        assert hand.joint_to_motor_ratios_dict[motor] == pytest.approx(0.4 / (91.25 + 12.5))
+
+    def test_this_computer_s_file_wins(self, connect, config):
+        hand_store.write_joint_ranges(
+            hand_store.open_hand_folder("ser-0000")[0], {"index_pip": [0.0, 95.0]},
+            source="camera rig", measured_at="2026-11-21T00:00:00Z", joint_ids=config.joint_ids)
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        model = config.joint_roms_dict["index_mcp"]
+        assert hand.config.joint_roms_dict["index_pip"] == [0.0, 95.0]
+        assert hand.config.joint_roms_dict["index_mcp"] == model
+        assert hand.joint_ranges_info == {"source": "measured", "measured_at": "2026-11-21T00:00:00Z",
+                                          "joints": ["index_pip"]}
+
+    def test_a_board_without_them_leaves_the_model_s(self, connect, config):
+        hand = connect(board_blob(config))
+        assert hand.joint_ranges_info["source"] == "model"
+        assert hand.config.joint_roms_dict["index_mcp"] == config.joint_roms_dict["index_mcp"]
+
+    def test_a_board_that_no_longer_holds_them_takes_them_out_of_force(self, connect, config):
+        connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        hand = connect(board_blob(config))
+        assert hand.joint_ranges_info["source"] == "model"
+        assert hand.config.joint_roms_dict["index_mcp"] == config.joint_roms_dict["index_mcp"]
+
+    def test_a_range_this_hand_cannot_apply_is_ignored(self, connect, config, caplog):
+        odd = {"measured_at": None, "source": None,
+               "joint_roms": {"index_mcp": [-12.5, 91.25], "index_pip": [5.0, 1.0],
+                              "not_a_joint": [0.0, 1.0]}}
+        hand = connect(board_blob(config, joint_ranges=odd))
+        assert hand.joint_ranges_info == {"source": "board", "measured_at": None,
+                                          "joints": ["index_mcp"]}
+        assert "ignoring joint range index_pip" in caplog.text
+
+    def test_a_hardware_version_change_keeps_them(self, connect, config):
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        hand.set_hardware_version(211)
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand.joint_ranges_info["source"] == "board"
+
+    def test_a_stored_hand_takes_them_from_the_store_last_read(self, connect, config, model_dir):
+        connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
+        hand._use_stored_hand("ser-0000")
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand.joint_ranges_info["source"] == "board"
 
 
 class TestReadingTheBoardAtConnect:

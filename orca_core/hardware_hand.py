@@ -194,9 +194,13 @@ class OrcaHand(BaseHand):
         self._current_task = None
 
         self._rom_frame = ROM_FRAME_ANCHOR
-        # Ranges measured on this hand (joint_ranges.yaml), and the joints they are in force for.
+        # Ranges measured on this hand (joint_ranges.yaml, else its board's), where
+        # they came from ("measured" or "board"), and the joints they are in force for.
         self._joint_ranges: dict = {}
         self._joint_ranges_measured_at = None
+        self._joint_ranges_source: str | None = None
+        # The ranges this hand's board store holds (section 16); None when it holds none.
+        self._board_joint_ranges: dict | None = None
         self._measured_range_joints: frozenset = frozenset()
         self._hand_id: str | None = None
         self._board_hand_id: str | None = None
@@ -297,6 +301,7 @@ class OrcaHand(BaseHand):
         """Keep what the board held at connect, and on first contact with this
         hand on this computer make the board's calibration this computer's."""
         self._board_store = None
+        self._board_joint_ranges = None
         if not blob:
             return
         try:
@@ -306,6 +311,7 @@ class OrcaHand(BaseHand):
                            "by this orca_core (%s); it is not used", exc)
             return
         self._board_store = store
+        self._board_joint_ranges = store.joint_ranges
         self._write_board_cache(folder, blob)
         path = os.path.join(folder, hand_store.CALIBRATION_FILE)
         if self._explicit_calibration or os.path.exists(path) \
@@ -332,6 +338,7 @@ class OrcaHand(BaseHand):
     def _remember_board_store(self, blob: bytes) -> None:
         """The board now holds ``blob`` (it was just written)."""
         self._board_store = board_store.unpack(blob)
+        self._board_joint_ranges = self._board_store.joint_ranges
         if self.hand_dir:
             self._write_board_cache(self.hand_dir, blob)
 
@@ -481,17 +488,28 @@ class OrcaHand(BaseHand):
     @property
     def joint_ranges_info(self) -> dict:
         """Where this hand's joint ranges come from: ``{"source": "model",
-        "measured_at": None, "joints": []}``, or ``"measured"`` with the date
-        and the joints ``joint_ranges.yaml`` in its folder measured."""
+        "measured_at": None, "joints": []}``; ``"measured"`` with the date and
+        the joints ``joint_ranges.yaml`` in its folder measured; or ``"board"``
+        for ranges measured on the hand that its board holds, in force while
+        that file is absent."""
         if not self._measured_range_joints:
             return {"source": "model", "measured_at": None, "joints": []}
-        return {"source": "measured", "measured_at": self._joint_ranges_measured_at,
+        return {"source": self._joint_ranges_source or "measured",
+                "measured_at": self._joint_ranges_measured_at,
                 "joints": sorted(self._measured_range_joints)}
 
     def _read_joint_ranges(self, folder: str) -> None:
+        """The ranges in force: ``joint_ranges.yaml`` in ``folder``, else the
+        board's. The board's are applied from its store, never written to a file."""
         doc = hand_store.read_joint_ranges(folder, self.config.joint_ids)
+        source = "measured"
+        if not doc and self._board_joint_ranges:
+            doc = hand_store.applicable_joint_ranges(
+                self._board_joint_ranges, self.config.joint_ids, "this hand's board store")
+            source = "board"
         self._joint_ranges = doc.get("joint_roms") or {}
         self._joint_ranges_measured_at = doc.get("measured_at")
+        self._joint_ranges_source = source if doc else None
 
     def _model_name(self) -> str:
         config_path = self.config.config_path or ""
@@ -595,21 +613,23 @@ class OrcaHand(BaseHand):
         reported when last read (unless this session chose one). Returns the folder."""
         folder = str(hand_store.hand_dir(hand_id))
         self._hand_id = hand_id
+        last = self._last_board_store(folder)
         if self._board_hardware_version is None:
-            self._board_hardware_version = self._last_board_version(folder)
+            self._board_hardware_version = (
+                normalize_hardware_version(last.identity.hw_version) if last else None)
+        self._board_joint_ranges = last.joint_ranges if last else None
         self._apply_hardware_version()
         self._use_folder(folder, reload=True)
         return folder
 
     @staticmethod
-    def _last_board_version(folder: str) -> int | None:
-        """The hardware version in the board store last read for this hand."""
+    def _last_board_store(folder: str) -> "board_store.BoardStore | None":
+        """The board store last read for this hand (``board.bin``), if readable."""
         try:
             with open(os.path.join(folder, hand_store.BOARD_STORE_FILE), "rb") as file:
-                identity = board_store.unpack(file.read()).identity
+                return board_store.unpack(file.read())
         except (OSError, board_store.BoardStoreError):
             return None
-        return normalize_hardware_version(identity.hw_version)
 
     def _use_folder(self, folder: str, reload: bool = False) -> None:
         """Read and write this hand's files in ``folder`` from now on."""
@@ -629,7 +649,9 @@ class OrcaHand(BaseHand):
         calibration = self.config.calibration_path if self._explicit_calibration else ""
         self.config = dataclasses.replace(self.config, hand_dir="", calibration_path=calibration)
         self._board_store = None
+        self._board_joint_ranges = None
         self._joint_ranges, self._joint_ranges_measured_at = {}, None
+        self._joint_ranges_source = None
         self._rebuild_config(self.config.hardware_version)
         if not self._explicit_calibration:
             self._load_calibration(None)
@@ -1045,6 +1067,7 @@ class OrcaHand(BaseHand):
         "_hand_id", "_board_hand_id", "_board_store",
         "_board_hardware_version", "_hardware_version_override",
         "_joint_ranges", "_joint_ranges_measured_at", "_measured_range_joints",
+        "_joint_ranges_source", "_board_joint_ranges",
         "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
         "_calibration_doc_stamp", "_rom_frame", "_wrap_offsets_dict", "_config",
     )

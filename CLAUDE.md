@@ -283,7 +283,10 @@ All hand-specific settings are in `config.yaml`:
   clamp and the calibration frame (`measured_joint_roms_dict`), over an encoder-measured span. A
   hand derives its ratios from the ranges in force whenever its config changes, so assigning such
   a config to `hand.config` remaps a calibrated hand; at connect a hand lays its folder's
-  `joint_ranges.yaml` on this way, and the measured ranges survive a hardware-version change.
+  `joint_ranges.yaml` on this way (without one, the ranges its board store holds in section 16,
+  applied from the store and never copied into a file; `joint_ranges_info["source"]` is then
+  `"board"`), and the measured ranges survive a hardware-version change. `board_push` packs the
+  file into section 16, or carries the board's forward when there is no file.
 - Motor-to-joint mapping, joint ROMs (ranges of motion), neutral positions, calibration sequences
 - `max_current` / `calibration_current` / `wrist_calibration_current` - `default` (what the
   packaged configs say) resolves to the connected motor family's own values, the
