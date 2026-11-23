@@ -230,6 +230,95 @@ class TestRoomToGrow:
         assert small < large < SLOT_BYTES
 
 
+def joint_ranges(joints=JOINTS, source="camera rig, sessions s1, s2, calibration run2"):
+    return {"measured_at": "2026-11-20T09:30:00Z", "source": source,
+            "joint_roms": {j: [-17.123456789012345, 93.98765432109876] for j in joints}}
+
+
+class TestTheJointRanges:
+    """Section 16: ranges measured on the hand, kept beside the calibration."""
+
+    def test_they_round_trip_bit_exact_and_apart_from_the_calibration(self):
+        doc, ranges = full_document(), joint_ranges()
+        store = unpack(pack(doc, joint_ranges=ranges))
+        assert store.joint_ranges == ranges
+        assert store.calibration == doc
+
+    def test_a_store_without_them_has_none(self):
+        assert unpack(pack(full_document())).joint_ranges is None
+        assert unpack(pack({}, joint_ranges={"measured_at": "x", "joint_roms": {}})).joint_ranges is None
+
+    def test_their_joints_join_the_name_table(self):
+        """A motors-only calibration names no joints; the ranges bring their own."""
+        store = unpack(pack({"motor_limits": {1: [0.0, 1.0]}},
+                            joint_ranges=joint_ranges(joints=["index_mcp"])))
+        assert store.joint_ranges["joint_roms"] == {
+            "index_mcp": [-17.123456789012345, 93.98765432109876]}
+
+    def test_a_range_that_is_not_a_pair_is_left_out(self):
+        ranges = {"joint_roms": {"index_mcp": [0.0, 90.0], "index_pip": [None, 1.0],
+                                 "wrist": "0, 90"}}
+        got = unpack(pack({}, joint_ranges=ranges)).joint_ranges
+        assert got == {"measured_at": None, "source": None, "joint_roms": {"index_mcp": [0.0, 90.0]}}
+
+    def test_the_source_is_cut_to_255_bytes(self):
+        got = unpack(pack({}, joint_ranges=joint_ranges(source="r" * 400))).joint_ranges
+        assert got["source"] == "r" * 255
+
+    def test_a_reader_that_does_not_know_them_skips_them(self, monkeypatch):
+        """0.14.0 and older skip section 16, and the layout version stays 1."""
+        import orca_core.board_store as board_store
+
+        doc = full_document()
+        blob = pack(doc, joint_ranges=joint_ranges())
+        assert LAYOUT_VERSION == 1 and blob[4] == 1
+        monkeypatch.setattr(board_store, "_DECODED",
+                            board_store._DECODED - {board_store.SEC_JOINT_RANGES})
+        store = unpack(blob)
+        assert store.calibration == doc
+        assert store.joint_ranges is None
+
+    @pytest.mark.parametrize("body", [
+        b"",                                   # no measured_at length
+        b"\x05ab",                             # measured_at runs past the section
+        b"\x00\x00\x00\x01\x02",                 # 3 bytes of a 17-byte record
+        b"\x00\x00" + struct.pack("<Bdd", 7, 0.0, 1.0),   # a joint never named
+    ])
+    def test_unreadable_ranges_drop_only_the_ranges(self, body, caplog, monkeypatch):
+        import orca_core.board_store as board_store
+
+        monkeypatch.setattr(board_store, "_unreadable_ranges_said", set())
+        names = (2, 1, b"\x09index_mcp")
+        travel = (5, 1, struct.pack("<Bd", 0, 131.5))
+        store = unpack(_store(names, travel, (16, 1, body)))
+        assert store.joint_ranges is None
+        assert store.calibration["motor_travel_measured"] == {"index_mcp": 131.5}
+        assert "joint ranges in this board store cannot be read" in caplog.text
+
+    def test_with_the_joints_named_a_range_for_another_joint_is_left_out(self):
+        """As the fingerprint section does, rather than refusing the pack."""
+        store = unpack(pack({"motor_travel_measured": {"index_mcp": 1.0}},
+                            joints=["index_mcp"],
+                            joint_ranges=joint_ranges(joints=["index_mcp", "wrist"])))
+        assert list(store.joint_ranges["joint_roms"]) == ["index_mcp"]
+
+    def test_stripping_them_leaves_every_other_section_decoding_the_same(self):
+        """What a reader that never knew section 16 sees: the same store."""
+        doc = dict(full_document(), **tactile_document({"thumb": 2, "index": 3}))
+        identity = BoardIdentity(side="left", hw_version=210, serial="ser-0000")
+        blob = pack(doc, identity=identity, sequence=12, joint_ranges=joint_ranges())
+        with_ranges, without = unpack(blob), unpack(_without_section(blob, 16))
+        assert with_ranges.joint_ranges is not None and without.joint_ranges is None
+        assert (with_ranges.calibration, with_ranges.identity, with_ranges.sequence) == \
+            (without.calibration, without.identity, without.sequence)
+
+    def test_seventeen_joints_cost_a_small_fraction_of_a_slot(self):
+        without = _packed_size(full_document())
+        cost = _packed_size(full_document(), joint_ranges=joint_ranges(source="s" * 255)) - without
+        assert cost == 4 + 1 + len("2026-11-20T09:30:00Z") + 1 + 255 + 17 * 17
+        assert cost < SLOT_BYTES * 0.05
+
+
 class TestTheTactileSections:
     """A touch hand keeps its tactile calibration in the same document."""
 
@@ -275,7 +364,8 @@ class TestEveryShippedModelFits:
         doc = full_document(joints=[str(j) for j in joints], motors=len(motors))
         doc.update(tactile_document())
         identity = BoardIdentity(side="right", hw_version=21, config=2500, serial="S" * 20)
-        size = _packed_size(doc, identity=identity)
+        ranges = joint_ranges(joints=[str(j) for j in joints], source="s" * 255)
+        size = _packed_size(doc, identity=identity, joint_ranges=ranges)
         assert size <= SLOT_BYTES, (
             f"{config_path}: worst case packs to {size} B, slot holds {SLOT_BYTES}"
         )
@@ -284,6 +374,20 @@ class TestEveryShippedModelFits:
             f"{config_path}: {size} B is over three quarters of a {SLOT_BYTES} B slot; "
             "enlarge __cal_store_size in the firmware's linker script"
         )
+
+
+def _without_section(blob, type_code):
+    """``blob`` re-sealed without its sections of ``type_code``."""
+    magic, version, count, flags, sequence, length, _ = struct.unpack_from("<4sBBHIHH", blob, 0)
+    payload, kept, offset = blob[HEADER_BYTES:HEADER_BYTES + length], [], 0
+    for _ in range(count):
+        t, n, size = struct.unpack_from("<BBH", payload, offset)
+        if t != type_code:
+            kept.append(payload[offset:offset + 4 + size])
+        offset += 4 + size
+    body = b"".join(kept)
+    header = struct.pack("<4sBBHIH", magic, version, len(kept), flags, sequence, len(body))
+    return header + struct.pack("<H", crc16(header + body)) + body
 
 
 def _store(*sections, sequence=1):
