@@ -371,7 +371,7 @@ class Night:
         plate and camera are there, the disk has room."""
         st = call("/status")
         hand = (call("/hand/info").get("hand") or {}).get("id")         # orca_core's hand id (its folder's name)
-        if call("/visual-calibration/study-map").get("enabled"):         # a study must see orca_core's own map
+        if self.study_map_on():                                          # a study must see orca_core's own map
             call("/visual-calibration/study-map", {"mode": "off"})
             self.log("preflight: the study map was on in orca-ui; switched to standard")
         want = self.spec.get("hand")
@@ -390,6 +390,16 @@ class Night:
         free = sh.disk_usage(Path.home()).free / 1e9
         self.log(f"preflight: {want} connected ({cfg}), 17 motors ok, hottest {max(x['temp_c'] for x in m):.0f} °C, "
                  f"plate {call(TT_STATE).get('angle')}, {free:.0f} GB free")
+
+    @staticmethod
+    def study_map_on() -> bool:
+        """Whether orca-ui applies a study map; one started without --research-ui has none (404)."""
+        try:
+            return bool(call("/visual-calibration/study-map").get("enabled"))
+        except hw.ApiError as e:
+            if ": 404 " in str(e):
+                return False
+            raise
 
     def ui_process(self) -> tuple[str | None, str | None, str | None]:
         """(pid, command line, cwd) of the orca-ui on hw.UI's port; the last ones seen are kept, so a
