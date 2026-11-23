@@ -267,8 +267,7 @@ def approach(hand: Hand, L, pair: dict, log=print) -> dict:
 def run(session: Path, prs: list[dict], reps: int = REPS, photos: bool = True, log=print) -> None:
     """Every pair `reps` times (resumable: a rep with contact.json is done); the first rep of each
     pair is also photographed at the contact (meta.json, solved by the workers like any pose)."""
-    import cv2
-    from hand_study.collect import PLATE_SETTLE_S, lock_camera, write_json
+    from hand_study.collect import PLATE_SETTLE_S, lock_camera, photograph, write_json
     from hand_study.hw import Camera, Stream
     from hand_study.mapping import LinearMap
     plan = json.loads((session / "plan.json").read_text())
@@ -317,9 +316,7 @@ def run(session: Path, prs: list[dict], reps: int = REPS, photos: bool = True, l
                             st = plate.move(a, log)
                             time.sleep(PLATE_SETTLE_S)
                             st = plate.state()
-                            name = f"v{int(round(a)):03d}.jpg"
-                            cv2.imwrite(str(d / name), cam.grab(), [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            views.append({"stop": a, "angle": st["angle"], "file": name, "t": time.time()})
+                            views += photograph(cam, d, a, st["angle"])
                         call("/visual-calibration/turntable/torque-off", {}, timeout=20)
                         after = hand.sample()
                         write_json(d / "meta.json", {"id": d.name, "q": hold, "kind": "contact", "joint": p["joint"],

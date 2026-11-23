@@ -237,6 +237,29 @@ def uvc():
     return {"set": "mock"}
 
 
+@app.post("/api/visual-calibration/cameras/preflight")
+def cameras_preflight():
+    return {"indices": {"a": 0, "b": 1}, "identified_by": "mock"}
+
+
+@app.get("/api/visual-calibration/cameras/{cam}/still")
+def camera_still(cam: str, format: str = "png", quality: int = 95):
+    import cv2
+    from fastapi.responses import Response
+    if cam not in ("a", "b"):
+        raise HTTPException(404, f"no camera {cam}")
+    img = np.full((216, 384, 3), 90 if cam == "a" else 130, np.uint8)
+    ok, buf = cv2.imencode(".jpg" if format == "jpg" else ".png", img)
+    return Response(buf.tobytes(), media_type="image/jpeg" if format == "jpg" else "image/png")
+
+
+@app.get("/api/visual-calibration/cameras/stills")
+def camera_stills(format: str = "png", quality: int = 95):
+    import base64
+    return {"format": format, "cameras": {c: base64.b64encode(camera_still(c, format, quality).body).decode()
+                                          for c in ("a", "b")}}
+
+
 @app.post("/api/tactile/zero")
 def tzero():
     return {}

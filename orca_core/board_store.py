@@ -36,6 +36,15 @@ fingerprint, so a copy read off a board is as checkable as the file it came
 from. The joint-to-motor ratios are still packed for readers that need them,
 but nothing here trusts them: a hand derives its own.
 
+Section 16 carries joint ranges measured on the hand (absolute end-stop
+angles in degrees, what a ``joint_ranges.yaml`` holds), apart from the
+calibration document; its record count is the number of joints:
+
+    section 16 body
+      0   1  measured_at length m, then m ASCII bytes
+      ..  1  source length s, then s ASCII bytes (cut to 255)
+      ..     per joint: u8 index into the joint names, f64 lo, f64 hi
+
 Values are float64, not because the hardware needs it — a 14-bit encoder step
 is ~4e-4 rad, some six orders coarser — but because space is not scarce here
 and an exact round-trip means the file mirrored from the board equals what
@@ -44,9 +53,12 @@ calibration produced, with no digits lost in between.
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 MAGIC = b"OHC1"
 LAYOUT_VERSION = 1
@@ -83,6 +95,7 @@ SEC_SENSOR_OFFSETS = 12
 SEC_RESULTANT_OFFSETS = 13
 SEC_STAMP = 14
 SEC_FINGERPRINT = 15
+SEC_JOINT_RANGES = 16
 
 _ROM_FRAMES = {1: "anchor", 2: "centered"}
 _ROM_FRAME_CODES = {name: code for code, name in _ROM_FRAMES.items()}
@@ -123,11 +136,14 @@ class BoardIdentity:
 
 @dataclass(frozen=True)
 class BoardStore:
-    """What a slot held: the calibration document, plus who the hand is."""
+    """What a slot held: the calibration document, plus who the hand is, plus
+    joint ranges measured on it (``{"measured_at", "source", "joint_roms"}``,
+    the shape of a ``joint_ranges.yaml``; ``None`` when the board holds none)."""
 
     calibration: Dict[str, Any]
     identity: BoardIdentity
     sequence: int
+    joint_ranges: Optional[Dict[str, Any]] = None
 
 
 def _finger_order(calibration: Mapping[str, Any]) -> List[str]:
@@ -146,14 +162,40 @@ def _name_table(type_code: int, names: Sequence[str]) -> bytes:
     return _section(type_code, len(names), body)
 
 
-def _joint_order(calibration: Mapping[str, Any]) -> List[str]:
-    """Every joint the document mentions, in a deterministic order."""
+def _joint_order(calibration: Mapping[str, Any],
+                 joint_ranges: Optional[Mapping[str, Any]] = None) -> List[str]:
+    """Every joint the document and the ranges mention, in a deterministic order."""
     seen: Dict[str, None] = {}
     for key in ("motor_travel_measured", "joint_encoder_calibration",
                 "joint_roms_measured", "drive_current_measured", "fingerprint"):
         for joint in (calibration.get(key) or {}):
             seen.setdefault(str(joint), None)
+    for joint in _range_roms(joint_ranges):
+        seen.setdefault(str(joint), None)
     return sorted(seen)
+
+
+def _range_roms(joint_ranges: Optional[Mapping[str, Any]]) -> Dict[str, Tuple[float, float]]:
+    """The ``[lo, hi]`` pairs of ``joint_ranges``; anything else is left out."""
+    roms = (joint_ranges or {}).get("joint_roms") or {}
+    if not isinstance(roms, Mapping):
+        return {}
+    pairs = {str(joint): _limits(rom) for joint, rom in roms.items()}
+    return {joint: pair for joint, pair in pairs.items() if pair is not None}
+
+
+def _short_text(value: Any) -> bytes:
+    """``value`` as a u8-length-prefixed ASCII string, cut to 255 bytes."""
+    text = str(value or "").encode("ascii", "replace")[:0xFF]
+    return struct.pack("<B", len(text)) + text
+
+
+def _read_short_text(body: bytes, cursor: int) -> Tuple[str, int]:
+    length = body[cursor]
+    cursor += 1
+    if cursor + length > len(body):
+        raise BoardStoreError("a text field runs past its section")
+    return body[cursor:cursor + length].decode("ascii", "replace"), cursor + length
 
 
 def _read_name_table(body: bytes) -> List[str]:
@@ -263,12 +305,14 @@ def pack(
     sequence: int = 1,
     joints: Optional[Sequence[str]] = None,
     slot_bytes: int = SLOT_BYTES,
+    joint_ranges: Optional[Mapping[str, Any]] = None,
 ) -> bytes:
     """Encode a calibration document and an identity into one slot's bytes.
 
     ``calibration`` is the mapping ``calibration.yaml`` holds. Sections the
     hand does not have are left out rather than zero-filled, so the result is
-    as small as that hand's data.
+    as small as that hand's data. ``joint_ranges`` (the mapping a
+    ``joint_ranges.yaml`` holds) goes into section 16; ``None`` leaves it out.
 
     Raises:
         BoardStoreError: when the result would not fit ``slot_bytes``. The
@@ -277,15 +321,16 @@ def pack(
             that is not ASCII, a motor ID above 255, a malformed value).
     """
     try:
-        return _pack(calibration, identity, sequence, joints, slot_bytes)
+        return _pack(calibration, identity, sequence, joints, slot_bytes, joint_ranges)
     except BoardStoreError:
         raise
     except (struct.error, KeyError, TypeError, ValueError) as exc:
         raise BoardStoreError(f"this calibration cannot be packed ({exc})") from exc
 
 
-def _pack(calibration, identity, sequence, joints, slot_bytes) -> bytes:
-    names = [str(j) for j in (joints if joints is not None else _joint_order(calibration))]
+def _pack(calibration, identity, sequence, joints, slot_bytes, joint_ranges) -> bytes:
+    names = [str(j) for j in (joints if joints is not None
+                              else _joint_order(calibration, joint_ranges))]
     motors = {int(m) for key in ("joint_to_motor_ratios", "motor_limits")
               for m in (calibration.get(key) or {})}
     check_packable(names, sorted(motors))
@@ -390,6 +435,14 @@ def _pack(calibration, identity, sequence, joints, slot_bytes) -> bytes:
     if frame:
         sections.append(_section(SEC_ROM_FRAME, 1, struct.pack("<B", frame)))
 
+    roms = _range_roms(joint_ranges)
+    records = [struct.pack("<Bdd", index[joint], *roms[joint])
+               for joint in sorted(roms) if joint in index]
+    if records:
+        body = (_short_text(joint_ranges.get("measured_at"))
+                + _short_text(joint_ranges.get("source")) + b"".join(records))
+        sections.append(_section(SEC_JOINT_RANGES, len(records), body))
+
     flags = 0
     if calibration.get("calibrated"):
         flags |= FLAG_CALIBRATED
@@ -445,6 +498,15 @@ def unpack(blob: bytes) -> BoardStore:
         raise BoardStoreError(f"a section does not hold what its type says ({exc})") from exc
 
 
+# The section types this reader decodes (names tables and the identity aside);
+# any other is skipped.
+_DECODED = frozenset({
+    SEC_RATIOS, SEC_MOTOR_LIMITS, SEC_TRAVEL, SEC_ENCODER_ANCHORS, SEC_ROMS_MEASURED,
+    SEC_DRIVE_CURRENTS, SEC_ROM_FRAME, SEC_TAXEL_GATES, SEC_SENSOR_OFFSETS,
+    SEC_RESULTANT_OFFSETS, SEC_STAMP, SEC_FINGERPRINT, SEC_JOINT_RANGES,
+})
+
+
 def _decode(payload: bytes, section_count: int, flags: int,
             sequence: int) -> BoardStore:
     calibration: Dict[str, Any] = {
@@ -452,6 +514,7 @@ def _decode(payload: bytes, section_count: int, flags: int,
         "wrist_calibrated": bool(flags & FLAG_WRIST_CALIBRATED),
     }
     identity = BoardIdentity()
+    joint_ranges: Optional[Dict[str, Any]] = None
     names: List[str] = []
     fingers: List[str] = []
     pending: List[Tuple[int, int, bytes]] = []
@@ -472,10 +535,7 @@ def _decode(payload: bytes, section_count: int, flags: int,
             names.extend(_read_name_table(body))
         elif type_code == SEC_FINGER_NAMES:
             fingers.extend(_read_name_table(body))
-        elif type_code in (SEC_RATIOS, SEC_MOTOR_LIMITS, SEC_TRAVEL, SEC_ENCODER_ANCHORS,
-                           SEC_ROMS_MEASURED, SEC_DRIVE_CURRENTS, SEC_ROM_FRAME,
-                           SEC_TAXEL_GATES, SEC_SENSOR_OFFSETS, SEC_RESULTANT_OFFSETS,
-                           SEC_STAMP, SEC_FINGERPRINT):
+        elif type_code in _DECODED:
             pending.append((type_code, count, body))
         # Any other section was added by a newer layout: skipped.
 
@@ -562,9 +622,32 @@ def _decode(payload: bytes, section_count: int, flags: int,
             frame = _ROM_FRAMES.get(body[0] if body else 0)
             if frame:
                 calibration["rom_frame"] = frame
+        elif type_code == SEC_JOINT_RANGES:
+            joint_ranges = _decode_joint_ranges(body, joint)
 
     return BoardStore(
         calibration=calibration,
         identity=identity,
         sequence=sequence,
+        joint_ranges=joint_ranges,
     )
+
+
+_unreadable_ranges_said: set = set()
+
+
+def _decode_joint_ranges(body: bytes, joint) -> Optional[Dict[str, Any]]:
+    """Section 16, or ``None`` when it does not hold what it should: unreadable
+    ranges are dropped on their own, never the rest of the store."""
+    try:
+        measured_at, cursor = _read_short_text(body, 0)
+        source, cursor = _read_short_text(body, cursor)
+        roms = {joint(idx): [lo, hi]
+                for idx, lo, hi in struct.iter_unpack("<Bdd", body[cursor:])}
+    except (struct.error, IndexError, BoardStoreError) as exc:
+        if str(exc) not in _unreadable_ranges_said:
+            _unreadable_ranges_said.add(str(exc))
+            logger.warning("the joint ranges in this board store cannot be read (%s); "
+                           "the rest of the store is used without them", exc)
+        return None
+    return {"measured_at": measured_at or None, "source": source or None, "joint_roms": roms}

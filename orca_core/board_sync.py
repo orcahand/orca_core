@@ -40,10 +40,12 @@ logger = logging.getLogger(__name__)
 class BoardContact:
     """What the board said at connect: its identity (``None`` for no board) and
     the bytes of its calibration store (``None`` when it holds none, or could
-    not be read)."""
+    not be read: ``store_unread`` tells the two apart)."""
 
     info: Optional[OrcaBoardInfo] = None
     store: Optional[bytes] = None
+    # The board answered who it is, but what its store holds was not read.
+    store_unread: bool = False
     # A controller board is behind the port but did not say who it is.
     silent_board: bool = False
     # The USB serial number of a board whose firmware is too old to report an identity.
@@ -132,9 +134,9 @@ def contact_board(
                     return BoardContact(silent_board=_says_orca(port))
                 # Firmware older than ORCA_INFO? has no identity to give.
                 return _old_firmware_contact(port)
-            _, metadata = board_store_link.query_metadata(link)
+            answered, metadata = board_store_link.query_metadata(link)
             if metadata is None:
-                return BoardContact(info=info)
+                return BoardContact(info=info, store_unread=not answered)
             cached = cached_store(info) if cached_store is not None else None
             if cached is not None and len(cached) == metadata.length \
                     and crc16(cached) == metadata.crc:
@@ -143,4 +145,5 @@ def contact_board(
                                 store=board_store_link.read_store_over_link(link, metadata))
     except Exception as exc:
         logger.debug("board on %s: %s", port, exc)
-        return BoardContact(info=info, silent_board=board and info is None and _says_orca(port))
+        return BoardContact(info=info, silent_board=board and info is None and _says_orca(port),
+                            store_unread=info is not None)

@@ -93,21 +93,28 @@ class Session:
     def _save(self) -> None:
         (self.root / "session.yaml").write_text(yaml.safe_dump(self.meta, sort_keys=False))
 
-    def add_photo(self, data: bytes, stop_deg: float, ext: str = "png",
+    def add_photo(self, data: bytes | np.ndarray, stop_deg: float, ext: str = "png",
                   plate_deg: float | None = None, camera: str = DEFAULT_CAMERA) -> tuple[dict, list[TileDetection]]:
         """Store a photo taken at ``stop_deg`` by ``camera`` (replacing one at the same stop) and detect
-        its tiles. ``plate_deg``: the motor's read-back angle when the photo was taken; the solves use it
-        instead of the nominal stop (the plate stops a little short or past)."""
-        image = read_image(data)
+        its tiles. ``data``: the encoded image, or the frame itself (written as PNG). ``plate_deg``: the
+        motor's read-back angle when the photo was taken; the solves use it instead of the nominal stop
+        (the plate stops a little short or past)."""
+        image = data if isinstance(data, np.ndarray) else read_image(data)
         size = [int(image.shape[1]), int(image.shape[0])]
         if self.meta["image_size"] and self.meta["image_size"] != size:
             raise ValueError(f"photo is {size[0]}x{size[1]}, the session's are {self.meta['image_size']}")
         name = f"stop_{stop_deg:07.2f}" + ("" if camera == DEFAULT_CAMERA else f"_{camera}")
-        (self.root / "photos" / f"{name}.{ext}").write_bytes(data)
+        path = self.root / "photos" / f"{name}.{'png' if isinstance(data, np.ndarray) else ext}"
+        if isinstance(data, np.ndarray):
+            import cv2
+            if not cv2.imwrite(str(path), data, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+                raise ValueError(f"could not write {path.name}")
+        else:
+            path.write_bytes(data)
         detections = self.detector.detect(image)
         (self.root / "detections" / f"{name}.json").write_text(json.dumps(
             {d.tile: {"ids": d.ids.tolist(), "uv": d.uv.round(3).tolist(), "markers": d.markers} for d in detections}))
-        entry = {"name": name, "file": f"photos/{name}.{ext}", "stop_deg": float(stop_deg),
+        entry = {"name": name, "file": f"photos/{path.name}", "stop_deg": float(stop_deg),
                  "plate_deg": None if plate_deg is None else round(float(plate_deg), 3),
                  "captured_at": datetime.now().isoformat(timespec="seconds"),
                  "tiles": len(detections), "corners": int(sum(len(d.ids) for d in detections))}

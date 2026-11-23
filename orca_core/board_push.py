@@ -18,7 +18,9 @@ Only scripts/calibrate.py pushes, after a successful run on a real hand.
 
 The identity on the board is carried into every write. It lives in the same
 store as the calibration, so a blob packed without it would make the board
-forget which hand it is.
+forget which hand it is. So are joint ranges measured on the hand (section 16):
+the hand's ``joint_ranges.yaml`` when it has one, else what the board already
+holds, so a recalibration never erases ranges measured elsewhere.
 """
 
 import logging
@@ -30,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from . import board_store, calibration_store
+from . import board_store, calibration_store, hand_store
 from .board_store import BoardIdentity
 from .constants import ORCA_ID_PROBE_BAUDRATE
 
@@ -88,12 +90,23 @@ def _missing_tool_reason() -> str:
 INFO_ATTEMPTS = 3
 
 
-def board_state(port: str, timeout: float = 0.2) -> "tuple[BoardIdentity, int]":
-    """The identity to carry forward and the sequence to beat.
+@dataclass(frozen=True)
+class BoardContents:
+    """What a write must carry forward from the board, and the sequence to beat."""
 
-    Read from the board's own store when it has one, else from what the board
-    reports about itself, so a board written for the first time still keeps its
-    identity. Sequence 0 means the board said it holds nothing.
+    identity: BoardIdentity
+    sequence: int                        # 0: the board said it holds nothing
+    joint_ranges: Optional[dict] = None  # section 16 of the store it holds
+    store_unreadable: bool = False       # it holds a store that could not be read
+
+
+def board_contents(port: str, timeout: float = 0.2) -> BoardContents:
+    """The identity to carry forward, the sequence to beat, and the joint ranges
+    the board's store holds.
+
+    The identity is read from the board's own store when it has one, else from
+    what the board reports about itself, so a board written for the first time
+    still keeps its identity.
 
     Raises:
         OSError: the board never said what it holds, or who it is: a write
@@ -106,6 +119,8 @@ def board_state(port: str, timeout: float = 0.2) -> "tuple[BoardIdentity, int]":
     from .hardware.sensing.serial_discovery import probe_orca_info_over_link
 
     identity = None
+    joint_ranges = None
+    unreadable = False
     with serial.Serial(port, baudrate=ORCA_ID_PROBE_BAUDRATE, timeout=timeout,
                        exclusive=True) as link:
         answered, metadata = board_store_link.query_metadata(link)
@@ -115,8 +130,10 @@ def board_state(port: str, timeout: float = 0.2) -> "tuple[BoardIdentity, int]":
         if metadata is not None:
             try:
                 blob = board_store_link.read_store_over_link(link, metadata)
-                identity = board_store.unpack(blob).identity
+                store = board_store.unpack(blob)
+                identity, joint_ranges = store.identity, store.joint_ranges
             except Exception as exc:
+                unreadable = True
                 logger.debug("could not read the store on %s: %s", port, exc)
         for _ in range(INFO_ATTEMPTS):
             if identity is not None and identity.provisioned:
@@ -131,7 +148,7 @@ def board_state(port: str, timeout: float = 0.2) -> "tuple[BoardIdentity, int]":
                 )
     if identity is None:
         raise OSError("the board did not say which hand it is")
-    return identity, sequence
+    return BoardContents(identity, sequence, joint_ranges, unreadable)
 
 
 def board_serves(port: str, blob: bytes, timeout: float = 0.2) -> bool:
@@ -152,8 +169,14 @@ def push(
     hand_id: str,
     port: str,
     calibration: Mapping[str, Any],
+    joint_ranges: Optional[Mapping[str, Any]] = None,
 ) -> PushResult:
     """Write ``calibration`` onto the board on ``port``, keyed as ``hand_id``.
+
+    ``joint_ranges`` (what a ``joint_ranges.yaml`` holds) replaces the ranges
+    on the board, unless the board's were measured later; ``None`` keeps the
+    ones the board holds, unchanged, and refuses a board whose store cannot be
+    read, whose ranges would otherwise be lost.
 
     The port must be free: the tool opens it itself, so this runs once the hand
     has let go of it. Nothing here raises -- a hand whose board could not be
@@ -165,7 +188,7 @@ def push(
         return PushResult(False, _missing_tool_reason())
 
     try:
-        identity, sequence = board_state(port)
+        held = board_contents(port)
     except Exception as exc:
         # A locked port means the hand itself still has it: the tool opens the
         # port too, so the write waits until the hand has let go.
@@ -175,8 +198,19 @@ def push(
                        "written once the hand has disconnected")
         return PushResult(False, f"the board on {port} did not answer ({exc})")
 
+    if joint_ranges is None and held.store_unreadable:
+        return PushResult(
+            False, f"the calibration store on the board on {port} could not be read, so the "
+                   "joint ranges it may hold could not be kept; nothing was written")
+    # provisional: merge rule pending decision
+    refusal = _newer_on_board(held.joint_ranges, joint_ranges)
+    if refusal:
+        return PushResult(False, refusal)
+    sequence = held.sequence
     try:
-        blob = board_store.pack(calibration, identity=identity, sequence=sequence + 1)
+        blob = board_store.pack(
+            calibration, identity=held.identity, sequence=sequence + 1,
+            joint_ranges=held.joint_ranges if joint_ranges is None else joint_ranges)
     except board_store.BoardStoreError as exc:
         return PushResult(False, f"this calibration cannot be stored on a board ({exc})")
 
@@ -207,13 +241,29 @@ def push(
     return PushResult(True, sequence=sequence + 1, size=len(blob), blob=blob)
 
 
+def _newer_on_board(on_board: Optional[Mapping[str, Any]],
+                    replacing: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Why ``replacing`` may not replace the board's ranges: they were measured
+    later (provisional: merge rule pending decision)."""
+    from .hardware_hand import _instant
+
+    board_at = (on_board or {}).get("measured_at")
+    file_at = (replacing or {}).get("measured_at")
+    if not board_at or not file_at or _instant(board_at) <= _instant(file_at):
+        return None
+    return (f"the joint ranges on the board were measured {board_at}, after this computer's "
+            f"joint_ranges.yaml ({file_at}); nothing was written, so the newer ranges are kept")
+
+
 def push_for_hand(hand) -> PushResult:
     """Write what this hand's calibration file says onto this hand's board.
 
     Skipped, not failed, when there is nothing to write to: a hand on a plain
     adapter has no board. Call it once the hand has released its port. The
     board copy carries the measurements, stamp and fingerprints, plus the
-    ratios in force for readers that still expect them.
+    ratios in force for readers that still expect them, and the ranges in the
+    hand's ``joint_ranges.yaml`` (without one, the board keeps the ranges it has;
+    see :func:`push` for when a push is refused instead).
     """
     if not hand.board_hand_id:
         return PushResult(False, "this hand has no board to keep a calibration on")
@@ -226,7 +276,9 @@ def push_for_hand(hand) -> PushResult:
         return PushResult(False, "there is no calibration to write")
     document = dict(document)
     document["joint_to_motor_ratios"] = dict(hand.calibration.joint_to_motor_ratios_dict)
-    result = push(hand.hand_id, port, document)
+    ranges = (hand_store.read_joint_ranges(hand.hand_dir, hand.config.joint_ids)
+              if hand.hand_dir else {})
+    result = push(hand.hand_id, port, document, joint_ranges=ranges or None)
     if result.written:
         hand._remember_board_store(result.blob)
     return result
