@@ -17,6 +17,14 @@ travel, stops, solver search bounds and priors per direction) +
 `calibration.yaml` (the solver's results, with a history of runs), loaded by
 `visual_calibration/rig_config.py`.
 
+**Where the rig's own files live:** `calibration.yaml` and `turntable_calibration.yaml`
+are the rig's, not the repo's: they live in `<ORCA_HOME>/rigs/<rig id>/` (default
+`~/.orca`), next to the rig's photo sessions and its hand runs
+(`runs/<hand id>/<YYYYMMDD-HHMMSS>/`), see `visual_calibration/rig_home.py`. The rig id
+is the rig board's rig ID (`rig-...`) if it has one, else its USB serial (pinned in
+`turntable.yaml`). A file still left in `rigs/v1/camera-rig/` is read, with a warning,
+until the rig has its own; nothing moves it.
+
 ## Step 1 in two parts (2026-11-06)
 
 The motor turns the plate (`visual_calibration/turntable.py`: XC430, multi-turn

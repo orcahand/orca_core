@@ -7,19 +7,28 @@
 # ==============================================================================
 
 """The camera rig for visual calibration: ``rigs/<version>/<name>/config.yaml``
-(design values and solver settings) and ``calibration.yaml`` (what the solver
-found). Plan: ``README.md``."""
+(design values and solver settings) in the repo, and the rig's own files
+(``calibration.yaml``: what the solver found; ``turntable_calibration.yaml``)
+in its folder under ORCA_HOME (rig_home). Plan: ``README.md``."""
 
+import logging
 import math
 import os
 from dataclasses import dataclass, field
 
 from orca_core.utils.utils import _version_sort_key, read_yaml, write_yaml_atomic
 
+from visual_calibration import rig_home
+
+logger = logging.getLogger(__name__)
+
 DEFAULT_RIG_NAME = "camera-rig"
 DEFAULT_CAMERA = "a"            # the old single `camera:` block; holds the gauge (its CAD azimuth)
 DEFAULT_TOWER = "v1"            # the `calibration_object:` block as written
 ANGLE_TOLERANCE_DEG = 1e-6
+CALIBRATION_FILE = "calibration.yaml"
+TURNTABLE_CALIBRATION_FILE = "turntable_calibration.yaml"
+_warned_left: set = set()
 
 
 class RigConfigError(ValueError):
@@ -103,6 +112,7 @@ class RigConfig:
     travel: float
     stops: Stops
     raw: dict = field(repr=False)
+    home: str | None = None         # the rig's own files (rig_home); None: the rig's id is not known
 
     @property
     def version(self) -> str:
@@ -155,7 +165,12 @@ class RigConfig:
         return self.raw["solver"]["search"]
 
     @classmethod
-    def load(cls, name: str = DEFAULT_RIG_NAME, version: str | None = None, path: str | None = None) -> "RigConfig":
+    def load(cls, name: str = DEFAULT_RIG_NAME, version: str | None = None, path: str | None = None,
+             rig_id: str | None = None) -> "RigConfig":
+        """The rig's config from the repo, its own files from its folder under ORCA_HOME: that of
+        `rig_id`, else of the board turntable.yaml pins. A rig loaded from a folder of its own
+        (`path`: a copy for a test, or of a past calibration) keeps its files there."""
+        home = path
         path = path or get_rig_path(name, version)
         raw = read_yaml(os.path.join(path, "config.yaml"))
         if not raw:
@@ -182,7 +197,14 @@ class RigConfig:
         except (KeyError, TypeError) as exc:
             raise RigConfigError(f"{path}/config.yaml: missing or malformed {exc}") from exc
         config.validate()
+        config.home = home or config._home(rig_id)
         return config
+
+    def _home(self, rig_id: str | None) -> str | None:
+        try:
+            return str(rig_home.rig_dir(rig_id or rig_home.rig_id((self.raw["turntable"].get("board") or {}).get("usb_serial"))))
+        except rig_home.RigIdError:
+            return None
 
     def validate(self) -> None:
         self.hard_stop.validate()
@@ -208,13 +230,34 @@ class RigConfig:
                 if not o["min"] <= v <= o["max"] or abs(k - round(k)) > 1e-6:
                     raise RigConfigError(f"{where}.mount.{key} {v:g} is not a hole: {o['min']:g}..{o['max']:g} in steps of {o['step']:g}")
 
+    def own_file(self, name: str) -> str:
+        """Where the rig's file `name` is written: its folder under ORCA_HOME."""
+        if self.home is None:
+            raise RigConfigError("the rig has no id: pin its board's usb_serial in turntable.yaml, or connect the rig")
+        return os.path.join(self.home, name)
+
+    def _in_force(self, name: str) -> str:
+        """The rig's file `name` to read: its own; until it has one, a file left in the checkout
+        (read with a warning, never moved)."""
+        left = os.path.join(self.path, name)
+        own = os.path.join(self.home, name) if self.home else None
+        if own and (os.path.exists(own) or not os.path.exists(left)):
+            return own
+        if not os.path.exists(left):
+            return self.own_file(name)
+        if left not in _warned_left:
+            _warned_left.add(left)
+            logger.warning("reading the rig's %s from the checkout (%s); it belongs in %s: move it there",
+                           name, left, own or "the rig's folder under ORCA_HOME")
+        return left
+
     @property
     def calibration_path(self) -> str:
-        return os.path.join(self.path, "calibration.yaml")
+        return self._in_force(CALIBRATION_FILE)
 
     @property
     def turntable_calibration_path(self) -> str:
-        return os.path.join(self.path, "turntable_calibration.yaml")
+        return self._in_force(TURNTABLE_CALIBRATION_FILE)
 
     def load_calibration(self) -> dict:
         return read_yaml(self.calibration_path) or {}
@@ -229,4 +272,6 @@ class RigConfig:
                 history.append({k: old.get(k) for k in ("calibrated_at", "lens", "camera", "axis", "tower", "mounting", "stop_angle_corrections", "tile_poses", "fit")}
                                | ({"cameras": old["cameras"]} if "cameras" in old else {}))
             calibration["history"] = history
-        write_yaml_atomic(self.calibration_path, calibration)
+        path = self.own_file(CALIBRATION_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_yaml_atomic(path, calibration)
