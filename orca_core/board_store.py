@@ -53,9 +53,12 @@ calibration produced, with no digits lost in between.
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 MAGIC = b"OHC1"
 LAYOUT_VERSION = 1
@@ -172,9 +175,13 @@ def _joint_order(calibration: Mapping[str, Any],
     return sorted(seen)
 
 
-def _range_roms(joint_ranges: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+def _range_roms(joint_ranges: Optional[Mapping[str, Any]]) -> Dict[str, Tuple[float, float]]:
+    """The ``[lo, hi]`` pairs of ``joint_ranges``; anything else is left out."""
     roms = (joint_ranges or {}).get("joint_roms") or {}
-    return roms if isinstance(roms, Mapping) else {}
+    if not isinstance(roms, Mapping):
+        return {}
+    pairs = {str(joint): _limits(rom) for joint, rom in roms.items()}
+    return {joint: pair for joint, pair in pairs.items() if pair is not None}
 
 
 def _short_text(value: Any) -> bytes:
@@ -429,8 +436,8 @@ def _pack(calibration, identity, sequence, joints, slot_bytes, joint_ranges) -> 
         sections.append(_section(SEC_ROM_FRAME, 1, struct.pack("<B", frame)))
 
     roms = _range_roms(joint_ranges)
-    records = [struct.pack("<Bdd", index[str(j)], *_limits(roms[j]))
-               for j in sorted(roms) if _limits(roms[j]) is not None]
+    records = [struct.pack("<Bdd", index[joint], *roms[joint])
+               for joint in sorted(roms) if joint in index]
     if records:
         body = (_short_text(joint_ranges.get("measured_at"))
                 + _short_text(joint_ranges.get("source")) + b"".join(records))
@@ -616,14 +623,7 @@ def _decode(payload: bytes, section_count: int, flags: int,
             if frame:
                 calibration["rom_frame"] = frame
         elif type_code == SEC_JOINT_RANGES:
-            measured_at, cursor = _read_short_text(body, 0)
-            source, cursor = _read_short_text(body, cursor)
-            joint_ranges = {
-                "measured_at": measured_at or None,
-                "source": source or None,
-                "joint_roms": {joint(idx): [lo, hi]
-                               for idx, lo, hi in struct.iter_unpack("<Bdd", body[cursor:])},
-            }
+            joint_ranges = _decode_joint_ranges(body, joint)
 
     return BoardStore(
         calibration=calibration,
@@ -631,3 +631,23 @@ def _decode(payload: bytes, section_count: int, flags: int,
         sequence=sequence,
         joint_ranges=joint_ranges,
     )
+
+
+_unreadable_ranges_said: set = set()
+
+
+def _decode_joint_ranges(body: bytes, joint) -> Optional[Dict[str, Any]]:
+    """Section 16, or ``None`` when it does not hold what it should: unreadable
+    ranges are dropped on their own, never the rest of the store."""
+    try:
+        measured_at, cursor = _read_short_text(body, 0)
+        source, cursor = _read_short_text(body, cursor)
+        roms = {joint(idx): [lo, hi]
+                for idx, lo, hi in struct.iter_unpack("<Bdd", body[cursor:])}
+    except (struct.error, IndexError, BoardStoreError) as exc:
+        if str(exc) not in _unreadable_ranges_said:
+            _unreadable_ranges_said.add(str(exc))
+            logger.warning("the joint ranges in this board store cannot be read (%s); "
+                           "the rest of the store is used without them", exc)
+        return None
+    return {"measured_at": measured_at or None, "source": source or None, "joint_roms": roms}

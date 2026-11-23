@@ -278,11 +278,39 @@ class TestTheJointRanges:
         assert store.calibration == doc
         assert store.joint_ranges is None
 
-    def test_a_short_section_behind_a_valid_crc_is_refused(self):
+    @pytest.mark.parametrize("body", [
+        b"",                                   # no measured_at length
+        b"\x05ab",                             # measured_at runs past the section
+        b"\x00\x00\x00\x01\x02",                 # 3 bytes of a 17-byte record
+        b"\x00\x00" + struct.pack("<Bdd", 7, 0.0, 1.0),   # a joint never named
+    ])
+    def test_unreadable_ranges_drop_only_the_ranges(self, body, caplog, monkeypatch):
+        import orca_core.board_store as board_store
+
+        monkeypatch.setattr(board_store, "_unreadable_ranges_said", set())
         names = (2, 1, b"\x09index_mcp")
-        for body in (b"", b"\x05ab", b"\x00\x00\x00\x01\x02"):
-            with pytest.raises(BoardStoreError):
-                unpack(_store(names, (16, 1, body)))
+        travel = (5, 1, struct.pack("<Bd", 0, 131.5))
+        store = unpack(_store(names, travel, (16, 1, body)))
+        assert store.joint_ranges is None
+        assert store.calibration["motor_travel_measured"] == {"index_mcp": 131.5}
+        assert "joint ranges in this board store cannot be read" in caplog.text
+
+    def test_with_the_joints_named_a_range_for_another_joint_is_left_out(self):
+        """As the fingerprint section does, rather than refusing the pack."""
+        store = unpack(pack({"motor_travel_measured": {"index_mcp": 1.0}},
+                            joints=["index_mcp"],
+                            joint_ranges=joint_ranges(joints=["index_mcp", "wrist"])))
+        assert list(store.joint_ranges["joint_roms"]) == ["index_mcp"]
+
+    def test_stripping_them_leaves_every_other_section_decoding_the_same(self):
+        """What a reader that never knew section 16 sees: the same store."""
+        doc = dict(full_document(), **tactile_document({"thumb": 2, "index": 3}))
+        identity = BoardIdentity(side="left", hw_version=210, serial="ser-0000")
+        blob = pack(doc, identity=identity, sequence=12, joint_ranges=joint_ranges())
+        with_ranges, without = unpack(blob), unpack(_without_section(blob, 16))
+        assert with_ranges.joint_ranges is not None and without.joint_ranges is None
+        assert (with_ranges.calibration, with_ranges.identity, with_ranges.sequence) == \
+            (without.calibration, without.identity, without.sequence)
 
     def test_seventeen_joints_cost_a_small_fraction_of_a_slot(self):
         without = _packed_size(full_document())
@@ -346,6 +374,20 @@ class TestEveryShippedModelFits:
             f"{config_path}: {size} B is over three quarters of a {SLOT_BYTES} B slot; "
             "enlarge __cal_store_size in the firmware's linker script"
         )
+
+
+def _without_section(blob, type_code):
+    """``blob`` re-sealed without its sections of ``type_code``."""
+    magic, version, count, flags, sequence, length, _ = struct.unpack_from("<4sBBHIHH", blob, 0)
+    payload, kept, offset = blob[HEADER_BYTES:HEADER_BYTES + length], [], 0
+    for _ in range(count):
+        t, n, size = struct.unpack_from("<BBH", payload, offset)
+        if t != type_code:
+            kept.append(payload[offset:offset + 4 + size])
+        offset += 4 + size
+    body = b"".join(kept)
+    header = struct.pack("<4sBBHIH", magic, version, len(kept), flags, sequence, len(body))
+    return header + struct.pack("<H", crc16(header + body)) + body
 
 
 def _store(*sections, sequence=1):
