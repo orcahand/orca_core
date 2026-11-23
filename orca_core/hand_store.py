@@ -336,6 +336,48 @@ def update_hand(folder: os.PathLike | str, **values: Any) -> Dict[str, Any]:
     return doc
 
 
+# --- joint_ranges.yaml ------------------------------------------------------------
+
+
+def write_joint_ranges(
+    folder: os.PathLike | str,
+    joint_roms: Dict[str, Any],
+    *,
+    source: str,
+    measured_at: Optional[str] = None,
+    joint_ids: Optional[List[str]] = None,
+) -> Path:
+    """Record joint ranges measured on the hand in ``folder`` as its ``joint_ranges.yaml``.
+
+    ``joint_roms`` maps a joint to ``[min, max]`` degrees and replaces the whole
+    previous file, so a joint left out goes back to its model range. The hand
+    puts these ranges in force at its next connect. ``source`` says what measured
+    them, ``measured_at`` defaults to now, and ``joint_ids`` are the joints a
+    range may name (default: the packaged model's).
+
+    Raises:
+        ValueError: no ranges, a joint not in ``joint_ids``, or a range that is
+            not ``[min, max]`` of finite numbers with ``min < max``.
+    """
+    from .hand_config import _valid_rom, canonical_joint_ids
+
+    if not joint_roms:
+        raise ValueError("no joint ranges to record")
+    known = set(joint_ids if joint_ids is not None else canonical_joint_ids())
+    roms = {}
+    for joint, rom in joint_roms.items():
+        if joint not in known:
+            raise ValueError(f"{joint!r} is not a joint of this hand")
+        if not _valid_rom(rom):
+            raise ValueError(f"range for {joint} must be [min, max] in degrees with min < max, got {rom!r}")
+        roms[str(joint)] = [float(rom[0]), float(rom[1])]
+    return write_doc(Path(folder) / JOINT_RANGES_FILE, {
+        "measured_at": measured_at or now_iso(),
+        "source": str(source),
+        "joint_roms": roms,
+    })
+
+
 def known_hands() -> List[Dict[str, Any]]:
     """Every hand this computer has a folder for, as its ``hand.yaml`` (plus ``folder``)."""
     root = _hands_dir()

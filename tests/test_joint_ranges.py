@@ -85,6 +85,28 @@ def test_a_changed_range_replaces_the_old_one(hand_with_ranges):
     assert hand.config.joint_roms_dict["index_mcp"] == model["index_mcp"]
 
 
+def test_written_ranges_are_put_in_force_by_the_hand(tmp_path):
+    folder = tmp_path / "orcahand-left"
+    folder.mkdir()
+    copy_model_config(MODEL, folder / "config.yaml")
+    mock_folder = hand_store._mock_hand_dir(hand_store._mock_hand_id("orcahand-left"))
+    hand_store.write_joint_ranges(mock_folder, {"index_mcp": (-10, 80)}, source="camera rig",
+                                  measured_at="2026-11-01T10:00:00Z")
+    hand = MockOrcaHand(config_path=str(folder / "config.yaml"))
+    assert hand.config.joint_roms_dict["index_mcp"] == MEASURED
+    assert hand.joint_ranges_info == {
+        "source": "measured", "measured_at": "2026-11-01T10:00:00Z", "joints": ["index_mcp"]}
+    assert hand_store.read_doc(mock_folder / "joint_ranges.yaml", "joint_ranges")["source"] == "camera rig"
+
+
+@pytest.mark.parametrize("roms", [{}, {"not_a_joint": [0, 1]}, {"index_pip": [5, 1]},
+                                  {"ring_mcp": [float("nan"), 90.0]}, {"index_mcp": "0, 90"}])
+def test_the_writer_refuses_what_the_hand_would_not_apply(tmp_path, roms):
+    with pytest.raises(ValueError):
+        hand_store.write_joint_ranges(tmp_path, roms, source="camera rig")
+    assert not (tmp_path / "joint_ranges.yaml").exists()
+
+
 def test_without_a_file_the_model_s_ranges_are_in_force(tmp_path):
     folder = tmp_path / "orcahand-left"
     folder.mkdir()
