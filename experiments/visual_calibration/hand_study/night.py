@@ -526,8 +526,8 @@ class Night:
         from hand_study import hardstops, quick
         val = Path(step["from"])
         self.wait_for_solves([val], "accuracy")
-        stops = json.loads((hardstops.OUT / "hardstops.json").read_text())["stops"]
-        res = quick.check(val, step["run"], stops)
+        fit = json.loads((hardstops.OUT / "hardstops.json").read_text())
+        res = quick.check(val, step["run"], fit["stops"], (fit.get("joint_ranges") or {}).get("recorded"))
         (hardstops.OUT / "accuracy.json").write_text(json.dumps(res, indent=1))
         a, b = res["before"]["all"] or {}, res["after"]["all"] or {}
         self.log(f"accuracy on {res['n']} validation poses: rms {a.get('rms')} -> {b.get('rms')} deg, "

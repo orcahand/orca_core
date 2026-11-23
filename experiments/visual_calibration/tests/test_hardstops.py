@@ -42,6 +42,23 @@ def test_a_fit_that_is_not_a_range_is_left_out_and_the_file_says_what_it_lost(ca
     assert "left out: wrist" in summary and "no longer in the file (back to the model's): ring_mcp" in summary
 
 
+def test_gone_counts_the_ranges_in_force_before_the_run_from_the_board_too(tmp_path, monkeypatch):
+    """A hand whose ranges came from its board: the run's archive records them in force; a joint the
+    new file does not hold is named as gone, though no file held it before."""
+    from orca_core import load_config
+    hand_store.hand_dir("ser-0001").mkdir(parents=True)
+    model = load_config(model_name=MODEL)["joint_roms"]
+    (tmp_path / "calib_q1").mkdir()
+    (tmp_path / "calib_q1" / HAND_MAP).write_text(yaml.safe_dump({"model": MODEL, "joints": {
+        "ring_mcp": {"rom": [-1.0, 50.0]}, "index_mcp": {"rom": list(model["index_mcp"])}}}))
+    monkeypatch.setattr(hardstops, "STUDY", tmp_path)
+    before = hardstops.ranges_before("q1")
+    assert before == {"ring_mcp": [-1.0, 50.0]} and hardstops.ranges_before("q2") is None
+    rec = hardstops.record_ranges("ser-0001", {"index_mcp": {"new": [-10.0, 90.0], "identifiable": True}}, "x",
+                                  before=before)
+    assert rec["gone"] == ["ring_mcp"]
+
+
 def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch):
     """hardstops on a run archived from a 0.14 hand folder (no config.yaml): the identifiable
     stops go to the hand's joint_ranges.yaml, its source naming the rig and the run."""
@@ -84,6 +101,8 @@ def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch)
     # The accuracy step (the same poses standing in for the validation block): before vs after the new stops.
     acc = quick.check(session, "q1", out["stops"])
     assert acc["n"] == 5 and acc["after"]["index_mcp"]["rms"] < 0.1 < acc["before"]["index_mcp"]["rms"]
+    kept_out = quick.check(session, "q1", out["stops"], recorded=[])        # "after" is what was recorded
+    assert kept_out["after"]["index_mcp"] == kept_out["before"]["index_mcp"] and kept_out["recorded"] == []
     (run / "proposed" / "accuracy.json").write_text(json.dumps(acc))
     res = run_hand.results(run)
     assert res["joints"]["index_mcp"] == {**res["joints"]["index_mcp"], "old": [-22.75, 103.69], "new": [-15.0, 95.0],

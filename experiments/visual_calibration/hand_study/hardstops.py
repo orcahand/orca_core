@@ -162,10 +162,12 @@ def proposed_config(config: Path, stops: dict[str, dict]) -> tuple[str, list[str
     return "".join(out), diff
 
 
-def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> dict:
+def record_ranges(hand_id: str, stops: dict[str, dict], source: str,
+                  before: dict[str, list[float]] | None = None) -> dict:
     """The fitted stops as the hand's joint_ranges.yaml in its orca_core folder, replacing the whole
     file. Returns {path (None: nothing to record), recorded, rejected: {joint: why}, gone: the joints
-    the file held before that it no longer does}."""
+    with a measured range in force before (`before`: the run's, from its file or its board; default
+    the file's) that the new file does not hold: they are back to the model's range}."""
     # TODO(quality gate): which joints may be recorded is not decided yet; until it is, every
     # joint the fit identifies (motor span >= MIN_SPAN) is, unless its fit is not a range.
     roms, rejected = {}, {}
@@ -179,10 +181,20 @@ def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> dict:
             rejected[j] = f"the fit gives [{lo}, {hi}], not a range"
             print(f"warning: {j} left out of the joint ranges: {rejected[j]}", file=sys.stderr)
     folder = hand_folder(hand_id)
-    before = set((read_yaml(folder / hand_store.JOINT_RANGES_FILE) or {}).get("joint_roms") or {})
+    if before is None:
+        before = (read_yaml(folder / hand_store.JOINT_RANGES_FILE) or {}).get("joint_roms") or {}
+    before = set(before)
     path = hand_store.write_joint_ranges(folder, roms, source=source) if roms else None
     return {"path": str(path) if path else None, "recorded": sorted(roms), "rejected": rejected,
             "gone": sorted(before - set(roms)) if path else []}
+
+
+def ranges_before(run: str) -> dict[str, list[float]] | None:
+    """The measured ranges in force when calibration `run` was archived (its hand_map.yaml: from the
+    hand's file or its board), None for an older archive without one."""
+    from hand_study.mapping import HAND_MAP, measured_in_force
+    ran = read_yaml(STUDY / f"calib_{run}" / HAND_MAP)
+    return measured_in_force(ran) if ran else None
 
 
 def ranges_summary(rec: dict) -> str:
@@ -231,7 +243,7 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
     (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
     if hand_id:
         source = f"{measured_by()}, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
-        out["joint_ranges"] = record_ranges(hand_id, stops, source)
+        out["joint_ranges"] = record_ranges(hand_id, stops, source, before=ranges_before(run))
         (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
     return out
 

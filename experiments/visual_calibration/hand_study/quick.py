@@ -40,15 +40,17 @@ def repeat(R: list[dict], a: str, b: str) -> dict | None:
     return {"per_joint": d, "rms": round(float(np.sqrt(np.mean(np.square(list(d.values()))))), 2)}
 
 
-def check(val: Path, run: str, stops: dict[str, dict]) -> dict:
+def check(val: Path, run: str, stops: dict[str, dict], recorded: list[str] | None = None) -> dict:
     """The hand's accuracy on its validation block (true minus predicted, deg): orca_core's linear map
-    under calibration `run` with the ranges in force before (the archived ones) and after the fitted
-    `stops` (hardstops.fit; a joint not measured keeps its old range)."""
+    under calibration `run` with the ranges in force before (the archived ones) and after: the fitted
+    `stops` (hardstops.fit) of the joints `recorded` in joint_ranges.yaml (default: every joint the fit
+    identified), the old range for the rest."""
     V_all = analysis.rows([val])
     V = hardstops.good(V_all)
+    kept = set(recorded if recorded is not None else (j for j, s in stops.items() if s["identifiable"]))
     before = hardstops.Linear(run)
-    after = hardstops.Linear(run, {j: stops[j]["new"] for j in JOINTS})
-    return {"run": run, "val": val.name, "n": len(V), "n_all": len(V_all),
+    after = hardstops.Linear(run, {j: stops[j]["new"] if j in kept else stops[j]["old"] for j in JOINTS})
+    return {"run": run, "val": val.name, "n": len(V), "n_all": len(V_all), "recorded": sorted(kept),
             "before": hardstops.accuracy(V, lambda r, j: before.joint(j, r["motor"][j])),
             "after": hardstops.accuracy(V, lambda r, j: after.joint(j, r["motor"][j]))}
 
