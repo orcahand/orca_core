@@ -170,6 +170,8 @@ class RigConfig:
         """The rig's config from the repo, its own files from its folder under ORCA_HOME: that of
         `rig_id`, else of the board turntable.yaml pins. A rig loaded from a folder of its own
         (`path`: a copy for a test, or of a past calibration) keeps its files there."""
+        # An explicit path is a self-contained rig folder: its calibration files are read and written
+        # there, never in ORCA_HOME (tests' copies, estimate.rig_at's past calibrations).
         home = path
         path = path or get_rig_path(name, version)
         raw = read_yaml(os.path.join(path, "config.yaml"))
