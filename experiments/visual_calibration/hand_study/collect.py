@@ -65,10 +65,11 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
     write_json(session / "progress.json", progress)
     stream = Stream()
     hand, plate = Hand(stream), Turntable()
-    cam = Camera()                             # orca-ui's camera preflight: refuses before anything moves
-    log(f"cameras {', '.join(cam.names)}: identified, controls locked")
+    cam = None
     forward = True
     try:
+        cam = Camera()                         # orca-ui's camera preflight: refuses before anything moves
+        log(f"cameras {', '.join(cam.names)}: identified, controls locked")
         if plate.state().get("busy"):
             raise RuntimeError("the turntable is busy")
         hand.torque(True)
@@ -175,7 +176,8 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
             hand.torque(False)
         finally:
             plate.off()
-            cam.close()
+            if cam is not None:
+                cam.close()
             stream.close()
             progress["ended"] = time.time()
             write_json(session / "progress.json", progress)

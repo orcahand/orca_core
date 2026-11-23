@@ -240,6 +240,13 @@ def camera_still(cam: str, format: str = "png", quality: int = 95):
     return Response(buf.tobytes(), media_type="image/jpeg" if format == "jpg" else "image/png")
 
 
+@app.get("/api/visual-calibration/cameras/stills")
+def camera_stills(format: str = "png", quality: int = 95):
+    import base64
+    return {"format": format, "cameras": {c: base64.b64encode(camera_still(c, format, quality).body).decode()
+                                          for c in ("a", "b")}}
+
+
 @app.post("/api/tactile/zero")
 def tzero():
     return {}

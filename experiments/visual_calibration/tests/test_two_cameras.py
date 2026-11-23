@@ -187,19 +187,24 @@ def test_hand_run_photographs_every_camera(tmp_path, monkeypatch):
     from hand_study.collect import photograph
     from hand_study.estimate import load_frames
     monkeypatch.delenv("STUDY_FAKE_CAMERA", raising=False)
-    calls, refuse = [], {"b": 1}
+    calls, refuse = [], [1]
+
+    def jpeg(cam):
+        return cv2.imencode(".jpg", np.full((6, 8, 3), 50 if cam == "a" else 200, np.uint8))[1].tobytes()
 
     def call(path, body=None, timeout=120.0):
         calls.append(path)
-        assert path == "/visual-calibration/cameras/preflight" and body == {"tiles": False}
-        return {"indices": {"a": 1, "b": 0}, "identified_by": "serial"}
+        if path == "/visual-calibration/cameras/preflight":
+            assert body == {"tiles": False}
+            return {"indices": {"a": 1, "b": 0}, "identified_by": "serial"}
+        assert path.startswith("/visual-calibration/cameras/stills?format=jpg") and body is None
+        if refuse[0]:
+            refuse[0] -= 1
+            raise hw.ApiError(f'{path}: 409 {{"detail": "the cameras are not checked: run the camera preflight"}}')
+        return {"cameras": {c: __import__("base64").b64encode(jpeg(c)).decode() for c in "ab"}}
 
     def fetch(path, timeout=60.0):
-        cam = path.split("/")[-2]
-        if refuse.get(cam):
-            refuse[cam] -= 1
-            raise hw.ApiError(f"{path}: 409 not checked")
-        return cv2.imencode(".jpg", np.full((6, 8, 3), 50 if cam == "a" else 200, np.uint8))[1].tobytes()
+        raise hw.ApiError(f'{path}: 409 {{"detail": "the plate is turning"}}')       # not about the preflight
 
     monkeypatch.setattr(hw, "call", call)
     monkeypatch.setattr(hw, "fetch", fetch)
@@ -207,9 +212,50 @@ def test_hand_run_photographs_every_camera(tmp_path, monkeypatch):
     views = photograph(cam, tmp_path, 45.0, 45.3) + photograph(cam, tmp_path, 90.0, 89.8)
     assert [v["file"] for v in views] == ["v045.jpg", "v045_b.jpg", "v090.jpg", "v090_b.jpg"]
     assert calls.count("/visual-calibration/cameras/preflight") == 2       # once more after the 409
+    with pytest.raises(hw.ApiError, match="plate is turning"):
+        cam.grab("b")                                                       # another 409: no new preflight
+    assert calls.count("/visual-calibration/cameras/preflight") == 2
     (tmp_path / "meta.json").write_text(__import__("json").dumps({"views": views}))
     f = load_frames(tmp_path)
     assert [x[2] if len(x) > 2 else "a" for x in f] == ["a", "b", "a", "b"] and f[1][1].mean() > 150
+
+
+def test_a_refused_camera_preflight_fails_the_hand_run(tmp_path, monkeypatch):
+    """The camera preflight is part of the run: refused, the run is marked failed with the reason,
+    nothing moved, the stream closed."""
+    import json
+
+    from hand_study import collect, hw
+    events = []
+
+    class Stream:
+        def close(self):
+            events.append("stream closed")
+
+    class Hand:
+        def __init__(self, stream):
+            pass
+
+        def torque(self, on):
+            events.append(f"torque {on}")
+
+    class Plate:
+        def off(self):
+            events.append("plate off")
+
+    def refused():
+        raise hw.ApiError('/visual-calibration/cameras/preflight: 409 {"detail": "camera b is not plugged in"}')
+
+    monkeypatch.setattr(collect, "Stream", Stream)
+    monkeypatch.setattr(collect, "Hand", Hand)
+    monkeypatch.setattr(collect, "Turntable", Plate)
+    monkeypatch.setattr(collect, "Camera", refused)
+    (tmp_path / "plan.json").write_text(json.dumps({"angles": [0.0], "configs": [{"id": "c0", "q": {}}], "calibration": "x"}))
+    with pytest.raises(hw.ApiError):
+        collect.run(tmp_path, log=lambda *a: None)
+    p = json.loads((tmp_path / "progress.json").read_text())
+    assert p["state"] == "error" and "not plugged in" in p["error"]
+    assert events == ["torque False", "plate off", "stream closed"]
 
 
 def test_overlay_and_quick_check_per_camera(two_camera_rig):

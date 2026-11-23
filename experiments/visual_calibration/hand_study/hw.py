@@ -631,28 +631,31 @@ class Camera:
         self.names = list(r["indices"])
         return r
 
-    def _still(self, cam: str, fmt: str = "jpg", quality: int = 95) -> bytes:
-        path = f"/visual-calibration/cameras/{cam}/still?format={fmt}&quality={quality}"
+    def _again(self, get):
+        """get(); once more after a new preflight when orca-ui wants one (a capture reopened: a replug)."""
         try:
-            return fetch(path)
+            return get()
         except ApiError as e:
-            if ": 409 " not in str(e):
+            if ": 409 " not in str(e) or "preflight" not in str(e):
                 raise
-        self.preflight()                       # a capture reopened since (a replug): prove the cameras again
-        return fetch(path)
+        self.preflight()
+        return get()
 
     def shots(self) -> dict[str, bytes]:
-        """{camera: JPEG (quality 95)} of every camera, each taken after this call."""
+        """{camera: JPEG (quality 95)} of every camera, all taken after this call."""
         if self.fake:
             import cv2
             return {"a": cv2.imencode(".jpg", self.img, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()}
-        return {c: self._still(c) for c in self.names}
+        import base64
+        r = self._again(lambda: call("/visual-calibration/cameras/stills?format=jpg&quality=95"))
+        return {c: base64.b64decode(v) for c, v in r["cameras"].items()}
 
     def grab(self, cam: str = "a") -> np.ndarray:
         import cv2
         if self.fake:
             return self.img.copy()
-        return cv2.imdecode(np.frombuffer(self._still(cam), np.uint8), cv2.IMREAD_COLOR)
+        data = self._again(lambda: fetch(f"/visual-calibration/cameras/{cam}/still?format=jpg&quality=95"))
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
     def close(self):
         """Nothing to release: orca-ui keeps the cameras open for its whole life."""
