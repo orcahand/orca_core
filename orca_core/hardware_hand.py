@@ -205,6 +205,8 @@ class OrcaHand(BaseHand):
         self._joint_ranges_info: dict = _MODEL_RANGES_INFO
         # The ranges this hand's board store holds (section 16); None when it holds none.
         self._board_joint_ranges: dict | None = None
+        # The hand whose board was asked what it holds this session (not a copy last read).
+        self._board_asked_for: str | None = None
         self._measured_range_joints: frozenset = frozenset()
         self._hand_id: str | None = None
         self._board_hand_id: str | None = None
@@ -309,6 +311,7 @@ class OrcaHand(BaseHand):
         joint ranges in the copy last read (``board.bin``) stay in force."""
         self._board_store = None
         self._board_joint_ranges = None
+        self._board_asked_for = self._hand_id
         if not blob:
             if unread:
                 self._keep_last_board_ranges(folder)
@@ -632,14 +635,18 @@ class OrcaHand(BaseHand):
     def _use_stored_hand(self, hand_id: str) -> str:
         """Take the files of the hand filed under ``hand_id`` without connecting:
         its joint ranges and calibration, under the hardware version its board
-        reported when last read (unless this session chose one). Returns the folder."""
+        reported when last read (unless this session chose one). What its board
+        holds is the copy last read (``board.bin``), unless this session asked
+        that hand's board itself. Returns the folder."""
         folder = str(hand_store.hand_dir(hand_id))
+        if self._board_asked_for != hand_id:
+            self._board_store = self._last_board_store(folder)
+            self._board_joint_ranges = (
+                self._board_store.joint_ranges if self._board_store else None)
         self._hand_id = hand_id
-        last = self._last_board_store(folder)
-        if self._board_hardware_version is None:
-            self._board_hardware_version = (
-                normalize_hardware_version(last.identity.hw_version) if last else None)
-        self._board_joint_ranges = last.joint_ranges if last else None
+        if self._board_hardware_version is None and self._board_store is not None:
+            self._board_hardware_version = normalize_hardware_version(
+                self._board_store.identity.hw_version)
         self._apply_hardware_version()
         self._use_folder(folder, reload=True)
         return folder
@@ -672,6 +679,7 @@ class OrcaHand(BaseHand):
         self.config = dataclasses.replace(self.config, hand_dir="", calibration_path=calibration)
         self._board_store = None
         self._board_joint_ranges = None
+        self._board_asked_for = None
         self._joint_ranges, self._joint_ranges_origin = {}, {}
         self._rebuild_config(self.config.hardware_version)
         if not self._explicit_calibration:
@@ -1088,7 +1096,7 @@ class OrcaHand(BaseHand):
         "_hand_id", "_board_hand_id", "_board_store",
         "_board_hardware_version", "_hardware_version_override",
         "_joint_ranges", "_joint_ranges_origin", "_joint_ranges_info",
-        "_measured_range_joints", "_board_joint_ranges",
+        "_measured_range_joints", "_board_joint_ranges", "_board_asked_for",
         "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
         "_calibration_doc_stamp", "_rom_frame", "_wrap_offsets_dict", "_config",
     )
@@ -2504,6 +2512,7 @@ class MockMotorResolutionMixin:
         if not (folder / hand_store.HAND_FILE).exists():
             hand_store.record_contact(folder, hand_id, model=self._model_name())
         self._hand_id, self._board_hand_id = hand_id, None
+        self._board_store = self._board_joint_ranges = self._board_asked_for = None
         self._use_folder(str(folder))
 
     def _install_mock_calibration(self) -> None:

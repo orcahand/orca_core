@@ -343,6 +343,22 @@ class TestTheBoardsJointRanges:
         hand._use_stored_hand("ser-0000")
         assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
         assert hand.joint_ranges_info["stored_on"] == "board"
+        assert hand._board_store.joint_ranges == BOARD_RANGES, "store and ranges agree"
+
+    def test_a_hand_whose_board_was_asked_keeps_what_it_said(self, connect, config):
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        (hand_store.hand_dir("ser-0000") / "board.bin").write_bytes(board_blob(config))
+        hand._use_stored_hand("ser-0000")
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand._board_store.joint_ranges == BOARD_RANGES
+
+    def test_a_mock_hand_drops_what_a_board_held(self, model_dir):
+        hand = MockOrcaHand(config_path=str(model_dir / "config.yaml"))
+        hand._board_store = board_store.unpack(board_blob(hand.config, joint_ranges=BOARD_RANGES))
+        hand._board_joint_ranges = BOARD_RANGES
+        hand._settle_identity(board_sync.NO_BOARD)
+        assert hand._board_store is None and hand._board_joint_ranges is None
+        assert hand.joint_ranges_info["source"] == "model"
 
 
 class TestReadingTheBoardAtConnect:
