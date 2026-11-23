@@ -43,6 +43,8 @@ def good(R: list[dict]) -> list[dict]:
 
 
 def t_of(L: LinearMap, j: str, m: float) -> float:
+    if not L.calibrated(j):
+        raise ValueError(f"{j} is not calibrated in this run")
     lo, hi = L.limits[L.motor[j]]
     return (L.unwrap(j, m) - lo) / (hi - lo)
 
@@ -52,6 +54,10 @@ def fit(R: list[dict], run: str) -> dict[str, dict]:
     out = {}
     rr = [r for r in good(R) if r["run"] == run]
     for j in JOINTS:
+        if not L.calibrated(j):                 # orca_core holds it uncalibrated: no stops to fit
+            out[j] = {"old": list(L.rom[j]), "new": list(L.rom[j]), "n": 0, "dropped": 0, "t_span": None,
+                      "identifiable": False, "fit": None, "rms": None, "uncalibrated": True}
+            continue
         t = np.array([t_of(L, j, r["motor"][j]) for r in rr])
         y = np.array([r["measured"][j] for r in rr])
         A = np.c_[t, 1 - t] if L.inverted[j] else np.c_[1 - t, t]
@@ -94,7 +100,11 @@ def accuracy(R: list[dict], predict) -> dict:
     """Per joint and overall RMS and max |true - predicted| (deg)."""
     out, allerr = {}, []
     for j in JOINTS:
-        e = np.array([r["measured"][j] - predict(r, j) for r in R if (r.get("split") or {}).get(j, 0.0) <= SPLIT_MAX_DEG])
+        try:
+            e = np.array([r["measured"][j] - predict(r, j) for r in R if (r.get("split") or {}).get(j, 0.0) <= SPLIT_MAX_DEG])
+        except ValueError:                      # an uncalibrated joint: nothing to predict
+            out[j] = None
+            continue
         allerr.append(e)
         out[j] = {"rms": round(float(np.sqrt(np.mean(e ** 2))), 2), "max": round(float(np.abs(e).max()), 2),
                   "mean": round(float(e.mean()), 2)} if len(e) else None

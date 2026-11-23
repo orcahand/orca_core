@@ -109,3 +109,51 @@ def test_night_archives_the_hand_folder_and_checks_it(tmp_path, monkeypatch):
     live["index_mcp"] = 43.0
     with pytest.raises(night.Abort, match="live estimate"):
         n.check_archive(out)
+
+
+def _stored_hand(hid, cal_extra=None, roms=None):
+    """A right hand filed under `hid`, calibrated (fingerprint of the packaged map), `roms` measured."""
+    from orca_core import hand_store
+    from orca_core.calibration import joint_fingerprints
+    f = hand_store.hand_dir(hid)
+    f.mkdir(parents=True)
+    (f / "hand.yaml").write_text(yaml.safe_dump({"schema": 1, "id": hid, "model": MODEL}))
+    limits = {m: [-1.0 + 0.1 * m, 1.6 + 0.13 * m] for m in range(1, 18)}
+    fingerprint = joint_fingerprints(OrcaHandConfig.from_config_path(model_name=MODEL))
+    (f / "calibration.yaml").write_text(yaml.safe_dump({"schema": 1, "calibrated": True, "wrist_calibrated": True,
+                                                        "motor_limits": limits, "fingerprint": fingerprint,
+                                                        **(cal_extra or {})}))
+    if roms:
+        hand_store.write_joint_ranges(f, roms, source="test")
+    return f, limits
+
+
+@pytest.mark.parametrize("cal_extra, roms", [
+    (None, None),
+    (None, {"index_mcp": [-12.0, 95.0], "ring_pip": [0.0, 100.0]}),
+    ({"joint_roms_measured": {"index_mcp": [-20.0, 80.0]}}, None),
+    ({"joint_roms_measured": {"index_mcp": [-20.0, 80.0]}, "rom_frame": "centered"}, None),
+    ({"fingerprint": {"index_mcp": "another mapping"}}, None),
+], ids=["model", "measured ranges", "encoder span", "encoder span centered", "a joint's mapping changed"])
+def test_the_map_is_orca_core_s_own(cal_extra, roms):
+    """LinearMap gives what the hand itself reads from the same motor positions (OrcaHand's map)."""
+    import numpy as np
+    from orca_core.hardware_hand import MockOrcaHand
+    folder, limits = _stored_hand("ser-0001", cal_extra, roms)
+    if cal_extra and "fingerprint" in cal_extra:            # a fingerprint for every joint, one of them changed
+        doc = yaml.safe_load((folder / "calibration.yaml").read_text())
+        from orca_core.calibration import joint_fingerprints
+        doc["fingerprint"] = {**joint_fingerprints(OrcaHandConfig.from_config_path(model_name=MODEL)),
+                              "index_mcp": "another mapping"}
+        (folder / "calibration.yaml").write_text(yaml.safe_dump(doc))
+    hand = MockOrcaHand(model_name=MODEL)
+    hand._use_stored_hand("ser-0001")
+    hand._wrap_offsets_dict = {}
+    L = LinearMap.of_hand(folder, MODEL)
+    ids = hand.config.motor_ids
+    for t in (0.0, 0.3, 0.9):
+        pos = np.array([limits[m][0] + t * (limits[m][1] - limits[m][0]) for m in ids])
+        runtime = {j: v for j, v in hand._motor_to_joint_pos(pos).items() if v is not None}
+        mine = L.joints_of(ids, list(pos))
+        assert set(mine) == set(runtime)
+        assert max(abs(mine[j] - runtime[j]) for j in runtime) < 1e-9
