@@ -73,6 +73,23 @@ def _print_progress(event: dict) -> None:
                 detail = f"pass at {100 * m['pass_fraction']:.0f}%"
             print(f"  motor {m['motor']:>2}  {_bar(m)}  ({m['spread_deg']:.0f} of {m['expected_deg']} deg, {detail})")
         print(f"Score: {event['passed']}/{event['scored']} motors ({100 * event['fraction']:.0f}%)")
+    elif kind == "fault":
+        _notice(f"Fault: {event['joint']} (motor {event['motor']}) latched {', '.join(event['flags'] or [])} "
+                "and is not holding; it cannot pass. Power-cycle the hand and run this again.")
+    elif kind == "fault_cleared":
+        _notice(f"Fault cleared: {event['joint']} (motor {event['motor']}) holds again.")
+    elif kind == "sampler_failed":
+        _notice(f"Live spreads stopped: {event['error']}")
+    elif kind == "torque_off_failed":
+        _notice(f"Torque could not be switched off on {', '.join(map(str, event['joints']))} "
+                f"(motors {event['motors']}); power the hand off.")
+
+
+def _notice(text: str) -> None:
+    """Print below the live spread line rather than over it."""
+    if _live.is_set():
+        print()
+    print(text)
 
 
 _round = [0]
@@ -139,11 +156,12 @@ def main() -> int:
     args = parser.parse_args()
 
     hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
-    last = read_last_tension(hand.config)
-    if last:
-        print(f"Last successful tension: {last.get('completed_at')}")
     try:
         connect_hand(hand)
+        # The hand's records are in its folder, known once it has connected.
+        last = read_last_tension(hand.config)
+        if last:
+            print(f"Last successful tension: {last.get('completed_at')}")
         result = run_guided_tension(
             hand,
             prompt_callback=_prompt,

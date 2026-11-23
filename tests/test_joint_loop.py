@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import time
 
 import numpy as np
@@ -27,6 +26,7 @@ from tests._loop_helpers import (
     encoder_reading_from_joint_angles,
     make_calibrated_hand,
 )
+from tests._helpers import copy_model_config
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +38,7 @@ REAL_CONFIG = os.path.join(
 @pytest.fixture
 def calibrated_hand(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
     hand = make_calibrated_hand(str(config_path))
     yield hand
     hand.disconnect()

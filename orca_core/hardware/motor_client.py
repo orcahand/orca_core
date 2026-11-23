@@ -147,14 +147,28 @@ class MotorClient(ABC):
     arrival_tolerance_rad: ClassVar[float] = 0.06
 
     def _flush_input_buffer(self):
-        """Discards stale RX bytes so a late reply can't be misread as the next response."""
-        ser = getattr(getattr(self, "port_handler", None), "ser", None)
+        """Recover the port after a failed transaction; call holding the bus lock.
+
+        Discards stale RX bytes and clears the SDK's ``is_using`` flag, which a
+        transaction that raised leaves set (under the lock nothing live owns it).
+        """
+        handler = getattr(self, "port_handler", None)
+        if getattr(handler, "is_using", False) is True:
+            handler.is_using = False
+        ser = getattr(handler, "ser", None)
         if ser is None or not hasattr(ser, "reset_input_buffer"):
             return
         try:
             ser.reset_input_buffer()
         except Exception:
             pass
+
+    def _reclaim_port(self) -> None:
+        """Recover a port a raising transaction left marked in use; call holding the bus lock."""
+        if getattr(getattr(self, "port_handler", None), "is_using", False) is True:
+            logging.warning("Port %s was left in use by a failed transaction; "
+                            "reclaiming it.", getattr(self, "port_name", "?"))
+            self._flush_input_buffer()
 
     OPEN_CLIENTS: ClassVar[set] = set()
     """Connected clients of every family, so exit cleanup only touches live ports."""
@@ -897,6 +911,17 @@ class MotorClient(ABC):
         instead of calling this in a loop.
         """
         return {motor_id: self._current_ceiling_ma(motor_id) for motor_id in self.motor_ids}
+
+    def read_goal_currents(
+        self, motor_ids: "Sequence[int] | None" = None
+    ) -> "dict[int, float | None]":
+        """The goal-current limit each motor reports holding, in mA, read from the bus.
+
+        A sync write carries no acknowledgement, so this is the proof that a
+        :meth:`write_desired_current` landed. ``None`` marks a motor that did not
+        answer or has no current register. One round trip per motor.
+        """
+        raise NotImplementedError
 
     def _current_ceiling_ma(self, motor_id: int) -> "float | None":
         """Cached ceiling for one motor: the family maximum unless a subclass knows better."""

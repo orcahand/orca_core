@@ -207,6 +207,31 @@ def test_the_thumb_and_the_fingers_are_parked_out_of_each_others_way(swept):
     assert seen["index_pip"][motor["index_pip"]] == pytest.approx(-0.5 + math.radians(2.0) if flex["index_pip"] > 0 else 1.5 - math.radians(2.0), abs=0.02)
 
 
+def test_every_motor_is_off_after_the_sweep(real_mode_change, swept):
+    hand, _ = swept
+    run_tension_sweep(hand, joints=["index_pip", "ring_pip"], clock=_FakeClock())
+    assert not any(hand.motor_client._torque_enabled.values())
+
+
+def test_every_motor_is_off_when_the_exit_mode_change_raises(real_mode_change, swept, monkeypatch):
+    hand, _ = swept
+    set_mode, stopping = hand.set_control_mode, []
+
+    def set_control_mode(mode, motor_ids=None):
+        set_mode(mode, motor_ids)
+        if stopping:
+            raise OSError("serial link dropped")
+
+    def stop():
+        stopping.append(True)
+        return True
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    with pytest.raises(InterruptedError):
+        run_tension_sweep(hand, joints=["index_pip"], clock=_FakeClock(), should_stop=stop)
+    assert not any(hand.motor_client._torque_enabled.values())
+
+
 def test_a_running_joint_loop_refuses_the_sweep():
     hand = OrcaHandFull.__new__(OrcaHandFull)
     hand._loop = object()

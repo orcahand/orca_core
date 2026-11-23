@@ -9,7 +9,6 @@ the calibration routine answers a short measurement with.
 import math
 import os
 import re
-import shutil
 
 import pytest
 import yaml
@@ -24,6 +23,7 @@ from orca_core.maintenance.motor_travel import (
     write_joint_motor_travel,
 )
 from orca_core.utils.utils import read_yaml
+from tests._helpers import copy_model_config, hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -33,7 +33,7 @@ MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right
 def model_dir(tmp_path):
     """A v2.1 copy of the packaged model with no packaged baseline or group
     currents, so each test's ``joint_motor_travel`` and currents are the only ones in force."""
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
     path = tmp_path / "config.yaml"
     doc = read_yaml(str(path))
     doc.pop("joint_motor_travel_v21")
@@ -644,7 +644,7 @@ def test_calibration_records_the_mean_current_per_direction(model_dir):
         assert all(value > 0 for value in per_direction.values()), joint
 
     # Persisted under its own key, and read back by from_calibration_path.
-    doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+    doc = read_yaml(str(hand_calibration_file(model_dir)))
     assert doc["drive_current_measured"]["index_mcp"].keys() == {"extend", "flex"}
 
     reloaded = MockOrcaHand(config_path=path)
@@ -711,9 +711,9 @@ def test_the_table_shows_the_change_against_the_previous_run(model_dir, caplog):
         hand.calibrate(joints=["index_mcp"], persist=True)
         stored = hand.calibration.drive_current_measured_dict["index_mcp"]["flex"]
         # Halve the stored figure, so the next run has a change to report.
-        doc = read_yaml(os.path.join(str(model_dir), "calibration.yaml"))
+        doc = read_yaml(str(hand_calibration_file(model_dir)))
         doc["drive_current_measured"]["index_mcp"]["flex"] = stored / 2
-        (model_dir / "calibration.yaml").write_text(yaml.dump(doc, sort_keys=False))
+        hand_calibration_file(model_dir).write_text(yaml.dump(doc, sort_keys=False))
 
         reloaded = MockOrcaHand(config_path=path)
         reloaded.connect()
@@ -727,3 +727,25 @@ def test_the_table_shows_the_change_against_the_previous_run(model_dir, caplog):
     assert table, "no drive-current table was logged"
     # Doubling the stored figure reads as +100%.
     assert re.search(r"index_mcp\s+\d+\s+\+\d+\s+\+100%", table[-1]), table[-1]
+
+
+def test_the_table_lists_only_the_joints_driven_this_run(model_dir):
+    """Joints carried over from an earlier run are kept but not shown as remeasured."""
+    path = _write_config(model_dir)
+    hand = MockOrcaHand(config_path=path)
+    hand.connect()
+    try:
+        hand.calibrate(joints=["index_mcp", "index_pip"], persist=True)
+        events = []
+        calibration_routine.run_calibration(
+            hand, joints=["index_mcp"], persist=False, progress_callback=events.append)
+        carried = hand.calibration.drive_current_measured_dict
+    finally:
+        hand.disconnect()
+
+    assert set(carried) == {"index_mcp", "index_pip"}
+    tables = [e["table"] for e in events if e["event"] == "drive_currents_measured"]
+    assert len(tables) == 1 and "index_mcp" in tables[0]
+    assert "index_pip" not in tables[0], tables[0]
+    done = [e for e in events if e["event"] == "calibration_done"][-1]
+    assert done["drive_current_measured_joints"] == ["index_mcp"]

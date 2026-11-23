@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import yaml
 import numpy as np
 
@@ -158,38 +159,40 @@ def update_yaml(file_path, key, value):
         key: Top-level key to update.
         value: New value. ``np.ndarray`` instances are converted to lists.
     """
-    if isinstance(value, np.ndarray):
-        value = value.tolist()
-    
-    if isinstance(value, dict):
-        value = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in value.items()}
-
     try:
-        with open(file_path, 'r+') as file:
-            data = yaml.safe_load(file) or {} 
-            
+        with open(file_path, 'r+', encoding="utf-8") as file:
+            data = yaml.safe_load(file) or {}
+
             new_data = {key: value} # Make the latest chnage in the yaml file the first entry
             for existing_key, existing_value in data.items():
                 if existing_key != key:
                     new_data[existing_key] = existing_value
-            
-            file.seek(0) 
-            yaml.dump(new_data, file, default_flow_style=False, sort_keys=False) 
-            file.truncate() 
+
+            file.seek(0)
+            file.write(_dump_yaml(new_data))
+            file.truncate()
     except FileNotFoundError:
-        with open(file_path, 'w') as file:
-            yaml.dump({key: value}, file, default_flow_style=False, sort_keys=False)
+        with open(file_path, 'w', encoding="utf-8") as file:
+            file.write(_dump_yaml({key: value}))
 
 
 def _to_plain(value):
+    """``value`` as plain YAML types: arrays and tuples as lists, NumPy scalars
+    as numbers, all the way down. Anything else is left for the safe dumper to
+    refuse, so a write never emits a tag that a safe read sets aside."""
     if isinstance(value, np.ndarray):
         return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
     if isinstance(value, dict):
-        return {
-            k: (v.tolist() if isinstance(v, np.ndarray) else v)
-            for k, v in value.items()
-        }
+        return {_to_plain(k): _to_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain(v) for v in value]
     return value
+
+
+def _dump_yaml(data) -> str:
+    return yaml.safe_dump(_to_plain(data), default_flow_style=False, sort_keys=False)
 
 
 def is_packaged_model_path(path) -> bool:
@@ -201,38 +204,73 @@ def is_packaged_model_path(path) -> bool:
     models_dir = os.path.normcase(os.path.realpath(_get_models_dir()))
     candidate = os.path.normcase(os.path.realpath(path))
     try:
-        return os.path.commonpath([candidate, models_dir]) == models_dir
+        if os.path.commonpath([candidate, models_dir]) == models_dir:
+            return True
     except ValueError:
         # Different drives on Windows: cannot be inside the package tree.
         return False
+    # A case-insensitive file system (macOS) opens the tree under other
+    # spellings too, which only the file system itself can say.
+    probe = candidate
+    while True:
+        try:
+            if os.path.samefile(probe, models_dir):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        probe = parent
 
 
-def write_text_atomic(file_path, text: str) -> None:
-    """Write ``text`` to ``file_path`` via a same-directory temp file and
-    ``os.replace``, keeping the target's permissions, so a crash mid-write
-    never leaves a truncated file."""
+_REPLACE_ATTEMPTS = 20
+
+
+def _replace(src: str, dst: str) -> None:
+    """``os.replace``, retried briefly on PermissionError: Windows refuses it
+    while another process has ``dst`` open, e.g. reading it."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.05)
+
+
+def write_bytes_atomic(file_path, data: bytes) -> None:
+    """Replace ``file_path`` with ``data`` via a same-directory temp file and
+    ``os.replace``, so a crash mid-write never leaves a truncated file. A
+    symlink is resolved first, and the target keeps its permissions."""
     real_path = os.path.realpath(file_path)
+    # mkstemp creates 0600 files; carry over the target's permissions.
     try:
         mode = os.stat(real_path).st_mode & 0o7777
-    except FileNotFoundError:
-        mode = None
+    except OSError:
+        mode = 0o644
     fd, tmp_path = tempfile.mkstemp(
-        dir=os.path.dirname(real_path) or ".", prefix=".", suffix=".tmp"
+        dir=os.path.dirname(real_path) or ".", prefix=os.path.basename(real_path) + ".", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        if mode is not None:
-            os.chmod(tmp_path, mode)
-        os.replace(tmp_path, real_path)
+        os.chmod(tmp_path, mode)
+        _replace(tmp_path, real_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+
+
+def write_text_atomic(file_path, text: str) -> None:
+    """:func:`write_bytes_atomic` for UTF-8 ``text``."""
+    write_bytes_atomic(file_path, text.encode("utf-8"))
 
 
 def write_yaml_atomic(file_path, data):
@@ -242,47 +280,25 @@ def write_yaml_atomic(file_path, data):
     moved over ``file_path`` with ``os.replace``, so a crash mid-write can
     never leave the target truncated or partially updated. A symlinked
     ``file_path`` is resolved first, so the write replaces the file the link
-    points to rather than swapping the link for a regular file. NumPy arrays
-    are converted to plain Python lists, as in :func:`update_yaml`.
+    points to rather than swapping the link for a regular file. Values are
+    written as plain YAML (NumPy arrays and tuples as lists, NumPy scalars as
+    numbers); one with no plain form raises instead of being tagged.
 
     Args:
         file_path: Path to the YAML file. Created if it does not exist.
         data: Mapping of top-level keys to values forming the whole document.
     """
-    data = {key: _to_plain(value) for key, value in data.items()}
-    real_path = os.path.realpath(file_path)
+    write_text_atomic(file_path, _dump_yaml(data))
 
-    # mkstemp creates 0600 files; carry over the target's permissions so the
-    # replace doesn't silently restrict who can read an existing file.
-    try:
-        mode = os.stat(real_path).st_mode & 0o7777
-    except OSError:
-        mode = 0o644
 
-    target_dir = os.path.dirname(real_path) or "."
-    fd, tmp_path = tempfile.mkstemp(
-        dir=target_dir, prefix=os.path.basename(real_path) + ".", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w") as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-            file.flush()
-            os.fsync(file.fileno())
-        os.chmod(tmp_path, mode)
-        os.replace(tmp_path, real_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+_SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
 def read_yaml(file_path):
-    """Reads a YAML file and returns its content."""
+    """Reads a UTF-8 YAML file and returns its content."""
     try:
-        with open(file_path, 'r') as file:
-            return yaml.safe_load(file) or None
+        with open(file_path, 'r', encoding="utf-8") as file:
+            return yaml.load(file, Loader=_SAFE_LOADER) or None
     except FileNotFoundError:
         return {}
 

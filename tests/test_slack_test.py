@@ -137,6 +137,64 @@ def test_a_skipped_joint_is_not_moved_and_a_stop_leaves_torque_off(spooled):
         SlackTestSettings(max_free_deg=360.0).validate()
 
 
+def _torqued(hand):
+    return sorted(m for m, on in hand.motor_client._torque_enabled.items() if on)
+
+
+def test_every_motor_is_off_while_a_joint_is_held_and_after_the_test(real_mode_change, spooled):
+    hand, _ = spooled
+    at_hold = []
+    run_slack_test(hand, joints=["index_pip", "ring_mcp"], clock=_FakeClock(),
+                   hold_callback=lambda joint: at_hold.append(_torqued(hand)) or True)
+    assert at_hold == [[], []]
+    assert _torqued(hand) == []
+
+
+def test_torque_goes_off_when_the_exit_mode_change_raises(real_mode_change, spooled, monkeypatch):
+    hand, _ = spooled
+    set_mode, calls, events = hand.set_control_mode, [], []
+
+    def set_control_mode(mode, motor_ids=None):
+        calls.append(mode)
+        set_mode(mode, motor_ids)
+        if len(calls) > 1:
+            raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    with pytest.raises(OSError):
+        run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(),
+                       progress_callback=events.append)
+    assert len(calls) == 2
+    assert _torqued(hand) == []
+    assert [e for e in events if e["event"] == "torque_off_failed"] == []
+
+
+def test_a_motor_left_holding_at_the_exit_is_reported(spooled, monkeypatch):
+    hand, _ = spooled
+    stuck = hand.config.joint_to_motor_map["index_pip"]
+    disable, events = hand.disable_torque, []
+
+    def disable_torque(motor_ids=None):
+        failed = disable(motor_ids)
+        return failed if motor_ids is not None else [stuck]  # all off: this one did not ack
+
+    monkeypatch.setattr(hand, "disable_torque", disable_torque)
+    run_slack_test(hand, joints=["index_pip"], clock=_FakeClock(), progress_callback=events.append)
+    failed = [e for e in events if e["event"] == "torque_off_failed"]
+    assert failed == [{"event": "torque_off_failed", "motors": [stuck], "joints": ["index_pip"]}]
+
+
+def test_a_feetech_spool_stopped_by_its_position_range_fails_instead_of_passing(
+        connected_feetech_mock_hand, monkeypatch):
+    hand, spools = _with_spools(connected_feetech_mock_hand, monkeypatch)
+    _, top = hand.motor_client.position_range_rad
+    motor = hand.config.joint_to_motor_map["index_pip"]
+    spools.start[motor] = top - math.radians(20.0)
+    spools.slack[motor] = 150.0
+    result = run_slack_test(hand, joints=["index_pip"], clock=_FakeClock())["results"][0]
+    assert result["range_limited"] and result["status"] == "fail"
+
+
 def test_back_discards_the_previous_joint_and_tests_it_again(spooled):
     hand, spools = spooled
     answers = iter([False, slack_test.HOLD_BACK, True, True])

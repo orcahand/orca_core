@@ -84,59 +84,6 @@ joint_to_motor_map_v21:
   pinky_pip: 16
   wrist: -1
 
-joint_roms:
-  wrist:
-  - -65
-  - 35
-  thumb_cmc:
-  - -45
-  - 33
-  thumb_abd:
-  - -18
-  - 55
-  thumb_mcp:
-  - -25
-  - 100
-  thumb_dip:
-  - -15
-  - 107
-  index_abd:
-  - -25
-  - 30
-  index_mcp:
-  - -25
-  - 100
-  index_pip:
-  - -15
-  - 107
-  middle_abd:
-  - -27
-  - 27
-  middle_mcp:
-  - -25
-  - 100
-  middle_pip:
-  - -15
-  - 107
-  ring_abd:
-  - -27
-  - 27
-  ring_mcp:
-  - -25
-  - 100
-  ring_pip:
-  - -15
-  - 107
-  pinky_abd:
-  - -30
-  - 30
-  pinky_mcp:
-  - -25
-  - 100
-  pinky_pip:
-  - -15
-  - 107
-
 neutral_position:
   thumb_cmc: 0
   thumb_abd: 50
@@ -157,12 +104,6 @@ neutral_position:
   wrist: -20
 
 calibration_current: default
-
-calibration_current_v21:
-  dynamixel:
-    abd: 300
-    mcp: 500
-    pip: 500
 
 calibration_step_size: 0.15
 
@@ -331,22 +272,3 @@ sensors:
     middle: 2
     ring: 3
     pinky: 4
-
-joint_motor_travel_v21:
-  wrist: 156.18
-  thumb_cmc: 59
-  thumb_abd: 56
-  thumb_mcp: 115
-  thumb_dip: 99
-  index_abd: 43
-  index_mcp: 122
-  index_pip: 100
-  middle_abd: 45
-  middle_mcp: 129
-  middle_pip: 101
-  ring_abd: 44
-  ring_mcp: 128
-  ring_pip: 101
-  pinky_abd: 50
-  pinky_mcp: 110
-  pinky_pip: 97

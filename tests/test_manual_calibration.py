@@ -182,6 +182,38 @@ def test_one_answer_records_every_joint_of_a_manual_step(hand):
         ["index_mcp", "index_mcp", "middle_mcp", "middle_mcp"]
 
 
+def _config_without_manual_sequence(tmp_path, version, model):
+    import os
+
+    import yaml
+
+    import orca_core
+
+    source = os.path.join(os.path.dirname(orca_core.__file__), "models", version, model, "config.yaml")
+    from orca_core.hand_config import load_config
+
+    raw = load_config(source)
+    raw.pop("manual_calibration_sequence", None)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
+    return str(path)
+
+
+def test_without_a_manual_sequence_each_answer_records_one_hardstop(tmp_path):
+    fingers = ["index_mcp", "middle_mcp", "ring_mcp", "pinky_mcp"]
+    hand = MockOrcaHand(config_path=_config_without_manual_sequence(tmp_path, "v2", "orcahand-right"))
+    hand.connect()
+    try:
+        asked = []
+        run_calibration(hand, joints=fingers, manual=True, persist=False,
+                        prompt_callback=lambda r: asked.append(dict(r["joints"])) or "record")
+    finally:
+        hand.disconnect()
+    assert all(len(joints) == 1 for joints in asked)
+    assert len(asked) == 2 * len(fingers)
+
+
 def test_a_manual_run_asks_for_the_wrist_even_when_it_is_calibrated(hand):
     object.__setattr__(hand.calibration, "wrist_calibrated", True)
     asked = []
@@ -242,3 +274,25 @@ def test_back_then_skip_does_not_commit_the_forgotten_capture(hand):
                     prompt_callback=prompt, progress_callback=events.append)
     assert [e["joint"] for e in _events(events, "joint_calibrated")] == []
     assert list(hand.calibration.motor_limits_dict.get(motor, [None, None])) == before
+
+
+def test_back_after_a_finished_pair_restores_that_joints_previous_limits(hand):
+    """thumb_cmc's pair completes on the second step; Back from the third step and
+    Skip must leave its limits and ratio as they were before the run."""
+    motor = hand.config.joint_to_motor_map["thumb_cmc"]
+    limits = hand.calibration.motor_limits_dict.get(motor)
+    ratio = hand.calibration.joint_to_motor_ratios_dict.get(motor)
+    limits = list(limits) if limits is not None else None
+    answers = iter(["record", "record", "back", "skip", "skip", "skip"])
+
+    def prompt(request):
+        hand.motor_client._pos[abs(request["motor"])] = 0.4 if request["direction"] == "flex" else -0.9
+        return next(answers)
+
+    events = []
+    run_calibration(hand, joints=["thumb_cmc", "thumb_abd"], manual=True, persist=False,
+                    prompt_callback=prompt, progress_callback=events.append)
+    assert _events(events, "manual_capture_back")
+    after = hand.calibration.motor_limits_dict.get(motor)
+    assert (list(after) if after is not None else None) == limits
+    assert hand.calibration.joint_to_motor_ratios_dict.get(motor) == ratio

@@ -8,18 +8,17 @@ when the config is built -- so nothing downstream has to know a revision exists.
 
 import glob
 import os
-from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from orca_core import hand_factory, load_hand
+from orca_core import load_hand
 from orca_core.constants import HARDWARE_VERSION_V21
 from orca_core.hand_config import (
     HandConfigValidationError,
     OrcaHandConfig,
     OrcaHandTouchConfig,
-    write_hardware_version,
+    load_config,
 )
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,8 +29,7 @@ FLIPPED = {"thumb_mcp", "thumb_dip"}
 
 
 def _config_with(tmp_path, source, **overrides):
-    with open(source, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_config(source)
     raw.update(overrides)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
@@ -76,15 +74,15 @@ def test_no_right_model_carries_a_v21_map(path):
     assert resolved.joint_inversion_dict == config.joint_inversion_dict
 
 
-def test_every_model_ships_the_same_baseline_and_only_for_v21():
-    """v2.0 hands have no travel baseline at all; every v2.1 variant shares one."""
-    baselines = []
+def test_every_model_takes_the_one_v21_baseline_from_shared_yaml():
+    """The v2.1 travel baseline lives once, in shared.yaml: no model restates it or ships a measurement."""
+    with open(os.path.join(V2_MODELS, "shared.yaml"), encoding="utf-8") as f:
+        baseline = yaml.safe_load(f)["joint_motor_travel_v21"]
     for path in LEFT + RIGHT:
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        assert "joint_motor_travel" not in raw, path
-        baselines.append(raw["joint_motor_travel_v21"])
-    assert all(b == baselines[0] for b in baselines)
+        assert "joint_motor_travel" not in raw and "joint_motor_travel_v21" not in raw, path
+        assert load_config(path)["joint_motor_travel_v21"] == baseline, path
 
 
 # --- the travel features follow the version ------------------------------
@@ -123,6 +121,24 @@ def test_a_pin_is_in_force_without_load_hand(tmp_path):
     assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
 
 
+def test_a_pinned_config_still_knows_its_base_map(tmp_path):
+    """The pin is applied at load; another version must start from the yaml's
+    own map, not from the pinned one."""
+    path = _config_with(tmp_path, LEFT[0], hardware_version=210)
+    pinned = OrcaHandConfig.from_config_path(config_path=path)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert pinned.base_joint_to_motor_map
+    assert pinned.with_hardware_version(200).joint_inversion_dict == base.joint_inversion_dict
+    assert pinned._without_hardware_version().joint_inversion_dict == base.joint_inversion_dict
+
+
+def test_a_session_choice_on_a_pinned_hand_puts_that_version_s_map_in_force(tmp_path):
+    hand = _hand(tmp_path, hardware_version=210)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert hand.set_hardware_version(200) == 200
+    assert hand.config.joint_inversion_dict == base.joint_inversion_dict
+
+
 def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
     source = os.path.join(V2_MODELS, "orcahand-touch-left", "config.yaml")
     path = _config_with(tmp_path, source, hardware_version=21)
@@ -131,51 +147,129 @@ def test_a_pin_is_in_force_for_a_tactile_config_built_from_the_path(tmp_path):
     assert all(config.joint_inversion_dict[j] != base.joint_inversion_dict[j] for j in FLIPPED)
 
 
-@pytest.mark.parametrize("has_line", [True, False], ids=["with auto line", "without the key"])
-def test_a_written_pin_lives_beside_the_config_and_leaves_it_untouched(tmp_path, has_line):
-    """The pin goes into local_config.yaml: config.yaml is never rewritten, so a
-    packaged model stays exactly as shipped and a dev checkout stays clean."""
-    original = open(RIGHT[0], encoding="utf-8").read()
-    if not has_line:
-        original = original.replace("hardware_version: auto\n", "")
-    path = tmp_path / "config.yaml"
-    path.write_text(original, encoding="utf-8")
-
-    written = write_hardware_version(str(path), 210)
-    assert written == str(tmp_path / "local_config.yaml")
-    assert path.read_text(encoding="utf-8") == original
-    assert yaml.safe_load(open(written)) == {"hardware_version": 210}
-    assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version == 210
-
-    write_hardware_version(str(path), None)
-    assert not os.path.exists(written), "an empty local config is removed"
-    assert OrcaHandConfig.from_config_path(config_path=str(path)).hardware_version is None
-    assert path.read_text(encoding="utf-8") == original
+def test_a_local_config_beside_the_config_is_never_read(tmp_path):
+    """An old local_config.yaml left beside a config pins nothing."""
+    path = _config_with(tmp_path, LEFT[0])
+    (tmp_path / "local_config.yaml").write_text("hardware_version: 21\n", encoding="utf-8")
+    assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None
 
 
-def test_the_local_config_beats_an_explicit_yaml_value_and_says_so(tmp_path, caplog):
-    path = _config_with(tmp_path, LEFT[0], hardware_version=200)
-    write_hardware_version(path, HARDWARE_VERSION_V21)
+# --- the version in force on a hand ---------------------------------------
+
+
+def _hand(tmp_path, **overrides):
+    from orca_core import MockOrcaHand
+
+    folder = tmp_path / "orcahand-left"
+    folder.mkdir(exist_ok=True)
+    path = _config_with(folder, LEFT[0], **overrides)
+    return MockOrcaHand(config_path=path)
+
+
+def _inverted(hand):
+    return {j: hand.config.joint_inversion_dict[j] for j in FLIPPED}
+
+
+def test_a_session_choice_puts_its_map_in_force_and_can_be_taken_back(tmp_path):
+    hand = _hand(tmp_path)
+    base = _inverted(hand)
+    assert hand.set_hardware_version(210) == 210
+    assert hand.hardware_version_override == 210
+    assert all(_inverted(hand)[j] != base[j] for j in FLIPPED)
+    assert hand.set_hardware_version(200) == 200
+    assert _inverted(hand) == base, "going back to v2.0 restores the base map"
+    assert hand.set_hardware_version(None) is None
+    assert _inverted(hand) == base
+
+
+def test_a_session_choice_wins_over_the_board_and_lifting_it_returns_to_the_board(tmp_path):
+    hand = _hand(tmp_path)
+    hand._board_hardware_version = 210
+    hand._apply_hardware_version()
+    assert hand.hardware_version == 210
+    hand.set_hardware_version(200)
+    assert hand.hardware_version == 200 and hand.board_hardware_version == 210
+    hand.set_hardware_version(None)
+    assert hand.hardware_version == 210
+
+
+def test_a_v211_choice_lays_its_ranges_over_and_v210_takes_them_back(tmp_path):
+    hand = _hand(tmp_path, joint_roms_v211={"index_mcp": [-1.0, 99.0]})
+    before = hand.config.joint_roms_dict["index_mcp"]
+    hand.set_hardware_version(211)
+    assert hand.config.joint_roms_dict["index_mcp"] == [-1.0, 99.0]
+    hand.set_hardware_version(210)
+    assert hand.config.joint_roms_dict["index_mcp"] == before
+
+
+def test_a_session_choice_is_never_saved(tmp_path):
+    hand = _hand(tmp_path)
+    hand.set_hardware_version(210)
+    again = _hand(tmp_path)
+    assert again.hardware_version is None
+    assert sorted(p.name for p in (tmp_path / "orcahand-left").iterdir()) == ["config.yaml"]
+
+
+def test_the_board_beats_a_config_yaml_pin_and_says_so(tmp_path, caplog):
+    hand = _hand(tmp_path, hardware_version=200)
+    assert hand.hardware_version == 200, "with no board, the pin is in force"
+    hand._board_hardware_version = 210
     with caplog.at_level("WARNING"):
-        config = OrcaHandConfig.from_config_path(config_path=path)
-    assert config.hardware_version == HARDWARE_VERSION_V21
-    assert "local_config.yaml sets hardware_version=210" in caplog.text
+        hand._apply_hardware_version()
+    assert hand.hardware_version == 210
+    assert "pins hardware_version=200" in caplog.text and "board's is used" in caplog.text
+    hand.set_hardware_version(200)
+    assert hand.hardware_version == 200, "a session choice still beats the board"
 
 
-def test_the_local_config_ignores_keys_it_does_not_own(tmp_path, caplog):
-    path = _config_with(tmp_path, RIGHT[0])
-    (tmp_path / "local_config.yaml").write_text(
-        yaml.safe_dump({"hardware_version": 210, "max_current": 50}), encoding="utf-8")
-    with caplog.at_level("WARNING"):
-        config = OrcaHandConfig.from_config_path(config_path=path)
-    assert config.hardware_version == 210
-    assert config.max_current != 50
-    assert "ignoring ['max_current']" in caplog.text
+def test_a_bad_version_is_refused(tmp_path):
+    with pytest.raises(ValueError):
+        _hand(tmp_path).set_hardware_version("210")
 
 
-def test_the_packaged_configs_carry_no_local_config():
-    for path in LEFT + RIGHT:
-        assert not os.path.exists(os.path.join(os.path.dirname(path), "local_config.yaml")), path
+def test_the_choice_is_cleared_when_another_hand_connects(tmp_path):
+    from orca_core import OrcaHand, board_sync
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    hand = OrcaHand(config_path=_config_with(tmp_path, LEFT[0]))
+
+    def contact(serial, hw):
+        return board_sync.BoardContact(info=OrcaBoardInfo(role="motor", serial=serial, hw_version=hw))
+
+    hand._settle_identity(contact("ser-0001", None))
+    hand.set_hardware_version(210)
+    hand._settle_identity(contact("ser-0001", None))
+    assert hand.hardware_version == 210, "the same hand keeps the choice across a reconnect"
+    hand._settle_identity(contact("ser-0002", 200))
+    assert hand.hardware_version_override is None
+    assert hand.hardware_version == 200
+
+
+def test_the_board_s_version_at_connect_is_put_in_force(tmp_path):
+    from orca_core import OrcaHand, board_sync
+    from orca_core.hardware.sensing.serial_discovery import OrcaBoardInfo
+
+    hand = OrcaHand(config_path=_config_with(tmp_path, LEFT[0]))
+    base = _inverted(hand)
+    hand._settle_identity(board_sync.BoardContact(
+        info=OrcaBoardInfo(role="motor", serial="ser-0000", hw_version=210)))
+    assert hand.board_hardware_version == 210 and hand.hardware_version == 210
+    assert all(_inverted(hand)[j] != base[j] for j in FLIPPED)
+
+
+@pytest.mark.parametrize("folder_opens", [True, False])
+def test_a_pin_stays_in_force_for_a_hand_with_no_board(tmp_path, monkeypatch, folder_opens):
+    from orca_core import OrcaHand, board_sync, hand_store
+
+    if not folder_opens:
+        def no_folder(*args, **kwargs):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(hand_store, "open_hand_folder", no_folder)
+    hand = OrcaHand(config_path=_config_with(tmp_path, LEFT[0], hardware_version=210))
+    pinned = _inverted(hand)
+    hand._settle_identity(board_sync.NO_BOARD)
+    assert hand.board_hardware_version is None and hand.hardware_version == 210
+    assert _inverted(hand) == pinned
 
 
 # --- selecting the map --------------------------------------------------
@@ -221,9 +315,7 @@ def test_v21_on_a_model_without_the_map_only_records_the_version():
 def test_the_chosen_map_passes_the_same_checks_as_the_base_map(tmp_path):
     """Applying the v2.1 map rebuilds the config, so the ordinary checks run
     on it: a motor the hand does not have is caught then, like in any map."""
-    with open(LEFT[0], encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    v21 = dict(raw["joint_to_motor_map_v21"])
+    v21 = dict(load_config(LEFT[0])["joint_to_motor_map_v21"])
     v21["thumb_dip"] = -99
     path = _config_with(tmp_path, LEFT[0], joint_to_motor_map_v21=v21)
     config = OrcaHandConfig.from_config_path(config_path=path)   # loads: not in force yet
@@ -255,7 +347,6 @@ def test_boards_provisioned_before_the_three_digit_form_read_as_v2_1_0():
     assert legacy.hardware_version == HARDWARE_VERSION_V21 and legacy.uses_motor_travel
     assert legacy.joint_inversion_dict == current.joint_inversion_dict
     assert base.with_hardware_version(2).hardware_version == 200
-    assert hand_factory._resolve_hardware_version(_pinned(None), _detection(21), None) == 210
 
 
 def test_v2_1_1_is_a_v2_1_hand_with_its_own_roms(tmp_path):
@@ -269,6 +360,20 @@ def test_v2_1_1_is_a_v2_1_hand_with_its_own_roms(tmp_path):
     assert base.with_hardware_version(210).joint_roms_dict == base.joint_roms_dict
 
 
+@pytest.mark.parametrize("empty", [None, {}])
+def test_an_empty_joint_roms_v211_means_no_overrides(tmp_path, empty):
+    path = _config_with(tmp_path, LEFT[0], joint_roms_v211=empty)
+    base = OrcaHandConfig.from_config_path(config_path=path)
+    assert base.joint_roms_v211_dict == {}
+    assert base.with_hardware_version(211).joint_roms_dict == base.joint_roms_dict
+
+
+def test_a_joint_roms_v211_that_is_not_a_mapping_is_rejected(tmp_path):
+    path = _config_with(tmp_path, LEFT[0], joint_roms_v211=[[-40, 30]])
+    with pytest.raises(HandConfigValidationError, match="joint_roms_v211"):
+        OrcaHandConfig.from_config_path(config_path=path)
+
+
 @pytest.mark.parametrize("spelling", ["auto", "Auto", " AUTO "])
 def test_auto_means_not_pinned(tmp_path, spelling):
     path = _config_with(tmp_path, LEFT[0], hardware_version=spelling)
@@ -276,9 +381,10 @@ def test_auto_means_not_pinned(tmp_path, spelling):
     assert config.hardware_version is None
 
 
-def test_every_packaged_config_ships_on_auto():
+def test_every_packaged_config_ships_on_auto(tmp_path):
     for path in LEFT + RIGHT:
-        assert OrcaHandConfig.from_config_path(config_path=path).hardware_version is None, path
+        copy = _config_with(tmp_path, path)
+        assert OrcaHandConfig.from_config_path(config_path=copy).hardware_version is None, path
 
 
 @pytest.mark.parametrize("value", [-1, "x", True, 2.5, [21]])
@@ -289,57 +395,60 @@ def test_a_hardware_version_that_is_not_auto_or_a_whole_number_is_rejected(tmp_p
 
 
 # --- how load_hand resolves it -------------------------------------------
-# Precedence: a yaml pin, else the board (read by detection or handed in by a
-# caller that skipped it -- the same source two ways), else nothing.
+# Precedence: the session override, else the board (read by detection or
+# handed in by a caller that skipped it -- the same source two ways), else a
+# yaml pin, else nothing.
 
 
-def _detection(hw):
-    return SimpleNamespace(identity=SimpleNamespace(hw_version=hw))
+def _loaded(tmp_path, pin=None, board=None):
+    pinned = {} if pin is None else {"hardware_version": pin}
+    return load_hand(config_path=_config_with(tmp_path, LEFT[0], **pinned), mock=True,
+                     detected_hardware_version=board)
 
 
-def _pinned(hw):
-    return SimpleNamespace(hardware_version=hw)
+def test_the_board_is_used_when_nothing_is_pinned(tmp_path):
+    assert _loaded(tmp_path, board=210).hardware_version == 210
 
 
-def test_the_board_is_used_when_nothing_is_pinned():
-    assert hand_factory._resolve_hardware_version(_pinned(None), _detection(210), None) == 210
+def test_a_board_provisioned_before_the_three_digit_form_reads_as_v2_1_0(tmp_path):
+    assert _loaded(tmp_path, board=21).hardware_version == 210
 
 
-def test_a_handed_in_board_value_ranks_as_detection():
+def test_a_handed_in_board_value_wins_over_a_pin_and_says_so_once(tmp_path, caplog):
     """The console loads by config_path, skips detection, and hands the board
-    value in. That is the board speaking through a different door, not an
-    override, so a pin still wins over it."""
-    assert hand_factory._resolve_hardware_version(_pinned(None), None, 210) == 210
-    assert hand_factory._resolve_hardware_version(_pinned(200), None, 210) == 200
+    value in. That is the board speaking through a different door, so it wins
+    over a pin just the same."""
+    with caplog.at_level("WARNING"):
+        hand = _loaded(tmp_path, pin=200, board=210)
+        hand.connect()
+    assert hand.hardware_version == 210
+    assert caplog.text.count("pins hardware_version=200") == 1
+    assert "board reports 210" in caplog.text
 
 
-def test_a_pin_wins_over_the_board_and_says_so(caplog):
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(200), None) == 210
-    assert "pins hardware_version=210" in caplog.text
-    assert "detected 200" in caplog.text
+def test_load_hand_puts_the_board_s_version_over_a_pin(tmp_path):
+    hand = _loaded(tmp_path, pin=200, board=210)
+    base = OrcaHandConfig.from_config_path(config_path=LEFT[0])
+    assert all(hand.config.joint_inversion_dict[j] != base.joint_inversion_dict[j]
+               for j in FLIPPED)
 
 
-def test_a_pin_that_agrees_with_the_board_is_quiet(caplog):
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), _detection(210), None) == 210
+def test_a_pin_that_agrees_with_the_board_is_quiet(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        assert _loaded(tmp_path, pin=210, board=210).hardware_version == 210
     assert "hardware_version" not in caplog.text
 
 
-def test_a_pin_with_no_board_is_quiet(caplog):
+def test_a_pin_with_no_board_is_quiet(tmp_path, caplog):
     """The pin exists for hands with no board. Warning that 'the detected None
     is not used' would nag exactly the people using it as intended."""
-    with caplog.at_level("WARNING", logger="orca_core.hand_factory"):
-        assert hand_factory._resolve_hardware_version(_pinned(210), None, None) == 210
-        assert hand_factory._resolve_hardware_version(
-            _pinned(210), SimpleNamespace(identity=None), None) == 210
+    with caplog.at_level("WARNING"):
+        assert _loaded(tmp_path, pin=210).hardware_version == 210
     assert "hardware_version" not in caplog.text
 
 
-def test_nothing_known_resolves_to_nothing():
-    assert hand_factory._resolve_hardware_version(_pinned(None), None, None) is None
-    assert hand_factory._resolve_hardware_version(
-        _pinned(None), SimpleNamespace(identity=None), None) is None
+def test_nothing_known_resolves_to_nothing(tmp_path):
+    assert _loaded(tmp_path).hardware_version is None
 
 
 def test_load_hand_applies_a_handed_in_version_to_the_mock_hand():
@@ -359,10 +468,10 @@ def test_load_hand_without_a_version_keeps_the_base_map():
 
 
 @pytest.mark.parametrize("path", LEFT + RIGHT)
-def test_only_a_v21_dynamixel_hand_calibrates_per_group(path):
+def test_only_a_v21_dynamixel_hand_calibrates_per_group(path, tmp_path):
     import dataclasses
 
-    base = OrcaHandConfig.from_config_path(config_path=path)
+    base = OrcaHandConfig.from_config_path(config_path=_config_with(tmp_path, path))
 
     def resolved(version, family):
         config = base.with_hardware_version(version)

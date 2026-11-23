@@ -205,14 +205,14 @@ def patch_comports(monkeypatch):
 def mock_config_dir(tmp_path):
     """Writable copy of the packaged v2 config so connect() can persist to it."""
     import os
-    import shutil
 
     import orca_core
+    from tests._helpers import copy_model_config
 
     model_config = os.path.join(
         os.path.dirname(orca_core.__file__), "models", "v2", "orcahand-right", "config.yaml"
     )
-    shutil.copy(model_config, tmp_path / "config.yaml")
+    copy_model_config(model_config, tmp_path / "config.yaml")
     (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
     return tmp_path
 
@@ -259,3 +259,31 @@ def connected_mock_hand(mock_config_dir):
 def initialized_mock_hand(connected_mock_hand):
     connected_mock_hand.init_joints(force_calibrate=True)
     return connected_mock_hand
+
+
+@pytest.fixture()
+def real_mode_change(monkeypatch):
+    """Like the real clients, writing an operating mode switches torque back on."""
+    from orca_core.hardware.mock_dynamixel_client import MockDynamixelClient
+
+    original = MockDynamixelClient.set_operating_mode
+
+    def set_operating_mode(self, motor_ids, mode_value):
+        original(self, motor_ids, mode_value)
+        self.set_torque_enabled(list(motor_ids), True)
+
+    monkeypatch.setattr(MockDynamixelClient, "set_operating_mode", set_operating_mode)
+
+
+@pytest.fixture(autouse=True)
+def _orca_home_is_never_the_real_one(tmp_path_factory, monkeypatch):
+    """Every test gets its own ORCA_HOME and mock-hand folder.
+
+    A hand reads and writes the folder filed under its id; pointed at the real
+    home, a test would load somebody's calibration, and a mock hand that
+    persists would write its synthesized one over it.
+    """
+    from orca_core import hand_store
+
+    monkeypatch.setenv(hand_store.ORCA_HOME_ENV, str(tmp_path_factory.mktemp("orca_home")))
+    monkeypatch.setattr(hand_store, "_mock_root", tmp_path_factory.mktemp("mock_hands"))

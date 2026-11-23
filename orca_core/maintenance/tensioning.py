@@ -27,6 +27,7 @@ import numpy as np
 from ..constants import CURRENT_BASED_POSITION, WRIST
 from .motor_reads import read_motor_pos_checked
 from .progress import ProgressCallback, ShouldStop, never_stop, progress_emitter
+from .release import release_hand
 
 if TYPE_CHECKING:
     from ..hardware_hand import OrcaHand
@@ -152,10 +153,15 @@ def pull_tendons(
     Starts from ``start`` (the goals of an earlier pull, so a stalled motor still
     gains the full extra) or else from where the motors stand. Returns the goals.
     """
+    pos = read_motor_pos_checked(hand)
+    here = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
     if start is None:
-        pos = read_motor_pos_checked(hand)
-        start = pos[[hand.config.motor_id_to_idx_dict[m] for m in motor_ids]]
+        start = here
         hand.write_motor_pos(motor_ids, start)
+    else:
+        # A reboot re-reports a multi-turn position within one turn: keep the
+        # earlier goals in the turn the motors now report.
+        start = start + np.round((here - start) / (2 * np.pi)) * 2 * np.pi
     hand.enable_torque(motor_ids)
     offset = math.radians(offset_deg)
     steps = max(1, math.ceil(abs(offset_deg) / (PULL_SPEED_DEG_S * PULL_STEP_S)))
@@ -198,7 +204,8 @@ def run_tension(
         progress_callback: Optional ``callable(dict)`` invoked with
             structured progress events (``phase`` with
             winding/ramp/holding/released, ``winding_progress``, ``pulled``
-            with ``total_deg``, ``cleanup_failed``). Must be fast and non-blocking; exceptions
+            with ``total_deg``, ``cleanup_failed``, ``torque_off_failed`` with
+            ``motors`` and ``joints`` left energized). Must be fast and non-blocking; exceptions
             it raises are swallowed.
         should_stop: Optional ``callable() -> bool`` polled between motor
             commands; return ``True`` to leave the hold cooperatively.
@@ -208,9 +215,11 @@ def run_tension(
     control_mode = hand.config.control_mode
 
     def _restore_hand() -> None:
-        hand.set_max_current(hand.config.max_current)
-        hand.set_control_mode(control_mode)
-        hand.disable_torque()
+        def restore() -> None:
+            hand.set_max_current(hand.config.max_current)
+            hand.set_control_mode(control_mode)
+
+        release_hand(hand, restore, routine="tensioning", progress_callback=progress_callback)
 
     hand.set_control_mode(CURRENT_BASED_POSITION)
     completed = False

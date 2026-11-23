@@ -197,7 +197,7 @@ class TestCreateHandFromArgs:
         cli, calls = self._recording_load_hand(monkeypatch)
         args = self._args(
             cli, ["cfg.yaml", "--mock", "--model-name", "orcahand-full-left",
-                  "--no-engage-feedback"],
+                  "--no-engage-feedback", "--motor-port", "/dev/cu.usbmodemXXXX"],
         )
 
         cli.create_hand_from_args(args)
@@ -205,7 +205,7 @@ class TestCreateHandFromArgs:
         assert calls == [dict(
             config_path="cfg.yaml", mock=True,
             model_name="orcahand-full-left", engage_feedback=False,
-            engage_sensors=True,
+            engage_sensors=True, motor_port="/dev/cu.usbmodemXXXX",
         )]
 
     def test_front_end_override_wins_over_the_flag(self, monkeypatch, capsys):
@@ -573,6 +573,39 @@ def test_check_encoder_signs_runs_against_the_mock(monkeypatch, capsys):
     assert "move the SAME direction" in out
     assert state["frames"] == 1
     assert "Stopped." in out
+
+
+def test_check_encoder_signs_reads_the_anchors_once_connected(monkeypatch, capsys):
+    """A real hand reads its folder's calibration at connect, not before."""
+    import dataclasses
+
+    module = _load("scripts/check_encoder_signs.py")
+    monkeypatch.setattr(
+        sys, "argv", ["check_encoder_signs.py", "--mock", "--model-name", "orcahand-joint-right"]
+    )
+    build = module.create_hand_from_args
+
+    def create(args, **kwargs):
+        hand = build(args, **kwargs)
+        anchored = hand.calibration
+        hand.calibration = dataclasses.replace(anchored, joint_encoder_calibration_dict={})
+        open_bus = hand._create_motor_client
+
+        def read_the_folder_then_open_the_bus():
+            hand.calibration = anchored
+            return open_bus()
+
+        hand._create_motor_client = read_the_folder_then_open_the_bus
+        return hand
+
+    def stop(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module, "create_hand_from_args", create)
+    monkeypatch.setattr(module, "_render", lambda *a, **k: "")
+    monkeypatch.setattr(module, "time", SimpleNamespace(sleep=stop))
+    module.main()
+    assert "No encoder anchor" not in capsys.readouterr().out
 
 
 class TestEngageFlagsSelectTheClass:

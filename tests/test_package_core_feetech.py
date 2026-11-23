@@ -6,7 +6,6 @@ built a Dynamixel client regardless of what the config declared.
 
 import logging
 import os
-import shutil
 import threading
 
 import pytest
@@ -16,6 +15,7 @@ from orca_core.constants import CURRENT_BASED_POSITION, MULTI_TURN_POSITION, POS
 from orca_core.hardware.mock_feetech_client import MockFeetechClient
 from orca_core.hardware.motor_client import MotionTimeoutError
 from orca_core.utils import update_yaml
+from tests._helpers import copy_model_config
 
 MODEL_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -27,7 +27,7 @@ MODEL_DIR = os.path.join(
 def feetech_hand(tmp_path):
     """Connected MockOrcaHand whose config declares Feetech motors."""
     config_path = tmp_path / "config.yaml"
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), config_path)
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), config_path)
     (tmp_path / "calibration.yaml").write_text("{}\n", encoding="utf-8")
     update_yaml(str(config_path), "motor_type", "feetech")
 

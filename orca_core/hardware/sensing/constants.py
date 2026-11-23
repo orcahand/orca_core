@@ -314,6 +314,10 @@ LINK_DEMUX_READ_TIMEOUT_S = 0.5
 """Serial-port read timeout. Bounds how long the demuxer waits before re-checking
 its run flag, so disconnect joins promptly."""
 
+LINK_READ_CHUNK_BYTES = 4096
+"""Most bytes the demuxer takes per read. It reads whatever has arrived, so a busy
+process costs it one thread switch per batch of frames, not one per byte."""
+
 LINK_HANDLER_ERROR_LOG_INTERVAL_S = 1.0
 """Per-second-byte rate limit for handler-exception traceback logging."""
 

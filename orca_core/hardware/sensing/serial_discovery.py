@@ -11,6 +11,8 @@ candidate", never stealing bytes from a link another client already holds.
 
 import errno
 import logging
+import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -158,6 +160,15 @@ def _query_until(
 
     with serial.Serial(port, baudrate=baudrate, timeout=0.05, exclusive=True) as link:
         return _query_link(link, timeout, query, is_complete)
+
+
+def probe_orca_info_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
+    """The board's identity, asked over an already-open link; ``None`` when
+    nothing answers (a plain adapter, whose motors ignore the unframed query)."""
+    reply = _query_link(link, timeout, ORCA_INFO_QUERY, _info_line_ready)
+    if reply is None:
+        return None
+    return parse_orca_info(_info_line(reply))
 
 
 def motor_baud_rates_over_link(link, timeout: float = ORCA_ID_PROBE_TIMEOUT_S):
@@ -317,6 +328,7 @@ def board_info_for_port(port: str) -> Optional[OrcaBoardInfo]:
     import serial.tools.list_ports
 
     entries = {p.device: p for p in serial.tools.list_ports.comports()}
+    port = canonical_port(port)
     mine = entries.get(port)
     if mine is None or mine.vid not in KNOWN_VIDS["oh_board"] or not mine.serial_number:
         return None
@@ -329,6 +341,21 @@ def board_info_for_port(port: str) -> Optional[OrcaBoardInfo]:
     return None
 
 
+def canonical_port(port: str) -> str:
+    """The name ``serial.tools.list_ports`` reports for ``port``: a symlink (a
+    Linux ``/dev/serial/by-id`` link) resolved, a macOS ``/dev/tty.*`` dial-in
+    name as its ``/dev/cu.*`` twin, and a Windows ``COM`` name in capitals."""
+    if not port:
+        return port
+    if re.fullmatch(r"(?i)com\d+", port):
+        return port.upper()
+    if os.name == "posix" and os.path.isabs(port):
+        port = os.path.realpath(port)
+    if port.startswith("/dev/tty."):
+        port = "/dev/cu." + port[len("/dev/tty."):]
+    return port
+
+
 def oh_board_ports() -> "list[str]":
     """Device paths of every CDC presented by a hand's controller board, in
     enumeration order."""
@@ -338,6 +365,33 @@ def oh_board_ports() -> "list[str]":
         p.device for p in serial.tools.list_ports.comports()
         if p.vid in KNOWN_VIDS["oh_board"]
     ]
+
+
+def oh_board_usb_serial(port: str) -> Optional[str]:
+    """The USB serial number of the controller board presenting ``port``;
+    ``None`` for another device or a board that reports none."""
+    import serial.tools.list_ports
+
+    port = canonical_port(port)
+    for entry in serial.tools.list_ports.comports():
+        if entry.device == port and entry.vid in KNOWN_VIDS["oh_board"]:
+            return entry.serial_number or None
+    return None
+
+
+def oh_board_says_orca(port: str) -> bool:
+    """Whether the board presenting ``port`` reports ORCA's USB product or
+    manufacturer string. Some hosts (Windows) report neither for any board."""
+    import serial.tools.list_ports
+
+    from ...constants import ORCA_USB_STRINGS
+
+    port = canonical_port(port)
+    for entry in serial.tools.list_ports.comports():
+        if entry.device == port and entry.vid in KNOWN_VIDS["oh_board"]:
+            names = {getattr(entry, "product", None), getattr(entry, "manufacturer", None)}
+            return bool(names & ORCA_USB_STRINGS)
+    return False
 
 
 def find_tactile_port() -> Optional[str]:

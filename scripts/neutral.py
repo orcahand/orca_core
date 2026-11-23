@@ -9,7 +9,7 @@ def main() -> int:
     parser.add_argument(
         "--force-calibrate",
         action="store_true",
-        help="Run calibration even if calibration.yaml already exists.",
+        help="Run calibration even if the hand is already calibrated.",
     )
     args = parser.parse_args()
 

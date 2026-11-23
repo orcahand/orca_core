@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 
 import numpy as np
 import pytest
+import yaml
 
 from orca_core.constants import CURRENT, MODE_MAP, WRIST
 from orca_core.control import JointController, JointLoopThread
@@ -23,6 +23,8 @@ from orca_core.joint_position import OrcaJointPositions
 
 from tests._hand_feedback_helpers import make_calibrated_joint_feedback_hand
 from tests._helpers import wait_until
+from tests._helpers import copy_model_config
+from orca_core.hand_config import load_config
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,14 +36,13 @@ REAL_CONFIG = os.path.join(
 @pytest.fixture
 def joint_feedback_config(tmp_path):
     config_path = tmp_path / "config.yaml"
-    shutil.copy(REAL_CONFIG, config_path)
+    copy_model_config(REAL_CONFIG, config_path)
     return str(config_path)
 
 
 @pytest.fixture
 def left_joint_feedback_config(tmp_path):
-    with open(REAL_CONFIG) as f:
-        text = f.read()
+    text = yaml.safe_dump(load_config(REAL_CONFIG), sort_keys=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(text.replace("type: right", "type: left"))
     return str(config_path)
@@ -50,8 +51,7 @@ def left_joint_feedback_config(tmp_path):
 @pytest.fixture
 def unknown_side_joint_feedback_config(tmp_path):
     """A side with no measured polarity table."""
-    with open(REAL_CONFIG) as f:
-        text = f.read()
+    text = yaml.safe_dump(load_config(REAL_CONFIG), sort_keys=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(text.replace("type: right", "type: middle"))
     return str(config_path)

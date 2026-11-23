@@ -611,8 +611,17 @@ class TactileClient:
                 f"need at least {min_sensors}"
             )
 
-        self.set_auto_data_type(resultant=resultant, taxels=taxels)
-        self.enable_auto_data_transmission()
+        try:
+            self.set_auto_data_type(resultant=resultant, taxels=taxels)
+            self.enable_auto_data_transmission()
+        except (OSError, RuntimeError):
+            # The enable may have reached the device even though its reply did
+            # not; leave it disabled rather than streaming to a client that ignores it.
+            try:
+                self.disable_auto_data_transmission()
+            except (OSError, RuntimeError) as e:
+                logger.debug(f"Disabling stream after a failed start failed: {e}")
+            raise
 
         with self._auto_lock:
             self._auto_reading = None

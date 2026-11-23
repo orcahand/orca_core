@@ -17,10 +17,8 @@ limits calibration recorded, flexing first then extending, so a group always
 moves the same way in joint terms. The thumb is parked fully extended while a
 finger group runs and the fingers are parked straight while a thumb joint
 runs; the rest hold at mid-range. Each motor's present current is sampled
-against its position the whole way, and
-the present current the motor reports is sampled against its position the
-whole way. The curve is the load the tendon and skin put on the motor over the
-whole travel; its level, compared joint for joint with a reference hand, says
+against its position the whole way. The curve is the load the tendon and
+skin put on the motor over the whole travel; its level, compared joint for joint with a reference hand, says
 whether a tendon is tighter or looser than it should be, and a stretch of near
 zero current after the reversal is slack: the spool turning before the other
 tendon takes up.
@@ -42,6 +40,7 @@ import numpy as np
 
 from ..constants import CURRENT_BASED_POSITION, TINY_SLEEP
 from .motor_reads import read_motor_pos_checked
+from .release import release_hand
 from .joint_motion import (
     POSE_MID,
     SENSES,
@@ -196,6 +195,20 @@ def _read_state_checked(hand, retries: int = 5, retry_interval: float = TINY_SLE
     raise RuntimeError("motor read failed: the motor bus returned no status packets")
 
 
+def _uncalibrated_description(hand, missing: Sequence[str]) -> str:
+    """Which joints keep the hand from counting as calibrated, for the refusal."""
+    calibration = getattr(hand, "calibration", None)
+    if not missing and hasattr(calibration, "_motor_ready"):
+        joint_to_motor = hand.config.joint_to_motor_map
+        missing = [
+            j for j in hand.config.joint_ids
+            if j in joint_to_motor and not calibration._motor_ready(int(joint_to_motor[j]))
+        ]
+    if missing:
+        return "no motor limits or ratio for " + ", ".join(missing)
+    return "the calibration is not marked complete; run calibration again"
+
+
 def run_tension_sweep(
     hand: "OrcaHand",
     *,
@@ -220,8 +233,8 @@ def run_tension_sweep(
     ``travel_deg``, ``groups``, ``parked`` per group), ``sweep_started`` / ``sweep_sample`` /
     ``sweep_done`` (``joint``, ``motor``, ``direction``, ``sense``, ``run``,
     ``index``, ``total``, ``group``; samples carry ``deg`` and ``current_ma``;
-    done carries the whole result, samples included), ``pose_short`` and
-    ``cleanup_failed``. A sweep ends when the motor is within 1° of the far
+    done carries the whole result, samples included), ``pose_short``,
+    ``cleanup_failed`` and ``torque_off_failed`` (``motors``, ``joints``). A sweep ends when the motor is within 1° of the far
     limit or has stopped moving there (``stall_deg`` over ``stall_hold_s``),
     so no motor sits against a stop at the sweep current. On any
     exit torque is off and the configured control mode and current limit are
@@ -254,8 +267,8 @@ def run_tension_sweep(
     missing = [j for j in targets if not limits.get(motor_of[j]) or None in limits[motor_of[j]]]
     if missing or not getattr(hand, "calibrated", False):
         raise ValueError(
-            "the tension sweep needs a calibrated hand: no motor limits for "
-            + (", ".join(missing) if missing else "this hand")
+            "the tension sweep needs a calibrated hand (every motor, wrist included): "
+            + _uncalibrated_description(hand, missing)
         )
     all_present = [
         m
@@ -266,9 +279,10 @@ def run_tension_sweep(
     control_mode = config.control_mode
 
     def _restore() -> None:
-        hand.disable_torque()
+        # A mode change leaves torque on, on every family: switch mode first.
+        release_hand(hand, lambda: hand.set_control_mode(control_mode, all_present),
+                     routine="tension sweep", progress_callback=progress_callback)
         hand.set_max_current(config.max_current)
-        hand.set_control_mode(control_mode, all_present)
 
     def _check() -> None:
         if should_stop():
@@ -297,6 +311,7 @@ def run_tension_sweep(
         )
         if short:
             _emit(progress_callback, "pose_short", joints=short)
+        _check()
         centre = read_motor_pos_checked(hand)
         hand.write_motor_pos(all_present, centre[[idx[m] for m in all_present]])
         hand.enable_torque(all_present)

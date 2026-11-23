@@ -18,6 +18,7 @@ import numpy as np
 from ..constants import TINY_SLEEP
 
 if TYPE_CHECKING:
+    from ..hardware.motor_client import MotorRead
     from ..hardware_hand import OrcaHand
 
 
@@ -40,4 +41,21 @@ def read_motor_pos_checked(
         time.sleep(retry_interval)
     raise RuntimeError(
         "motor position read failed: the motor bus returned no status packets"
+    )
+
+
+def read_motor_state_checked(
+    hand: "OrcaHand", retries: int = 5, retry_interval: float = TINY_SLEEP
+) -> "MotorRead":
+    """:func:`read_motor_pos_checked` for the whole bus read: positions, velocities
+    and currents (mA) from the same transaction, so a sampler gets currents for free."""
+    for _ in range(retries):
+        with hand._motor_lock:
+            state = hand.get_motor_state()
+            read_ok = hand.motor_client.last_read_ok
+        if read_ok:
+            return state
+        time.sleep(retry_interval)
+    raise RuntimeError(
+        "motor state read failed: the motor bus returned no status packets"
     )

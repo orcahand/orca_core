@@ -44,11 +44,6 @@ CALIBRATION_CURRENT_V21 = "calibration_current_v21"
 # Joint groups calibration_current_v21 sets a current for.
 CALIBRATION_GROUPS = ("abd", "mcp", "pip")
 GUIDED_TENSION_CURRENTS = "guided_tension_currents"
-# Range-check holds a config's guided_tension_currents does not override.
-DEFAULT_GUIDED_TENSION_CURRENTS = {
-    "dynamixel": {"hold": {"abd": 200, "mcp": 140, "pip": 100}},
-    "feetech": {"hold": {"abd": 380, "mcp": 320, "pip": 280}},
-}
 MOTOR_TRAVEL_MEASURED = "motor_travel_measured"
 DRIVE_CURRENT_MEASURED = "drive_current_measured"
 DEFAULT_MODEL_NAME = "orcahand-right"
@@ -111,6 +106,11 @@ KNOWN_VIDS: dict[str, list[int]] = {
         0x2F5D,  # ORCA Dexterity hand controller board (dual-CDC; PID 0x2202)
     ],
 }
+
+# The USB product and manufacturer strings ORCA's board firmware reports; a
+# stock board with the same USB IDs (an OpenRB-150) reports its maker's.
+ORCA_USB_STRINGS = frozenset({"ORCA Hand", "ORCA Dexterity"})
+
 
 def motor_family_vids() -> "set[int]":
     """USB vendor IDs of every supported motor family's adapters."""
@@ -203,3 +203,15 @@ MOTOR_BAUD_RATES: dict[str, list[int]] = {
 # validated on assembled hands; 0 is faster still but not yet proven safe
 # against transceiver turnaround. Feetech is left at its factory value.
 DYNAMIXEL_RETURN_DELAY_TIME_US = 20
+
+
+def __getattr__(name: str):
+    # DEFAULT_GUIDED_TENSION_CURRENTS: models/v2/shared.yaml's guided_tension_currents,
+    # a fresh plain copy on every access, so changing it never reaches a hand's config.
+    if name == "DEFAULT_GUIDED_TENSION_CURRENTS":
+        import copy
+
+        from .hand_config import _default_guided_tension_currents
+
+        return copy.deepcopy(_default_guided_tension_currents())
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

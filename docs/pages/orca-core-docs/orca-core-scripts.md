@@ -28,7 +28,8 @@ Measures how far each joint's motor turns between that joint's two hardstops and
 <br><strong>Args:</strong><br>
 <ul>
     <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. Omit to autodetect the connected hand.</li><br>
-    <li><strong>--from-calibration</strong> (<strong>action</strong>, optional): Derive the baseline from the stored `calibration.yaml` instead of sweeping. Moves nothing and needs no motor bus.</li><br>
+    <li><strong>--from-calibration</strong> (<strong>action</strong>, optional): Derive the baseline from a hand's stored calibration instead of sweeping. Moves nothing and needs no motor bus.</li><br>
+    <li><strong>--hand-id</strong> (<strong>str</strong>, optional): With --from-calibration, the hand whose calibration to use, when this computer has several of the model.</li><br>
     <li><strong>--current</strong> (<strong>int</strong>, optional): Calibration current (mA) for the sweep. Raise it above the config value so a stiff joint still reaches its hardstop.</li><br>
     <li><strong>--force-wrist</strong> (<strong>action</strong>, optional): Include the wrist even if it is already calibrated.</li><br>
     <li><strong>--dry-run</strong> (<strong>action</strong>, optional): Print the measured travel without writing `config.yaml`.</li><br>
@@ -218,6 +219,26 @@ python scripts/manual_control.py /path/to/orcahand-right/config.yaml --motor-spa
 </details>
 
 ### Miscellaneous Scripts
+
+<details>
+<summary><strong>guided_tension.py</strong></summary>
+
+Guided tendon tensioning for v2.1 hardware, one finger at a time. You pose the hand, then move each joint through its range by hand while the motors hold lightly: how far each motor is dragged along shows how taut its tendon is. For joints that fall short, the motors hold firmly while you ratchet, and the round repeats until every joint passes. It refuses v2.0 hardware unless `--any-hardware` is given.
+
+<br><strong>Args:</strong><br>
+<ul>
+    <li><strong>config_path</strong> (<strong>str</strong>, optional): Path to the hand config file. If not provided, the connected hand is autodetected.</li><br>
+    <li><strong>--scoring</strong> <code>fraction</code> / <code>slack</code>: Score each joint by the share of its expected travel (default), or by the degrees it falls short with both ends reached twice.</li><br>
+    <li><strong>--hold-current</strong>, <strong>--tension-current</strong>: Override the range-check hold and the tensioning pull, in mA.</li><br>
+    <li><strong>--hardware-version N</strong>: Use this hardware version (200, 210, 211) for this run only, over what the board reports. Never saved.</li>
+</ul>
+
+<strong>Example:</strong>
+```bash
+python scripts/guided_tension.py /path/to/orcahand-right/config.yaml
+python scripts/guided_tension.py /path/to/orcahand-right/config.yaml --scoring slack
+```
+</details>
 
 <details>
 <summary><strong>tension.py</strong></summary>

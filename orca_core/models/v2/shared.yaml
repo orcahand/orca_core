@@ -1,0 +1,100 @@
+# Defaults for every v2 model. Each model's config.yaml is laid over this file:
+# its values win, and mappings merge key by key, so a model lists only what differs.
+# The per-joint maps below keep only the joints in a model's joint_ids.
+
+# Joint ranges in degrees, for every hardware version. A v2.1.1 hand also takes
+# joint_roms_v211 (only the joints that differ) when one is set.
+joint_roms:
+  wrist:
+  - -64.46
+  - 38.51
+  thumb_cmc:
+  - -40.86
+  - 29.43
+  thumb_abd:
+  - -14.72
+  - 53.97
+  thumb_mcp:
+  - -21.26
+  - 103.93
+  thumb_dip:
+  - -12.57
+  - 106.29
+  index_abd:
+  - -22.07
+  - 28.64
+  index_mcp:
+  - -22.75
+  - 103.69
+  index_pip:
+  - -9.01
+  - 106.43
+  middle_abd:
+  - -28.6
+  - 24.72
+  middle_mcp:
+  - -24.91
+  - 100
+  middle_pip:
+  - -12.5
+  - 106.93
+  ring_abd:
+  - -27.31
+  - 21.48
+  ring_mcp:
+  - -23.74
+  - 101.55
+  ring_pip:
+  - -12.8
+  - 104.21
+  pinky_abd:
+  - -30.86
+  - 27.76
+  pinky_mcp:
+  - -21.4
+  - 100.76
+  pinky_pip:
+  - -12.62
+  - 108.4
+
+# Guided tensioning per motor family: the range-check hold per joint group (abd, mcp,
+# pip); a model may add a joint. The pull (tension) follows max_current unless set.
+guided_tension_currents:
+  dynamixel:
+    hold:
+      abd: 200
+      mcp: 140
+      pip: 100
+  feetech:
+    hold:
+      abd: 380
+      mcp: 320
+      pip: 280
+
+# v2.1 only: calibration current per joint group, per motor family.
+calibration_current_v21:
+  dynamixel:
+    abd: 300
+    mcp: 500
+    pip: 500
+
+# v2.1 only: motor-shaft travel between each joint's hardstops, in degrees.
+# The spool geometry is the same on every hand, so one baseline serves all.
+joint_motor_travel_v21:
+  wrist: 156.18
+  thumb_cmc: 59
+  thumb_abd: 56
+  thumb_mcp: 115
+  thumb_dip: 99
+  index_abd: 43
+  index_mcp: 122
+  index_pip: 100
+  middle_abd: 45
+  middle_mcp: 129
+  middle_pip: 101
+  ring_abd: 44
+  ring_mcp: 128
+  ring_pip: 101
+  pinky_abd: 50
+  pinky_mcp: 110
+  pinky_pip: 97

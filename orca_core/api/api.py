@@ -455,7 +455,7 @@ def calibrate_auto():
 if __name__ == "__main__":
     import argparse
 
-    from orca_core.utils.cli import add_hand_arguments
+    from orca_core.utils.cli import add_hand_arguments, create_hand_from_args
 
     parser = argparse.ArgumentParser(description="Serve an ORCA hand over HTTP.")
     add_hand_arguments(parser)
@@ -463,11 +463,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Bind up front so the server reports the right hand before /connect.
-    hand = load_hand(
-        config_path=args.config_path,
-        mock=args.mock,
-        model_name=args.model_name,
-        engage_feedback=args.engage_feedback,
-    )
+    hand = create_hand_from_args(args)
     print(f"Serving {type(hand).__name__} from {hand.config.config_path}")
     uvicorn.run(app, host="0.0.0.0", port=args.port)

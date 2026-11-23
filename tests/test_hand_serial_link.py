@@ -154,6 +154,58 @@ def test_drain_before_send_discards_stale_response(link):
     assert link.send_register_request(build_read_request(0x0020, 4)) == fresh
 
 
+def test_reply_to_another_request_is_skipped(link):
+    # A request that timed out can still be answered later; that late reply
+    # arrives ahead of the reply to the request now waiting.
+    late = _read_response(0x0010, b"\x01\x02\x03\x04")
+    fresh = _read_response(0x0030, b"\x09\x09")
+    link.set_response_provider(lambda _request: late + fresh)
+
+    assert link.send_register_request(build_read_request(0x0030, 2)) == fresh
+    assert link.get_link_stats().responses_stale == 1
+
+
+def test_a_stale_reply_alone_times_out_rather_than_answering(link):
+    link.set_response_provider(lambda _request: _read_response(0x0010, b"\x01"))
+    with pytest.raises(IOError, match="Timed out"):
+        link.send_register_request(build_read_request(0x0030, 1), response_timeout_s=0.05)
+
+
+def test_frame_split_across_reads_is_reassembled(link):
+    received = _Capture()
+    link.register_frame_handler(PROTOCOL_BYTE_AUTO_ENC, received)
+
+    frame = _encoder_frame()
+    link.feed_bytes(frame[:5])
+    wait_until(lambda: not link._injected_buffer)  # the demuxer now holds a partial frame
+    link.feed_bytes(frame[5:])
+
+    received.wait_for(1)
+    assert received.frames == [frame]
+
+
+class _WaitingSerial:
+    def __init__(self, waiting: int) -> None:
+        self.in_waiting = waiting
+        self.reads: list[int] = []
+
+    def read(self, n: int) -> bytes:
+        self.reads.append(n)
+        return b"\x00" * n
+
+
+def test_serial_read_takes_everything_waiting_in_one_call():
+    """One read per batch of waiting bytes, not one per byte: a reader that needs
+    a thread switch per byte falls behind whenever the process is busy."""
+    link = HandSerialLink(port="unused")
+    link._serial = _WaitingSerial(waiting=37)
+    assert len(link._serial_read(4096)) == 37
+
+    link._serial = _WaitingSerial(waiting=0)
+    link._serial_read(4096)
+    assert link._serial.reads == [1]  # nothing waiting: block for the next byte
+
+
 def test_demuxer_recovers_from_corruption(link):
     received = _Capture()
     link.register_frame_handler(PROTOCOL_BYTE_AUTO_ENC, received)

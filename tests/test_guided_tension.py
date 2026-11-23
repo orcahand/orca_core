@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 import orca_core
 from orca_core.constants import SUPPORTED_MOTOR_TYPES
@@ -24,6 +25,7 @@ from orca_core.maintenance.guided_tension import (
     DONE,
     FINISH,
     FINISH_ANYWAY,
+    GOTO_SCORE,
     SETTLE_SAMPLES,
     TENSION,
     MotorSpread,
@@ -441,11 +443,10 @@ def test_packaged_configs_list_only_what_differs_from_the_defaults():
     paths = sorted(glob.glob(os.path.join(V2_MODELS, "*", "config.yaml")))
     assert paths
     for path in paths:
-        config = OrcaHandConfig.from_config_path(config_path=path)
-        expected = (
-            {"dynamixel": {"hold": {"thumb_mcp": 100}}} if "orcahand-touch-" in path else {}
-        )
-        assert config.guided_tension_currents_dict == expected, path
+        with open(path, encoding="utf-8") as f:
+            own = yaml.safe_load(f).get("guided_tension_currents")
+        expected = {"dynamixel": {"hold": {"thumb_mcp": 100}}} if "orcahand-touch-" in path else None
+        assert own == expected, path
 
 
 def test_the_tension_step_pulls_at_the_tension_current_then_holds_at_the_ceiling(
@@ -471,6 +472,70 @@ def test_the_tension_step_pulls_at_the_tension_current_then_holds_at_the_ceiling
     run_guided_tension(hand, prompt_callback=prompt, persist=False, resume=False)
     tension_ma = float(hand.config.max_current)
     assert seen == [(tension_ma, [tension_ma, uncapped_currents(hand)])]
+
+
+def test_every_limit_write_is_read_back_from_the_motors_and_drawn_currents_reported(
+    connected_mock_hand,
+):
+    """The log must show the limit each motor holds, not the one intended: the
+    stage's joints at their hold current, every other finger frozen at the
+    tension current, the pull at the tension current and the ratchet at the ceiling."""
+    hand = connected_mock_hand
+    config = hand.config
+    hand.motor_client.current_ceilings_ma = {m: 700.0 + m for m in config.motor_ids}
+    events, samples = [], threading.Condition()
+    answers = ["Continue", "goto:tension", "Done", "goto:score", FINISH_ANYWAY]
+
+    def progress(event):
+        with samples:
+            events.append(event)
+            samples.notify_all()
+
+    def spreads():
+        return sum(e["event"] == "spread" for e in events)
+
+    def prompt(p):
+        if p["action"] == "range_check":
+            # The sampler may have sampled before the stage began, and one sample
+            # may straddle the prompt: the second spread from here was taken in it.
+            with samples:
+                asked = spreads()
+                assert samples.wait_for(lambda: spreads() >= asked + 2, timeout=5)
+        return answers.pop(0)
+
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
+                       persist=False, resume=False)
+
+    limits = {e["phase"]: e for e in events if e["event"] == "current_limits"}
+    stage = limits["range_check"]["stage"]
+    holds = guided_tension.joint_currents(config)
+    tension = float(config.tension_current)
+    fingers = [j for j in holds if j != "wrist"]
+    for joint in fingers:
+        want = holds[joint] if joint in stage["joints"] else tension
+        assert limits["range_check"]["limits"][joint] == {"asked": want, "held": want}, joint
+        assert limits["pull"]["limits"][joint] == {"asked": tension, "held": tension}, joint
+        ceiling = 700.0 + config.joint_to_motor_map[joint]
+        assert limits["ratchet"]["limits"][joint]["held"] == ceiling, joint
+
+    drawn = next(e for e in events if e["event"] == "currents_drawn")
+    assert drawn["stage"]["key"] == stage["key"]
+    assert set(fingers) <= set(drawn["drawn"])
+    assert all({"peak", "mean"} == set(v) for v in drawn["drawn"].values())
+
+
+def test_a_family_without_the_read_back_still_tensions(connected_mock_hand, monkeypatch):
+    hand = connected_mock_hand
+
+    def missing(motor_ids=None):
+        raise NotImplementedError
+
+    monkeypatch.setattr(hand.motor_client, "read_goal_currents", missing)
+    events = []
+    answers = ["Continue", "goto:tension", "Done", "goto:score", FINISH_ANYWAY]
+    run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0),
+                       progress_callback=events.append, persist=False, resume=False)
+    assert not [e for e in events if e["event"] == "current_limits"]
 
 
 # ----- slack scoring ----------------------------------------------------------
@@ -904,3 +969,281 @@ def test_the_live_line_shows_the_stages_joints_on_one_row():
     every_joint = [motor["joint"] for motor in motors]
     line = script._live_line(event, 80, every_joint)
     assert len(script._ANSI_COLOUR.sub("", line)) < 80 and line.endswith("...")
+
+
+# ----- failures a front-end must hear about ------------------------------------
+
+
+def test_a_sampler_that_dies_is_logged_and_reported(connected_mock_hand, monkeypatch, caplog):
+    hand = connected_mock_hand
+    failed = threading.Event()
+    events = []
+
+    def progress(event):
+        events.append(event)
+        if event["event"] == "sampler_failed":
+            failed.set()
+
+    def broken_read(_hand):
+        raise OSError("serial link dropped")
+
+    monkeypatch.setattr(guided_tension, "read_motor_state_checked", broken_read)
+    seen_failure = []
+
+    def prompt(p):
+        if p["action"] == "range_check" and not seen_failure:
+            seen_failure.append(failed.wait(5))
+        return p["options"][0]
+
+    with pytest.raises(OSError):
+        run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=False)
+    assert seen_failure == [True]
+    event = next(e for e in events if e["event"] == "sampler_failed")
+    assert event["error"] == "serial link dropped" and event["round"] == 1
+    assert any("sampler" in r.message and r.exc_info for r in caplog.records)
+
+
+def test_motors_left_energized_at_the_exit_are_reported(connected_mock_hand, monkeypatch):
+    hand = connected_mock_hand
+    stuck = hand.config.joint_to_motor_map["index_mcp"]
+    disable = hand.disable_torque
+
+    def disable_torque(motor_ids=None):
+        failed = disable(motor_ids)
+        return failed if motor_ids is not None else [stuck]
+
+    monkeypatch.setattr(hand, "disable_torque", disable_torque)
+    events = []
+    answers = ["goto:score", FINISH_ANYWAY]
+    run_guided_tension(
+        hand, prompt_callback=lambda p: answers.pop(0), progress_callback=events.append,
+        persist=False,
+    )
+    failed = [e for e in events if e["event"] == "torque_off_failed"]
+    assert failed == [{"event": "torque_off_failed", "motors": [stuck], "joints": ["index_mcp"]}]
+
+
+def test_torque_goes_off_when_the_exit_mode_change_raises(connected_mock_hand, monkeypatch):
+    hand = connected_mock_hand
+    client = hand.motor_client
+    set_mode = hand.set_control_mode
+
+    def set_control_mode(mode, motor_ids=None):
+        if motor_ids is not None:
+            return set_mode(mode, motor_ids)
+        client.set_torque_enabled(hand.config.motor_ids, True)  # as a mode change leaves it
+        raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "set_control_mode", set_control_mode)
+    answers = ["goto:score", FINISH_ANYWAY]
+    with pytest.raises(OSError):
+        run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0), persist=False)
+    assert not any(client._torque_enabled.values())
+
+    def disable_torque(motor_ids=None):
+        raise OSError("serial link dropped")
+
+    monkeypatch.setattr(hand, "disable_torque", disable_torque)
+    events = []
+    answers = ["goto:score", FINISH_ANYWAY]
+    with pytest.raises(OSError):
+        run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0),
+                           progress_callback=events.append, persist=False)
+    failed = [e for e in events if e["event"] == "torque_off_failed"]
+    assert failed and failed[0]["motors"] == list(hand.config.motor_ids)
+
+
+def test_an_unanswered_error_read_keeps_the_faults(connected_mock_hand):
+    hand = connected_mock_hand
+    client = hand.motor_client
+    target = hand.config.joint_to_motor_map["index_mcp"]
+    events = []
+    watch = guided_tension._FaultWatch(hand, events.append)
+    answers = {"value": 0x20}
+
+    def read_hardware_errors(motor_ids):
+        if isinstance(answers["value"], Exception):
+            raise answers["value"]
+        return {int(m): answers["value"] if m == target else 0 for m in motor_ids}
+
+    client.read_hardware_errors = read_hardware_errors
+    watch.sweep([target])
+    assert target in watch.faults
+
+    for unanswered in (None, OSError("no status packet")):
+        answers["value"] = unanswered
+        watch.recheck()
+        watch.sweep([target])
+        assert target in watch.faults
+    assert not [e for e in events if e["event"] == "fault_cleared"]
+
+    answers["value"] = 0
+    watch.recheck()
+    assert not watch.faults
+    assert [e["motor"] for e in events if e["event"] == "fault_cleared"] == [target]
+
+
+def test_jumping_straight_to_tension_keeps_the_saved_slack_scores(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive_slack(hand, lambda j: 0.98 if j == "index_mcp" else 0.2)
+    run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+        hand_key="ser-0005", scoring="slack",
+    )
+    saved = read_progress(hand.config, "ser-0005", "slack")
+    assert saved["scores"]["index_mcp"]["status"] == "pass"
+
+    answers = ["goto:tension", DONE, "goto:score", FINISH_ANYWAY]
+    run_guided_tension(
+        hand, prompt_callback=lambda p: answers.pop(0), persist=True,
+        hand_key="ser-0005", scoring="slack", tension_offset_deg=0,
+    )
+    assert read_progress(hand.config, "ser-0005", "slack") == saved
+
+
+def test_a_retest_then_finish_anyway_drops_the_saved_pass(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive(hand, lambda j: 0.9 if j == "index_mcp" else 0.2)
+    run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+        hand_key="ser-0006",
+    )
+    assert read_progress(hand.config, "ser-0006")["best"]["index_mcp"] > 0.85
+
+    asks = []
+    inner, progress = _drive(hand, lambda j: 0.2)
+
+    def prompt(p):
+        if p["action"] == "score":
+            asks.append({"index_mcp"})
+            return FINISH_ANYWAY
+        return inner(p)
+
+    run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+        hand_key="ser-0006", forget=lambda: asks.pop() if asks else set(),
+    )
+    assert "index_mcp" not in read_progress(hand.config, "ser-0006")["best"]
+
+
+def test_a_retest_is_never_drained_while_the_round_is_scored(connected_mock_hand, monkeypatch):
+    """The sampler drains retests on its own thread; scoring and the ``best``
+    update must not interleave with that."""
+    hand = connected_mock_hand
+    main = threading.current_thread()
+    scoring_now = threading.Event()
+    overlaps = []
+    real_score = guided_tension.score
+
+    def slow_score(*args, **kwargs):
+        if threading.current_thread() is not main:
+            return real_score(*args, **kwargs)
+        scoring_now.set()
+        try:
+            threading.Event().wait(0.1)  # many sampler periods
+            return real_score(*args, **kwargs)
+        finally:
+            scoring_now.clear()
+
+    def forget():
+        if threading.current_thread() is not main and scoring_now.is_set():
+            overlaps.append(True)
+        return set()
+
+    monkeypatch.setattr(guided_tension, "score", slow_score)
+    prompt, progress = _drive(hand, lambda j: 0.2)
+    run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=False, forget=forget,
+    )
+    assert not overlaps
+
+
+def test_a_retest_is_saved_from_a_round_without_a_range_check(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive(hand, lambda j: 0.9 if j == "index_mcp" else 0.2)
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
+                       persist=True, hand_key="ser-0001")
+    assert read_progress(hand.config, "ser-0001")["best"]["index_mcp"] > 0.85
+    asks = [{"index_mcp"}]
+    answers = [GOTO_SCORE, FINISH_ANYWAY]
+    run_guided_tension(hand, prompt_callback=lambda p: answers.pop(0), persist=True,
+                       hand_key="ser-0001", forget=lambda: asks.pop() if asks else set())
+    assert read_progress(hand.config, "ser-0001")["best"].get("index_mcp", 0.0) < 0.85
+
+
+def test_saving_progress_rereads_the_file_under_its_lock(connected_mock_hand, monkeypatch):
+    """Another process may save its hand between this one's read and write;
+    the write must merge into what is on disk, not into a stale read."""
+    config = connected_mock_hand.config
+    guided_tension._write_progress(config, "ser-0007", {"rounds": 1, "best": {}})
+    monkeypatch.setattr(guided_tension, "read_section", lambda *a, **k: None)
+    guided_tension._write_progress(config, "ser-0008", {"rounds": 2, "best": {}})
+    monkeypatch.undo()
+    assert read_progress(config, "ser-0007")["rounds"] == 1
+    assert read_progress(config, "ser-0008")["rounds"] == 2
+
+
+def test_a_joint_never_range_checked_saves_no_fraction(connected_mock_hand):
+    hand = connected_mock_hand
+    checked = []
+
+    def prompt(p):
+        if p["action"] == "pose":
+            return "goto:score" if p["round"] > 1 else p["options"][0]
+        if p["action"] == "range_check":
+            checked.extend(p["stage"]["joints"])
+            return "goto:tension"
+        return DONE if p["action"] == "tension" else FINISH_ANYWAY
+
+    run_guided_tension(hand, prompt_callback=prompt, persist=True, hand_key="ser-0007",
+                       tension_offset_deg=0)
+    assert set(read_progress(hand.config, "ser-0007")["best"]) == set(checked)
+
+
+def test_a_slack_retest_at_the_score_drops_the_saved_score_and_rescores(connected_mock_hand):
+    hand = connected_mock_hand
+    prompt, progress = _drive_slack(hand, lambda j: 0.98 if j == "index_mcp" else 0.2)
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+                       hand_key="ser-0008", scoring="slack")
+    assert "index_mcp" in read_progress(hand.config, "ser-0008", "slack")["scores"]
+
+    asks = []
+    events = []
+
+    def prompt(p):
+        if p["action"] == "score":
+            asks.append({"index_mcp"})
+            return FINISH_ANYWAY
+        return GOTO_SCORE
+
+    run_guided_tension(hand, prompt_callback=prompt, progress_callback=events.append,
+                       persist=True, hand_key="ser-0008", scoring="slack",
+                       forget=lambda: asks.pop() if asks else set())
+    assert "index_mcp" not in read_progress(hand.config, "ser-0008", "slack")["scores"]
+    assert len([e for e in events if e["event"] == "score"]) == 2
+
+
+def test_a_retest_the_sampler_drained_before_finish_is_still_scored(connected_mock_hand):
+    hand = connected_mock_hand
+    inner, progress = _drive(hand, lambda j: 0.9)
+    asks, drained = [], threading.Event()
+
+    def forget():
+        if not asks:
+            return set()
+        drained.set()
+        return asks.pop()
+
+    def prompt(p):
+        if p["action"] == "score" and FINISH in p["options"]:
+            asks.append({"index_mcp"})
+            assert drained.wait(5), "the paused sampler never asked for retests"
+        return inner(p)
+
+    result = run_guided_tension(
+        hand, prompt_callback=prompt, progress_callback=progress, persist=True,
+        hand_key="ser-0007", forget=forget,
+    )
+    by_joint = {m["joint"]: m for m in result.spreads}
+    assert not result.completed and by_joint["index_mcp"]["status"] != "pass"
+    assert read_last_tension(hand.config) is None

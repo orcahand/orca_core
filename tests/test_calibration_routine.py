@@ -4,7 +4,6 @@ offset-calibration failures, and the atomic YAML persistence helper."""
 import dataclasses
 import logging
 import os
-import shutil
 import sys
 import threading
 
@@ -14,7 +13,8 @@ import yaml
 
 from orca_core import MockOrcaHand
 from orca_core.maintenance import calibration_routine, motor_reads
-from orca_core.utils.utils import read_yaml, write_yaml_atomic
+from orca_core.utils.utils import read_yaml, write_bytes_atomic, write_yaml_atomic
+from tests._helpers import copy_model_config, hand_calibration_file
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right")
@@ -22,7 +22,7 @@ MODEL_DIR = os.path.join(REPO_ROOT, "orca_core", "models", "v2", "orcahand-right
 
 @pytest.fixture
 def calib_dir(tmp_path):
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -112,7 +112,7 @@ def test_initial_offset_failure_skips_joint_and_keeps_limits(
     hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
 
     assert hand.motor_limits_dict[target_motor] == pre[target_motor]
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["motor_limits"][target_motor] == pre[target_motor]
     failures = [e for e in events if e["event"] == "offset_calibration_failed"]
     assert failures and all(e["motor"] == target_motor for e in failures)
@@ -144,7 +144,7 @@ def test_wrist_offset_failure_keeps_wrist_uncalibrated_and_recoverable(
     hand.calibrate(joints=["wrist"], progress_callback=events.append, persist=True)
 
     assert not hand.calibration.wrist_calibrated
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["wrist_calibrated"] is False
     assert raw["calibrated"] is False
     assert any(
@@ -161,7 +161,7 @@ def test_wrist_offset_failure_keeps_wrist_uncalibrated_and_recoverable(
     assert not any(e["event"] == "wrist_skipped" for e in events)
     assert hand.calibration.wrist_calibrated
     assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
-    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+    assert read_yaml(str(hand_calibration_file(calib_dir)))["wrist_calibrated"] is True
 
 
 def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir):
@@ -186,7 +186,7 @@ def test_stale_wrist_flag_without_limits_recalibrates(connected_hand, calib_dir)
     assert not any(e["event"] == "wrist_skipped" for e in events)
     assert hand.calibration.wrist_calibrated
     assert all(l is not None for l in hand.motor_limits_dict[wrist_motor])
-    assert read_yaml(str(calib_dir / "calibration.yaml"))["wrist_calibrated"] is True
+    assert read_yaml(str(hand_calibration_file(calib_dir)))["wrist_calibrated"] is True
 
 
 def test_final_offset_failure_records_no_limit(connected_hand, monkeypatch):
@@ -248,12 +248,33 @@ def test_failed_torque_release_skips_limit_capture(
     hand.calibrate(joints=[target], progress_callback=events.append, persist=True)
 
     assert hand.motor_limits_dict[target_motor] == pre[target_motor]
-    raw = read_yaml(str(calib_dir / "calibration.yaml"))
+    raw = read_yaml(str(hand_calibration_file(calib_dir)))
     assert raw["motor_limits"][target_motor] == pre[target_motor]
     failures = [e for e in events if e["event"] == "torque_release_failed"]
     assert failures and all(e["motor"] == target_motor for e in failures)
     assert not any(e["event"] == "limit_recorded" for e in events)
     assert not any(e["event"] == "joint_calibrated" for e in events)
+
+
+def test_an_aborted_run_switches_torque_off_even_when_restoring_the_current_fails(
+    connected_hand, monkeypatch
+):
+    hand = connected_hand
+
+    def drive_then_fail(*args, **kwargs):
+        hand.enable_torque()
+        monkeypatch.setattr(hand, "set_max_current", failing_current)
+        raise OSError("port went away mid-run")
+
+    def failing_current(*args, **kwargs):
+        raise OSError("port went away mid-run")
+
+    monkeypatch.setattr(calibration_routine, "_drive_calibration", drive_then_fail)
+    events = []
+    with pytest.raises(OSError):
+        calibration_routine.run_calibration(hand, progress_callback=events.append)
+    assert not any(hand.motor_client._torque_enabled.values())
+    assert any(e["event"] == "cleanup_failed" for e in events)
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +302,32 @@ def test_write_yaml_atomic_failed_write_keeps_original(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(yaml, "dump", boom)
+    monkeypatch.setattr(yaml, "safe_dump", boom)
     with pytest.raises(RuntimeError, match="disk full"):
         write_yaml_atomic(str(path), {"calibrated": True})
 
     assert read_yaml(str(path)) == {"calibrated": False}
     assert [p.name for p in tmp_path.iterdir()] == ["calibration.yaml"]
+
+
+def test_atomic_writes_wait_out_a_reader_holding_the_file(tmp_path, monkeypatch):
+    """Windows refuses the replace while another process has the file open."""
+    path = tmp_path / "setup.yaml"
+    replace = os.replace
+    refusals = [PermissionError("in use by another process")] * 3
+
+    def busy_replace(src, dst):
+        if refusals:
+            raise refusals.pop()
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_replace)
+    write_yaml_atomic(str(path), {"calibrated": True})
+    assert read_yaml(str(path)) == {"calibrated": True}
+
+    refusals.extend([PermissionError("in use by another process")] * 3)
+    write_bytes_atomic(str(tmp_path / "board.bin"), b"\x01\x02")
+    assert (tmp_path / "board.bin").read_bytes() == b"\x01\x02"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")
@@ -363,7 +404,7 @@ def test_single_turn_wrist_gets_the_final_offset_calibration(tmp_path, monkeypat
     from orca_core.utils import update_yaml
 
     config_path = tmp_path / "config.yaml"
-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), config_path)
+    copy_model_config(os.path.join(MODEL_DIR, "config.yaml"), config_path)
     update_yaml(str(config_path), "motor_type", "feetech")
 
     hand = MockOrcaHand(config_path=str(config_path))
