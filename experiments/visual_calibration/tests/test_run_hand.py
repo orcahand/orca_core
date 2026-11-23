@@ -144,3 +144,42 @@ def test_a_lost_turn_in_a_console_run_stops_it_for_a_recalibration(monkeypatch):
     n = night.Night.__new__(night.Night)
     with pytest.raises(night.Abort, match="recalibrate the hand, then Measure again"):
         n.rewrap({"name": "N07-short"})
+
+
+def test_the_workers_solve_on_the_run_s_rig(orca_home, monkeypatch):
+    """Two rigs on this computer: a worker of a run on rig-2 fits with rig-2's calibration."""
+    from hand_study import estimate
+    other = RigConfig.load(rig_id="rig-1")
+    rig = RigConfig.load(rig_id="rig-2")
+    rig.save_calibration({"calibrated_at": "2026-11-22T10:00:00+00:00"})
+    run = paths.new_run(rig, "ser-0001")
+    monkeypatch.setattr(paths, "STUDY", run)
+    assert paths.run_rig_id() == "rig-2" and estimate.rig_at("").home == rig.home != other.home
+    assert estimate.rig_at("").load_calibration()["calibrated_at"] == "2026-11-22T10:00:00+00:00"
+    monkeypatch.setattr(paths, "STUDY", orca_home / "no-run")
+    monkeypatch.setenv(paths.RIG_ENV, "rig-1")
+    assert estimate.rig_at("").home == other.home
+
+
+def test_a_dead_worker_ends_the_night_and_files_are_read_whole(tmp_path, monkeypatch):
+    from hand_study import night
+    monkeypatch.setattr(night, "NIGHT", tmp_path)
+    night.Night.check_workers()                                         # no workers.json yet
+    (tmp_path / "workers.json").write_text('[{"pid": 1, "log": "w0.log", "alive": tr')   # being written
+    assert paths.read_json(tmp_path / "workers.json") == {}
+    night.Night.check_workers()
+    paths.write_json(tmp_path / "workers.json", [{"pid": 1, "log": "w0.log", "alive": True, "returncode": None},
+                                                 {"pid": 2, "log": "w1.log", "alive": False, "returncode": -15}])
+    night.Night.check_workers()                                         # stopped by run_hand: not dead
+    paths.write_json(tmp_path / "workers.json", [{"pid": 1, "log": "w0.log", "alive": False, "returncode": 1}])
+    with pytest.raises(night.Abort, match="a solve worker died: see w0.log"):
+        night.Night.check_workers()
+    assert [p.name for p in tmp_path.iterdir()] == ["workers.json"]     # no temp file left
+
+
+def test_a_resumed_night_is_no_longer_cut_short(tmp_path, monkeypatch):
+    from hand_study import night
+    monkeypatch.setattr(night, "NIGHT", tmp_path)
+    (tmp_path / "t.json").write_text(json.dumps({"steps": [], "bench": str(tmp_path)}))
+    (tmp_path / "t.state.json").write_text(json.dumps({"state": "done", "done": {}, "started": 0, "cut_short": "N08-V"}))
+    assert "cut_short" not in night.Night("t", 1.0).state

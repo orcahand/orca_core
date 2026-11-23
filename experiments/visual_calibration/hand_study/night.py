@@ -44,6 +44,7 @@ def projected_gb(spec: dict) -> float:
     slack = sum(s["kind"] == "slack" for s in spec["steps"])
     return poses * views * 0.7e-3 + poses * 0.3e-3 + slack * 1500 * 45e-6 + spec.get("hours", 8) * 0.025 + 0.2
 from hand_study.hw import TT, Abort, FaultLog, Hand, MotorFault, Stream, Turntable, Wrapped, beat, call, recover
+from hand_study import paths
 from hand_study.paths import STUDY, UI_STATE
 
 TT_STATE = TT
@@ -62,6 +63,7 @@ class Night:
         self.log_path = NIGHT / f"{tag}.log"
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else \
             {"tag": tag, "started": time.time(), "done": {}, "errors": []}
+        self.state.pop("cut_short", None)            # a resumed night is not cut short (yet)
         self.deadline = self.state.setdefault("deadline", self.state["started"] + hours * 3600)
         global BENCH
         BENCH = Path(self.spec.get("bench") or BENCH).expanduser()
@@ -359,6 +361,7 @@ class Night:
         while not e.exists():
             if time.time() - t0 > 1800:
                 raise Abort("the baseline pose was not solved in 30 min")
+            self.check_workers()
             beat("waiting for the baseline solve")
             time.sleep(10)
         est = json.loads(e.read_text())
@@ -412,10 +415,9 @@ class Night:
     def check_rig(self) -> str:
         """The rig calibration this run's solves use is on file (in the rig's folder, or the one left
         in the checkout) and is the one orca-ui uses: the same file, calibrated at the same time."""
-        from hand_study import paths
         from visual_calibration.rig_config import RigConfig, RigConfigError
         try:
-            rig = RigConfig.load(rig_id=paths.run_info().get("rig"))
+            rig = RigConfig.load(rig_id=paths.run_rig_id())
             path = rig.calibration_path
         except RigConfigError as e:
             raise Abort(f"rig calibration: {e}") from e
@@ -507,8 +509,17 @@ class Night:
             if time.time() - t0 > 3600:
                 self.log(f"{what}: only {n_est}/{n_meta} solved after 60 min, fitting with those")
                 return
+            self.check_workers()
             beat(f"{what}: waiting for solves {n_est}/{n_meta}")
             time.sleep(15)
+
+    @staticmethod
+    def check_workers() -> None:
+        """A solve worker that died (run_hand's workers.json) ends the night: nothing would solve its poses."""
+        workers = paths.read_json(NIGHT / "workers.json") or []
+        dead = [w["log"] for w in workers if not w.get("alive", True) and w.get("returncode") not in (None, -15)]
+        if dead:
+            raise Abort(f"a solve worker died: see {', '.join(dead)}")
 
     def ranges(self, step: dict) -> None:
         """The hand's own hard stops from the short block (hardstops), recorded as its joint_ranges.yaml
@@ -526,9 +537,9 @@ class Night:
         from hand_study import hardstops, quick
         val = Path(step["from"])
         self.wait_for_solves([val], "accuracy")
-        fit = json.loads((hardstops.OUT / "hardstops.json").read_text())
+        fit = paths.read_json(hardstops.OUT / "hardstops.json")
         res = quick.check(val, step["run"], fit["stops"], (fit.get("joint_ranges") or {}).get("recorded"))
-        (hardstops.OUT / "accuracy.json").write_text(json.dumps(res, indent=1))
+        paths.write_json(hardstops.OUT / "accuracy.json", res)
         a, b = res["before"]["all"] or {}, res["after"]["all"] or {}
         self.log(f"accuracy on {res['n']} validation poses: rms {a.get('rms')} -> {b.get('rms')} deg, "
                  f"max {a.get('max')} -> {b.get('max')} deg")
@@ -600,7 +611,6 @@ class Night:
     def rewrap(self, step: dict) -> None:
         """A reboot lost a motor's turn: recalibrate orca_core (its connect re-places the turn, the
         calibration a clean run), and every session not yet done is tracked with the new run."""
-        from hand_study import paths
         if os.environ.get(paths.CONSOLE_ENV):     # orca-ui's hand run: no operation may take the hand meanwhile
             raise Abort("a motor lost its turn: recalibrate the hand, then Measure again")
         k = self.state.setdefault("rewraps", 0) + 1

@@ -114,7 +114,7 @@ def watch_workers(procs: list[subprocess.Popen], logs: list[Path], path: Path) -
         while True:
             now = state()
             if now != last:
-                path.write_text(json.dumps(now, indent=1))
+                paths.write_json(path, now)
                 for w in now:
                     if not w["alive"] and w["returncode"] not in (None, -signal.SIGTERM):
                         print(f"solve worker {w['pid']} died (exit {w['returncode']}): see {w['log']}", flush=True)
@@ -122,7 +122,7 @@ def watch_workers(procs: list[subprocess.Popen], logs: list[Path], path: Path) -
             if not any(w["alive"] for w in now):
                 return
             time.sleep(2.0)
-    path.write_text(json.dumps(state(), indent=1))
+    paths.write_json(path, state())
     threading.Thread(target=watch, daemon=True, name="worker-watch").start()
 
 
@@ -191,8 +191,7 @@ def go(run: Path, workers: int, segmenter: str, hours: float) -> tuple[Path, boo
     return run, complete
 
 
-def read_json(path: Path) -> dict:
-    return json.loads(path.read_text()) if path.exists() else {}
+read_json = paths.read_json
 
 
 # What a console shows of a run (orca-ui's "Measure joint ranges"): read from its files, never from the process.
@@ -245,7 +244,7 @@ def progress(run: Path) -> dict:
         steps.append(item)
     return {"run": str(run), "tag": spec.get("tag"), "state": state.get("state") or ("planned" if spec else "starting"),
             "error": state.get("error"), "cut_short": state.get("cut_short"), "step": current, "steps": steps,
-            "recorded": "joint_ranges" in read_json(run / "proposed" / "hardstops.json"),
+            "recorded": bool((read_json(run / "proposed" / "hardstops.json").get("joint_ranges") or {}).get("path")),
             "workers": read_json(run / "night" / "workers.json") or [],
             "eta_s": round(left_s) if spec and state.get("state") not in ("done", "aborted") else None,
             "photos": last_photos(run, spec)}

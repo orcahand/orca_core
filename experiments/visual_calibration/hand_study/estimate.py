@@ -87,7 +87,8 @@ RIG_AT = os.environ.get("STUDY_RIG_AT", "")         # refit old photos: the rig 
 def rig_at(calibrated_at: str = RIG_AT) -> RigConfig:
     """The rig, or with `calibrated_at` (a `history` entry of calibration.yaml) a copy of it with that
     calibration (in the rig's folder, calibrations/): photos are fitted with the rig calibration they were shot with."""
-    rig = RigConfig.load()
+    from hand_study import paths
+    rig = RigConfig.load(rig_id=paths.run_rig_id())
     if not calibrated_at:
         return rig
     import shutil

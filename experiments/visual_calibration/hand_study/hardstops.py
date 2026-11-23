@@ -240,11 +240,11 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
         lut = Lut.load(lut_path)
     out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "min_span": MIN_SPAN, "stops": stops, "diff": diff,
            "train": compare(R, stops, lut), "inverted": L.inverted}
-    (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
+    paths.write_json(OUT / "hardstops.json", out)
     if hand_id:
         source = f"{measured_by()}, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
         out["joint_ranges"] = record_ranges(hand_id, stops, source, before=ranges_before(run))
-        (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))
+        paths.write_json(OUT / "hardstops.json", out)
     return out
 
 

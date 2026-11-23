@@ -14,6 +14,7 @@ studies and the maps orca-ui offers per hand.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,3 +61,26 @@ def new_run(rig, hand_id: str, **info) -> Path:
 def run_info(study: Path | None = None) -> dict:
     """The run.yaml of a run folder (default: this process's); {} outside a run."""
     return read_yaml((study or STUDY) / RUN_FILE) or {}
+
+
+def run_rig_id() -> str | None:
+    """The rig this process works on: its run's (run.yaml), else the one orca-ui named (RIG_ENV),
+    else None (RigConfig: the one turntable.yaml pins). The planner, the night and the solve
+    workers of a run all read the same rig folder and calibration."""
+    return run_info().get("rig") or os.environ.get(RIG_ENV) or None
+
+
+def read_json(path: Path):
+    """A JSON file's content, {} when it is missing or not whole yet (written by another process)."""
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path: Path, data) -> None:
+    """Write `path` whole or not at all (a temp file replaced): a reader never sees half of it."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.replace(tmp, path)
