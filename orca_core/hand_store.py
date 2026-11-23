@@ -393,10 +393,12 @@ def read_joint_ranges(folder: os.PathLike | str, joint_ids: List[str]) -> Dict[s
 
 
 def applicable_joint_ranges(doc: Optional[Dict[str, Any]], joint_ids: List[str],
-                            where: str) -> Dict[str, Any]:
+                            where: str, *, unknown_joints_level: int = logging.WARNING
+                            ) -> Dict[str, Any]:
     """``doc`` (shaped like a ``joint_ranges.yaml``) keeping only the ranges a
     hand with ``joint_ids`` applies; ``{}`` when none. Each range dropped is
-    logged against ``where``."""
+    logged against ``where``, one for a joint not in ``joint_ids`` at
+    ``unknown_joints_level``."""
     from .hand_config import _valid_rom
 
     roms = (doc or {}).get("joint_roms") or {}
@@ -405,7 +407,8 @@ def applicable_joint_ranges(doc: Optional[Dict[str, Any]], joint_ids: List[str],
         if joint in joint_ids and _valid_rom(rom):
             ranges[str(joint)] = [float(rom[0]), float(rom[1])]
         else:
-            logger.warning("ignoring joint range %s=%r in %s", joint, rom, where)
+            level = logging.WARNING if joint in joint_ids else unknown_joints_level
+            logger.log(level, "ignoring joint range %s=%r in %s", joint, rom, where)
     if not ranges:
         return {}
     return {"measured_at": doc.get("measured_at"), "source": doc.get("source"),

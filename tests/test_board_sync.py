@@ -5,6 +5,7 @@ the board's; after that the computer's copy wins. A newer board calibration is
 offered (board_calibration_newer), never taken silently.
 """
 
+import logging
 import os
 import sys
 
@@ -254,8 +255,9 @@ class TestTheBoardsJointRanges:
         hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
         assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
         assert hand.config.joint_roms_dict["wrist"] == [-40.0, 30.0]
-        assert hand.joint_ranges_info == {"source": "board", "measured_at": "2026-11-20T09:30:00Z",
-                                          "joints": ["index_mcp", "wrist"]}
+        assert hand.joint_ranges_info == {"source": "measured", "measured_at": "2026-11-20T09:30:00Z",
+                                          "joints": ["index_mcp", "wrist"],
+                                          "stored_on": "board", "path": None}
 
     def test_they_are_not_copied_into_a_file(self, connect, config):
         hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
@@ -275,8 +277,16 @@ class TestTheBoardsJointRanges:
         model = config.joint_roms_dict["index_mcp"]
         assert hand.config.joint_roms_dict["index_pip"] == [0.0, 95.0]
         assert hand.config.joint_roms_dict["index_mcp"] == model
-        assert hand.joint_ranges_info == {"source": "measured", "measured_at": "2026-11-21T00:00:00Z",
-                                          "joints": ["index_pip"]}
+        assert hand.joint_ranges_info == {
+            "source": "measured", "measured_at": "2026-11-21T00:00:00Z", "joints": ["index_pip"],
+            "stored_on": "file", "path": os.path.join(hand.hand_dir, "joint_ranges.yaml")}
+
+    def test_a_file_with_no_range_to_apply_leaves_the_board_s_in_force(self, connect, config):
+        hand_store.write_doc(hand_store.open_hand_folder("ser-0000")[0] / "joint_ranges.yaml",
+                             {"joint_roms": {"index_pip": [5.0, 1.0], "not_a_joint": [0, 1]}})
+        hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
+        assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
+        assert hand.joint_ranges_info["stored_on"] == "board"
 
     def test_a_board_without_them_leaves_the_model_s(self, connect, config):
         hand = connect(board_blob(config))
@@ -293,23 +303,26 @@ class TestTheBoardsJointRanges:
         odd = {"measured_at": None, "source": None,
                "joint_roms": {"index_mcp": [-12.5, 91.25], "index_pip": [5.0, 1.0],
                               "not_a_joint": [0.0, 1.0]}}
-        hand = connect(board_blob(config, joint_ranges=odd))
-        assert hand.joint_ranges_info == {"source": "board", "measured_at": None,
-                                          "joints": ["index_mcp"]}
-        assert "ignoring joint range index_pip" in caplog.text
+        with caplog.at_level(logging.DEBUG, logger="orca_core.hand_store"):
+            hand = connect(board_blob(config, joint_ranges=odd))
+        assert hand.joint_ranges_info["joints"] == ["index_mcp"]
+        said = {r.getMessage().split("=")[0]: r.levelno for r in caplog.records
+                if r.getMessage().startswith("ignoring joint range")}
+        assert said == {"ignoring joint range index_pip": logging.WARNING,
+                        "ignoring joint range not_a_joint": logging.DEBUG}
 
     def test_a_hardware_version_change_keeps_them(self, connect, config):
         hand = connect(board_blob(config, joint_ranges=BOARD_RANGES))
         hand.set_hardware_version(211)
         assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
-        assert hand.joint_ranges_info["source"] == "board"
+        assert hand.joint_ranges_info["stored_on"] == "board"
 
     def test_a_stored_hand_takes_them_from_the_store_last_read(self, connect, config, model_dir):
         connect(board_blob(config, joint_ranges=BOARD_RANGES))
         hand = OrcaHand(config_path=str(model_dir / "config.yaml"))
         hand._use_stored_hand("ser-0000")
         assert hand.config.joint_roms_dict["index_mcp"] == [-12.5, 91.25]
-        assert hand.joint_ranges_info["source"] == "board"
+        assert hand.joint_ranges_info["stored_on"] == "board"
 
 
 class TestReadingTheBoardAtConnect:

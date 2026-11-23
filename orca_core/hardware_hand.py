@@ -110,6 +110,10 @@ def _instant(stamp: str):
     return (1, when.timestamp())
 
 
+# joint_ranges_info while the model's ranges are in force.
+_MODEL_RANGES_INFO = {"source": "model", "measured_at": None, "joints": [],
+                      "stored_on": None, "path": None}
+
 # How encoder-measured joint travel is laid onto the config ROM (see
 # effective_joint_roms_dict). "anchor" pins the flex hardstop to the config
 # upper and moves only the lower endpoint; "centered" splits the measured
@@ -194,11 +198,11 @@ class OrcaHand(BaseHand):
         self._current_task = None
 
         self._rom_frame = ROM_FRAME_ANCHOR
-        # Ranges measured on this hand (joint_ranges.yaml, else its board's), where
-        # they came from ("measured" or "board"), and the joints they are in force for.
+        # Ranges measured on this hand (joint_ranges.yaml, else its board's), where they
+        # are kept, and what joint_ranges_info reports once they are in force.
         self._joint_ranges: dict = {}
-        self._joint_ranges_measured_at = None
-        self._joint_ranges_source: str | None = None
+        self._joint_ranges_origin: dict = {}
+        self._joint_ranges_info: dict = _MODEL_RANGES_INFO
         # The ranges this hand's board store holds (section 16); None when it holds none.
         self._board_joint_ranges: dict | None = None
         self._measured_range_joints: frozenset = frozenset()
@@ -480,6 +484,11 @@ class OrcaHand(BaseHand):
         measured = {**kept, **self._joint_ranges}
         self._measured_range_joints = frozenset(self._joint_ranges)
         self.config = config.with_measured_ranges(measured) if measured else config
+        # One assignment, so a reader never sees one hand's joints with another's origin.
+        self._joint_ranges_info = (
+            {"source": "measured", **self._joint_ranges_origin,
+             "joints": sorted(self._joint_ranges)}
+            if self._joint_ranges else _MODEL_RANGES_INFO)
 
     # ------------------------------------------------------------------
     # Joint ranges measured on this hand
@@ -487,29 +496,29 @@ class OrcaHand(BaseHand):
 
     @property
     def joint_ranges_info(self) -> dict:
-        """Where this hand's joint ranges come from: ``{"source": "model",
-        "measured_at": None, "joints": []}``; ``"measured"`` with the date and
-        the joints ``joint_ranges.yaml`` in its folder measured; or ``"board"``
-        for ranges measured on the hand that its board holds, in force while
-        that file is absent."""
-        if not self._measured_range_joints:
-            return {"source": "model", "measured_at": None, "joints": []}
-        return {"source": self._joint_ranges_source or "measured",
-                "measured_at": self._joint_ranges_measured_at,
-                "joints": sorted(self._measured_range_joints)}
+        """Where this hand's joint ranges come from. ``source`` is ``"model"``
+        (the model's ranges; every other field empty) or ``"measured"`` (on this
+        hand, at ``measured_at``, for ``joints``). ``stored_on`` says where
+        measured ranges are kept: ``"file"``, the ``joint_ranges.yaml`` at
+        ``path``, or ``"board"``, the hand's board store, in force while there
+        is no such file (``path`` is then ``None``)."""
+        info = self._joint_ranges_info
+        return {**info, "joints": list(info["joints"])}
 
     def _read_joint_ranges(self, folder: str) -> None:
         """The ranges in force: ``joint_ranges.yaml`` in ``folder``, else the
         board's. The board's are applied from its store, never written to a file."""
         doc = hand_store.read_joint_ranges(folder, self.config.joint_ids)
-        source = "measured"
+        origin = {"stored_on": "file",
+                  "path": os.path.join(folder, hand_store.JOINT_RANGES_FILE)}
         if not doc and self._board_joint_ranges:
             doc = hand_store.applicable_joint_ranges(
-                self._board_joint_ranges, self.config.joint_ids, "this hand's board store")
-            source = "board"
+                self._board_joint_ranges, self.config.joint_ids, "this hand's board store",
+                unknown_joints_level=logging.DEBUG)
+            origin = {"stored_on": "board", "path": None}
         self._joint_ranges = doc.get("joint_roms") or {}
-        self._joint_ranges_measured_at = doc.get("measured_at")
-        self._joint_ranges_source = source if doc else None
+        self._joint_ranges_origin = (
+            {"measured_at": doc.get("measured_at"), **origin} if doc else {})
 
     def _model_name(self) -> str:
         config_path = self.config.config_path or ""
@@ -650,8 +659,7 @@ class OrcaHand(BaseHand):
         self.config = dataclasses.replace(self.config, hand_dir="", calibration_path=calibration)
         self._board_store = None
         self._board_joint_ranges = None
-        self._joint_ranges, self._joint_ranges_measured_at = {}, None
-        self._joint_ranges_source = None
+        self._joint_ranges, self._joint_ranges_origin = {}, {}
         self._rebuild_config(self.config.hardware_version)
         if not self._explicit_calibration:
             self._load_calibration(None)
@@ -1066,8 +1074,8 @@ class OrcaHand(BaseHand):
     _IDENTITY_STATE = (
         "_hand_id", "_board_hand_id", "_board_store",
         "_board_hardware_version", "_hardware_version_override",
-        "_joint_ranges", "_joint_ranges_measured_at", "_measured_range_joints",
-        "_joint_ranges_source", "_board_joint_ranges",
+        "_joint_ranges", "_joint_ranges_origin", "_joint_ranges_info",
+        "_measured_range_joints", "_board_joint_ranges",
         "_stored_calibration", "_stored_fingerprint", "_derived_for", "_calibration",
         "_calibration_doc_stamp", "_rom_frame", "_wrap_offsets_dict", "_config",
     )

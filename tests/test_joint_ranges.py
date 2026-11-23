@@ -32,7 +32,8 @@ def test_measured_ranges_are_in_force_and_said(hand_with_ranges):
     hand = hand_with_ranges
     assert hand.config.joint_roms_dict["index_mcp"] == MEASURED
     assert hand.joint_ranges_info == {
-        "source": "measured", "measured_at": "2026-11-01T10:00:00Z", "joints": ["index_mcp"]}
+        "source": "measured", "measured_at": "2026-11-01T10:00:00Z", "joints": ["index_mcp"],
+        "stored_on": "file", "path": os.path.join(hand.hand_dir, "joint_ranges.yaml")}
 
 
 def test_the_ratio_is_fitted_to_the_measured_range(hand_with_ranges):
@@ -95,7 +96,8 @@ def test_written_ranges_are_put_in_force_by_the_hand(tmp_path):
     hand = MockOrcaHand(config_path=str(folder / "config.yaml"))
     assert hand.config.joint_roms_dict["index_mcp"] == MEASURED
     assert hand.joint_ranges_info == {
-        "source": "measured", "measured_at": "2026-11-01T10:00:00Z", "joints": ["index_mcp"]}
+        "source": "measured", "measured_at": "2026-11-01T10:00:00Z", "joints": ["index_mcp"],
+        "stored_on": "file", "path": os.path.join(hand.hand_dir, "joint_ranges.yaml")}
     assert hand_store.read_doc(mock_folder / "joint_ranges.yaml", "joint_ranges")["source"] == "camera rig"
 
 
@@ -112,7 +114,8 @@ def test_without_a_file_the_model_s_ranges_are_in_force(tmp_path):
     folder.mkdir()
     copy_model_config(MODEL, folder / "config.yaml")
     hand = MockOrcaHand(config_path=str(folder / "config.yaml"))
-    assert hand.joint_ranges_info == {"source": "model", "measured_at": None, "joints": []}
+    assert hand.joint_ranges_info == {"source": "model", "measured_at": None, "joints": [],
+                                      "stored_on": None, "path": None}
 
 
 def test_the_reader_keeps_what_the_hand_would_apply(tmp_path):
