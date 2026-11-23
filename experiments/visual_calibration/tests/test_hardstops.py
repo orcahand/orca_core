@@ -6,7 +6,7 @@ import pytest
 import yaml
 from orca_core import hand_store
 
-from hand_study import hardstops, paths, quick
+from hand_study import hardstops, paths, quick, run_hand
 from hand_study.mapping import HAND_MAP, LinearMap
 from visual_calibration.rig_config import RigConfig
 
@@ -68,3 +68,9 @@ def test_the_fitted_stops_become_the_hand_s_joint_ranges(orca_home, monkeypatch)
     # The accuracy step (the same poses standing in for the validation block): before vs after the new stops.
     acc = quick.check(session, "q1", out["stops"])
     assert acc["n"] == 5 and acc["after"]["index_mcp"]["rms"] < 0.1 < acc["before"]["index_mcp"]["rms"]
+    (run / "proposed" / "accuracy.json").write_text(json.dumps(acc))
+    res = run_hand.results(run)
+    assert res["joints"]["index_mcp"] == {**res["joints"]["index_mcp"], "old": [-22.75, 103.69], "new": [-15.0, 95.0],
+                                          "measured": True}
+    assert res["min_span"] == hardstops.MIN_SPAN and res["accuracy"]["after"]["all"]["rms"] < 0.1
+    assert (res["hand"], res["rig"], res["joint_ranges"]) == ("ser-0001", "rig-1", str(folder / "joint_ranges.yaml"))
