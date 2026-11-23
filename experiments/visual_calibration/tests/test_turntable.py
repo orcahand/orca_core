@@ -13,7 +13,7 @@ def cfg():
 
 def test_config_is_its_own_file():
     rig = RigConfig.load()
-    assert rig.raw["turntable"]["motor"]["model"].startswith("XC430")
+    assert rig.raw["turntable"]["motor"]["model"] in SOFT          # a model the limits below are known for
     assert rig.turntable_calibration_path.endswith("turntable_calibration.yaml")
 
 
@@ -91,12 +91,19 @@ def test_probe_is_retried(monkeypatch):
     assert tt._board_role("/dev/x") == "motor"
 
 
+# Per rig motor: PWM cap, stall lag (deg) and position P gain it may run at. XC430-T240BB-T: no
+# current control, the PWM cap is all that limits the force on the stop, and P 700 hunts while
+# holding. XC330-T288-T (the rig's motor since 2026-11-09): PWM 0.3, P 1200 (400 left 1.5 deg droop).
+SOFT = {"XC430-T240BB-T": (0.2, 2.0, 699), "XC430-W240-T": (0.2, 2.0, 699), "XC330-T288-T": (0.3, 3.5, 1200)}
+
+
 def test_slow_and_soft_by_default():
     m = cfg()["motor"]
-    assert m["speed_deg_s"] <= 10 and m["homing_speed_deg_s"] <= 5 and m["pwm"] <= 0.2 and m["stall_lag_deg"] <= 2
+    pwm, lag, kp = SOFT[m["model"]]
+    assert m["speed_deg_s"] <= 10 and m["homing_speed_deg_s"] <= 5 and m["pwm"] <= pwm and m["stall_lag_deg"] <= lag
     t = Turntable.open(cfg(), mock=True, torque=True)
     assert t.client.pwm_fraction[t.motor_id] == pytest.approx(m["pwm"])
-    assert t.client._servo_gains[t.motor_id].kp == m["position_p_gain"] < 700     # 700 hunts while holding
+    assert t.client._servo_gains[t.motor_id].kp == m["position_p_gain"] <= kp
     assert t.torque and t.state().torque
     t.close()
 
