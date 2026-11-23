@@ -87,14 +87,19 @@ The hand fit (live_fit, hand_study) adds every calibrated camera's views (meta.j
 
 Who owns the cameras (2026-11-23): one Python process on the rig Mac, the console's backend
 (`visual_calibration/rig_cameras.py`, served by orca_ui under `/api/visual-calibration/cameras`).
-Both cameras are required (b `enabled: true`). Each is opened once (capture.SharedCamera), its
-OpenCV index found from `uvc.device.serial` (AVFoundation order), and a preflight proves it
-before any still is handed out: each camera's exposure is cut through uvcc and exactly one
-stream must darken; with the tower on the plate each camera's PnP height must match its mount
-(A ~250 mm, B ~470 mm). Swapped, missing or silent cameras: refused. The console's 1a/1b
-sweeps store a photo from every camera at each stop (`/sessions/<id>/capture`), the page only
-shows the backend's preview; the hand run (hand_study.collect) takes every camera's still from
-the backend at each plate stop (`v<stop>.jpg`, `v<stop>_b.jpg`).
+Both cameras are required (b `enabled: true`, each with its `uvc.device.serial`). Each is opened
+once (capture.SharedCamera), its OpenCV index found from its serial (its place among the video
+devices sorted by unique id, as OpenCV 4.13 orders them; to be confirmed on the rig), and a
+preflight proves it before any still is handed out: each camera's exposure is cut through uvcc
+and exactly one stream must darken; with the tower on the plate each camera's PnP height must
+match its mount (A ~250 mm, B ~470 mm). Swapped, missing or silent cameras: refused. Every
+preflight rereads config.yaml and the USB bus (a replug or a serial set later is picked up).
+The console's 1a/1b sweeps store a photo from every camera at each stop
+(`/sessions/<id>/capture`), the page only shows the backend's preview; the hand run
+(hand_study.collect) takes both cameras' stills from the backend at each plate stop
+(`/cameras/stills`; `v<stop>.jpg`, `v<stop>_b.jpg`). Known regression: the slack check's
+filming (hand_study.slack) now gets its frames over HTTP, so fewer per second and each one's
+time a little late (~0.1-0.3 s); it is a research tool, not part of the hand run.
 
 ## Hand model (starting point)
 
