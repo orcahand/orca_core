@@ -23,6 +23,8 @@ from orca_core.utils.utils import read_yaml, write_yaml_atomic
 
 RUN_ENV = "STUDY_RUN"
 RUN_FILE = "run.yaml"
+CONSOLE_ENV = "ORCA_UI_PID"     # set by orca-ui when it starts a run: its pid (the run ends without it)
+RIG_ENV = "ORCA_RIG_ID"         # set by orca-ui when it starts a run: the rig it has connected
 UI_STATE = hand_store.orca_home() / "ui"
 SHARED = UI_STATE / "visual_calibration" / "hand_study"
 

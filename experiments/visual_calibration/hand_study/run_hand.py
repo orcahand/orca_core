@@ -12,7 +12,8 @@ The hand is the one connected to orca-ui (/api/hand/info), or --hand-id, a hand 
 orca_core's hand store on this computer (preflight then checks it is the one connected). The
 plans are built in a child process: they read the run's config when imported (STUDY_ROM_CONFIG).
 A run that stopped resumes with --resume (the command it prints). orca-ui starts this as a child
-process of its own and shows a run from its files (progress, results).
+process of its own and shows a run from its files (progress, results); such a run ends its whole process group
+when the console is gone (watch_console), and says at once when a solve worker dies.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -70,10 +72,64 @@ def run_env(run: Path, cfg: Path) -> dict:
             "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
 
 
+def the_rig(rig_id: str | None = None) -> RigConfig:
+    """The rig: `rig_id`, else the one orca-ui has connected (paths.RIG_ENV, set when it starts the
+    run), else the one turntable.yaml pins."""
+    return RigConfig.load(rig_id=rig_id or os.environ.get(paths.RIG_ENV) or None)
+
+
+def watch_console() -> None:
+    """A run orca-ui started (paths.CONSOLE_ENV: its pid, this process's parent) ends its whole
+    process group when the console is gone (quit, crashed, killed): nothing drives the hand without it."""
+    pid = os.environ.get(paths.CONSOLE_ENV)
+    if not pid:
+        return
+
+    def watch():
+        while os.getppid() == int(pid):
+            time.sleep(1.0)
+        print("orca-ui is gone: the run ends", flush=True)
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    threading.Thread(target=watch, daemon=True, name="console-watch").start()
+
+
+def check_segmenter(env: dict) -> None:
+    """The solve workers' segmenter loads (BiRefNet: torch, transformers, its weights) before anything moves."""
+    done = subprocess.run([sys.executable, "-c", "from hand_study import segment; segment.masker()"], cwd=HERE,
+                          env=env, capture_output=True, text=True)
+    if done.returncode:
+        why = (done.stderr.strip().splitlines() or [f"exit {done.returncode}"])[-1]
+        raise SystemExit(f"the solve workers' segmenter {env.get('STUDY_SEGMENTER')} does not load: {why}")
+
+
+def watch_workers(procs: list[subprocess.Popen], logs: list[Path], path: Path) -> None:
+    """Each solve worker's pid, log and whether it is alive, in `path` (read by run_hand.progress),
+    a worker's death said at once."""
+    def state():
+        return [{"pid": p.pid, "log": str(log), "alive": p.poll() is None, "returncode": p.returncode}
+                for p, log in zip(procs, logs)]
+
+    def watch():
+        last = None
+        while True:
+            now = state()
+            if now != last:
+                path.write_text(json.dumps(now, indent=1))
+                for w in now:
+                    if not w["alive"] and w["returncode"] not in (None, -signal.SIGTERM):
+                        print(f"solve worker {w['pid']} died (exit {w['returncode']}): see {w['log']}", flush=True)
+                last = now
+            if not any(w["alive"] for w in now):
+                return
+            time.sleep(2.0)
+    path.write_text(json.dumps(state(), indent=1))
+    threading.Thread(target=watch, daemon=True, name="worker-watch").start()
+
+
 def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, motors: str, hours: float,
-         limit: int | None, dry: bool) -> Path:
+         limit: int | None, dry: bool) -> tuple[Path, bool]:
     hand, model, roms = the_hand(hand_id)
-    run = paths.new_run(RigConfig.load(), hand, protocol="night_quick", model=model)
+    run = paths.new_run(the_rig(), hand, protocol="night_quick", model=model)
     tag = tag or f"{hand}-{run.name}"
     write_yaml_atomic(run / paths.RUN_FILE, {**paths.run_info(run), "tag": tag})
     cfg = run_config(run, model, roms)
@@ -90,22 +146,30 @@ def main(hand_id: str | None, tag: str | None, workers: int, segmenter: str, mot
     print(f"run {run}\ntag {tag}", flush=True)
     if dry:
         subprocess.run([sys.executable, "-m", "hand_study.night", tag, "--dry"], cwd=HERE, env=env, check=True)
-        return run
+        return run, True
     return go(run, workers, segmenter, hours)
 
 
-def go(run: Path, workers: int, segmenter: str, hours: float) -> Path:
-    """Run (or resume) the run's night with its solve workers; then say what came of it."""
+def go(run: Path, workers: int, segmenter: str, hours: float) -> tuple[Path, bool]:
+    """Run (or resume) the run's night with its solve workers; then say what came of it. True when the
+    night finished every step (its exit code, its state, no step cut by the deadline)."""
     info = paths.run_info(run)
     tag = info["tag"]
-    env = run_env(run, run / "bench" / info["model"] / "config.yaml")
+    env = {**run_env(run, run / "bench" / info["model"] / "config.yaml"), "STUDY_SEGMENTER": segmenter}
     spec = json.loads((run / "night" / f"{tag}.json").read_text())
+    if workers:
+        check_segmenter(env)
+    logs = [run / "night" / f"{tag}-worker{i}.log" for i in range(workers)]
     procs = [subprocess.Popen([sys.executable, "-m", "hand_study.worker", *spec["sessions"], "--follow"], cwd=HERE,
-                              env={**env, "STUDY_SEGMENTER": segmenter}, stderr=subprocess.STDOUT,
-                              stdout=(run / "night" / f"{tag}-worker{i}.log").open("a"))
-             for i in range(workers)]
+                              env=env, stderr=subprocess.STDOUT, stdout=log.open("a")) for log in logs]
+    night = None
     try:
-        subprocess.run([sys.executable, "-m", "hand_study.night", tag, "--hours", str(hours)], cwd=HERE, env=env)
+        watch_workers(procs, logs, run / "night" / "workers.json")
+        time.sleep(3.0 if procs else 0.0)
+        dead = [str(log) for p, log in zip(procs, logs) if p.poll() is not None]
+        if dead:
+            raise SystemExit(f"a solve worker died at its start: see {', '.join(dead)}")
+        night = subprocess.run([sys.executable, "-m", "hand_study.night", tag, "--hours", str(hours)], cwd=HERE, env=env)
     finally:
         for p in procs:
             p.send_signal(signal.SIGTERM)
@@ -117,11 +181,14 @@ def go(run: Path, workers: int, segmenter: str, hours: float) -> Path:
         print(ranges_summary(out["joint_ranges"]))
     else:
         print("joint ranges: none recorded")
-    if state.get("state") != "done":
+    complete = night.returncode == 0 and state.get("state") == "done" and not state.get("cut_short")
+    if state.get("cut_short"):
+        print(f"the night reached its deadline before {state['cut_short']}")
+    if not complete:
         print(f"resume: cd {HERE} && {hand_store.ORCA_HOME_ENV}={env[hand_store.ORCA_HOME_ENV]} "
               f"PYTHONPATH={env['PYTHONPATH']} {sys.executable} -m hand_study.run_hand --resume {run} "
               f"--workers {workers} --segmenter {segmenter}")
-    return run
+    return run, complete
 
 
 def read_json(path: Path) -> dict:
@@ -135,14 +202,14 @@ STEP_LABELS = {"preflight": "preflight", "snapshot": "calibration snapshot", "N0
                "ranges": "joint ranges fit", "accuracy": "accuracy check"}
 
 
-def runs_dir(hand_id: str) -> Path:
+def runs_dir(hand_id: str, rig_id: str | None = None) -> Path:
     """Where the rig keeps `hand_id`'s runs (paths.new_run)."""
-    return Path(RigConfig.load().own_file("runs")) / hand_store.hand_dir(hand_id).name
+    return Path(the_rig(rig_id).own_file("runs")) / hand_store.hand_dir(hand_id).name
 
 
-def latest_run(hand_id: str, with_results: bool = False) -> Path | None:
+def latest_run(hand_id: str, with_results: bool = False, rig_id: str | None = None) -> Path | None:
     """The hand's newest run folder on this rig (with_results: the newest with a fit), or None."""
-    root = runs_dir(hand_id)
+    root = runs_dir(hand_id, rig_id)
     runs = sorted((d for d in root.iterdir() if (d / paths.RUN_FILE).exists()), reverse=True) if root.is_dir() else []
     return next((d for d in runs if not with_results or (d / "proposed" / "hardstops.json").exists()), None)
 
@@ -177,7 +244,9 @@ def progress(run: Path) -> dict:
             left_s += seconds
         steps.append(item)
     return {"run": str(run), "tag": spec.get("tag"), "state": state.get("state") or ("planned" if spec else "starting"),
-            "error": state.get("error"), "step": current, "steps": steps,
+            "error": state.get("error"), "cut_short": state.get("cut_short"), "step": current, "steps": steps,
+            "recorded": "joint_ranges" in read_json(run / "proposed" / "hardstops.json"),
+            "workers": read_json(run / "night" / "workers.json") or [],
             "eta_s": round(left_s) if spec and state.get("state") not in ("done", "aborted") else None,
             "photos": last_photos(run, spec)}
 
@@ -230,7 +299,9 @@ if __name__ == "__main__":
     p.add_argument("--dry", action="store_true", help="build the run and list its steps; nothing moves")
     p.add_argument("--resume", type=Path, help="a run folder: go on where its night stopped")
     a = p.parse_args()
+    watch_console()
     if a.resume:
-        go(a.resume.expanduser().absolute(), a.workers, a.segmenter, a.hours)
+        _, complete = go(a.resume.expanduser().absolute(), a.workers, a.segmenter, a.hours)
     else:
-        main(a.hand_id, a.tag, a.workers, a.segmenter, a.motors, a.hours, a.limit, a.dry)
+        _, complete = main(a.hand_id, a.tag, a.workers, a.segmenter, a.motors, a.hours, a.limit, a.dry)
+    sys.exit(0 if complete else 1)

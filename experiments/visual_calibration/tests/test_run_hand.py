@@ -95,3 +95,52 @@ def test_a_console_follows_the_run_from_its_files():
     assert (p["steps"][1]["taken"], p["steps"][1]["poses"], p["steps"][1]["label"]) == (2, 4, "short block")
     assert p["eta_s"] == 4 * 60 // 2 + 2 * 60 and p["state"] == "running"
     assert p["photos"]["b"] == "sessions/t-N07-short/configs/p0/v000_b.jpg" and p["photos"]["a"].startswith("sessions/t-N07-short")
+    assert (p["recorded"], p["cut_short"], p["workers"]) == (False, None, [])
+
+
+def test_a_run_ends_itself_when_the_console_is_gone(tmp_path):
+    """orca-ui quit or crashed without killing its run: the run's process group ends on its own."""
+    import os
+    import subprocess
+    import sys
+    import time
+    pids = tmp_path / "pids"
+    child = ("import os, subprocess, sys, time; from hand_study import run_hand; run_hand.watch_console(); "
+             "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+             f"open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{p.pid}}'); time.sleep(60)")
+    console = ("import os, subprocess, sys, time; "
+               f"subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True, "
+               f"env={{**os.environ, {paths.CONSOLE_ENV!r}: str(os.getpid())}}); time.sleep(60)")
+    proc = subprocess.Popen([sys.executable, "-c", console], cwd=run_hand.HERE)
+    deadline = time.time() + 20
+    while not (pids.exists() and pids.read_text()) and time.time() < deadline:
+        time.sleep(0.1)
+    run, worker = map(int, pids.read_text().split())
+    proc.kill()
+    proc.wait()
+
+    def gone(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+    deadline = time.time() + 10
+    while not (gone(run) and gone(worker)) and time.time() < deadline:
+        time.sleep(0.1)
+    assert gone(run) and gone(worker)
+
+
+def test_a_segmenter_that_does_not_load_stops_the_run_before_anything_moves(monkeypatch):
+    import os
+    with pytest.raises(SystemExit, match="segmenter nope does not load"):
+        run_hand.check_segmenter({**os.environ, "STUDY_SEGMENTER": "nope", "PYTHONPATH": str(run_hand.HERE)})
+
+
+def test_a_lost_turn_in_a_console_run_stops_it_for_a_recalibration(monkeypatch):
+    """The console refuses every operation while its run measures: no recalibration from inside the run."""
+    from hand_study import night
+    monkeypatch.setenv(paths.CONSOLE_ENV, "1")
+    n = night.Night.__new__(night.Night)
+    with pytest.raises(night.Abort, match="recalibrate the hand, then Measure again"):
+        n.rewrap({"name": "N07-short"})

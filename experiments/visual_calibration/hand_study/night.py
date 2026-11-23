@@ -600,6 +600,9 @@ class Night:
     def rewrap(self, step: dict) -> None:
         """A reboot lost a motor's turn: recalibrate orca_core (its connect re-places the turn, the
         calibration a clean run), and every session not yet done is tracked with the new run."""
+        from hand_study import paths
+        if os.environ.get(paths.CONSOLE_ENV):     # orca-ui's hand run: no operation may take the hand meanwhile
+            raise Abort("a motor lost its turn: recalibrate the hand, then Measure again")
         k = self.state.setdefault("rewraps", 0) + 1
         self.state["rewraps"] = k
         base = step.get("run") or self.spec["runs"]["B"]
@@ -1120,6 +1123,7 @@ class Night:
                     late = st.get("minutes") is None        # a protocol runs every phase; only the filler waits
                 if late:
                     self.log(f"deadline reached before {st['name']}")
+                    self.save(cut_short=st["name"])
                     break
                 retries = int(self.spec.get("retries", 8)) if hw.RESILIENT else RETRIES
                 failed = None
