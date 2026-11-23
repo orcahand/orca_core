@@ -386,10 +386,32 @@ class Night:
             raise Abort(f"motors: {len(m)} found, in error {bad}")
         if not call(TT_STATE).get("connected"):
             self.reconnect_plate()
+        rig = self.check_rig()
         import shutil as sh
         free = sh.disk_usage(Path.home()).free / 1e9
         self.log(f"preflight: {want} connected ({cfg}), 17 motors ok, hottest {max(x['temp_c'] for x in m):.0f} °C, "
-                 f"plate {call(TT_STATE).get('angle')}, {free:.0f} GB free")
+                 f"plate {call(TT_STATE).get('angle')}, {rig}, {free:.0f} GB free")
+
+    def check_rig(self) -> str:
+        """The rig calibration this run's solves use is on file (in the rig's folder, or the one left
+        in the checkout) and is the one orca-ui uses: the same file, calibrated at the same time."""
+        from hand_study import paths
+        from visual_calibration.rig_config import RigConfig, RigConfigError
+        try:
+            rig = RigConfig.load(rig_id=paths.run_info().get("rig"))
+            path = rig.calibration_path
+        except RigConfigError as e:
+            raise Abort(f"rig calibration: {e}") from e
+        at = rig.load_calibration().get("calibrated_at")
+        if not at:
+            raise Abort(f"no rig calibration at {path}: calibrate the rig (motor, 1a, 1b) before measuring a hand")
+        ui = call("/visual-calibration/status")
+        theirs = ui.get("calibration_path")
+        if not theirs or os.path.realpath(theirs) != os.path.realpath(path) or ui.get("calibrated_at") != at:
+            raise Abort(f"orca-ui uses the rig calibration {theirs or '(not reported)'} of {ui.get('calibrated_at')}, "
+                        f"this run {path} of {at}: run both on the same rig and ORCA_HOME, and restart orca-ui "
+                        f"after a new rig calibration")
+        return f"rig calibrated {at}"
 
     def ui_process(self) -> tuple[str | None, str | None, str | None]:
         """(pid, command line, cwd) of the orca-ui on hw.UI's port; the last ones seen are kept, so a

@@ -67,6 +67,14 @@ def hand_info():
                      "joint_ranges": {"source": "measured" if measured else "model"}}}
 
 
+@app.get("/api/visual-calibration/status")
+def rig_status():
+    """The rig calibration in force, as orca-ui reports it (the same files as the runner's)."""
+    from visual_calibration.rig_config import RigConfig
+    rig = RigConfig.load()
+    return {"calibrated_at": rig.load_calibration().get("calibrated_at"), "calibration_path": rig.calibration_path}
+
+
 @app.get("/api/visual-calibration/study-map")
 def study_map():
     return {"hand": S["hand"], "mode": "off", "options": []}

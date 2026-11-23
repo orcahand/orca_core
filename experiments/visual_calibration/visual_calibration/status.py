@@ -49,6 +49,7 @@ def calibration_status(rig: RigConfig, base: Path) -> dict:
     cal = rig.load_calibration()
     sessions = Session.list(base)
     return {"rig": rig.name, "version": rig.version, "calibrated_at": cal.get("calibrated_at"),
+            "calibration_path": rig.calibration_path,
             "mounting": cal.get("mounting"),
             "steps": [_motor(rig)] + [_session_step(rig, k, sessions, cal.get(f"{k}_session"))
                                       for k in ("camera", "rotation", "hand")]}

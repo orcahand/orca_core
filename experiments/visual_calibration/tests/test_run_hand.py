@@ -33,3 +33,22 @@ def test_a_hand_whose_board_holds_its_ranges_is_planned_over_them():
         {"motor_limits": {1: [0.0, 1.0]}}, identity=BoardIdentity(side="right", serial="ser-0001"),
         joint_ranges={"joint_roms": {"index_mcp": [-12.5, 91.25]}}))
     assert run_hand.the_hand("ser-0001")[2]["index_mcp"] == [-12.5, 91.25]
+
+
+def test_preflight_needs_the_rig_calibration_orca_ui_uses(monkeypatch):
+    from hand_study import night
+    from visual_calibration.rig_config import RigConfig
+    rig = RigConfig.load(rig_id="rig-1")
+    from hand_study import paths
+    monkeypatch.setattr(paths, "run_info", lambda study=None: {"rig": "rig-1"})
+    ui = {}
+    monkeypatch.setattr(night, "call", lambda path, *a, **k: ui)
+    n = night.Night.__new__(night.Night)
+    with pytest.raises(night.Abort, match="no rig calibration"):
+        n.check_rig()
+    rig.save_calibration({"calibrated_at": "2026-11-20T10:00:00+00:00"})
+    ui.update(calibration_path=rig.calibration_path, calibrated_at="2026-11-19T10:00:00+00:00")
+    with pytest.raises(night.Abort, match="restart orca-ui"):
+        n.check_rig()
+    ui["calibrated_at"] = "2026-11-20T10:00:00+00:00"
+    assert n.check_rig() == "rig calibrated 2026-11-20T10:00:00+00:00"
