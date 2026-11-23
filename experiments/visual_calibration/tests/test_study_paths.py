@@ -1,5 +1,7 @@
 """The hand study's folders: a run's under the rig that measured the hand, else the shared one."""
 
+import os
+
 import pytest
 
 from hand_study import paths
@@ -25,3 +27,11 @@ def test_two_runs_in_one_second_get_their_own_folders(orca_home):
     rig = RigConfig.load(rig_id="rig-1")
     runs = {paths.new_run(rig, "ser-0001") for _ in range(3)}
     assert len(runs) == 3 and all(paths.run_info(r)["hand"] == "ser-0001" for r in runs)
+
+
+def test_the_tests_never_reach_the_real_home():
+    """conftest points HOME and ORCA_HOME into the session's temporary folder before any import."""
+    import pwd
+    real = pwd.getpwuid(os.getuid()).pw_dir
+    for p in (paths.UI_STATE, paths.SHARED, paths.STUDY):
+        assert not str(p).startswith(real + os.sep)
