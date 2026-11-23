@@ -10,11 +10,11 @@ import argparse
 import json
 import os
 import time
-from pathlib import Path
 
 from hand_study.hw import call
+from hand_study.paths import STUDY
 
-NIGHT = Path.home() / ".orca_ui/visual_calibration/hand_study/night"
+NIGHT = STUDY / "night"
 STALE_S = 180.0
 
 

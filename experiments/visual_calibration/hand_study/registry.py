@@ -3,7 +3,7 @@ rig and with which protocol, where its data is, and its held-out accuracy per ma
 that compare across hands. One row per study (a night); rebuilt from the study files, so it is
 never edited by hand:
 
-    ~/.orca_ui/visual_calibration/hand_study/registry.json   (+ registry.csv, one line per study)
+    <ORCA_HOME>/ui/visual_calibration/hand_study/registry.json (hand_study.paths)   (+ registry.csv, one line per study)
 
 Updated by offline.py whenever a night's results change; `python -m hand_study.registry` rebuilds
 it from everything on disk. The Study tab shows it (server.py: protocol status -> registry).

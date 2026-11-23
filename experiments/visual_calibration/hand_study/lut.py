@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 
 from hand_study.configs import JOINTS, ROM
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 OWN_KNOTS = 9
 PARTNER_KNOTS = 4
 PAIR_KNOTS = 4

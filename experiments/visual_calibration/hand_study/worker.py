@@ -18,8 +18,8 @@ import numpy as np
 from hand_study.collect import write_json
 from hand_study.estimate import StudyFit, load_frames
 from hand_study.mapping import LinearMap
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 OUT = "est.json"        # --out: a re-fit beside the original (e.g. est_full.json), views not saved
 
 

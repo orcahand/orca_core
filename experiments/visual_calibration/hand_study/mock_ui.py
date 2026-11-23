@@ -23,6 +23,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 
 from hand_study.mapping import LinearMap
+from hand_study.paths import STUDY
 
 app = FastAPI()
 S: dict = {}
@@ -261,7 +262,7 @@ def main() -> None:
              temp={int(k): 35.0 for k in limits}, err={int(k): 0 for k in limits}, faults=faults, count={},
              calibrations=[], plate_moves=0, violations=0, target_t=0.0, plate_t=0.0, caps={}, cur={}, cap_calls=0,
              notes={}, pairs={})
-    pf = Path.home() / ".orca_ui/visual_calibration/hand_study/collision_pairs.json"
+    pf = STUDY / "collision_pairs.json"
     if pf.exists():
         for p in json.loads(pf.read_text()):
             S["pairs"].setdefault(p["joint"], []).append(p)

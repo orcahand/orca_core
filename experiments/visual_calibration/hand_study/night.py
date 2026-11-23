@@ -44,10 +44,10 @@ def projected_gb(spec: dict) -> float:
     slack = sum(s["kind"] == "slack" for s in spec["steps"])
     return poses * views * 0.7e-3 + poses * 0.3e-3 + slack * 1500 * 45e-6 + spec.get("hours", 8) * 0.025 + 0.2
 from hand_study.hw import TT, Abort, FaultLog, Hand, MotorFault, Stream, Turntable, Wrapped, beat, call, recover
+from hand_study.paths import STUDY, UI_STATE
 
 TT_STATE = TT
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 NIGHT = STUDY / "night"
 BENCH = Path.home() / "orca_bench/ser-4485/orcahand-touch-right"
 RETRIES = 3
@@ -408,7 +408,7 @@ class Night:
                 if time.time() - t0 > 30:
                     subprocess.run(["kill", "-9", pid])
                 time.sleep(0.5)
-        log = open(Path.home() / f".orca_ui/orca-ui-dev.{time.strftime('%H%M%S')}.log", "a")
+        log = open(UI_STATE / f"orca-ui-dev.{time.strftime('%H%M%S')}.log", "a")
         argv = cmd.split()
         if board and "--board" in argv:
             argv[argv.index("--board") + 1] = board

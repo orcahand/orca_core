@@ -20,8 +20,8 @@ import numpy as np
 from hand_study import hw
 from hand_study.configs import JOINTS, ROM
 from hand_study.hw import Hand, Turntable, beat, call
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 PAIRS = STUDY / "collision_pairs.json"
 TOUCH_MM = 0.6           # surfaces closer than this touch (samples ~2 mm apart)
 FREE_MM = 3.0            # the sweep starts at least this far apart
