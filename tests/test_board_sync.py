@@ -493,16 +493,34 @@ class TestWritingTheBoard:
         assert not (firmware / "tool.log").exists()
         assert board.store == held
 
-    def test_the_hand_s_file_replaces_the_board_s_ranges(self, connect, config, firmware, board):
+    @pytest.mark.parametrize("measured_at", ["2026-11-20T09:30:00Z", "2026-11-22T00:00:00Z"])
+    def test_the_hand_s_file_replaces_the_board_s_ranges_of_the_same_date_or_older(
+            self, connect, config, firmware, board, measured_at):
         hand = self.calibrated(connect, config)
         board.store = pack({}, identity=BoardIdentity(side="right", serial="ser-0000"),
                            sequence=6, joint_ranges=self.RIG_RANGES)
         hand_store.write_joint_ranges(hand.hand_dir, {"index_pip": [0.0, 95.0]},
-                                      source="camera rig, run3", joint_ids=hand.config.joint_ids)
+                                      source="camera rig, run3", measured_at=measured_at,
+                                      joint_ids=hand.config.joint_ids)
         assert board_push.push_for_hand(hand).written
         sent = board_store.unpack((firmware / "sent.bin").read_bytes())
         assert sent.joint_ranges["joint_roms"] == {"index_pip": [0.0, 95.0]}
         assert sent.joint_ranges["source"] == "camera rig, run3"
+
+    def test_the_hand_s_file_never_replaces_newer_ranges_on_the_board(self, connect, config,
+                                                                      firmware, board):
+        """Provisional, until the merge of file and board ranges is decided."""
+        hand = self.calibrated(connect, config)
+        board.store = held = pack({}, identity=BoardIdentity(side="right", serial="ser-0000"),
+                                  sequence=6, joint_ranges=self.RIG_RANGES)
+        hand_store.write_joint_ranges(hand.hand_dir, {"index_pip": [0.0, 95.0]},
+                                      source="camera rig, run1", measured_at="2026-11-19T00:00:00Z",
+                                      joint_ids=hand.config.joint_ids)
+        result = board_push.push_for_hand(hand)
+        assert not result.written
+        assert "2026-11-20T09:30:00Z" in result.reason and "2026-11-19T00:00:00Z" in result.reason
+        assert not (firmware / "tool.log").exists()
+        assert board.store == held
 
     def test_with_ranges_nowhere_the_board_holds_none(self, connect, config, firmware):
         hand = self.calibrated(connect, config)

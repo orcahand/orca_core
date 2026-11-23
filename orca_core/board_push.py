@@ -174,9 +174,9 @@ def push(
     """Write ``calibration`` onto the board on ``port``, keyed as ``hand_id``.
 
     ``joint_ranges`` (what a ``joint_ranges.yaml`` holds) replaces the ranges
-    on the board; ``None`` keeps the ones the board holds, unchanged, and
-    refuses a board whose store cannot be read, whose ranges would otherwise
-    be lost.
+    on the board, unless the board's were measured later; ``None`` keeps the
+    ones the board holds, unchanged, and refuses a board whose store cannot be
+    read, whose ranges would otherwise be lost.
 
     The port must be free: the tool opens it itself, so this runs once the hand
     has let go of it. Nothing here raises -- a hand whose board could not be
@@ -202,6 +202,10 @@ def push(
         return PushResult(
             False, f"the calibration store on the board on {port} could not be read, so the "
                    "joint ranges it may hold could not be kept; nothing was written")
+    # provisional: merge rule pending decision
+    refusal = _newer_on_board(held.joint_ranges, joint_ranges)
+    if refusal:
+        return PushResult(False, refusal)
     sequence = held.sequence
     try:
         blob = board_store.pack(
@@ -235,6 +239,20 @@ def push(
     if not served:
         return PushResult(False, "the board does not serve the calibration just written")
     return PushResult(True, sequence=sequence + 1, size=len(blob), blob=blob)
+
+
+def _newer_on_board(on_board: Optional[Mapping[str, Any]],
+                    replacing: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Why ``replacing`` may not replace the board's ranges: they were measured
+    later (provisional: merge rule pending decision)."""
+    from .hardware_hand import _instant
+
+    board_at = (on_board or {}).get("measured_at")
+    file_at = (replacing or {}).get("measured_at")
+    if not board_at or not file_at or _instant(board_at) <= _instant(file_at):
+        return None
+    return (f"the joint ranges on the board were measured {board_at}, after this computer's "
+            f"joint_ranges.yaml ({file_at}); nothing was written, so the newer ranges are kept")
 
 
 def push_for_hand(hand) -> PushResult:
