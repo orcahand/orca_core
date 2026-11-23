@@ -378,6 +378,32 @@ def write_joint_ranges(
     })
 
 
+def read_joint_ranges(folder: os.PathLike | str, joint_ids: List[str]) -> Dict[str, Any]:
+    """The ``joint_ranges.yaml`` in ``folder`` as ``{"measured_at", "source",
+    "joint_roms"}``, keeping the ranges of ``joint_ids`` that are ``[min, max]``
+    with ``min < max`` (any other is logged and ignored). ``{}`` when there is
+    no file or no range in it to apply. A ``joint_roms`` that is not a mapping
+    sets the file aside."""
+    from .hand_config import _valid_rom
+
+    path = Path(folder) / JOINT_RANGES_FILE
+    doc = read_doc(path, "joint_ranges")
+    roms = doc.get("joint_roms") or {}
+    if not isinstance(roms, dict):
+        _set_aside(path, "joint_roms is not a mapping of joint ranges")
+        return {}
+    ranges = {}
+    for joint, rom in roms.items():
+        if joint in joint_ids and _valid_rom(rom):
+            ranges[str(joint)] = [float(rom[0]), float(rom[1])]
+        else:
+            logger.warning("ignoring joint range %s=%r in %s", joint, rom, path)
+    if not ranges:
+        return {}
+    return {"measured_at": doc.get("measured_at"), "source": doc.get("source"),
+            "joint_roms": ranges}
+
+
 def known_hands() -> List[Dict[str, Any]]:
     """Every hand this computer has a folder for, as its ``hand.yaml`` (plus ``folder``)."""
     root = _hands_dir()

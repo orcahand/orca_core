@@ -29,7 +29,7 @@ from .calibration import (
     joint_fingerprints,
     result_from_mapping,
 )
-from .hand_config import HandConfigValidationError, OrcaHandConfig, _valid_rom, load_config
+from .hand_config import HandConfigValidationError, OrcaHandConfig, load_config
 from .hardware.motor_factory import create_mock_motor_client, create_motor_client
 from .hardware.motor_client import (
     MotionTimeoutError,
@@ -489,20 +489,8 @@ class OrcaHand(BaseHand):
                 "joints": sorted(self._measured_range_joints)}
 
     def _read_joint_ranges(self, folder: str) -> None:
-        path = os.path.join(folder, hand_store.JOINT_RANGES_FILE)
-        doc = hand_store.read_doc(path, "joint_ranges")
-        roms = doc.get("joint_roms") or {}
-        if not isinstance(roms, dict):
-            hand_store._set_aside(path, "joint_roms is not a mapping of joint ranges")
-            doc, roms = {}, {}
-        ranges = {}
-        for joint, rom in roms.items():
-            if joint in self.config.joint_ids and _valid_rom(rom):
-                ranges[str(joint)] = [float(rom[0]), float(rom[1])]
-            else:
-                logger.warning("ignoring joint range %s=%r in %s", joint, rom,
-                               os.path.join(folder, hand_store.JOINT_RANGES_FILE))
-        self._joint_ranges = ranges
+        doc = hand_store.read_joint_ranges(folder, self.config.joint_ids)
+        self._joint_ranges = doc.get("joint_roms") or {}
         self._joint_ranges_measured_at = doc.get("measured_at")
 
     def _model_name(self) -> str:

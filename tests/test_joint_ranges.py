@@ -113,3 +113,14 @@ def test_without_a_file_the_model_s_ranges_are_in_force(tmp_path):
     copy_model_config(MODEL, folder / "config.yaml")
     hand = MockOrcaHand(config_path=str(folder / "config.yaml"))
     assert hand.joint_ranges_info == {"source": "model", "measured_at": None, "joints": []}
+
+
+def test_the_reader_keeps_what_the_hand_would_apply(tmp_path):
+    hand_store.write_doc(tmp_path / "joint_ranges.yaml", {
+        "measured_at": "2026-11-01T10:00:00Z", "source": "camera rig",
+        "joint_roms": {"index_mcp": [-10, 80], "index_pip": [5, 1], "not_a_joint": [0, 1]}})
+    assert hand_store.read_joint_ranges(tmp_path, ["index_mcp", "index_pip"]) == {
+        "measured_at": "2026-11-01T10:00:00Z", "source": "camera rig",
+        "joint_roms": {"index_mcp": MEASURED}}
+    assert hand_store.read_joint_ranges(tmp_path, ["index_pip"]) == {}
+    assert hand_store.read_joint_ranges(tmp_path / "nowhere", ["index_mcp"]) == {}
