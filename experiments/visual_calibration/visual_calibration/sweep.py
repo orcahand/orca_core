@@ -1,7 +1,9 @@
 """A sweep on the rig from the command line: the camera check, the zero check, a
 photo at every stop and the first stop again, then park.
 
-The camera check runs before anything moves: the UVC controls are set to
+The camera check runs before anything moves: the cameras are opened and told apart
+(rig_cameras.RigCameras.preflight: by serial, proven by a blink of each one's exposure, which
+writes and restores that one control even with --verify-only), the UVC controls are set to
 config.yaml camera.uvc and read back (uvc.ensure); then one frame at the
 reference stop (where the plate is parked) is held against
 ``camera_reference.yaml``: sharpness, tile scale (focus), brightness, clipping.
@@ -227,22 +229,16 @@ def quick(rig, t, grabs: dict[str, Callable], detector, reference_stop: float = 
 
 def list_cameras(run=None) -> dict:
     """The USB cameras (serial, location, address: for config.yaml cameras.<c>.uvc.device) and
-    AVFoundation's video devices (unique id = location + vendor + product; their order is
-    usually OpenCV's index). Opens nothing."""
+    AVFoundation's video devices (their order is usually OpenCV's index). Opens nothing."""
     import subprocess
 
+    from visual_calibration.rig_cameras import avfoundation_devices, avfoundation_index
     from visual_calibration.uvc import usb_devices
     run = run or subprocess.run
     usb = [d for d in usb_devices(run) if d.get("vendor") == 1133]
-    p = run(["system_profiler", "SPCameraDataType", "-json"], capture_output=True, text=True, timeout=30)
-    try:
-        av = [{"name": c.get("_name"), "unique_id": c.get("spcamera_unique-id")}
-              for c in json.loads(p.stdout or "{}").get("SPCameraDataType", [])]
-    except ValueError:
-        av = []
+    av = avfoundation_devices(run)
     for d in usb:
-        uid = f"0x{d.get('location', 0):x}{d.get('vendor', 0):04x}{d.get('product', 0):04x}"
-        d["avfoundation_index"] = next((i for i, c in enumerate(av) if str(c["unique_id"]).lower() == uid), None)
+        d["avfoundation_index"] = avfoundation_index(d, av)
     return {"usb": usb, "avfoundation": av}
 
 
@@ -251,6 +247,7 @@ def main() -> None:
 
     from visual_calibration.calibration_object import CalibrationObject
     from visual_calibration.detect import TileDetector
+    from visual_calibration.rig_cameras import RigCameras
     from visual_calibration.rig_config import RigConfig
     from visual_calibration.turntable import Turntable
 
@@ -277,22 +274,20 @@ def main() -> None:
     detector = TileDetector(CalibrationObject.from_config(rig.raw["calibration_object"]))
     cfg = {c: rig.cameras[c] for c in rig.active_cameras}
     uvcc = {c: Uvcc.from_config(v["uvc"]) for c, v in cfg.items()}
-    cams = {c: Webcam(int(v.get("index", 0)), tuple(v["resolution"])) for c, v in cfg.items()}
+    cams = RigCameras(rig)
+    print(json.dumps(_plain(cams.preflight(write=not args.verify_only)), indent=1), flush=True)   # which stream is which
+    grabs = {c: (lambda c=c: cams.still(c, after=time.monotonic())) for c in cfg}
     t = Turntable.open(tt, calibration_path=rig.turntable_calibration_path)
     try:
         if args.quick:
-            for c, u in uvcc.items():
-                ensure(u, cfg[c]["uvc"], not args.verify_only)
-            print(json.dumps(_plain(quick(rig, t, {c: w.grab for c, w in cams.items()}, detector)), indent=1))
+            print(json.dumps(_plain(quick(rig, t, grabs, detector)), indent=1))
             return
-        grabs = {c: w.grab for c, w in cams.items()}
         run(rig, t, grabs if len(grabs) > 1 else grabs[DEFAULT_CAMERA], detector, args.out, stops,
             uvcc if len(uvcc) > 1 else uvcc[DEFAULT_CAMERA], settle_s=max(1.0, float(st.get("settle_s", 1.0))),
             write=not args.verify_only, zero_check=not args.no_zero_check, save_ref=args.save_reference,
             hand=args.hand)
     finally:
-        for w in cams.values():
-            w.close()
+        cams.close()
         t.close()
         print("torque off", flush=True)
 

@@ -259,6 +259,15 @@ def call(path: str, body: dict | None = None, timeout: float = 120.0):
         raise ApiError(msg) from None
 
 
+def fetch(path: str, timeout: float = 60.0) -> bytes:
+    """A GET's raw body (an image)."""
+    try:
+        with urllib.request.urlopen(UI + path, timeout=timeout) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        raise ApiError(f"{path}: {e.code} {e.read().decode()}") from None
+
+
 class Telemetry:
     """The whole night at full rate, for reuse: every websocket message of orca-ui's motor telemetry,
     joint estimate and target, status and control state (no extra bus traffic), and the turntable's
@@ -603,18 +612,50 @@ class Turntable:
 
 
 class Camera:
-    def __init__(self, size=(3840, 2160)):
+    """The rig's cameras through orca-ui, which owns them (visual_calibration.rig_cameras): its
+    preflight first (which stream is which camera, controls locked; raises before anything moves),
+    then stills on request. shots(): every enabled camera's JPEG at this moment; grab(): one
+    camera's frame, decoded."""
+
+    def __init__(self):
         self.fake = os.environ.get("STUDY_FAKE_CAMERA")          # a dry run: this photo, no camera
         if self.fake:
             import cv2
             self.img = cv2.imread(self.fake)
+            self.names = ["a"]
             return
-        from visual_calibration.sweep import Webcam
-        self.cam = Webcam(0, size)
+        self.preflight()
 
-    def grab(self) -> np.ndarray:
-        return self.img.copy() if self.fake else self.cam.grab()
+    def preflight(self) -> dict:
+        r = call("/visual-calibration/cameras/preflight", {"tiles": False})
+        self.names = list(r["indices"])
+        return r
+
+    def _again(self, get):
+        """get(); once more after a new preflight when orca-ui wants one (a capture reopened: a replug)."""
+        try:
+            return get()
+        except ApiError as e:
+            if ": 409 " not in str(e) or "preflight" not in str(e):
+                raise
+        self.preflight()
+        return get()
+
+    def shots(self) -> dict[str, bytes]:
+        """{camera: JPEG (quality 95)} of every camera, all taken after this call."""
+        if self.fake:
+            import cv2
+            return {"a": cv2.imencode(".jpg", self.img, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()}
+        import base64
+        r = self._again(lambda: call("/visual-calibration/cameras/stills?format=jpg&quality=95"))
+        return {c: base64.b64decode(v) for c, v in r["cameras"].items()}
+
+    def grab(self, cam: str = "a") -> np.ndarray:
+        import cv2
+        if self.fake:
+            return self.img.copy()
+        data = self._again(lambda: fetch(f"/visual-calibration/cameras/{cam}/still?format=jpg&quality=95"))
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
     def close(self):
-        """Kept open: one capture for the runner's whole life (a reopen per block is what the
-        decoder must not see); released at exit (capture.SharedCamera)."""
+        """Nothing to release: orca-ui keeps the cameras open for its whole life."""

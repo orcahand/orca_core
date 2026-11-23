@@ -1,5 +1,5 @@
 """Run a plan of hand configurations: the hand moves (plate still), then the plate visits each
-stop (hand still) and the camera takes a photo. Torque: the plate is released after every
+stop (hand still) and every camera takes a photo (through orca-ui, which owns the cameras). Torque: the plate is released after every
 move; the hand holds during one configuration's photos and is released at the end.
 
     python -m hand_study.collect SESSION_DIR [--limit N]
@@ -43,8 +43,18 @@ def lock_camera(log=print) -> None:
         log(f"camera controls: {e}")
 
 
+def photograph(cam, out: Path, stop: float, angle: float) -> list[dict]:
+    """Every camera's photo at this stop, one view each: v<stop>.jpg for camera "a",
+    v<stop>_<camera>.jpg (view `camera`) for the others (estimate.load_frames)."""
+    views = []
+    for c, data in cam.shots().items():
+        name = f"v{int(round(stop)):03d}" + ("" if c == "a" else f"_{c}") + ".jpg"
+        (out / name).write_bytes(data)
+        views.append({"stop": stop, "angle": angle, "file": name, "t": time.time(), **({"camera": c} if c != "a" else {})})
+    return views
+
+
 def run(session: Path, limit: int | None = None, log=print) -> None:
-    import cv2
     plan = json.loads((session / "plan.json").read_text())
     angles = plan["angles"]
     todo = [c for c in plan["configs"] if not (session / "configs" / c["id"] / "meta.json").exists()
@@ -55,15 +65,11 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
     write_json(session / "progress.json", progress)
     stream = Stream()
     hand, plate = Hand(stream), Turntable()
-    cam = Camera()
-    lock_camera(log)
-    cam.grab()
-    try:
-        call("/visual-calibration/camera/uvc")
-    except Exception as e:
-        log(f"camera controls not locked after opening: {e}")
+    cam = None
     forward = True
     try:
+        cam = Camera()                         # orca-ui's camera preflight: refuses before anything moves
+        log(f"cameras {', '.join(cam.names)}: identified, controls locked")
         if plate.state().get("busy"):
             raise RuntimeError("the turntable is busy")
         hand.torque(True)
@@ -94,12 +100,12 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
                 st = plate.move(a, log)
                 time.sleep(PLATE_SETTLE_S)
                 st = plate.state()
-                img = cam.grab()
-                name = f"v{int(round(a)):03d}.jpg"
-                cv2.imwrite(str(out / name), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                views.append({"stop": a, "angle": st["angle"], "file": name, "t": time.time()})
+                shot = photograph(cam, out, a, st["angle"])
                 if plan.get("current_each_view"):
-                    views[-1]["current_ma"] = [x["current_ma"] for x in hand.motors()["motors"]]
+                    current = [x["current_ma"] for x in hand.motors()["motors"]]
+                    for v in shot:
+                        v["current_ma"] = current
+                views += shot
             forward = not forward
             after = hand.sample()
             hand.guard()
@@ -170,7 +176,8 @@ def run(session: Path, limit: int | None = None, log=print) -> None:
             hand.torque(False)
         finally:
             plate.off()
-            cam.close()
+            if cam is not None:
+                cam.close()
             stream.close()
             progress["ended"] = time.time()
             write_json(session / "progress.json", progress)
