@@ -17,7 +17,7 @@ cameras:
     diagonal_fov_deg: 90.0     # the BRIO mode (Logi Tune: 65 / 78 / 90): the nominal lens until 1a has run (1a: fx 2272 px = 88°)
     autofocus: false
     stabilization: false
-    index: 0                 # OpenCV (AVFoundation) device index; two BRIOs: check once which is which (sweep --list-cameras)
+    index: 0                 # OpenCV device index, used only without a serial (one camera); else found from uvc.device.serial
     # The mount (calibration_rig, Shea 2026-11-06; lowered 30 mm, re-tilted). Set distance and height to the
     # holes the camera is bolted in; the CAD pose below follows from them.
     mount:
@@ -60,9 +60,9 @@ cameras:
     # Cam B (2026-11-09 plan, Shea calibration_rig_330 "side rail module"): a second BRIO on a
     # side rail at the base's CAD -x face = rig +y (azimuth 90°), portrait, tilted 45° down,
     # aimed at z 250 on the axis. For every finger, not only the thumb: its views join the hand
-    # fit. Off until it is plugged in: then enabled: true, its serial below, and a 1a + 1b
-    # with both cameras (sweep grabs every enabled camera at every stop).
-    enabled: false
+    # fit. Every photo (1a, 1b, the hand run) is taken by both cameras; set its serial below
+    # (sweep --list-cameras), then a 1a + 1b with both cameras.
+    enabled: true
     index: 1
     resolution: [3840, 2160]
     diagonal_fov_deg: 90.0
