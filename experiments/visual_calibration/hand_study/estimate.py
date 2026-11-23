@@ -86,13 +86,13 @@ RIG_AT = os.environ.get("STUDY_RIG_AT", "")         # refit old photos: the rig 
 
 def rig_at(calibrated_at: str = RIG_AT) -> RigConfig:
     """The rig, or with `calibrated_at` (a `history` entry of calibration.yaml) a copy of it with that
-    calibration (under hand_study/rigs/): photos are fitted with the rig calibration they were shot with."""
+    calibration (in the rig's folder, calibrations/): photos are fitted with the rig calibration they were shot with."""
     rig = RigConfig.load()
     if not calibrated_at:
         return rig
     import shutil
     import yaml
-    d = Path.home() / ".orca_ui/visual_calibration/hand_study/rigs" / calibrated_at.replace(":", "")
+    d = Path(rig.own_file("calibrations")) / calibrated_at.replace(":", "")
     if not (d / "calibration.yaml").exists():
         cal = yaml.safe_load(Path(rig.calibration_path).read_text())
         old = [h for h in cal.get("history") or [] if h.get("calibrated_at") == calibrated_at]

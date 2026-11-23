@@ -7,14 +7,13 @@ press lightly (1 mm overlap on the model), every other link stays clear.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 
 from hand_study.configs import REST, ROM, Collider
+from hand_study.paths import STUDY
 from visual_calibration.solve import least_squares
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 THUMB = ["thumb_cmc", "thumb_abd", "thumb_mcp", "thumb_dip"]
 GAP_MM = -1.0              # the pads 1 mm into each other on the model: a light press when the hand is right
 

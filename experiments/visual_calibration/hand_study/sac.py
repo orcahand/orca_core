@@ -18,6 +18,7 @@ import numpy as np
 
 from hand_study.configs import REST, ROM
 from hand_study.hw import Abort, Hand, MotorFault, beat, call, recover
+from hand_study.paths import STUDY
 
 K_SIGMA = 6.0
 MIN_RISE = 0.12            # sensor units (N) above the zeroed mean, at least (readings come in 0.1 steps)
@@ -77,7 +78,7 @@ def creep(hand: Hand, start: dict, end: dict, watch: list[str], thr: dict) -> di
 
 def run(session: Path, hand: Hand, log=print, fingers: list[str] | None = None) -> int:
     session.mkdir(parents=True, exist_ok=True)
-    touch = json.loads((Path.home() / ".orca_ui/visual_calibration/hand_study/touch_poses.json").read_text())
+    touch = json.loads((STUDY / "touch_poses.json").read_text())
     out = session / "contacts.jsonl"
     hand.torque(True)
     try:

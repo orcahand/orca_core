@@ -7,8 +7,12 @@ with t = (m - m0) / (m1 - m0):   joint = lo (1 - t) + hi t   (inverted: hi (1 - 
 linear in (lo, hi). Note: the new numbers act fully only after a calibration with the new
 config (it recomputes the ratio); without one only the offset moves.
 
-    python -m hand_study.hardstops SESSION... [--run run2]    # proposed/ config + diff + accuracy
+    python -m hand_study.hardstops SESSION... [--run run2]    # proposed/ stops + diff + accuracy
         [--hand-id ID]     # and the hand's joint_ranges.yaml on this computer (in force at its next connect)
+
+Run with the run's STUDY_RUN (hand_study.paths), so the archived calibration and proposed/ are the
+run's own. A run archived from orca_core 0.14 holds no config.yaml: the stops are the result, and
+proposed/config.yaml is written only for an older run's full config.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from pathlib import Path
 import numpy as np
 from orca_core import hand_store
 
-from hand_study import analysis
+from hand_study import analysis, paths
 from hand_study.configs import JOINTS
 from hand_study.mapping import LinearMap
 
@@ -154,6 +158,12 @@ def record_ranges(hand_id: str, stops: dict[str, dict], source: str) -> Path | N
     return hand_store.write_joint_ranges(hand_folder(hand_id), roms, source=source) if roms else None
 
 
+def measured_by() -> str:
+    """What measured the stops, for joint_ranges.yaml's source: the rig and the run."""
+    info = paths.run_info()
+    return f"camera rig {info['rig']}, run {STUDY.name}" if info.get("rig") else "camera rig"
+
+
 def hand_folder(hand_id: str) -> Path:
     folder = hand_store.hand_dir(hand_id)
     if not folder.is_dir():
@@ -168,8 +178,13 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
     stops = fit(R, run)
     L = LinearMap(STUDY / f"calib_{run}")
     OUT.mkdir(exist_ok=True)
-    text, diff = proposed_config(STUDY / f"calib_{run}" / "config.yaml", stops)
-    (OUT / "config.yaml").write_text(text)
+    cfg = STUDY / f"calib_{run}" / "config.yaml"
+    if cfg.exists():
+        text, diff = proposed_config(cfg, stops)
+        (OUT / "config.yaml").write_text(text)
+    else:
+        diff = [f"joint_roms.{j}[{k}]: {s['old'][k]:g} -> {s['new'][k]:g}" for j, s in stops.items()
+                for k in (0, 1) if abs(s["new"][k] - s["old"][k]) >= 0.05]
     (OUT / "config.diff.txt").write_text("\n".join(diff) + "\n")
     lut = None
     if lut_path and lut_path.exists():
@@ -178,7 +193,7 @@ def main(sessions: list[Path], run: str, lut_path: Path | None = None, hand_id: 
     out = {"run": run, "sessions": [s.name for s in sessions], "n": len(R), "stops": stops, "diff": diff,
            "train": compare(R, stops, lut), "inverted": L.inverted}
     if hand_id:
-        source = f"camera rig, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
+        source = f"{measured_by()}, sessions {', '.join(s.name for s in sessions)}, calibration {run}"
         written = record_ranges(hand_id, stops, source)
         out["joint_ranges"] = str(written) if written else None
     (OUT / "hardstops.json").write_text(json.dumps(out, indent=1))

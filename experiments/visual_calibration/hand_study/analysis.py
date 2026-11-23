@@ -10,8 +10,8 @@ import numpy as np
 
 from hand_study.configs import JOINTS, ROM
 from hand_study.mapping import LinearMap
+from hand_study.paths import STUDY
 
-STUDY = Path.home() / ".orca_ui/visual_calibration/hand_study"
 FINGER = {j: j.split("_")[0] for j in JOINTS}
 T_SIGNIFICANT = 3.0
 MIN_ROWS = 8
