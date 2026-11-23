@@ -11,7 +11,8 @@ joint_ranges.yaml in its folder (in force at its next connect).
 The hand is the one connected to orca-ui (/api/hand/info), or --hand-id, a hand with a folder in
 orca_core's hand store on this computer (preflight then checks it is the one connected). The
 plans are built in a child process: they read the run's config when imported (STUDY_ROM_CONFIG).
-A run that stopped resumes with --resume (the command it prints).
+A run that stopped resumes with --resume (the command it prints). orca-ui starts this as a child
+process of its own and shows a run from its files (progress, results).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from orca_core import hand_store, write_standalone_config
@@ -124,6 +126,96 @@ def go(run: Path, workers: int, segmenter: str, hours: float) -> Path:
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text()) if path.exists() else {}
+
+
+# What a console shows of a run (orca-ui's "Measure joint ranges"): read from its files, never from the process.
+
+STEP_LABELS = {"preflight": "preflight", "snapshot": "calibration snapshot", "N00-baseline": "baseline pose",
+               "mount": "mount fit", "N07-short": "short block", "N08-V": "validation check",
+               "ranges": "joint ranges fit", "accuracy": "accuracy check"}
+
+
+def runs_dir(hand_id: str) -> Path:
+    """Where the rig keeps `hand_id`'s runs (paths.new_run)."""
+    return Path(RigConfig.load().own_file("runs")) / hand_store.hand_dir(hand_id).name
+
+
+def latest_run(hand_id: str, with_results: bool = False) -> Path | None:
+    """The hand's newest run folder on this rig (with_results: the newest with a fit), or None."""
+    root = runs_dir(hand_id)
+    runs = sorted((d for d in root.iterdir() if (d / paths.RUN_FILE).exists()), reverse=True) if root.is_dir() else []
+    return next((d for d in runs if not with_results or (d / "proposed" / "hardstops.json").exists()), None)
+
+
+def night_files(run: Path) -> tuple[dict, dict]:
+    """The run's night spec and state ({} before night_quick wrote them)."""
+    specs = [p for p in sorted((run / "night").glob("*.json")) if not p.name.endswith(".state.json")]
+    if not specs:
+        return {}, {}
+    return read_json(specs[0]), read_json(specs[0].with_name(specs[0].stem + ".state.json"))
+
+
+def progress(run: Path) -> dict:
+    """Each step (done, running or to do; a block's poses), the time left (from the spec's minutes, a
+    block's scaled by the poses still to take), and the newest photo of each camera (paths in the run)."""
+    spec, state = night_files(run)
+    current = state.get("step") if state.get("state") == "running" else None
+    steps, left_s = [], 0.0
+    for st in spec.get("steps", []):
+        done = st["name"] in state.get("done", {})
+        item = {"name": st["name"], "label": STEP_LABELS.get(st["name"], st["name"]),
+                "state": "done" if done else "running" if st["name"] == current else "todo"}
+        seconds = 60.0 * float(st.get("minutes") or 0)
+        if st.get("session"):
+            total = min(int(st["poses"]), int(st.get("limit") or st["poses"]))
+            taken = len(list(Path(st["session"]).glob("configs/*/meta.json")))
+            item.update(poses=total, taken=min(taken, total))
+            seconds *= max(total - taken, 0) / max(total, 1)
+        if item["state"] == "running" and not st.get("session"):
+            seconds = max(seconds - (time.time() - float(state.get("step_t0") or time.time())), 0.0)
+        if not done:
+            left_s += seconds
+        steps.append(item)
+    return {"run": str(run), "tag": spec.get("tag"), "state": state.get("state") or ("planned" if spec else "starting"),
+            "error": state.get("error"), "step": current, "steps": steps,
+            "eta_s": round(left_s) if spec and state.get("state") not in ("done", "aborted") else None,
+            "photos": last_photos(run, spec)}
+
+
+def last_photos(run: Path, spec: dict) -> dict[str, str]:
+    """The newest photo of each camera (v<stop>.jpg is camera a, v<stop>_<c>.jpg camera c) in the
+    latest block that has any, relative to the run."""
+    for st in reversed([st for st in spec.get("steps", []) if st.get("session")]):
+        found: dict[str, Path] = {}
+        for f in Path(st["session"]).glob("configs/*/v*.jpg"):
+            cam = f.stem.split("_", 1)[1] if "_" in f.stem else "a"
+            if cam not in found or f.stat().st_mtime > found[cam].stat().st_mtime:
+                found[cam] = f
+        if found:
+            return {c: str(f.relative_to(run)) for c, f in sorted(found.items())}
+    return {}
+
+
+def results(run: Path) -> dict | None:
+    """Per joint the range in force before the run and the fitted one, whether it was measured (the
+    fit's coverage check, hardstops.MIN_SPAN, and recorded: a fit that is not a range is left out,
+    `rejected` says why; `uncalibrated`: the joint had no calibration to fit under), the joints the
+    hand's joint_ranges.yaml no longer holds, and the accuracy on the validation block before and
+    after (quick.check); None before the ranges step ran."""
+    fit = read_json(run / "proposed" / "hardstops.json")
+    if not fit:
+        return None
+    rec = fit.get("joint_ranges") or {}
+    recorded = set(rec.get("recorded") or [])
+    joints = {j: {"old": s["old"], "new": s["new"], "n": s["n"], "rms": s["rms"], "t_span": s["t_span"],
+                  "measured": j in recorded if rec else bool(s["identifiable"]),
+                  "rejected": (rec.get("rejected") or {}).get(j), "uncalibrated": bool(s.get("uncalibrated"))}
+              for j, s in fit["stops"].items()}
+    info = paths.run_info(run)
+    return {"run": str(run), "hand": info.get("hand"), "rig": info.get("rig"), "started": info.get("started"),
+            "poses": fit["n"], "min_span": fit.get("min_span"), "joint_ranges": rec.get("path"),
+            "gone": rec.get("gone") or [], "joints": joints,
+            "accuracy": read_json(run / "proposed" / "accuracy.json") or None}
 
 
 if __name__ == "__main__":

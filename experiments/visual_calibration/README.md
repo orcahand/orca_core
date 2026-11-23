@@ -29,9 +29,12 @@ until the rig has its own; nothing moves it.
 `python -m hand_study.run_hand` makes a run folder for the connected hand, plans over its
 ranges in force (a standalone copy of its model, the packaged config is never edited),
 archives its calibration from its folder in the hand store, collects the short block and the
-validation set with the solve workers beside it, and records the fitted hard stops as the
-hand's `joint_ranges.yaml` (in force at its next connect). `--dry` builds and lists the run;
-`--hand-id` names the hand instead.
+validation set with the solve workers beside it, records the fitted hard stops as the
+hand's `joint_ranges.yaml` (in force at its next connect), and checks the hand's accuracy on the
+validation set with its ranges before and after (`proposed/accuracy.json`, `quick.check`). `--dry`
+builds and lists the run; `--hand-id` names the hand instead. orca-ui's Setup › Visual calibration
+starts it for the connected hand ("Measure joint ranges") and follows it from its files
+(`run_hand.progress`, `run_hand.results`).
 
 ## Step 1 in two parts (2026-11-06)
 

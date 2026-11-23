@@ -1,7 +1,8 @@
 """The quick visual recalibration of a hand (STUDY.md): preflight (the hand named is the one
 connected), its calibration archived from its folder, a baseline pose that fixes the mount, the
 short block (4 points per joint + 6 random) and the validation set, with no tactile, Kapandji or
-SAC; then the hard stops fitted on the short block recorded as the hand's joint_ranges.yaml. Plans
+SAC; then the hard stops fitted on the short block recorded as the hand's joint_ranges.yaml, and the
+hand's accuracy on the validation set with its ranges before and after (proposed/accuracy.json). Plans
 span the hand's own config ROM (STUDY_ROM_CONFIG, set before import). hand_study.run_hand makes
 the run folder and that config and runs it all.
 
@@ -45,6 +46,8 @@ def main(tag: str, run: str, bench: Path, motors: str, track_ma: float, hand: st
             night["steps"].append({"name": "mount", "kind": "mount", "run": run, "from": str(sdir), "minutes": 3})
     night["steps"].append({"name": "ranges", "kind": "ranges", "run": run, "minutes": 5,
                            "from": [str(STUDY / "sessions" / f"{tag}-N07-short")]})
+    night["steps"].append({"name": "accuracy", "kind": "accuracy", "run": run, "minutes": 3,
+                           "from": str(STUDY / "sessions" / f"{tag}-N08-V")})
     (STUDY / "night").mkdir(parents=True, exist_ok=True)
     (STUDY / "night" / f"{tag}.json").write_text(json.dumps(night, indent=1))
     return night

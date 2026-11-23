@@ -388,7 +388,7 @@ class Night:
         plate and camera are there, the disk has room."""
         st = call("/status")
         hand = (call("/hand/info").get("hand") or {}).get("id")         # orca_core's hand id (its folder's name)
-        if call("/visual-calibration/study-map").get("enabled"):         # a study must see orca_core's own map
+        if self.study_map_on():                                          # a study must see orca_core's own map
             call("/visual-calibration/study-map", {"mode": "off"})
             self.log("preflight: the study map was on in orca-ui; switched to standard")
         want = self.spec.get("hand")
@@ -429,6 +429,16 @@ class Night:
                         f"this run {path} of {at}: run both on the same rig and ORCA_HOME, and restart orca-ui "
                         f"after a new rig calibration")
         return f"rig calibrated {at}"
+
+    @staticmethod
+    def study_map_on() -> bool:
+        """Whether orca-ui applies a study map; one started without --research-ui has none (404)."""
+        try:
+            return bool(call("/visual-calibration/study-map").get("enabled"))
+        except hw.ApiError as e:
+            if ": 404 " in str(e):
+                return False
+            raise
 
     def ui_process(self) -> tuple[str | None, str | None, str | None]:
         """(pid, command line, cwd) of the orca-ui on hw.UI's port; the last ones seen are kept, so a
@@ -509,6 +519,19 @@ class Night:
         res = hardstops.main(sessions, step["run"], hand_id=self.spec["hand"])
         self.log(f"{res['n']} poses: {hardstops.ranges_summary(res['joint_ranges'])}")
         self.note(f"joint ranges recorded for {self.spec['hand']}: {', '.join(res['joint_ranges']['recorded']) or 'none'}")
+
+    def accuracy(self, step: dict) -> None:
+        """The hand's accuracy on the validation block before and after the ranges step's stops
+        (quick.check), as proposed/accuracy.json beside its hardstops.json."""
+        from hand_study import hardstops, quick
+        val = Path(step["from"])
+        self.wait_for_solves([val], "accuracy")
+        stops = json.loads((hardstops.OUT / "hardstops.json").read_text())["stops"]
+        res = quick.check(val, step["run"], stops)
+        (hardstops.OUT / "accuracy.json").write_text(json.dumps(res, indent=1))
+        a, b = res["before"]["all"] or {}, res["after"]["all"] or {}
+        self.log(f"accuracy on {res['n']} validation poses: rms {a.get('rms')} -> {b.get('rms')} deg, "
+                 f"max {a.get('max')} -> {b.get('max')} deg")
 
     def refit(self, step: dict) -> None:
         """The hand's own hard stops from the short block (hardstops.fit), written into its

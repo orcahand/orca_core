@@ -40,6 +40,19 @@ def repeat(R: list[dict], a: str, b: str) -> dict | None:
     return {"per_joint": d, "rms": round(float(np.sqrt(np.mean(np.square(list(d.values()))))), 2)}
 
 
+def check(val: Path, run: str, stops: dict[str, dict]) -> dict:
+    """The hand's accuracy on its validation block (true minus predicted, deg): orca_core's linear map
+    under calibration `run` with the ranges in force before (the archived ones) and after the fitted
+    `stops` (hardstops.fit; a joint not measured keeps its old range)."""
+    V_all = analysis.rows([val])
+    V = hardstops.good(V_all)
+    before = hardstops.Linear(run)
+    after = hardstops.Linear(run, {j: stops[j]["new"] for j in JOINTS})
+    return {"run": run, "val": val.name, "n": len(V), "n_all": len(V_all),
+            "before": hardstops.accuracy(V, lambda r, j: before.joint(j, r["motor"][j])),
+            "after": hardstops.accuracy(V, lambda r, j: after.joint(j, r["motor"][j]))}
+
+
 def main(short: Path, val: Path, run: str, extra_roms: dict[str, Path], drop: list[str]) -> dict:
     S_all = analysis.rows([short])
     s_ex = list(analysis.EXCLUDED)
