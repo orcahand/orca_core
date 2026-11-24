@@ -1141,28 +1141,74 @@ def test_no_id_write_lands_on_a_slot_that_answers_again(monkeypatch, model):
     assert bus.at(1, plan.target_baud)
 
 
-def test_the_survey_resets_no_motor_the_run_placed_unless_it_is_wrong(monkeypatch):
-    """Motor 2, behind a gap, is no stray even "at" another rate (a link that
-    missed the chain-rate scan). The wrong model at a placed ID is, at any rate,
-    and so is a spare at the awaited slot's ID off the chain's rate."""
+@pytest.mark.parametrize("mid, model, baud, validated, reset", [
+    (2, "XC430", 2_000_000, {3, 2}, True),
+    (2, "XC330", 2_000_000, {3, 2}, False),
+    (3, "XC330", 2_000_000, {3, 2}, False),
+    (3, "XC330", 2_000_000, {2}, True),
+    (3, "XC430", 2_000_000, {3, 2}, True),
+    (3, "XC430", 1_000_000, {3, 2}, True),
+])
+def test_the_survey_resets_no_motor_the_run_placed_unless_it_is_wrong(
+        monkeypatch, mid, model, baud, validated, reset):
+    """Placed motors are protected at any rate, including the awaited slot.
+    A wrong model or an unvalidated spare can still be reset."""
     plan = small_plan()
-    bus, client = _wire_real(monkeypatch, plan, [motor(2, "XC430", 2_000_000)])
+    bus, client = _wire_real(monkeypatch, plan, [motor(mid, model, baud)])
     events = []
 
-    def survey():
-        events.clear()
-        mc._census(plan, [], 3, events.append, tier=2, state={"skip_bauds": set()},
-                   validated={3, 2})
-        return [e["motor"]["id"] for e in events if e["event"] == "stray_motor_reset"]
+    mc._census(plan, [], 3, events.append, tier=2, state={"skip_bauds": set()},
+               validated=validated)
+    resets = [e["motor"]["id"] for e in events if e["event"] == "stray_motor_reset"]
 
-    assert survey() == [2], "wrong model at a placed ID, another rate"
-    bus.motors.append(motor(2, "XC330", 2_000_000))
-    assert survey() == [], "placed motor 2 seen at another rate"
-    bus.motors.append(motor(3, "XC330", 2_000_000))
-    assert survey() == [3], "a spare at the awaited slot's ID, another rate"
-    bus.motors.append(motor(3, "XC430", plan.target_baud))
-    assert survey() == [3], "wrong model at the awaited slot's ID"
-    assert bus.at(2, 2_000_000), "motor 2 untouched"
+    assert resets == ([mid] if reset else [])
+    if reset:
+        assert bus.at(plan.default_id, plan.default_baud)
+    else:
+        assert client.calls == []
+        assert bus.at(mid, baud)
+
+
+def test_a_validated_slot_missed_by_the_survey_is_not_reset_through_a_mirrored_baud(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(3, "XC330", plan.target_baud)])
+    mirrored_baud = 115_200
+    bus.mirrored.add(mirrored_baud)
+    missed = False
+
+    def scan(motor_type, port, baudrate, id_range):
+        nonlocal missed
+        if baudrate == plan.target_baud and id_range == (1, plan.total_motors) and not missed:
+            missed = True
+            return []
+        return [dict(m, baud_rate=baudrate)
+                for m in bus.scan(motor_type, port, baudrate, id_range)]
+
+    real_session = mc._config_session
+
+    @contextlib.contextmanager
+    def session(motor_type, motor_ids, port, baudrate):
+        actual_baud = plan.target_baud if baudrate == mirrored_baud else baudrate
+        with real_session(motor_type, motor_ids, port, actual_baud) as opened:
+            yield opened
+
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    monkeypatch.setattr(mc, "_config_session", session)
+    monkeypatch.setattr(plan.client_cls, "scannable_baudrates",
+                        classmethod(lambda cls: [mirrored_baud]))
+    events = []
+    state = {"skip_bauds": set()}
+
+    seen = mc._census(plan, [], 3, events.append, tier=2, state=state, validated={3})
+    assert seen["returned"] is False
+    assert client.calls == []
+    assert bus.motors == [motor(3, "XC330", plan.target_baud)]
+
+    seen = mc._census(plan, [], 3, events.append, tier=2, state=state, validated={3})
+    assert seen["returned"] is True
+    assert mirrored_baud in state["skip_bauds"]
+    assert not any(e["event"] == "stray_motor_reset" for e in events)
+    assert client.calls == []
 
 
 def test_verify_tolerates_validated_motors_rejoining(monkeypatch):

@@ -728,7 +728,7 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
     default or target baud is left to the poll, a right-model motor already
     carrying ``target_id`` — the slot being waited for — is one that came back
     (reconnected after it dropped off), reported as ``returned`` so the caller
-    re-reads the chain, and a right-model motor at another ``validated`` ID, one
+    re-reads the chain, and a right-model motor at any ``validated`` ID, one
     this run already placed, is stranded behind a gap and left alone at any baud
     (see :func:`_stranded`). A motor "at" another baud whose ID also answers at the
     chain's baud is the chain seen through a bridge that ignored that rate; the
@@ -766,8 +766,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             _emit(progress_callback, "phantom_baud", baudrate=baud,
                   motor_ids=[m["id"] for m in phantoms])
             continue
-        # At the slot's own ID a motor off the chain's rate is a spare: reset, it fills the slot.
-        strays.extend(m for m in found if m["id"] == target_id or not _stranded(plan, m, validated))
+        # A placed motor missed at the chain's rate may reappear through a mirrored rate.
+        strays.extend(m for m in found if not _stranded(plan, m, validated))
     if strays and not returned:
         _reset_stray(plan, strays[0], progress_callback)
     if other_bauds:
