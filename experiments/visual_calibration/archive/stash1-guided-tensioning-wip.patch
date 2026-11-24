@@ -1,0 +1,1059 @@
+diff --git a/.gitignore b/.gitignore
+index 4a3a888..86aa0a3 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -149,4 +149,6 @@ replay_sequences/
+ # joint usage counters. All are one hand's history, not shared assets.
+ calibration.yaml.bak-*
+ calibration_history.jsonl
++last_tension.yaml
++tension_progress.yaml
+ joint_usage.json
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 4361882..4186e28 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -13,7 +13,8 @@ orca_core/
+ │   ├── motor_chain.py               # Assign motor IDs/baud; progress + prompt callbacks
+ │   ├── calibration_routine.py       # run_calibration(): hardstop-drive + encoder-anchor pass
+ │   ├── motor_travel.py              # per-joint motor-travel baselines (config.yaml joint_motor_travel)
+-│   └── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
++│   ├── tensioning.py                # run_tension()/run_jitter(): tendon tensioning + seating
++│   └── guided_tension.py            # run_guided_tension(): centre/range-check/tension rounds
+ ├── data/                         # Packaged content (demo_poses.yaml)
+ ├── control/                      # Closed-loop joint control
+ │   ├── joint_loop.py                # JointLoopThread: PI loop + encoder-freshness watchdog
+@@ -264,10 +265,12 @@ All hand-specific settings are in `config.yaml`:
+   joint name** (the travel follows the joint's tendon spool, and motor IDs differ per hand; the
+   routine resolves the motor through `joint_to_motor_map` at the point of use). Calibration re-drives
+   a joint that measures more than `calibration_travel_margin` short of its baseline
+-  (`calibration_travel_retries`), escalating the current only when `calibration_max_current`
+-  grants headroom (`calibration_retry_current` is the target) - the fix for an over-tensioned hand
+-  whose joints stall before their hardstops. Generate it with `scripts/measure_travel.py` into your
+-  own copy of a config, never by hand and never into a packaged model: the numbers are per hand.
++  (`calibration_travel_retries`, default 3). With nothing pinned each re-drive adds 50 mA
++  (`CALIBRATION_RETRY_STEP_MA`; 300 → 350 → 400 → 450 on Dynamixel); pinning `calibration_max_current`
++  and/or `calibration_retry_current` switches to an even ramp up to the retry current, capped at the
++  ceiling - the fix for an over-tensioned hand whose joints stall before their hardstops. The v2 models ship one shared baseline (the spool
++  geometry is the same on every hand), measured with `scripts/measure_travel.py` on a freshly
++  tensioned hand; guided tensioning (`scripts/guided_tension.py`) scores slack against it too.
+ - `use_joint_feedback` + `joint_encoder_joints` + `encoder_serial_port` - enable the closed-loop joint-encoder controller (`load_hand` then returns `OrcaHandJointFeedback`/`OrcaHandFull`)
+ - `joint_control_gains:` block - **overrides only** for the outer-loop PI gains. The defaults live in `control/constants.py`; `all:` overrides them for one hand, `joints:` overrides `all:` per joint. Never pin a gain here that just restates the constant - that shadows it and makes editing the default a silent no-op. Stiffly-coupled (fast-responding) joints have the least stability margin and want a lower `kp`.
+ - `sensors:` block - enable tactile sensing (`load_hand` then returns `OrcaHandTouch`/`OrcaHandFull`)
+diff --git a/orca_core/constants.py b/orca_core/constants.py
+index 98b2162..212d1ae 100644
+--- a/orca_core/constants.py
++++ b/orca_core/constants.py
+@@ -31,6 +31,13 @@ DEFAULT_MODEL_NAME = "orcahand-right"
+ # ``calibration_retry_current``.
+ DEFAULT_RETRY_CURRENT_SCALE = 1.5
+ 
++# With neither ``calibration_retry_current`` nor ``calibration_max_current``
++# pinned, each re-drive of a joint that stopped short of its full sweep adds
++# this much to the nominal calibration current (mA) — 300 → 350 → 400 → 450
++# on a Dynamixel hand over the default three attempts.
++CALIBRATION_RETRY_STEP_MA = 50
++DEFAULT_CALIBRATION_TRAVEL_RETRIES = 3
++
+ # A calibration sweep that ends with its two motor limits this close together
+ # did not find two hardstops: the motor never turned. Committing such a pair
+ # writes a zero (or near-zero) joint-to-motor ratio, which silently makes the
+diff --git a/orca_core/hand_config.py b/orca_core/hand_config.py
+index 4aea4bf..40d270d 100644
+--- a/orca_core/hand_config.py
++++ b/orca_core/hand_config.py
+@@ -15,6 +15,8 @@ from typing import Dict, List, Literal
+ from .constants import (
+     CONTROL_MODES,
+     DEFAULT_MODEL_NAME,
++    CALIBRATION_RETRY_STEP_MA,
++    DEFAULT_CALIBRATION_TRAVEL_RETRIES,
+     DEFAULT_RETRY_CURRENT_SCALE,
+     FINGER_NAMES,
+     JOINT_IDS,
+@@ -399,13 +401,13 @@ class OrcaHandConfig(BaseHandConfig):
+     calibration_travel_margin: float = 0.25
+     # Current the re-drive uses (mA). None derives it from calibration_current.
+     calibration_retry_current: int | None = None
+-    calibration_travel_retries: int = 1
++    calibration_travel_retries: int = DEFAULT_CALIBRATION_TRAVEL_RETRIES
+     # Ceiling for the re-drive only (mA), independent of max_current: getting a
+     # joint past an over-tensioned tendon takes more torque than the hand is
+     # allowed to use in normal operation, and the routine restores max_current
+-    # as soon as it finishes. Unset means no headroom, so the re-drive repeats
+-    # at the nominal calibration current: the useful ceiling depends on what
+-    # the motors and tendons of that hand tolerate, which is measured per hand.
++    # as soon as it finishes. Unset (with calibration_retry_current unset too)
++    # steps each re-drive CALIBRATION_RETRY_STEP_MA above the last, so the top
++    # attempt is retries x step above the nominal calibration current.
+     calibration_max_current: int | None = None
+     use_joint_feedback: bool | None = None
+     # Joint names or the ["all"] sentinel (every slotted joint, wrist
+@@ -451,9 +453,18 @@ class OrcaHandConfig(BaseHandConfig):
+             return self.calibration_retry_current
+         return int(round(self.calibration_current * DEFAULT_RETRY_CURRENT_SCALE))
+ 
++    @property
++    def retry_steps_by_default(self) -> bool:
++        """Re-drives step up by CALIBRATION_RETRY_STEP_MA, nothing being pinned."""
++        return self.calibration_retry_current is None and self.calibration_max_current is None
++
+     def retry_current_for_attempt(self, attempt: int) -> float:
+         """Current (mA) for 1-based re-drive ``attempt``.
+ 
++        With neither ``calibration_retry_current`` nor ``calibration_max_current``
++        pinned, each attempt adds CALIBRATION_RETRY_STEP_MA to the nominal
++        current. Otherwise:
++
+         Successive attempts ramp evenly from the nominal calibration current up
+         to :attr:`calibration_retry_current_resolved`, so a hand that only
+         needs a nudge is not driven at the full retry current on the first try.
+@@ -475,6 +486,8 @@ class OrcaHandConfig(BaseHandConfig):
+                 f"attempt {attempt} is outside 1..{self.calibration_travel_retries}"
+             )
+         base = float(self.calibration_current)
++        if self.retry_steps_by_default:
++            return base + CALIBRATION_RETRY_STEP_MA * attempt
+         top = float(self.calibration_retry_current_resolved)
+         ramped = base + (top - base) * attempt / self.calibration_travel_retries
+         ceiling = (
+diff --git a/orca_core/maintenance/__init__.py b/orca_core/maintenance/__init__.py
+index 5761fbb..c0eca7f 100644
+--- a/orca_core/maintenance/__init__.py
++++ b/orca_core/maintenance/__init__.py
+@@ -14,6 +14,7 @@ drives a terminal, a GUI, or a web front-end.
+ """
+ 
+ from .calibration_routine import run_calibration
++from .guided_tension import read_last_tension, run_guided_tension
+ from .motor_travel import (
+     measured_travel_by_joint,
+     motor_travel_deg,
+@@ -48,9 +49,11 @@ __all__ = [
+     "measured_travel_by_joint",
+     "motor_travel_deg",
+     "plan_motor_chain",
++    "read_last_tension",
+     "reset_all_motors",
+     "resolve_port",
+     "run_calibration",
++    "run_guided_tension",
+     "run_jitter",
+     "run_tension",
+     "scan_configured_motors",
+diff --git a/orca_core/maintenance/calibration_routine.py b/orca_core/maintenance/calibration_routine.py
+index 0219955..e85f140 100644
+--- a/orca_core/maintenance/calibration_routine.py
++++ b/orca_core/maintenance/calibration_routine.py
+@@ -1421,7 +1421,7 @@ def _resolve_short_travel(
+         if config.calibration_max_current is not None
+         else config.calibration_current
+     )
+-    if config.calibration_retry_current_resolved > ceiling:
++    if not config.retry_steps_by_default and config.calibration_retry_current_resolved > ceiling:
+         logger.warning(
+             "the re-drive for %s is capped at calibration_max_current (%d mA): "
+             "it would otherwise use %d mA, so it repeats the pass that already "
+diff --git a/orca_core/maintenance/guided_tension.py b/orca_core/maintenance/guided_tension.py
+new file mode 100644
+index 0000000..3a32dcf
+--- /dev/null
++++ b/orca_core/maintenance/guided_tension.py
+@@ -0,0 +1,441 @@
++# ==============================================================================
++# Copyright (c) 2025 ORCA
++#
++# This file is part of ORCA and is licensed under the MIT License.
++# You may use, copy, modify, and distribute this file under the terms of the MIT License.
++# See the LICENSE file at the root of this repository for full license information.
++# ==============================================================================
++
++"""Guided tendon tensioning: centre → range check → score → tension, repeated.
++
++Each round the operator centres every joint with torque off, then the finger
++motors hold that centre position at a low current while the operator drives
++the joints through their range by hand. A tendon with slack moves the joint
++without dragging its motor along, so how far each motor is dragged — its
++spread from the furthest ``+`` to the furthest ``-`` — measured against the
++joint's ``joint_motor_travel`` baseline scores how taut that tendon is. Below
++100 % the motors hold at a higher current while the operator takes up the
++slack with the ratchet tool, and the round repeats.
++
++The wrist is never touched. Interaction-free like the other maintenance
++routines: progress goes out through ``progress_callback({"event": ...})`` and
++each operator step blocks on ``prompt_callback({"action": ...}) -> str``. The
++range check samples on its own thread while that prompt blocks, so the
++front-end shows the spreads live and answers when the operator is done.
++"""
++
++from __future__ import annotations
++
++import dataclasses
++import logging
++import math
++import os
++import threading
++import time
++from dataclasses import dataclass
++from datetime import datetime, timezone
++from typing import Callable, Dict, List, Optional, TYPE_CHECKING, Union
++
++import numpy as np
++
++from ..constants import CURRENT_BASED_POSITION, WRIST
++from ..utils.utils import read_yaml, write_yaml_atomic
++from .motor_reads import read_motor_pos_checked
++
++if TYPE_CHECKING:
++    from ..hand_config import OrcaHandConfig
++    from ..hardware_hand import OrcaHand
++
++logger = logging.getLogger(__name__)
++
++ProgressCallback = Callable[[dict], None]
++PromptCallback = Callable[[dict], str]
++ShouldStop = Callable[[], bool]
++Current = Union[float, Callable[[], float]]
++HoldCurrent = Union[float, Callable[[str], float]]  # one value, or one per joint name
++PassFraction = Union[float, Callable[[str], float]]  # one value, or one per joint name
++
++HOLD_CURRENT_MA = 100
++TENSION_CURRENT_MA = 400
++PASS_FRACTION = 0.7
++PARTIAL_FRACTION = 0.3
++SAMPLE_PERIOD_S = 0.05
++LAST_TENSION_FILE = "last_tension.yaml"
++PROGRESS_FILE = "tension_progress.yaml"
++DEFAULT_HAND_KEY = "default"
++
++CONTINUE = "Continue"
++CHECK_SCORE = "Score"
++TENSION = "Tension"
++FINISH = "Finish"
++FINISH_ANYWAY = "Finish anyway"
++DONE = "Done"
++
++STATUS_PASS = "pass"
++STATUS_PARTIAL = "partial"
++STATUS_LOW = "low"
++STATUS_UNSCORED = "unscored"
++
++
++@dataclass
++class MotorSpread:
++    """How far one joint's motor has been dragged from its held centre."""
++
++    joint: str
++    motor_id: int
++    expected_deg: Optional[float]
++    offset_deg: float = 0.0
++    plus_deg: float = 0.0
++    minus_deg: float = 0.0
++    kept: Optional[float] = None  # best fraction from earlier rounds or sessions
++
++    @property
++    def spread_deg(self) -> float:
++        return self.plus_deg - self.minus_deg
++
++    @property
++    def live_fraction(self) -> Optional[float]:
++        if not self.expected_deg:
++            return None
++        return self.spread_deg / self.expected_deg
++
++    @property
++    def fraction(self) -> Optional[float]:
++        """Best of this check and anything kept: a joint that once passed stays passed."""
++        live = self.live_fraction
++        if live is None or self.kept is None:
++            return live
++        return max(live, self.kept)
++
++    def status(self, pass_fraction: float) -> str:
++        fraction = self.fraction
++        if fraction is None:
++            return STATUS_UNSCORED
++        if fraction >= pass_fraction:
++            return STATUS_PASS
++        return STATUS_PARTIAL if fraction >= PARTIAL_FRACTION else STATUS_LOW
++
++    def to_dict(self, pass_fraction: float) -> dict:
++        fraction = self.fraction
++        live = self.live_fraction
++        return {
++            "joint": self.joint,
++            "motor": self.motor_id,
++            "expected_deg": self.expected_deg,
++            "offset_deg": round(self.offset_deg, 2),
++            "plus_deg": round(self.plus_deg, 2),
++            "minus_deg": round(self.minus_deg, 2),
++            "spread_deg": round(self.spread_deg, 2),
++            "fraction": None if fraction is None else round(fraction, 3),
++            "live_fraction": None if live is None else round(live, 3),
++            "kept": None if self.kept is None else round(self.kept, 3),
++            "status": self.status(pass_fraction),
++            "pass_fraction": pass_fraction,
++        }
++
++
++@dataclass
++class GuidedTensionResult:
++    completed: bool
++    rounds: int
++    spreads: List[dict]
++
++
++def tension_targets(config: "OrcaHandConfig") -> List[MotorSpread]:
++    """One empty spread per non-wrist joint, in the hand's joint order."""
++    return [
++        MotorSpread(joint, config.joint_to_motor_map[joint], config.expected_motor_travel_deg(joint))
++        for joint in config.joint_ids
++        if joint != WRIST and joint in config.joint_to_motor_map
++    ]
++
++
++def pass_threshold(pass_fraction: PassFraction, joint: str) -> float:
++    return float(pass_fraction(joint) if callable(pass_fraction) else pass_fraction)
++
++
++def score(spreads: List[MotorSpread], pass_fraction: PassFraction = PASS_FRACTION) -> dict:
++    """Passed / scored counts over the joints that have a baseline."""
++    motors = [s.to_dict(pass_threshold(pass_fraction, s.joint)) for s in spreads]
++    scored = [m for m in motors if m["fraction"] is not None]
++    passed = sum(m["status"] == STATUS_PASS for m in scored)
++    return {
++        "passed": passed,
++        "scored": len(scored),
++        "fraction": passed / len(scored) if scored else 0.0,
++        "motors": motors,
++    }
++
++
++def last_tension_path(config: "OrcaHandConfig") -> str:
++    return os.path.join(os.path.dirname(config.calibration_path), LAST_TENSION_FILE)
++
++
++def read_last_tension(config: "OrcaHandConfig") -> Optional[dict]:
++    """The last guided tension that reached 100 %, or ``None``."""
++    data = read_yaml(last_tension_path(config))
++    return data or None
++
++
++def progress_path(config: "OrcaHandConfig") -> str:
++    return os.path.join(os.path.dirname(config.calibration_path), PROGRESS_FILE)
++
++
++def read_progress(config: "OrcaHandConfig", hand_key: Optional[str] = None) -> Optional[dict]:
++    """Saved best score per joint for one hand (``updated_at``, ``rounds``, ``best``), or ``None``."""
++    hands = (read_yaml(progress_path(config)) or {}).get("hands") or {}
++    return hands.get(hand_key or DEFAULT_HAND_KEY) or None
++
++
++def _write_progress(config: "OrcaHandConfig", hand_key: str, record: Optional[dict]) -> None:
++    path = progress_path(config)
++    hands = dict((read_yaml(path) or {}).get("hands") or {})
++    if record is None:
++        if hand_key not in hands:
++            return
++        hands.pop(hand_key)
++    else:
++        hands[hand_key] = record
++    write_yaml_atomic(path, {"hands": hands})
++
++
++def clear_progress(config: "OrcaHandConfig", hand_key: Optional[str] = None) -> None:
++    _write_progress(config, hand_key or DEFAULT_HAND_KEY, None)
++
++
++def _emit(progress_callback: Optional[ProgressCallback], event: str, **payload) -> None:
++    if progress_callback is None:
++        return
++    try:
++        progress_callback({"event": event, **payload})
++    except Exception:
++        logger.exception("guided tension progress callback failed")
++
++
++class _SpreadSampler(threading.Thread):
++    """Tracks each motor's drag from ``centre`` until stopped."""
++
++    def __init__(self, hand, spreads, centre, pass_fraction, round_no, progress_callback):
++        super().__init__(daemon=True, name="guided-tension-sampler")
++        self._hand = hand
++        self._spreads = spreads
++        self._idx = [hand.config.motor_id_to_idx_dict[s.motor_id] for s in spreads]
++        self._centre = centre
++        self._pass_fraction = pass_fraction
++        self._round = round_no
++        self._progress_callback = progress_callback
++        self._stop = threading.Event()
++        self.error: Optional[BaseException] = None
++
++    def run(self) -> None:
++        try:
++            while not self._stop.wait(SAMPLE_PERIOD_S):
++                try:
++                    pos = read_motor_pos_checked(self._hand)
++                except RuntimeError as exc:
++                    logger.warning("%s; skipping this sample", exc)
++                    continue
++                for spread, idx in zip(self._spreads, self._idx):
++                    offset = math.degrees(pos[idx] - self._centre[idx])
++                    spread.offset_deg = offset
++                    spread.plus_deg = max(spread.plus_deg, offset)
++                    spread.minus_deg = min(spread.minus_deg, offset)
++                _emit(self._progress_callback, "spread", round=self._round,
++                      **score(self._spreads, self._pass_fraction))
++        except BaseException as exc:
++            self.error = exc
++
++    def stop(self) -> None:
++        self._stop.set()
++        self.join()
++
++
++def joint_currents(config: "OrcaHandConfig", current: HoldCurrent) -> Dict[str, float]:
++    """Holding current per non-wrist joint, in mA."""
++    return {s.joint: float(current(s.joint) if callable(current) else current)
++            for s in tension_targets(config)}
++
++
++def per_motor_currents(config: "OrcaHandConfig", by_joint: Dict[str, float]) -> List[float]:
++    """``set_max_current`` list in motor order; motors outside ``by_joint`` get the lowest value."""
++    joint_of = config.motor_to_joint_dict
++    fallback = min(by_joint.values())
++    return [by_joint.get(joint_of.get(m), fallback) for m in config.motor_ids]
++
++
++def _hold_here(hand: "OrcaHand", motor_ids: List[int], by_joint: Dict[str, float]) -> np.ndarray:
++    """Hold ``motor_ids`` where they stand under their joints' currents; return the positions."""
++    hand.set_max_current(per_motor_currents(hand.config, by_joint))
++    centre = read_motor_pos_checked(hand)
++    idx = [hand.config.motor_id_to_idx_dict[m] for m in motor_ids]
++    hand.write_motor_pos(motor_ids, centre[idx])
++    hand.enable_torque(motor_ids)
++    hand.write_motor_pos(motor_ids, centre[idx])
++    return centre
++
++
++def _resolve(current: Current) -> float:
++    return float(current() if callable(current) else current)
++
++
++def _ask(prompt_callback: PromptCallback, should_stop: ShouldStop, action: str,
++         options: List[str], **payload) -> str:
++    answer = prompt_callback({"action": action, "options": options, **payload})
++    if should_stop():
++        raise InterruptedError("guided tension stopped")
++    if answer not in options:
++        raise ValueError(f"{action}: unexpected answer {answer!r}; expected one of {options}")
++    return answer
++
++
++def run_guided_tension(
++    hand: "OrcaHand",
++    *,
++    prompt_callback: PromptCallback,
++    progress_callback: Optional[ProgressCallback] = None,
++    should_stop: Optional[ShouldStop] = None,
++    hold_current: HoldCurrent = HOLD_CURRENT_MA,
++    tension_current: Current = TENSION_CURRENT_MA,
++    pass_fraction: PassFraction = PASS_FRACTION,
++    persist: Optional[bool] = None,
++    hand_key: Optional[str] = None,
++    resume: bool = True,
++) -> GuidedTensionResult:
++    """Run centre → range check → score → tension rounds until 100 % or finish.
++
++    Prompts (``action`` → options):
++
++    - ``center``: torque off; centre every joint. → ``Continue``
++    - ``range_check``: motors hold the centre at ``hold_current``; drive the
++      joints through their range while ``spread`` events stream. → ``Score``
++    - ``score``: carries the round's score. → ``Finish`` at 100 %, else
++      ``Tension`` / ``Finish anyway``
++    - ``tension``: motors hold at ``tension_current``; take up the slack with
++      the ratchet tool, without overtensioning. → ``Done``
++
++    Progress events: ``step`` (``step``, ``round``), ``spread`` and ``score``
++    (``round``, ``passed``, ``scored``, ``fraction``, ``motors``), and
++    ``cleanup_failed``.
++
++    ``hold_current`` may be a callable of the joint name and ``tension_current``
++    a callable of nothing; each is read when its step starts, so a front-end
++    can set holding currents per joint and change either between rounds. The
++    ``range_check`` prompt carries the resolved ``hold_current`` per joint.
++    ``pass_fraction`` may be a callable of the joint name, read on every
++    sample, so thresholds can differ per joint and change mid-check.
++
++    Each joint's best score is kept across rounds and, keyed by ``hand_key``
++    (a hand serial or board id; one shared slot when ``None``), across runs in
++    ``tension_progress.yaml``: a joint that has passed stays passed, so later
++    checks only need the joints still short. ``resume=False`` starts from
++    scratch and drops what was saved. Reaching 100 % clears the saved progress.
++
++    A round that reaches 100 % is recorded in ``last_tension.yaml`` beside the
++    hand's calibration (unless ``persist`` is false; mock hands default to not
++    persisting). On any exit torque is disabled and the configured control
++    mode and current limit are restored.
++
++    Raises:
++        ValueError: If no non-wrist joint has a ``joint_motor_travel`` baseline.
++        InterruptedError: If ``should_stop`` fires during a prompt.
++    """
++    if should_stop is None:
++        should_stop = lambda: False  # noqa: E731
++    if persist is None:
++        persist = getattr(hand, "_persist_calibration", True)
++
++    config = hand.config
++    template = tension_targets(config)
++    if not any(s.expected_deg for s in template):
++        raise ValueError(
++            "no joint has a joint_motor_travel baseline; run scripts/measure_travel.py first"
++        )
++    motor_ids = [s.motor_id for s in template]
++    control_mode = config.control_mode
++
++    def _restore() -> None:
++        hand.disable_torque()
++        hand.set_max_current(config.max_current)
++        hand.set_control_mode(control_mode)
++
++    key = hand_key or DEFAULT_HAND_KEY
++    saved = read_progress(config, key) if resume else None
++    best: Dict[str, float] = {j: float(f) for j, f in ((saved or {}).get("best") or {}).items()
++                              if f is not None}
++    rounds_before = int((saved or {}).get("rounds") or 0)
++    if not resume and persist:
++        clear_progress(config, key)
++    if best:
++        _emit(progress_callback, "resumed", best=dict(best), rounds=rounds_before,
++              updated_at=saved.get("updated_at"))
++    template = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
++
++    round_no = 0
++    completed = False
++    result: dict = score(template, pass_fraction)
++    try:
++        hand.disable_torque()
++        hand.set_control_mode(CURRENT_BASED_POSITION, motor_ids)
++        while True:
++            round_no += 1
++            hand.disable_torque(motor_ids)
++            _emit(progress_callback, "step", step="center", round=round_no)
++            _ask(prompt_callback, should_stop, "center", [CONTINUE], round=round_no)
++
++            spreads = [dataclasses.replace(s, kept=best.get(s.joint)) for s in template]
++            hold_ma = joint_currents(config, hold_current)
++            centre = _hold_here(hand, motor_ids, hold_ma)
++            _emit(progress_callback, "step", step="range", round=round_no)
++            sampler = _SpreadSampler(hand, spreads, centre, pass_fraction, round_no,
++                                     progress_callback)
++            sampler.start()
++            try:
++                _ask(prompt_callback, should_stop, "range_check", [CHECK_SCORE],
++                     round=round_no, hold_current=hold_ma,
++                     pass_fraction={s.joint: pass_threshold(pass_fraction, s.joint) for s in spreads})
++            finally:
++                sampler.stop()
++            if sampler.error is not None:
++                raise sampler.error
++
++            result = score(spreads, pass_fraction)
++            for m in result["motors"]:
++                if m["fraction"] is not None:
++                    best[m["joint"]] = max(best.get(m["joint"], 0.0), m["fraction"])
++            if persist:
++                _write_progress(config, key, {
++                    "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
++                    "rounds": rounds_before + round_no,
++                    "best": {j: round(f, 3) for j, f in best.items()},
++                })
++            _emit(progress_callback, "step", step="score", round=round_no)
++            _emit(progress_callback, "score", round=round_no, **result)
++            completed = result["passed"] == result["scored"]
++            options = [FINISH] if completed else [TENSION, FINISH_ANYWAY]
++            if _ask(prompt_callback, should_stop, "score", options,
++                    round=round_no, **result) != TENSION:
++                break
++
++            tension_ma = _resolve(tension_current)
++            hand.set_max_current(tension_ma)
++            _emit(progress_callback, "step", step="tension", round=round_no)
++            _ask(prompt_callback, should_stop, "tension", [DONE],
++                 round=round_no, tension_current=tension_ma)
++    except BaseException:
++        try:
++            _restore()
++        except Exception as e:
++            _emit(progress_callback, "cleanup_failed", error=str(e))
++            logger.warning("cleanup after aborted guided tension failed: %s", e)
++        raise
++    _restore()
++
++    if completed and persist:
++        clear_progress(config, key)
++        write_yaml_atomic(last_tension_path(config), {
++            "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
++            "rounds": round_no,
++            "pass_fraction": {m["joint"]: m["pass_fraction"] for m in result["motors"]},
++            "spreads": {m["joint"]: m["fraction"] for m in result["motors"]},
++        })
++    return GuidedTensionResult(completed, round_no, result["motors"])
+diff --git a/orca_core/models/v2/orcahand-full-left/config.yaml b/orca_core/models/v2/orcahand-full-left/config.yaml
+index d38d243..e306b0b 100644
+--- a/orca_core/models/v2/orcahand-full-left/config.yaml
++++ b/orca_core/models/v2/orcahand-full-left/config.yaml
+@@ -214,3 +214,22 @@ sensors:
+     middle: 2
+     ring: 3
+     pinky: 4
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-full-right/config.yaml b/orca_core/models/v2/orcahand-full-right/config.yaml
+index 612cb94..0cd7263 100644
+--- a/orca_core/models/v2/orcahand-full-right/config.yaml
++++ b/orca_core/models/v2/orcahand-full-right/config.yaml
+@@ -212,3 +212,22 @@ sensors:
+     middle: 2
+     ring: 3
+     pinky: 4
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-joint-left/config.yaml b/orca_core/models/v2/orcahand-joint-left/config.yaml
+index ca50e6c..98a01be 100644
+--- a/orca_core/models/v2/orcahand-joint-left/config.yaml
++++ b/orca_core/models/v2/orcahand-joint-left/config.yaml
+@@ -204,3 +204,22 @@ calibration_sequence:
+ - step: 16
+   joints:
+     wrist: extend
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-joint-right/config.yaml b/orca_core/models/v2/orcahand-joint-right/config.yaml
+index 6d7b834..e51f762 100644
+--- a/orca_core/models/v2/orcahand-joint-right/config.yaml
++++ b/orca_core/models/v2/orcahand-joint-right/config.yaml
+@@ -204,3 +204,22 @@ calibration_sequence:
+ - step: 16
+   joints:
+     wrist: extend
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-left/config.yaml b/orca_core/models/v2/orcahand-left/config.yaml
+index 855ccba..ffa3df9 100644
+--- a/orca_core/models/v2/orcahand-left/config.yaml
++++ b/orca_core/models/v2/orcahand-left/config.yaml
+@@ -199,3 +199,22 @@ calibration_sequence:
+ - step: 16
+   joints:
+     wrist: extend
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-right/config.yaml b/orca_core/models/v2/orcahand-right/config.yaml
+index aedaf37..af6bf73 100644
+--- a/orca_core/models/v2/orcahand-right/config.yaml
++++ b/orca_core/models/v2/orcahand-right/config.yaml
+@@ -199,3 +199,22 @@ calibration_sequence:
+ - step: 16
+   joints:
+     wrist: extend
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-touch-left/config.yaml b/orca_core/models/v2/orcahand-touch-left/config.yaml
+index 8ec6e3c..02d2275 100644
+--- a/orca_core/models/v2/orcahand-touch-left/config.yaml
++++ b/orca_core/models/v2/orcahand-touch-left/config.yaml
+@@ -209,3 +209,22 @@ sensors:
+     middle: 2
+     ring: 3
+     pinky: 4
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/orca_core/models/v2/orcahand-touch-right/config.yaml b/orca_core/models/v2/orcahand-touch-right/config.yaml
+index 049bc9e..68ee4cb 100644
+--- a/orca_core/models/v2/orcahand-touch-right/config.yaml
++++ b/orca_core/models/v2/orcahand-touch-right/config.yaml
+@@ -210,3 +210,22 @@ sensors:
+     middle: 2
+     ring: 3
+     pinky: 4
++
++joint_motor_travel:
++  wrist: 156.18
++  thumb_cmc: 57.57
++  thumb_abd: 56.25
++  thumb_mcp: 116.1
++  thumb_dip: 96.86
++  index_abd: 39.11
++  index_mcp: 139.39
++  index_pip: 131.04
++  middle_abd: 47.9
++  middle_mcp: 132.01
++  middle_pip: 103.36
++  ring_abd: 49.75
++  ring_mcp: 143.09
++  ring_pip: 112.85
++  pinky_abd: 49.13
++  pinky_mcp: 113.91
++  pinky_pip: 115.84
+diff --git a/scripts/guided_tension.py b/scripts/guided_tension.py
+new file mode 100644
+index 0000000..63fd218
+--- /dev/null
++++ b/scripts/guided_tension.py
+@@ -0,0 +1,100 @@
++"""Guided tendon tensioning: repeat centre → range check → tension until every
++finger motor follows its joint through most of its travel.
++
++See ``orca_core/maintenance/guided_tension.py`` for the protocol.
++"""
++
++import argparse
++import sys
++import threading
++
++from orca_core.maintenance.guided_tension import (
++    HOLD_CURRENT_MA,
++    PASS_FRACTION,
++    read_last_tension,
++    run_guided_tension,
++)
++from orca_core.utils.cli import add_hand_arguments, connect_hand, create_hand_from_args, shutdown_hand
++
++_COLOURS = {"pass": "\033[92m", "partial": "\033[93m", "low": "\033[91m", "unscored": "\033[90m"}
++_live = threading.Event()
++
++
++def _bar(motor: dict) -> str:
++    fraction = motor["fraction"]
++    pct = "  -" if fraction is None else f"{100 * fraction:3.0f}"
++    return f"{_COLOURS[motor['status']]}{motor['joint']}:{pct}%\033[0m"
++
++
++def _print_progress(event: dict) -> None:
++    kind = event["event"]
++    if kind == "spread" and _live.is_set():
++        line = " ".join(_bar(m) for m in event["motors"])
++        sys.stdout.write(f"\r\033[K{event['passed']}/{event['scored']}  {line}")
++        sys.stdout.flush()
++    elif kind == "score":
++        print()
++        for m in event["motors"]:
++            print(f"  motor {m['motor']:>2}  {_bar(m)}  ({m['spread_deg']:.0f} of {m['expected_deg']} deg)")
++        print(f"Score: {event['passed']}/{event['scored']} motors ({100 * event['fraction']:.0f}%)")
++
++
++def _prompt(prompt: dict) -> str:
++    action, options = prompt["action"], prompt["options"]
++    if action == "center":
++        print(f"\n=== Round {prompt['round']} ===")
++        print("Torque is off. Put every joint in the middle of its range of motion.")
++    elif action == "range_check":
++        lo, hi = min(prompt['hold_current'].values()), max(prompt['hold_current'].values())
++        held = f"{lo:.0f} mA" if lo == hi else f"{lo:.0f}-{hi:.0f} mA"
++        print(f"Motors hold the centre at {held}. Drive every joint "
++              f"through its full range; a motor passes at {100 * min(prompt['pass_fraction'].values()):.0f}%+ of its travel.")
++        _live.set()
++    elif action == "tension":
++        print(f"Motors hold at {prompt['tension_current']:.0f} mA. Take up the slack with the "
++              "ratchet tool. Tension carefully - do not overtension.")
++    if len(options) == 1:
++        input(f"Press Enter to {options[0].lower()}... ")
++        _live.clear()
++        return options[0]
++    while True:
++        choice = input(" / ".join(f"[{i + 1}] {o}" for i, o in enumerate(options)) + ": ").strip()
++        if choice.isdigit() and 1 <= int(choice) <= len(options):
++            return options[int(choice) - 1]
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    add_hand_arguments(parser, feedback_flag=False)
++    parser.add_argument("--hold-current", type=float, default=HOLD_CURRENT_MA, help=f"Range-check hold current, mA (default {HOLD_CURRENT_MA}).")
++    parser.add_argument("--tension-current", type=float, default=400, help="Tensioning hold current, mA (default 400).")
++    parser.add_argument("--pass-fraction", type=float, default=PASS_FRACTION,
++                        help="Share of a joint's travel its motor must follow to pass (default 0.7).")
++    args = parser.parse_args()
++
++    hand = create_hand_from_args(args, engage_feedback=False, engage_sensors=False)
++    last = read_last_tension(hand.config)
++    if last:
++        print(f"Last successful tension: {last.get('completed_at')}")
++    try:
++        connect_hand(hand)
++        result = run_guided_tension(
++            hand,
++            prompt_callback=_prompt,
++            progress_callback=_print_progress,
++            hold_current=args.hold_current,
++            tension_current=args.tension_current,
++            pass_fraction=args.pass_fraction,
++        )
++        print("Tensioning complete. Calibrate next." if result.completed
++              else "Finished below 100%.")
++        return 0
++    except KeyboardInterrupt:
++        print("\nGuided tensioning interrupted.")
++        return 1
++    finally:
++        shutdown_hand(hand)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_guided_tension.py b/tests/test_guided_tension.py
+new file mode 100644
+index 0000000..cf5607e
+--- /dev/null
++++ b/tests/test_guided_tension.py
+@@ -0,0 +1,106 @@
++"""Guided tensioning: spreads are scored against the travel baseline, the wrist
++is left alone, and every exit leaves the motors limp."""
++
++import math
++import threading
++
++import pytest
++
++from orca_core.maintenance.guided_tension import (
++    FINISH,
++    FINISH_ANYWAY,
++    read_last_tension,
++    run_guided_tension,
++    tension_targets,
++)
++
++
++def _drive(hand, drag):
++    """Prompt answers that drag each joint's motor by ``drag(joint)`` x its travel."""
++    spread_seen = threading.Event()
++    client = hand.motor_client
++    targets = tension_targets(hand.config)
++
++    def progress(event):
++        if event["event"] == "spread":
++            spread_seen.set()
++
++    def prompt(p):
++        if p["action"] == "range_check":
++            assert all(client._torque_enabled[t.motor_id] for t in targets)
++            for t in targets:
++                half = math.radians(t.expected_deg * drag(t.joint)) / 2
++                centre = client._pos[t.motor_id]
++                client._pos[t.motor_id] = centre + half
++                spread_seen.clear()
++                assert spread_seen.wait(5)
++                client._pos[t.motor_id] = centre - half
++            spread_seen.clear()
++            assert spread_seen.wait(5)
++        return FINISH if FINISH in p["options"] else (
++            FINISH_ANYWAY if FINISH_ANYWAY in p["options"] else p["options"][0])
++
++    return prompt, progress
++
++
++def test_wrist_is_never_a_target(connected_mock_hand):
++    assert "wrist" not in {t.joint for t in tension_targets(connected_mock_hand.config)}
++
++
++def test_partial_spread_scores_short_and_releases(connected_mock_hand):
++    hand = connected_mock_hand
++    prompt, progress = _drive(hand, lambda j: 0.8 if j == "index_mcp" else 0.4)
++    result = run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=True)
++
++    by_joint = {m["joint"]: m for m in result.spreads}
++    assert by_joint["index_mcp"]["status"] == "pass"
++    assert by_joint["middle_mcp"]["status"] == "partial"
++    assert not result.completed
++    assert not any(hand.motor_client._torque_enabled.values())
++    assert read_last_tension(hand.config) is None
++
++
++def test_full_spread_completes_and_records(connected_mock_hand):
++    hand = connected_mock_hand
++    prompt, progress = _drive(hand, lambda j: 0.8)
++    result = run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress, persist=True)
++
++    assert result.completed and result.rounds == 1
++    assert read_last_tension(hand.config)["spreads"]["index_mcp"] == pytest.approx(0.8, abs=0.01)
++
++
++def test_stop_during_prompt_releases(connected_mock_hand):
++    hand = connected_mock_hand
++    stop = threading.Event()
++
++    def prompt(p):
++        stop.set()
++        return p["options"][0]
++
++    with pytest.raises(InterruptedError):
++        run_guided_tension(hand, prompt_callback=prompt, should_stop=stop.is_set)
++    assert not any(hand.motor_client._torque_enabled.values())
++
++
++def test_progress_carries_over_per_hand_and_resets_from_scratch(connected_mock_hand):
++    from orca_core.maintenance.guided_tension import read_progress
++
++    hand = connected_mock_hand
++    prompt, progress = _drive(hand, lambda j: 0.8 if j == "index_mcp" else 0.2)
++    run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
++                       persist=True, hand_key="ser-0001")
++    assert read_progress(hand.config, "ser-0001")["best"]["index_mcp"] == pytest.approx(0.8, abs=0.01)
++    assert read_progress(hand.config, "ser-0002") is None
++
++    # A resumed run keeps index_mcp passed without moving it again.
++    prompt, progress = _drive(hand, lambda j: 0.0)
++    result = run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
++                                persist=True, hand_key="ser-0001")
++    by_joint = {m["joint"]: m for m in result.spreads}
++    assert by_joint["index_mcp"]["status"] == "pass"
++    assert by_joint["index_mcp"]["kept"] == pytest.approx(0.8, abs=0.01)
++
++    prompt, progress = _drive(hand, lambda j: 0.0)
++    result = run_guided_tension(hand, prompt_callback=prompt, progress_callback=progress,
++                                persist=True, hand_key="ser-0001", resume=False)
++    assert {m["joint"]: m for m in result.spreads}["index_mcp"]["status"] == "low"
+diff --git a/tests/test_motor_travel_check.py b/tests/test_motor_travel_check.py
+index 4391f85..d54ebb2 100644
+--- a/tests/test_motor_travel_check.py
++++ b/tests/test_motor_travel_check.py
+@@ -8,6 +8,7 @@ the calibration routine answers a short measurement with.
+ 
+ import math
+ import os
++import re
+ import shutil
+ 
+ import pytest
+@@ -543,7 +544,8 @@ def test_write_joint_motor_travel_refuses_a_packaged_model_config():
+ 
+ def test_write_joint_motor_travel_keeps_comments_and_other_lines(tmp_path):
+     path = tmp_path / "config.yaml"
+-    shutil.copy(os.path.join(MODEL_DIR, "config.yaml"), path)
++    packaged = open(os.path.join(MODEL_DIR, "config.yaml")).read()
++    path.write_text(re.sub(r"\n*^joint_motor_travel:\n(?:[ \t]+\S[^\n]*\n)*", "\n", packaged, flags=re.M))
+     before = path.read_text()
+     comment_lines = [l for l in before.splitlines() if l.lstrip().startswith("#")]
+     assert comment_lines, "the packaged config carries comments to protect"

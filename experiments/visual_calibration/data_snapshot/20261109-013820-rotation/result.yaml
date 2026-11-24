@@ -1,0 +1,261 @@
+calibrated_at: '2026-11-09T01:38:23'
+lens:
+  image_size:
+  - 3840
+  - 2160
+  fx: 2283.952
+  fy: 2283.876
+  cx: 1909.957
+  cy: 1032.939
+  distortion:
+  - 0.226012
+  - -0.591454
+  - 0.000145
+  - 0.000403
+  - 0.396354
+  reprojection_px: 1.113
+  source: calibration_object
+camera:
+  translation:
+  - 208.173
+  - -0.0
+  - 249.281
+  rotation:
+  - -154.135
+  - -89.283
+  - 152.791
+axis:
+  tilt:
+  - 0.027
+  - 0.424
+  offset:
+  - 1.583
+  - -0.133
+tower:
+  tilt:
+  - 0.027
+  - 0.424
+  offset:
+  - 1.583
+  - -0.133
+  yaw: 90.146
+  yaw_from_mounting: 0.146
+  height: held at the CAD (trades with the camera height)
+stop_angle_corrections:
+  0.0: 0.0
+  15.118: 0.0254
+  30.235: -0.5108
+  45.176: -0.7436
+  60.118: -0.7236
+  75.059: -0.8754
+  90.088: -1.4802
+  105.03: -1.326
+  119.971: -1.2064
+  135.176: -1.2723
+  150.118: -0.7344
+  164.971: -0.557
+  180.0: -0.5717
+  194.942: -0.455
+  210.059: -0.6557
+  224.913: -0.7953
+  239.854: -0.7695
+  254.971: -0.9899
+  270.0: -1.1364
+  285.03: -0.781
+  300.059: -0.7467
+  314.913: -0.7742
+tile_poses:
+  tile_r0_s0:
+    corner:
+    - -45.876
+    - 39.308
+    - 188.977
+    rpy:
+    - -90.106
+    - 0.189
+    - -90.023
+  tile_r0_s2:
+    corner:
+    - 45.956
+    - -38.791
+    - 188.478
+    rpy:
+    - -90.156
+    - -0.272
+    - 89.965
+  tile_r1_s0:
+    corner:
+    - -46.0
+    - 39.0
+    - 278.0
+    rpy:
+    - -90.0
+    - 0.0
+    - -90.0
+  tile_r1_s1:
+    corner:
+    - -38.681
+    - -45.898
+    - 277.747
+    rpy:
+    - -89.985
+    - -0.012
+    - -0.182
+  tile_r1_s2:
+    corner:
+    - 46.156
+    - -39.02
+    - 277.624
+    rpy:
+    - -89.937
+    - -0.217
+    - 89.949
+  tile_r1_s3:
+    corner:
+    - 38.986
+    - 45.997
+    - 277.937
+    rpy:
+    - -90.101
+    - -0.146
+    - 179.875
+  tile_r2_s0:
+    corner:
+    - -81.511
+    - 38.934
+    - 355.307
+    rpy:
+    - -64.953
+    - 0.117
+    - -89.999
+  tile_r2_s2:
+    corner:
+    - 81.639
+    - -39.393
+    - 354.787
+    rpy:
+    - -64.942
+    - -0.183
+    - 89.825
+fit:
+  reprojection_px: 1.113
+  axis_wobble: null
+  stops_used: 22
+  points: 1029
+mounting:
+  yaw: 90.0
+  measured: 89.29
+  side0_stop: 90.0
+  direction: 1
+  direction_known: true
+  consistency: 1.0
+  snapped: true
+  source: camera
+camera_session: 20261109-013741-camera
+per_photo_px:
+  stop_0000.00: 1.479
+  stop_0015.00: 0.962
+  stop_0030.00: 2.045
+  stop_0045.00: 0.872
+  stop_0060.00: 0.895
+  stop_0075.00: 0.997
+  stop_0090.00: 0.982
+  stop_0105.00: 1.025
+  stop_0120.00: 0.935
+  stop_0135.00: 1.002
+  stop_0150.00: 1.838
+  stop_0165.00: 0.775
+  stop_0180.00: 0.673
+  stop_0195.00: 0.568
+  stop_0210.00: 0.581
+  stop_0225.00: 0.825
+  stop_0240.00: 0.92
+  stop_0255.00: 1.053
+  stop_0270.00: 1.015
+  stop_0285.00: 0.997
+  stop_0300.00: 0.97
+  stop_0315.00: 0.929
+per_tile_px:
+  tile_r0_s0: 1.84
+  tile_r0_s2: 1.188
+  tile_r1_s0: 0.923
+  tile_r1_s1: 1.099
+  tile_r1_s2: 0.648
+  tile_r1_s3: 0.699
+  tile_r2_s0: 1.051
+  tile_r2_s2: 0.935
+std:
+  lens_fx_fy_cx_cy:
+  - 1.159
+  - 1.177
+  - 1.498
+  - 1.134
+  camera_translation:
+  - 0.0713
+  - 0.1156
+  - 0.0313
+  camera_rotation:
+  - 0.0385
+  - 0.0379
+  - 0.0035
+  axis_tilt:
+  - 0.021
+  - 0.0126
+  axis_offset:
+  - 0.0583
+  - 0.088
+photos: 22
+corners: 1029
+warnings:
+- code: residual_high
+  severity: warning
+  message: The fit is 1.11 px, the target 1 px.
+  fix: Lock the focus on the tower, light it evenly, and retake the photos with few
+    corners.
+  values:
+    rms_px: 1.11
+    target_px: 1.0
+- code: photo_residual
+  severity: warning
+  message: '1 photo(s) above 2 px (worst stop_0030.00: 2.04 px).'
+  fix: Usually a photo that sees one or two tiles only; retake it or leave it.
+  values:
+    photos:
+      stop_0030.00: 2.045
+- code: mounting_found
+  severity: info
+  message: "Tower mounted at 90\xB0: side 0 faces the camera at 90\xB0."
+  fix: ''
+  values:
+    yaw_deg: 90.0
+    measured_deg: 89.3
+    side0_stop_deg: 90.0
+- code: tower_offset
+  severity: warning
+  message: The tower stands 1.6 mm off the turning axis.
+  fix: Check the Franka connector is centred on the plate.
+  values:
+    offset_mm:
+    - 1.58
+    - -0.13
+    total_mm: 1.59
+- code: stop_angle
+  severity: warning
+  message: "Stop 90.088\xB0 is -1.48\xB0 off its motor angle."
+  fix: Check the motor holds the plate (PWM cap, backlash) and that the plate turns
+    freely.
+  values:
+    worst_stop: 90.088
+    correction_deg: -1.48
+- code: weak_tiles
+  severity: info
+  message: 5 photos with fewer than 24 corners.
+  fix: More light and a locked focus; photos of one side-on tile add little.
+  values:
+    tiles: {}
+    photos:
+    - stop_0000.00
+    - stop_0015.00
+    - stop_0165.00
+    - stop_0180.00
+    - stop_0195.00

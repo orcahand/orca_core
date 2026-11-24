@@ -1,0 +1,39 @@
+stop: 90.1
+date: '2026-11-09T01:37:29'
+uvc:
+  auto_focus: 0
+  auto_exposure_mode: 1
+  auto_exposure_priority: 0
+  auto_white_balance_temperature: 0
+  absolute_focus: 70
+  absolute_exposure_time: 100
+  gain: 0
+  white_balance_temperature: 5000
+  power_line_frequency: 1
+  backlight_compensation: 1
+  brightness: 128
+  contrast: 122
+  saturation: 128
+  sharpness: 64
+  absolute_zoom: 100
+  absolute_pan_tilt:
+  - 0
+  - 0
+tiles:
+  A:
+    sharpness: 107.83361067844862
+    scale: 196.11163337942932
+    corners: 16
+    clipped: 7.368982602973748e-05
+  B:
+    sharpness: 459.8013746276281
+    scale: 198.47588320268596
+    corners: 16
+    clipped: 0.0002309927419648972
+  C:
+    sharpness: 68.6179141559288
+    scale: 244.51205655845507
+    corners: 16
+    clipped: 0.00013959521395471238
+brightness: 64.05695402885611
+clipped: 0.00014734340992096824

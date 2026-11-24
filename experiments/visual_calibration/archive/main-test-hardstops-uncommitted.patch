@@ -1,0 +1,94 @@
+diff --git a/orca_core/models/v2/orcahand-touch-right/config.yaml b/orca_core/models/v2/orcahand-touch-right/config.yaml
+index 771d460..71fde71 100644
+--- a/orca_core/models/v2/orcahand-touch-right/config.yaml
++++ b/orca_core/models/v2/orcahand-touch-right/config.yaml
+@@ -59,56 +59,56 @@ joint_to_motor_map:
+   wrist: -1
+ joint_roms:
+   wrist:
+-  - -65
+-  - 35
++  - -64.2
++  - 34.8
+   thumb_cmc:
+-  - -45
++  - -46
+   - 33
+   thumb_abd:
+-  - -18
+-  - 55
++  - -17.1
++  - 59.7
+   thumb_mcp:
+-  - -25
+-  - 100
++  - -21.5
++  - 102.1
+   thumb_dip:
+-  - -15
+-  - 107
++  - -11.2
++  - 108.2
+   index_abd:
+-  - -25
+-  - 30
++  - -21.3
++  - 27
+   index_mcp:
+-  - -25
+-  - 100
++  - -35.9
++  - 103.8
+   index_pip:
+-  - -15
+-  - 107
++  - -18.8
++  - 113.9
+   middle_abd:
+-  - -27
+-  - 27
++  - -26.7
++  - 26.7
+   middle_mcp:
+-  - -25
+-  - 100
++  - -27.8
++  - 103.8
+   middle_pip:
+-  - -15
+-  - 107
++  - -15.3
++  - 107.7
+   ring_abd:
+-  - -27
+-  - 27
++  - -28.5
++  - 26.6
+   ring_mcp:
+-  - -25
+-  - 100
++  - -22.4
++  - 102.1
+   ring_pip:
+-  - -15
+-  - 107
++  - -16.3
++  - 108.3
+   pinky_abd:
+-  - -30
+-  - 30
++  - -34.1
++  - 29.6
+   pinky_mcp:
+-  - -25
+-  - 100
++  - -19.9
++  - 106.1
+   pinky_pip:
+-  - -15
+-  - 107
++  - -14.3
++  - 103.3
+ neutral_position:
+   thumb_cmc: 0
+   thumb_abd: 50

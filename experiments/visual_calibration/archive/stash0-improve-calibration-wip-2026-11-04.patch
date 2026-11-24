@@ -1,0 +1,277 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 091a5af..b04d3bb 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -278,7 +278,7 @@ All hand-specific settings are in `config.yaml`:
+ - `calibration_current_v21:` - **v2.1 only**: per motor family, a calibration current per joint
+   group (`abd` = abductions + thumb_cmc, `mcp`, `pip` = PIPs + thumb_dip) replacing
+   `calibration_current` for those joints; read through `config.calibration_current_for(joint)`.
+-  The packaged models set Dynamixel to 300/500/500 and leave Feetech on `calibration_current`.
++  The packaged models set Dynamixel to 300/500/500 and Feetech to 1800 on every group.
+ - `guided_tension_currents:` - guided tensioning currents per motor family (CLI and console):
+   `hold` per group (`abd`/`mcp`/`pip`) or per joint (a joint wins over its group and over
+   `--hold-current`), and `tension`. Read through `config.tension_hold_current_for(joint)` and
+diff --git a/orca_core/models/v2/orcahand-full-left/config.yaml b/orca_core/models/v2/orcahand-full-left/config.yaml
+index 93d7a50..9eabe37 100644
+--- a/orca_core/models/v2/orcahand-full-left/config.yaml
++++ b/orca_core/models/v2/orcahand-full-left/config.yaml
+@@ -163,6 +163,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -173,10 +177,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-full-right/config.yaml b/orca_core/models/v2/orcahand-full-right/config.yaml
+index 62997ff..cca2dd9 100644
+--- a/orca_core/models/v2/orcahand-full-right/config.yaml
++++ b/orca_core/models/v2/orcahand-full-right/config.yaml
+@@ -144,6 +144,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -154,10 +158,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-joint-left/config.yaml b/orca_core/models/v2/orcahand-joint-left/config.yaml
+index 601813d..166f6ce 100644
+--- a/orca_core/models/v2/orcahand-joint-left/config.yaml
++++ b/orca_core/models/v2/orcahand-joint-left/config.yaml
+@@ -163,6 +163,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -173,10 +177,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-joint-right/config.yaml b/orca_core/models/v2/orcahand-joint-right/config.yaml
+index f863ea1..210ca2d 100644
+--- a/orca_core/models/v2/orcahand-joint-right/config.yaml
++++ b/orca_core/models/v2/orcahand-joint-right/config.yaml
+@@ -144,6 +144,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -154,10 +158,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-left/config.yaml b/orca_core/models/v2/orcahand-left/config.yaml
+index ab47120..a66a2fa 100644
+--- a/orca_core/models/v2/orcahand-left/config.yaml
++++ b/orca_core/models/v2/orcahand-left/config.yaml
+@@ -163,6 +163,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -173,10 +177,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-right/config.yaml b/orca_core/models/v2/orcahand-right/config.yaml
+index 5406672..3cb8128 100644
+--- a/orca_core/models/v2/orcahand-right/config.yaml
++++ b/orca_core/models/v2/orcahand-right/config.yaml
+@@ -144,6 +144,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -154,10 +158,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-touch-left/config.yaml b/orca_core/models/v2/orcahand-touch-left/config.yaml
+index c5031fc..a8d97d7 100644
+--- a/orca_core/models/v2/orcahand-touch-left/config.yaml
++++ b/orca_core/models/v2/orcahand-touch-left/config.yaml
+@@ -163,6 +163,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -174,10 +178,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/orca_core/models/v2/orcahand-touch-right/config.yaml b/orca_core/models/v2/orcahand-touch-right/config.yaml
+index 888b4c4..e1aef27 100644
+--- a/orca_core/models/v2/orcahand-touch-right/config.yaml
++++ b/orca_core/models/v2/orcahand-touch-right/config.yaml
+@@ -144,6 +144,10 @@ calibration_current_v21:
+     abd: 300
+     mcp: 500
+     pip: 500
++  feetech:
++    abd: 1800
++    mcp: 1800
++    pip: 1800
+ 
+ guided_tension_currents:
+   dynamixel:
+@@ -155,10 +159,10 @@ guided_tension_currents:
+     tension: 400
+   feetech:
+     hold:
+-      abd: 380
+-      mcp: 320
+-      pip: 280
+-    tension: 580
++      abd: 900
++      mcp: 1000
++      pip: 1100
++    tension: 1800
+ 
+ calibration_step_size: 0.15
+ 
+diff --git a/tests/test_hardware_version.py b/tests/test_hardware_version.py
+index ca74967..c27a98c 100644
+--- a/tests/test_hardware_version.py
++++ b/tests/test_hardware_version.py
+@@ -346,7 +346,7 @@ def test_load_hand_without_a_version_keeps_the_base_map():
+ 
+ 
+ @pytest.mark.parametrize("path", LEFT + RIGHT)
+-def test_only_a_v21_dynamixel_hand_calibrates_per_group(path):
++def test_only_a_v21_hand_calibrates_per_group(path):
+     import dataclasses
+ 
+     base = OrcaHandConfig.from_config_path(config_path=path)
+@@ -361,6 +361,8 @@ def test_only_a_v21_dynamixel_hand_calibrates_per_group(path):
+             ("index_abd", "thumb_cmc", "index_mcp", "thumb_mcp", "index_pip", "thumb_dip", "wrist")] \
+         == [300, 300, 500, 500, 500, 500, 280]
+     assert v21.retry_current_for_attempt(1, "index_mcp") == 550
+-    for config in (resolved(2, "dynamixel"), resolved(None, "dynamixel"),
+-                   resolved(HARDWARE_VERSION_V21, "feetech")):
++    feetech = resolved(HARDWARE_VERSION_V21, "feetech")
++    assert {feetech.calibration_current_for(j) for j in feetech.joint_ids if j != "wrist"} == {1800}
++    assert feetech.calibration_current_for("wrist") == 280
++    for config in (resolved(2, "dynamixel"), resolved(None, "dynamixel"), resolved(2, "feetech")):
+         assert {config.calibration_current_for(j) for j in config.joint_ids if j != "wrist"} == {300}

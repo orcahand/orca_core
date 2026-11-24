@@ -1,0 +1,197 @@
+calibrated_at: '2026-11-07T19:56:22'
+lens:
+  image_size:
+  - 3840
+  - 2160
+  fx: 2281.149
+  fy: 2280.858
+  cx: 1913.943
+  cy: 1028.99
+  distortion:
+  - 0.225786
+  - -0.655471
+  - 4.3e-05
+  - 0.001201
+  - 0.552859
+  reprojection_px: 0.819
+  source: calibration_object
+tile_poses:
+  tile_r0_s0:
+    corner:
+    - -45.949
+    - 39.094
+    - 188.743
+    rpy:
+    - -90.131
+    - -0.07
+    - -89.952
+  tile_r0_s2:
+    corner:
+    - 46.128
+    - -38.736
+    - 188.783
+    rpy:
+    - -90.201
+    - -0.008
+    - 89.913
+  tile_r1_s0:
+    corner:
+    - -46.0
+    - 39.0
+    - 278.0
+    rpy:
+    - -90.0
+    - 0.0
+    - -90.0
+  tile_r1_s1:
+    corner:
+    - -38.776
+    - -45.902
+    - 278.052
+    rpy:
+    - -90.103
+    - 0.087
+    - -0.075
+  tile_r1_s2:
+    corner:
+    - 46.007
+    - -38.741
+    - 277.95
+    rpy:
+    - -90.161
+    - 0.039
+    - 89.987
+  tile_r1_s3:
+    corner:
+    - 38.835
+    - 46.15
+    - 277.953
+    rpy:
+    - -89.946
+    - 0.084
+    - 179.87
+  tile_r2_s0:
+    corner:
+    - -81.373
+    - 39.348
+    - 354.809
+    rpy:
+    - -64.983
+    - -0.204
+    - -90.092
+  tile_r2_s2:
+    corner:
+    - 81.483
+    - -39.176
+    - 354.954
+    rpy:
+    - -64.967
+    - 0.004
+    - 89.954
+camera_fit:
+  reprojection_px: 0.819
+  points: 1984
+  photos: 43
+mounting:
+  yaw: 90.0
+  measured: 91.82
+  side0_stop: 90.0
+  direction: 1
+  direction_known: true
+  consistency: 0.81
+  snapped: true
+  source: tiles
+per_photo_px:
+  stop_0000.00: 0.694
+  stop_0007.50: 0.702
+  stop_0015.00: 0.563
+  stop_0022.50: 0.636
+  stop_0030.00: 1.365
+  stop_0037.50: 0.567
+  stop_0045.00: 0.579
+  stop_0052.50: 0.566
+  stop_0060.00: 0.585
+  stop_0067.50: 0.663
+  stop_0075.00: 0.706
+  stop_0082.50: 0.706
+  stop_0090.00: 0.753
+  stop_0097.50: 0.697
+  stop_0105.00: 0.66
+  stop_0112.50: 0.703
+  stop_0120.00: 0.591
+  stop_0127.50: 0.559
+  stop_0135.00: 0.509
+  stop_0142.50: 1.793
+  stop_0150.00: 2.107
+  stop_0157.50: 0.474
+  stop_0165.00: 0.553
+  stop_0172.50: 0.423
+  stop_0180.00: 0.484
+  stop_0187.50: 0.453
+  stop_0195.00: 0.395
+  stop_0202.50: 0.363
+  stop_0210.00: 0.691
+  stop_0217.50: 0.61
+  stop_0225.00: 0.521
+  stop_0232.50: 0.529
+  stop_0240.00: 0.597
+  stop_0247.50: 0.698
+  stop_0255.00: 0.722
+  stop_0262.50: 0.724
+  stop_0270.00: 0.771
+  stop_0277.50: 0.772
+  stop_0285.00: 0.755
+  stop_0292.50: 0.75
+  stop_0300.00: 0.657
+  stop_0307.50: 0.601
+  stop_0315.00: 0.601
+per_tile_px:
+  tile_r0_s0: 1.506
+  tile_r0_s2: 0.864
+  tile_r1_s0: 0.729
+  tile_r1_s1: 0.651
+  tile_r1_s2: 0.493
+  tile_r1_s3: 0.418
+  tile_r2_s0: 0.632
+  tile_r2_s2: 0.649
+std:
+  lens_fx_fy_cx_cy:
+  - 1.007
+  - 0.974
+  - 1.241
+  - 1.162
+  distortion:
+  - 0.00294
+  - 0.01316
+  - 0.00013
+  - 0.00019
+  - 0.01764
+photos: 43
+corners: 1984
+warnings:
+- code: mounting_found
+  severity: info
+  message: "Tower mounted at 90\xB0: side 0 faces the camera at 90\xB0."
+  fix: ''
+  values:
+    yaw_deg: 90.0
+    measured_deg: 91.8
+    side0_stop_deg: 90.0
+- code: weak_tiles
+  severity: info
+  message: 11 photos with fewer than 24 corners.
+  fix: More light and a locked focus; photos of one side-on tile add little.
+  values:
+    tiles: {}
+    photos:
+    - stop_0000.00
+    - stop_0007.50
+    - stop_0015.00
+    - stop_0022.50
+    - stop_0157.50
+    - stop_0165.00
+    - stop_0172.50
+    - stop_0180.00
+    - stop_0187.50
+    - stop_0195.00
+    - stop_0202.50

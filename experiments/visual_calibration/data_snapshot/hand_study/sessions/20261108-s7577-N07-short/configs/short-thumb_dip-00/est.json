@@ -1,0 +1,242 @@
+{
+ "x": [
+  0.39,
+  0.62,
+  0.774,
+  0.03,
+  1.448,
+  0.819,
+  6.189037116730809,
+  -1.209020739524933,
+  -3.788425948436254,
+  -2.713058983859474,
+  -4.4628429538268914,
+  -4.569540230240791,
+  -4.9228626630854055,
+  -4.776864566389516,
+  -3.8224019146040016,
+  2.901389598660041,
+  2.877505293578014,
+  -3.5364998246396837,
+  -0.4558582687298166,
+  -7.7156991404184465,
+  6.98316277042772,
+  -2.747129721378834,
+  2.7727411375860043
+ ],
+ "joints": {
+  "wrist": 6.189,
+  "pinky_abd": -1.209,
+  "ring_abd": -3.788,
+  "middle_abd": -2.713,
+  "index_abd": -4.463,
+  "thumb_cmc": -4.57,
+  "thumb_abd": -4.923,
+  "thumb_mcp": -4.777,
+  "thumb_dip": -3.822,
+  "index_mcp": 2.901,
+  "index_pip": 2.878,
+  "middle_mcp": -3.536,
+  "middle_pip": -0.456,
+  "ring_mcp": -7.716,
+  "ring_pip": 6.983,
+  "pinky_mcp": -2.747,
+  "pinky_pip": 2.773
+ },
+ "std": {
+  "wrist": 0.019,
+  "pinky_abd": 0.055,
+  "ring_abd": 0.059,
+  "middle_abd": 0.053,
+  "index_abd": 0.058,
+  "thumb_cmc": 0.071,
+  "thumb_abd": 0.052,
+  "thumb_mcp": 0.135,
+  "thumb_dip": 0.181,
+  "index_mcp": 0.139,
+  "index_pip": 0.302,
+  "middle_mcp": 0.144,
+  "middle_pip": 0.326,
+  "ring_mcp": 0.094,
+  "ring_pip": 0.215,
+  "pinky_mcp": 0.114,
+  "pinky_pip": 0.188
+ },
+ "mount": [
+  0.39,
+  0.62,
+  0.774,
+  0.03,
+  1.448,
+  0.819
+ ],
+ "mount_std": [
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0
+ ],
+ "spread": {
+  "thumb_mcp": 11.8,
+  "thumb_dip": 13.1,
+  "index_mcp": 3.5,
+  "index_pip": 10.7,
+  "middle_mcp": 3.7,
+  "middle_pip": 10.0,
+  "ring_mcp": 6.8,
+  "ring_pip": 15.7,
+  "pinky_mcp": 2.2,
+  "pinky_pip": 20.0
+ },
+ "rms_px": 7.640000000000001,
+ "view_rms_px": [
+  7.56,
+  6.95,
+  8.23,
+  7.82
+ ],
+ "angles": [
+  142.38,
+  179.91,
+  254.27,
+  291.62
+ ],
+ "quality": [
+  {
+   "angle": 142.4,
+   "mask_only": 0.023,
+   "model_only": 0.059,
+   "finger_missed": 0.06
+  },
+  {
+   "angle": 179.9,
+   "mask_only": 0.016,
+   "model_only": 0.053,
+   "finger_missed": 0.065
+  },
+  {
+   "angle": 254.3,
+   "mask_only": 0.035,
+   "model_only": 0.07,
+   "finger_missed": 0.034
+  },
+  {
+   "angle": 291.6,
+   "mask_only": 0.036,
+   "model_only": 0.079,
+   "finger_missed": 0.05
+  }
+ ],
+ "suspect": [],
+ "obs": [
+  0.544,
+  0.873,
+  0.898,
+  0.897,
+  0.886,
+  0.636,
+  0.747,
+  0.76,
+  0.925,
+  0.55,
+  0.647,
+  0.566,
+  0.722,
+  0.763,
+  0.88,
+  0.848,
+  0.988
+ ],
+ "split": {
+  "even": {
+   "wrist": 4.6,
+   "pinky_abd": 5.753,
+   "ring_abd": -0.925,
+   "middle_abd": -5.748,
+   "index_abd": -4.098,
+   "thumb_cmc": -5.833,
+   "thumb_abd": -7.099,
+   "thumb_mcp": -3.516,
+   "thumb_dip": -4.202,
+   "index_mcp": 7.582,
+   "index_pip": -2.944,
+   "middle_mcp": -9.529,
+   "middle_pip": 7.193,
+   "ring_mcp": -3.76,
+   "ring_pip": 15.114,
+   "pinky_mcp": 8.694,
+   "pinky_pip": -1.03
+  },
+  "odd": {
+   "wrist": 6.795,
+   "pinky_abd": -2.077,
+   "ring_abd": -3.299,
+   "middle_abd": -3.05,
+   "index_abd": -5.462,
+   "thumb_cmc": 1.694,
+   "thumb_abd": -3.305,
+   "thumb_mcp": -7.621,
+   "thumb_dip": -1.913,
+   "index_mcp": 14.537,
+   "index_pip": 3.947,
+   "middle_mcp": -7.555,
+   "middle_pip": 8.89,
+   "ring_mcp": -3.597,
+   "ring_pip": -1.209,
+   "pinky_mcp": -4.911,
+   "pinky_pip": 2.972
+  }
+ },
+ "solve_s": 116.3,
+ "cut_views": {
+  "112.5": [
+   "thumb_dp",
+   -32.3
+  ],
+  "224.91": [
+   "thumb_dp",
+   -27.0
+  ]
+ },
+ "n_views_all": 6,
+ "assumed": {
+  "wrist": -0.41936539805151796,
+  "thumb_cmc": -0.6044768939361234,
+  "thumb_abd": -2.0846201975712635,
+  "thumb_mcp": -0.5685066692844707,
+  "thumb_dip": -8.314507149231176,
+  "index_abd": -0.5588457316512674,
+  "index_mcp": -0.01468222893480231,
+  "index_pip": -0.4513573121522434,
+  "middle_abd": -1.3376771256262643,
+  "middle_mcp": -0.07554224242648289,
+  "middle_pip": -1.0345289288310902,
+  "ring_abd": -1.1695225240482614,
+  "ring_mcp": -0.46510596860183284,
+  "ring_pip": -0.8802365225260207,
+  "pinky_abd": -0.6854516997194153,
+  "pinky_mcp": -0.0762848267386893,
+  "pinky_pip": -2.0721488654483835
+ },
+ "commanded": {
+  "wrist": 0.0,
+  "thumb_cmc": 0.0,
+  "thumb_abd": 0.0,
+  "thumb_mcp": 0.0,
+  "thumb_dip": -11.2,
+  "index_abd": 0.0,
+  "index_mcp": 0.0,
+  "index_pip": 0.0,
+  "middle_abd": 0.0,
+  "middle_mcp": 0.0,
+  "middle_pip": 0.0,
+  "ring_abd": 0.0,
+  "ring_mcp": 0.0,
+  "ring_pip": 0.0,
+  "pinky_abd": 0.0,
+  "pinky_mcp": 0.0,
+  "pinky_pip": 0.0
+ }
+}
