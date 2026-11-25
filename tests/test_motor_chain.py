@@ -886,6 +886,97 @@ def test_an_id_write_the_motor_ignored_once_is_retried(monkeypatch):
     assert client.bus.motors == [motor(3, "XC330", plan.target_baud)]
 
 
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_a_lost_id_confirmation_keeps_the_motor_validated_when_the_chain_shortens(
+        monkeypatch, acknowledged):
+    plan = small_plan()
+    motor_3 = motor(3, "XC330", plan.target_baud)
+    bus, client = _wire_real(monkeypatch, plan, [motor_3])
+    write_id = client.change_motor_id
+
+    def write(current_id, new_id):
+        write_id(current_id, new_id)
+        return acknowledged
+
+    client.change_motor_id = write
+    missed = False
+
+    def scan(motor_type, port, baudrate, id_range):
+        nonlocal missed
+        found = bus.scan(motor_type, port, baudrate, id_range)
+        if id_range == (2, 2) and baudrate == plan.target_baud and found and not missed:
+            missed = True
+            return []
+        return found
+
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "write_retry" and e["target_id"] == 2:
+            bus.motors.remove(motor_3)
+        if e["event"] == "awaiting_motor":
+            if e["target_id"] == 3:
+                bus.motors.append(motor_3)
+            elif not bus.at(1, plan.default_baud):
+                bus.motors.append(motor(1, e["expected_model"], plan.default_baud))
+
+    stops = iter(range(200))
+    assert mc.configure_motor_chain(plan, progress_callback=operator, poll_interval=0,
+                                    should_stop=lambda: next(stops) == 199) == [3, 2, 1]
+    assert missed
+    assert [e["stranded"] for e in events if e["event"] == "chain_shortened"] == [[2]]
+    assert not any(e["event"] == "stray_motor_reset" for e in events)
+    assert [c for c in client.calls if c[0] == "id"] == [("id", 1, 2), ("id", 1, 1)]
+    assert sorted(m["id"] for m in bus.motors) == [1, 2, 3]
+
+
+def test_a_slot_taken_after_an_ignored_id_write_blocks_the_retry(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(1, "XC330", plan.default_baud)])
+    client.ignore_id_writes = 1
+
+    def operator(e):
+        if e["event"] == "write_retry":
+            bus.motors.append(motor(3, "XC330", plan.target_baud))
+
+    with pytest.raises(mc.SlotTaken):
+        mc.configure_default_motor(plan, 3, progress_callback=operator)
+    assert [c for c in client.calls if c[0] == "id"] == [("id", 1, 3)]
+    assert bus.at(1, plan.target_baud)
+    assert bus.at(3, plan.target_baud)
+
+
+def test_a_lost_id_confirmation_still_checks_for_a_second_factory_motor_on_retry(monkeypatch):
+    plan = small_plan()
+    bus, client = _wire_real(monkeypatch, plan, [motor(1, "XC330", plan.default_baud)])
+    missed = False
+
+    def scan(motor_type, port, baudrate, id_range):
+        nonlocal missed
+        found = bus.scan(motor_type, port, baudrate, id_range)
+        if id_range == (3, 3) and baudrate == plan.target_baud and found and not missed:
+            missed = True
+            return []
+        return found
+
+    monkeypatch.setattr(mc, "scan_motors", scan)
+    events = []
+
+    def operator(e):
+        events.append(e)
+        if e["event"] == "write_retry":
+            bus.motors.append(motor(1, "XC330", plan.default_baud))
+
+    with pytest.raises(mc.MotorChainError, match="a second motor joined"):
+        mc.configure_default_motor(plan, 3, progress_callback=operator)
+    assert any(e["event"] == "duplicate_default_motor" for e in events)
+    assert [c for c in client.calls if c[0] == "id"] == [("id", 1, 3)]
+    assert bus.at(1, plan.default_baud)
+    assert bus.at(3, plan.target_baud)
+
+
 def test_an_id_write_never_taken_fails_clearly_not_as_a_duplicate(monkeypatch):
     plan = small_plan()
     client = FakeSessionClient()

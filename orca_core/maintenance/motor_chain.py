@@ -92,8 +92,8 @@ class MotorChainAborted(MotorChainError):
 
 
 class SlotTaken(MotorChainError):
-    """A motor answered at the target ID just before the ID write, so nothing
-    was written: the chain must be re-read before the slot is filled."""
+    """A motor already answers at the target ID, so no further ID write is safe.
+    Re-read the chain before filling the slot."""
 
 
 @dataclass(frozen=True)
@@ -456,7 +456,8 @@ def configure_default_motor(
     joined mid-step (``duplicate_default_motor``), and the step is refused rather
     than risking a duplicate ``target_id``. A motor already answering at
     ``target_id`` before an ID write raises :class:`SlotTaken`: the motor is left
-    at the default ID for the next slot.
+    at the default ID for the next slot. On a retry, a target reply with no motor
+    left at the default ID confirms the previous write instead.
     """
     current = plan.default_baud if current_baud is None else current_baud
     if current != plan.target_baud:
@@ -481,6 +482,10 @@ def configure_default_motor(
 
     for attempt in range(1, WRITE_ATTEMPTS + 1):
         if target_id != plan.default_id and _id_answers(plan, target_id, plan.target_baud):
+            if attempt > 1:
+                _refuse_leftover_default_motor(plan, target_id, progress_callback)
+                if not _default_answers(plan, plan.target_baud):
+                    return
             raise SlotTaken(f"motor {target_id} answers again; no second motor was given its ID")
         with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
             delay_us = plan.return_delay_time_us
