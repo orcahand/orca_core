@@ -39,7 +39,7 @@ cameras:
     # focus 60 balances the bottom row (A, D) with the upper tiles; the lens has some
     # hysteresis, the corners do not care within 55..70. In-camera sharpening hardly matters.
     uvc:
-      device: {vendor: 1133, product: 2142, serial: null}   # Logitech BRIO (046d:085e); with two BRIOs set each serial (sweep --list-cameras)
+      device: {vendor: 1133, product: 2142, serial: null}   # Logitech BRIO (046d:085e); with two BRIOs set each serial (sweep --assign-cameras)
       auto_focus: 0
       absolute_focus: 70                      # 0 far .. 255 near (rig330 at 190 mm, 2026-11-09: 70 balances A/B/C; was 60 at 240 mm)
       auto_exposure_mode: 1
@@ -61,7 +61,7 @@ cameras:
     # side rail at the base's CAD -x face = rig +y (azimuth 90°), portrait, tilted 45° down,
     # aimed at z 250 on the axis. For every finger, not only the thumb: its views join the hand
     # fit. Every photo (1a, 1b, the hand run) is taken by both cameras; set its serial below
-    # (sweep --list-cameras), then a 1a + 1b with both cameras.
+    # (sweep --assign-cameras), then a 1a + 1b with both cameras.
     enabled: true
     index: 1
     resolution: [3840, 2160]
@@ -76,7 +76,7 @@ cameras:
       lens_offset: [0.0, 0.0]  # distance/height are the lens itself until the side rail is built and measured
     nominal_pose: null
     uvc:
-      device: {vendor: 1133, product: 2142, serial: null}   # its own BRIO: set the serial (sweep --list-cameras)
+      device: {vendor: 1133, product: 2142, serial: null}   # its own BRIO: set the serial (sweep --assign-cameras)
       auto_focus: 0
       absolute_focus: 60                      # ~310 mm to the hand: retune on the rig
       auto_exposure_mode: 1

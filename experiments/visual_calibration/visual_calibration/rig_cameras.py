@@ -6,10 +6,13 @@ every photo through here; the page only shows a preview of it. Both cameras are 
 Which OpenCV index is which camera: AVFoundation may renumber its devices on a replug, and two
 BRIOs look the same to OpenCV. So the index comes from the camera's USB serial (serial -> USB
 location -> AVFoundation unique id -> its place among the devices sorted by unique id, the order
-OpenCV's AVFoundation backend uses), and `preflight` proves it before a photo counts:
+OpenCV's AVFoundation backend uses), and `preflight` proves it before a photo counts. Two cameras
+that report the same serial are told apart by their USB location as well (`match_cameras`): they
+must then stay on their ports. `python -m visual_calibration.sweep --assign-cameras` writes both.
 
-- blink: each camera's exposure is cut through uvcc, which selects the camera by its serial; the
-  one stream that darkens is that camera (a clean swap of the opened streams is taken as found);
+- blink: each camera's exposure is cut through uvcc, which selects the camera by its serial (and
+  location); the one stream that darkens is that camera (a clean swap of the opened streams is
+  taken as found);
 - tiles (the tower on the plate, rig calibration only): each camera's height above the plate,
   from PnP on the tiles it sees, must match its mount (cam A ~250 mm, cam B ~470 mm). A camera
   on the other mount, or serials swapped in config.yaml, fails here.
@@ -30,7 +33,7 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from visual_calibration.uvc import CameraSettingsError, Uvcc, ensure, find_device, usb_devices, wanted
+from visual_calibration.uvc import CameraSettingsError, Uvcc, as_location, ensure, find_device, usb_devices, wanted
 
 MIN_CAMERAS = 2             # the rig calibration and the hand run need both
 BLINK_CONTROL = "absolute_exposure_time"
@@ -41,6 +44,7 @@ BLINK_MAX_OTHER = 0.15      # ... and every other stream at most this share
 HEIGHT_TOL_MM = 60.0        # PnP height (nominal lens) vs the mount's
 MIN_CORNERS = 12            # tile corners a camera must see for the tile check
 LISTING_TTL_S = 5.0         # a preview reuses the device listing this long (ioreg + system_profiler are slow)
+ASSIGN = "python -m visual_calibration.sweep --assign-cameras"
 
 
 class CameraIdentityError(RuntimeError):
@@ -49,6 +53,39 @@ class CameraIdentityError(RuntimeError):
 
 class UnknownCamera(LookupError):
     """A camera name the rig does not have (enabled)."""
+
+
+def match_cameras(devices: Mapping[str, Mapping], usb: list[dict]) -> dict[str, dict]:
+    """Each camera's USB device, from its config.yaml uvc.device: by vendor, product and serial;
+    by the location as well where the serial does not tell (uvc.find_device), so two cameras with
+    one serial need theirs. A camera that reports a serial needs it in config.yaml. Raises
+    CameraIdentityError."""
+    out = {}
+    for c, d in devices.items():
+        serial, location = d.get("serial"), as_location(d.get("location"))
+        twins = sorted(o for o, e in devices.items() if o != c and e.get("serial") == serial
+                       and (e.get("vendor"), e.get("product")) == (d.get("vendor"), d.get("product")))
+        if serial is None and location is None:
+            raise CameraIdentityError(
+                f"camera {c}: no serial; the cameras are told apart by it: set cameras.<c>.uvc.device.serial "
+                f"in config.yaml ({ASSIGN})")
+        if twins and location is None:
+            raise CameraIdentityError(f"cameras {', '.join([c, *twins])} share the serial {serial}: tell them "
+                                      f"apart by their USB port ({ASSIGN})")
+        try:
+            dev = find_device(d["vendor"], d["product"], serial, location, usb)
+        except CameraSettingsError as e:
+            where = f" at USB location 0x{location:08x}" if location is not None else ""
+            raise CameraIdentityError(f"camera {c} (serial {serial}{where}) is not plugged in: {e}"
+                                      + (f" (moved to another port? plug it back, or {ASSIGN})" if where else "")) from e
+        if serial is None and dev.get("serial"):
+            raise CameraIdentityError(f"camera {c} reports the serial {dev['serial']}: set it in config.yaml ({ASSIGN})")
+        same = [o for o, x in out.items() if x is dev]
+        if same:
+            raise CameraIdentityError(f"cameras {same[0]} and {c} are the one camera at USB location "
+                                      f"0x{dev.get('location', 0):08x}: is the other one unplugged?")
+        out[c] = dev
+    return out
 
 
 def avfoundation_devices(run: Callable = subprocess.run) -> list[dict]:
@@ -139,8 +176,11 @@ class RigCameras:
     def size(self, cam: str) -> tuple[int, int]:
         return tuple(self.config(cam).get("resolution", (3840, 2160)))
 
+    def device(self, cam: str) -> dict:
+        return dict((self.config(cam).get("uvc") or {}).get("device") or {})
+
     def serial(self, cam: str):
-        return ((self.config(cam).get("uvc") or {}).get("device") or {}).get("serial")
+        return self.device(cam).get("serial")
 
     def controls(self, cam: str) -> Uvcc | None:
         uvc = self.config(cam).get("uvc")
@@ -160,23 +200,21 @@ class RigCameras:
         return self._listing[1], self._listing[2]
 
     def resolve(self, fresh: bool = True) -> dict[str, int]:
-        """The OpenCV index of every camera, from its serial (every enabled camera needs one)."""
+        """The OpenCV index of every camera, from its serial (and location, match_cameras)."""
         names = self.names
         if self.mock:
             return {c: int(self.config(c).get("index", i)) for i, c in enumerate(names)}
-        unnamed = [c for c in names if not self.serial(c)]
+        devices = {c: self.device(c) for c in names}
+        unnamed = [c for c, d in devices.items() if not d.get("serial") and d.get("location") is None]
         if unnamed:
             raise CameraIdentityError(
                 f"camera {', '.join(unnamed)}: no serial; the cameras are told apart by it: set "
-                f"cameras.<c>.uvc.device.serial in config.yaml (python -m visual_calibration.sweep --list-cameras)")
+                f"cameras.<c>.uvc.device.serial in config.yaml ({ASSIGN})")
         usb, av = self._devices_now(fresh)
+        found = match_cameras(devices, usb)
         out = {}
         for c in names:
-            d = self.config(c)["uvc"]["device"]
-            try:
-                dev = find_device(d["vendor"], d["product"], d.get("serial"), d.get("location"), usb)
-            except CameraSettingsError as e:
-                raise CameraIdentityError(f"camera {c} (serial {d.get('serial')}) is not plugged in: {e}") from e
+            d, dev = devices[c], found[c]
             i = avfoundation_index(dev, av)
             if i is None:
                 raise CameraIdentityError(f"camera {c} (serial {d.get('serial')}) is on USB but not among "
@@ -361,6 +399,7 @@ class RigCameras:
     def status(self) -> dict:
         names = self.names
         return {"cameras": [{"name": c, "index": self.indices.get(c), "serial": self.serial(c),
+                             "location": self.device(c).get("location"),
                              "resolution": list(self.size(c)),
                              "stats": self.cams[c].stats() if c in self.cams and hasattr(self.cams[c], "stats") else None}
                             for c in names],

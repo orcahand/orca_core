@@ -98,15 +98,18 @@ same marker ids). Each photo has a camera (`Photo.camera`; session photos `stop_
 1a and 1b solve a lens and a pose per camera and share the object, axis, tower, stops and
 tiles; cam A holds the azimuth gauge. calibration.yaml keeps cam A at the top level (every
 single-camera reader unchanged), the others under `cameras:`. Sweeps grab every enabled
-camera at each stop (`camera_reference_b.yaml` for b); two BRIOs are told apart by serial
-(`uvc.device.serial`; `python -m visual_calibration.sweep --list-cameras`). Before a hand
+camera at each stop (`camera_reference_b.yaml` for b); two cameras are told apart by serial
+(`uvc.device.serial`), two that report the same serial also by their USB port (`uvc.device.location`);
+`python -m visual_calibration.sweep --assign-cameras` writes both into config.yaml from ioreg (`--swap`
+when Check cameras finds A and B swapped; `--list-cameras` only lists). Before a hand
 session `sweep --quick` checks one frame per camera at the park stop: over 1 px, a 5-stop
 rotation session with the lens and tiles held (`Session.create(..., "rotation", hold=True)`).
 The hand fit (live_fit, hand_study) adds every calibrated camera's views (meta.json `camera`).
 
 Who owns the cameras (2026-11-23): one Python process on the rig Mac, the console's backend
 (`visual_calibration/rig_cameras.py`, served by orca_ui under `/api/visual-calibration/cameras`).
-Both cameras are required (b `enabled: true`, each with its `uvc.device.serial`). Each is opened
+Both cameras are required (b `enabled: true`, each with its `uvc.device.serial`, and its
+`uvc.device.location` where the serials are equal). Each is opened
 once (capture.SharedCamera), its OpenCV index found from its serial (its place among the video
 devices sorted by unique id, as OpenCV 4.13 orders them; to be confirmed on the rig), and a
 preflight proves it before any still is handed out: each camera's exposure is cut through uvcc

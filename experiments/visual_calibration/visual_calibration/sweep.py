@@ -12,6 +12,8 @@ Either failing aborts. At the end the controls are read again.
     PYTHONPATH=. uv run --with opencv-contrib-python-headless --with dynamixel-sdk \\
         python -m visual_calibration.sweep OUT [--step 7.5] [--save-reference]
     ... python -m visual_calibration.sweep --list-cameras     # serials, USB locations, AVFoundation order
+    ... python -m visual_calibration.sweep --assign-cameras   # write them into config.yaml (camera_assign)
+    ... python -m visual_calibration.sweep --assign-cameras --swap   # after Check cameras found A and B swapped
     ... python -m visual_calibration.sweep --quick            # the per-session check, nothing but the park stop
 
 Writes OUT/stop_<deg>.png, OUT/repeat_<deg>.png and OUT/sweep.yaml (read-back
@@ -232,14 +234,11 @@ def list_cameras(run=None) -> dict:
     AVFoundation's video devices (their order is usually OpenCV's index). Opens nothing."""
     import subprocess
 
-    from visual_calibration.rig_cameras import avfoundation_devices, avfoundation_index
-    from visual_calibration.uvc import usb_devices
+    from visual_calibration.camera_assign import usb_cameras
+    from visual_calibration.rig_cameras import avfoundation_devices
     run = run or subprocess.run
-    usb = [d for d in usb_devices(run) if d.get("vendor") == 1133]
     av = avfoundation_devices(run)
-    for d in usb:
-        d["avfoundation_index"] = avfoundation_index(d, av)
-    return {"usb": usb, "avfoundation": av}
+    return {"usb": usb_cameras(run, av=av), "avfoundation": av}
 
 
 def main() -> None:
@@ -254,6 +253,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Camera check, then a photo at every stop (the rig's turntable).")
     ap.add_argument("out", type=Path, nargs="?")
     ap.add_argument("--list-cameras", action="store_true", help="the cameras' serials and indices, nothing moves")
+    ap.add_argument("--assign-cameras", nargs="*", type=int, metavar="N",
+                    help="write the plugged-in USB cameras into config.yaml as cameras a, b (N: the listed "
+                         "cameras to take, in that order); nothing opened, nothing moves")
+    ap.add_argument("--swap", action="store_true", help="with --assign-cameras: trade cameras a and b")
     ap.add_argument("--quick", action="store_true", help="the per-session check: one frame per camera at the park stop")
     ap.add_argument("--step", type=float, help="deg between stops (default turntable.yaml stops.step)")
     ap.add_argument("--verify-only", action="store_true", help="do not set the camera controls, only check them")
@@ -263,6 +266,13 @@ def main() -> None:
     args = ap.parse_args()
     if args.list_cameras:
         print(json.dumps(list_cameras(), indent=1))
+        return
+    if args.assign_cameras is not None or args.swap:
+        from visual_calibration.camera_assign import AssignError, assign
+        try:
+            print("\n".join(assign(RigConfig.load(), args.assign_cameras, do_swap=args.swap)))
+        except AssignError as e:
+            raise SystemExit(str(e)) from None
         return
     if not args.quick and args.out is None:
         ap.error("OUT is needed for a sweep")

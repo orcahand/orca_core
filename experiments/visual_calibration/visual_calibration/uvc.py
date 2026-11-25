@@ -6,8 +6,9 @@ OpenCV on macOS cannot read or set these; uvcc (node, ``npx uvcc``) talks UVC
 over USB. Units are uvcc's: exposure in 100 µs, auto_exposure_mode 1 = manual.
 
 Two cameras of one model (two BRIOs): uvcc tells them apart by USB address only, and that
-changes on every replug, so config.yaml names each by its serial number (or USB location,
-the port); the address is looked up in the IORegistry (`usb_devices`) before each call.
+changes on every replug, so config.yaml names each by its serial number; two cameras that
+report the same serial also by their USB location (the port, `find_device`). The address is
+looked up in the IORegistry (`usb_devices`) before each call.
 """
 from __future__ import annotations
 
@@ -33,8 +34,9 @@ class CameraSettingsError(RuntimeError):
 
 
 def usb_devices(run: Callable = subprocess.run) -> list[dict]:
-    """Every USB device in the IORegistry: {name, vendor, product, serial, location, address}
-    (macOS; location = locationID, the port; address = the USB address uvcc selects by)."""
+    """Every USB device in the IORegistry: {name, vendor, product, serial, location, address, speed}
+    (macOS; location = locationID, the port; address = the USB address uvcc selects by; speed =
+    the link's Device Speed, see SPEEDS)."""
     p = run(["ioreg", "-p", "IOUSB", "-l", "-w0"], capture_output=True, text=True, timeout=20)
     out, cur = [], None
     for line in p.stdout.splitlines():
@@ -46,30 +48,41 @@ def usb_devices(run: Callable = subprocess.run) -> list[dict]:
         if "+-o " in line:
             cur = None
             continue
-        m = re.search(r'"(idVendor|idProduct|USB Serial Number|locationID|USB Address)" = (.+)$', line)
+        m = re.search(r'"(idVendor|idProduct|USB Serial Number|locationID|USB Address|Device Speed)" = (.+)$', line)
         if cur is not None and m:
             key = {"idVendor": "vendor", "idProduct": "product", "USB Serial Number": "serial",
-                   "locationID": "location", "USB Address": "address"}[m.group(1)]
+                   "locationID": "location", "USB Address": "address", "Device Speed": "speed"}[m.group(1)]
             v = m.group(2).strip().strip('"')
             cur[key] = v if key == "serial" else int(v)
     return out
 
 
+SPEEDS = {0: "USB 1 low speed", 1: "USB 1 full speed", 2: "USB 2 (480 Mb/s)", 3: "USB 3 (5 Gb/s)",
+          4: "USB 3 (10 Gb/s)", 5: "USB 3 (20 Gb/s)"}
+
+
+def as_location(value: int | str | None) -> int | None:
+    """A USB location as config.yaml may write it (an int, or a string such as "0x01100000")."""
+    return None if value is None else int(value, 0) if isinstance(value, str) else int(value)
+
+
 def find_device(vendor: int, product: int, serial: str | None = None, location: int | str | None = None,
                 devices: list[dict] | None = None) -> dict:
-    """The one device of this model with that serial / location; one of the model without either."""
+    """The one device of this model with that serial; one of the model without a serial or location.
+    The location (the port) only tells apart devices whose serials are equal: it is used when the
+    serial matches more than one plugged-in device, or there is no serial, and must then match."""
     devs = [d for d in (usb_devices() if devices is None else devices)
             if d.get("vendor") == int(vendor) and d.get("product") == int(product)]
     if serial is not None:
         devs = [d for d in devs if str(d.get("serial")) == str(serial)]
-    if location is not None:
-        loc = int(location, 0) if isinstance(location, str) else int(location)
-        devs = [d for d in devs if d.get("location") == loc]
+    if location is not None and (serial is None or len(devs) > 1):
+        devs = [d for d in devs if d.get("location") == as_location(location)]
     if len(devs) != 1:
         want = f"{vendor:04x}:{product:04x}" + (f" serial {serial}" if serial is not None else "") + \
-            (f" location {location}" if location is not None else "")
+            (f" location 0x{as_location(location):08x}" if location is not None else "")
         raise CameraSettingsError(f"{len(devs)} USB cameras match {want}" +
-                                  ("; set device.serial per camera in config.yaml" if len(devs) > 1 else ""))
+                                  ("; tell them apart: python -m visual_calibration.sweep --assign-cameras"
+                                   if len(devs) > 1 else ""))
     return devs[0]
 
 
