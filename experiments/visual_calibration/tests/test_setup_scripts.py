@@ -62,14 +62,24 @@ def test_setup_stops_at_a_missing_checkout(tmp_path):
     assert r.returncode == 1 and f"orca_ui: no git checkout at {tmp_path / 'orca_ui'}" in r.stderr
 
 
-def test_setup_warns_about_a_branch_and_stops_where_uv_fails(tmp_path):
-    exp = layout(tmp_path, branches={**BRANCHES, "orca_ui": "main"}, skip=("orca_firmware",))
+@pytest.mark.parametrize("repo", ["orca_core", "orca_ui"])
+def test_orca_core_or_orca_ui_on_another_branch_stops_before_anything_changes(tmp_path, repo):
+    exp = layout(tmp_path, branches={**BRANCHES, repo: "main"})
+    fake_tool(tmp_path / "bin", "uv", f'echo "$*" >> {tmp_path / "uv.calls"}; echo "uv 0.0.0"')
+    r = run(exp / "setup_rig.sh", tmp_path)
+    assert r.returncode == 1 and "is on 'main', not internal/rig-calibration; nothing was changed" in r.stderr
+    assert f"git -C {tmp_path / repo} switch internal/rig-calibration" in r.stderr
+    assert (tmp_path / "uv.calls").read_text().split() == ["--version"]        # no uv sync, no install
+
+
+def test_the_optional_checkouts_on_another_branch_are_warnings(tmp_path):
+    exp = layout(tmp_path, branches={**BRANCHES, "orcahand_description": "v1-fix"}, skip=("orca_firmware",))
     fake_tool(tmp_path / "bin", "uv", 'case "$1" in --version) echo "uv 0.0.0";; *) exit 1;; esac')
     r = run(exp / "setup_rig.sh", tmp_path, "--no-firmware")
     assert f"ok    orca_core at {tmp_path / 'orca_core'} (internal/rig-calibration)" in r.stdout
-    assert "orca_ui at" in r.stdout and "is on 'main', not internal/rig-calibration" in r.stdout
-    assert "WARN  orca_firmware: no git checkout" in r.stdout                       # optional: a warning
-    assert r.returncode == 1 and "uv sync in" in r.stderr
+    assert "WARN  orcahand_description at" in r.stdout and "is on 'v1-fix', not main" in r.stdout
+    assert "WARN  orca_firmware: no git checkout" in r.stdout
+    assert r.returncode == 1 and "uv sync in" in r.stderr                    # went on to the environment
 
 
 def test_setup_without_uv_says_how_to_install_it(tmp_path):
@@ -85,7 +95,13 @@ def test_the_console_starts_from_orca_uis_environment_with_the_rigs_paths(tmp_pa
     r = run(exp / "rig-console.sh", tmp_path)
     assert r.returncode == 1 and "run" in r.stderr and "setup_rig.sh first" in r.stderr
     venv = tmp_path / "orca_ui" / ".venv" / "bin"
-    fake_tool(venv, "python", 'echo "pwd=$(pwd) args=$*"; env | grep -E "^ORCA" | sort')
+    core = tmp_path / "orca_core" / "orca_core"
+    core.mkdir()
+    fake_tool(venv, "python", f'[ "$1" = -c ] && {{ echo "${{FAKE_CORE:-{core.resolve()}}}"; exit 0; }}\n'
+                              'echo "pwd=$(pwd) args=$*"; env | grep -E "^ORCA" | sort')
+    r = run(exp / "rig-console.sh", tmp_path, env={"FAKE_CORE": "/site-packages/orca_core"})
+    assert r.returncode == 1 and "imports orca_core from '/site-packages/orca_core'" in r.stderr
+    assert "re-run" in r.stderr and "setup_rig.sh" in r.stderr and "pwd=" not in r.stdout
     r = run(exp / "rig-console.sh", tmp_path, "--research-ui", env={"ORCA_FIRMWARE_REPO": "/elsewhere"})
     assert r.returncode == 0
     assert f"pwd={(tmp_path / 'orca_ui').resolve()} args=-m orca_ui --research-ui" in r.stdout
