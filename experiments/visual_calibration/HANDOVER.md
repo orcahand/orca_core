@@ -71,9 +71,13 @@ works.
 4. **Cameras:** plug both in, close any camera app such as Logi Tune, then run
    `python -m visual_calibration.sweep --assign-cameras`. It writes each camera's USB identity into
    `rigs/v1/camera-rig/config.yaml` (a tracked file). Two cameras that report the same serial (the rig
-   Mac's two "USB 2.0 Camera" units, 0c45:6361, both `SN20221220`) are told apart by their USB port, so
-   keep each in its port. Which is A and which B is a guess until "Check cameras" passes with the tower
-   on the plate; if it says the cameras are swapped, run `... --assign-cameras --swap`.
+   Mac's two "USB 2.0 Camera" units, 0c45:6361, both `SN20221220`) are told apart by their USB port
+   only: label both ports and both cables, and keep each camera in its port. Which is A and which B is
+   a guess until "Check cameras" passes with the tower on the plate; if it says the cameras are swapped,
+   run `... --assign-cameras --swap`. Two such cameras swapped later (their cables traded between the
+   ports) pass the hand run's camera check and show only in the accuracy numbers.
+   config.yaml's resolution and UVC controls are a Logitech BRIO's: for any other camera
+   `--assign-cameras` warns and the doctor's `camera_identity` stays an error until they are adapted.
 5. **Start the console:** `experiments/visual_calibration/rig-console.sh` (orca-ui with the rig's paths
    set). The banner's `core` line must show the local checkout.
 6. **The tube:** check the J/K tile letters. orca_files `set.yaml` and the rig config disagree on which
