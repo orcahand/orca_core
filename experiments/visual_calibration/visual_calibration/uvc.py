@@ -34,9 +34,9 @@ class CameraSettingsError(RuntimeError):
 
 
 def usb_devices(run: Callable = subprocess.run) -> list[dict]:
-    """Every USB device in the IORegistry: {name, vendor, product, serial, location, address, speed}
-    (macOS; location = locationID, the port; address = the USB address uvcc selects by; speed =
-    the link's Device Speed, see SPEEDS)."""
+    """Every USB device in the IORegistry: {name, vendor, product, serial, location, address, speed,
+    bcd_usb} (macOS; location = locationID, the port; address = the USB address uvcc selects by;
+    speed = the link's Device Speed, see SPEEDS; bcd_usb = the USB version the device supports)."""
     p = run(["ioreg", "-p", "IOUSB", "-l", "-w0"], capture_output=True, text=True, timeout=20)
     out, cur = [], None
     for line in p.stdout.splitlines():
@@ -48,10 +48,11 @@ def usb_devices(run: Callable = subprocess.run) -> list[dict]:
         if "+-o " in line:
             cur = None
             continue
-        m = re.search(r'"(idVendor|idProduct|USB Serial Number|locationID|USB Address|Device Speed)" = (.+)$', line)
+        m = re.search(r'"(idVendor|idProduct|USB Serial Number|locationID|USB Address|Device Speed|USBSpeed|bcdUSB)" = (.+)$', line)
         if cur is not None and m:
             key = {"idVendor": "vendor", "idProduct": "product", "USB Serial Number": "serial",
-                   "locationID": "location", "USB Address": "address", "Device Speed": "speed"}[m.group(1)]
+                   "locationID": "location", "USB Address": "address", "Device Speed": "speed",
+                   "USBSpeed": "speed", "bcdUSB": "bcd_usb"}[m.group(1)]
             v = m.group(2).strip().strip('"')
             cur[key] = v if key == "serial" else int(v)
     return out
