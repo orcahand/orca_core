@@ -8,6 +8,12 @@ helpers). Move pieces into `orca_core` once they work.
     uv run --with opencv-contrib-python-headless pytest tests -q
     uv run python -m visual_calibration.e0
 
+**A rig Mac:** `setup_rig.sh` (orca_ui's environment with orca_core's `rig` extra, the BiRefNet
+weights, the firmware toolchain), `python -m visual_calibration.doctor` (what is missing, with the
+fix; `doctor.run()` is what orca-ui serves), `python -m visual_calibration.sweep --assign-cameras`
+(the cameras' USB identity into config.yaml), `rig-console.sh` (orca-ui with the rig's paths).
+Steps: `HANDOVER.md`.
+
 Goal: measure the hand's 17 joint angles from photos, then correct the motors
 until the hand matches a target pose.
 

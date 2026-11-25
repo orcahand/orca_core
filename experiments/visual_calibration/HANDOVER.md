@@ -41,25 +41,27 @@ works.
 
 ## Setup
 
-1. **Checkouts:**
-   - orca_core and orca_ui on `internal/rig-calibration`;
-   - orcahand_description on main, next to orca_core (else set `ORCAHAND_DESCRIPTION=<path>`).
-2. **orca-ui on this orca_core:** in orca_ui, run `./dev local <orca_core checkout>`. The banner's `core`
-   line must show the local checkout. If orca_core isn't at `../orca_core`, set
-   `ORCA_VISUAL_CALIBRATION=<orca_core>/experiments/visual_calibration`.
-3. **The console's Python needs:** OpenCV with aruco (tested with 4.13), scipy, trimesh, torch and
-   transformers (BiRefNet `ZhengPeng7/BiRefNet_dynamic`, ~900 MB). Load the model once before the first
-   run so the download doesn't happen mid-run. You also need node/npx for `uvcc`.
-4. **Cameras:**
-   - Put each camera's USB serial into `rigs/v1/camera-rig/config.yaml` under
-     `cameras.a.uvc.device.serial` and `cameras.b.uvc.device.serial`. Run
-     `python -m visual_calibration.sweep --list-cameras` to see them. Without a serial the preflight
-     refuses.
-   - Close Logi Tune.
-   - Not BRIOs? On 2026-11-24 the rig Mac had two "USB 2.0 Camera" units (0c45:6361, 1080p) that both
-     report the serial `SN20221220`. Serials can't tell those apart. `uvc.find_device` also filters on
-     `location`, but telling them apart by port is untested.
-5. **The tube:** check the J/K tile letters. orca_files `set.yaml` and the rig config disagree on which
+1. **Checkouts, side by side in one folder:** orca_core and orca_ui on `internal/rig-calibration`,
+   orca_firmware on `internal/board-calibration-store` (optional, for board writes), orcahand_description
+   on main. Elsewhere: set `ORCA_UI`, `ORCA_FIRMWARE_REPO`, `ORCAHAND_DESCRIPTION`.
+2. **Install:** `uv` and node (`brew install uv node`), then from orca_core run
+   `experiments/visual_calibration/setup_rig.sh`. It makes orca_ui's environment on Python 3.12 with
+   orca_core's `rig` extra (OpenCV with aruco, torch, transformers and what BiRefNet needs), points orca_ui
+   at this orca_core (`./dev local`), downloads the BiRefNet weights (~450 MB), runs orca_firmware's
+   `./setup.sh` (`--no-firmware` skips it), checks uvcc and Rosetta, and ends with the doctor. Run it
+   again whenever: it only does what is missing.
+3. **Doctor:** `python -m visual_calibration.doctor` (from `experiments/visual_calibration`, with
+   orca_ui's `.venv/bin/python`) checks all of this and the rig's hardware, and prints the fix for each
+   problem. It opens nothing.
+4. **Cameras:** plug both in, close Logi Tune, then from `experiments/visual_calibration`:
+   `python -m visual_calibration.sweep --assign-cameras`. It writes each camera's USB identity into
+   `rigs/v1/camera-rig/config.yaml` (a tracked file). Two cameras that report the same serial (the rig
+   Mac's two "USB 2.0 Camera" units, 0c45:6361, both `SN20221220`) are told apart by their USB port, so
+   keep each in its port. Which is A and which B is a guess until "Check cameras" passes with the tower
+   on the plate; if it says the cameras are swapped, run `... --assign-cameras --swap`.
+5. **Start the console:** `experiments/visual_calibration/rig-console.sh` (orca-ui with the rig's paths
+   set). The banner's `core` line must show the local checkout.
+6. **The tube:** check the J/K tile letters. orca_files `set.yaml` and the rig config disagree on which
    letter the tile with marker ids 36–47 has.
 
 ## The test, in order
@@ -89,6 +91,9 @@ and those ranges are in force from the next connect. Move the file away to go ba
   Diego still decides the real gate.
 - Unverified on the rig:
   - OpenCV's camera order with the MacBook's own camera present;
+  - two cameras with one serial, told apart by USB port (tested on fakes only);
+  - with the "USB 2.0 Camera" units instead of BRIOs: config.yaml's resolution (3840×2160) and UVC
+    controls (focus, exposure, white balance) are the BRIO's and may not fit them;
   - how long the preflight takes;
   - whether camera B sees enough tiles at the park angle;
   - how far the solves lag behind collection against the 3 h deadline.
