@@ -135,6 +135,8 @@ def test_identical_serials_are_assigned_by_port_and_found_by_it(rig):
     changed = [(x, y) for x, y in zip(before.splitlines(), text.splitlines()) if x != y]
     assert len(changed) == 2 and len(before.splitlines()) == len(text.splitlines())   # only the two device lines
     assert any("same serial" in l for l in lines) and any(ca.SWAP in l for l in lines)
+    assert any(l.startswith("WARNING: config.yaml is tuned for Logitech BRIO; these cameras (0c45:6361) are "
+                            "untested") for l in lines)                                  # warned, still written
 
     usb = usb_devices(run)
     found = match_cameras(devices, usb)
@@ -180,7 +182,8 @@ def test_more_cameras_than_the_rig_are_picked_by_number(rig):
     run = fake_run([*TWINS, A_BRIO])
     with pytest.raises(ca.AssignError, match=r"(?s)1  USB 2.0 Camera.*3  Logitech BRIO.*--assign-cameras 1 2"):
         ca.assign(rig, run=run)
-    ca.assign(rig, [3, 2], run=run)
+    lines = ca.assign(rig, [3, 2], run=run)
+    assert any("(0c45:6361) are untested" in l for l in lines)                   # camera b is not a BRIO
     raw = yaml.safe_load((Path(rig.path) / "config.yaml").read_text())
     assert raw["cameras"]["a"]["uvc"]["device"] == {"vendor": BRIO_VID, "product": BRIO_PID, "serial": "ser-0001"}
     assert raw["cameras"]["b"]["uvc"]["device"]["location"] == TWIN2           # its twin is still plugged in

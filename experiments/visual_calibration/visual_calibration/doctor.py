@@ -342,6 +342,11 @@ def check_camera_identity(p: Probe) -> dict:
     twins = [c for c in names if list(keys.values()).count(keys[c]) > 1 and devices[c].get("location") is None]
     if twins:
         return _result(ERROR, f"cameras {', '.join(twins)} share a serial and have no USB location in {config}", fix)
+    from visual_calibration.camera_assign import untuned, untuned_message
+    models = untuned(devices)
+    if models:
+        return _result(ERROR, untuned_message(models),
+                       f"adapt cameras.<c>.resolution and cameras.<c>.uvc in {_q(config)} to these cameras")
     said = "; ".join(f"{c} = {d['vendor']:04x}:{d['product']:04x} serial {d.get('serial')}"
                      + (f" port 0x{int(d['location']):08x}" if d.get("location") is not None else "")
                      for c, d in devices.items())

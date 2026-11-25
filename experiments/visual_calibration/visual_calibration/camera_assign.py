@@ -25,12 +25,24 @@ from orca_core.utils.utils import write_text_atomic
 from visual_calibration.uvc import SPEEDS, usb_devices
 
 VIDEO_CLASS = 14            # USB interface class of a UVC camera
+TUNED_FOR = {"vendor": 0x046D, "product": 0x085E, "name": "Logitech BRIO"}   # config.yaml's resolution and controls
 NOTE = "set by sweep --assign-cameras; Check cameras proves it"
 SWAP = "python -m visual_calibration.sweep --assign-cameras --swap"
 
 
 class AssignError(RuntimeError):
     pass
+
+
+def untuned(devices: Mapping[str, Mapping]) -> list[str]:
+    """The camera models (vvvv:pppp) among `devices` that config.yaml is not tuned for."""
+    return sorted({f"{int(d['vendor']):04x}:{int(d['product']):04x}" for d in devices.values()
+                   if (int(d["vendor"]), int(d["product"])) != (TUNED_FOR["vendor"], TUNED_FOR["product"])})
+
+
+def untuned_message(models: list[str]) -> str:
+    return (f"config.yaml is tuned for {TUNED_FOR['name']}; these cameras ({', '.join(models)}) are untested: "
+            "resolution and UVC controls must be adapted")
 
 
 def video_locations(run: Callable = subprocess.run) -> set[int]:
@@ -191,6 +203,9 @@ def assign(rig, picks: list[int] | None = None, do_swap: bool = False, run: Call
             raise AssignError("\n".join([*lines, f"Nothing written: {e}"])) from None
         write_devices(config, devices)
         lines.append(f"Wrote {config}:")
+        models = untuned(devices)
+        if models:
+            lines[:0] = ["", "!" * 72, f"WARNING: {untuned_message(models)}.", "!" * 72, ""]
     for c, d in devices.items():
         where = f", port 0x{d['location']:08x}" if d.get("location") is not None else ""
         lines.append(f"  camera {c} = {d['vendor']:04x}:{d['product']:04x} serial {d.get('serial')}{where}")

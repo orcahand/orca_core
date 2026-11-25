@@ -12,8 +12,8 @@ import yaml
 from visual_calibration import doctor
 from visual_calibration.rig_config import RigConfig, get_rig_path
 
-TWIN = {"name": "USB 2.0 Camera", "vendor": 0x0C45, "product": 0x6361, "serial": "SN00000000", "speed": 2,
-        "bcd_usb": 0x200, "link": "USB 2 (480 Mb/s)"}
+TWIN = {"name": "Logitech BRIO", "vendor": 0x046D, "product": 0x085E, "serial": "SN00000000", "speed": 3,
+        "bcd_usb": 0x320, "link": "USB 3 (5 Gb/s)"}                     # two BRIOs with one serial
 CAMS = [{**TWIN, "location": 0x01110000, "address": 4}, {**TWIN, "location": 0x01120000, "address": 5}]
 RIG_SERIAL = "ser-0001"
 GOOD_IMPORTS = {"cv2": {"version": "4.13.0", "aruco": True}, "torch": {"version": "2.10.0", "mps": True},
@@ -148,6 +148,18 @@ def test_twins_without_a_port_need_assigning(mac):
     (mac.rig / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
     r = by_name(doctor.run(["camera_identity"], probe=probe(mac)))["camera_identity"]
     assert r["status"] == "error" and "no serial" in r["detail"]
+
+
+def test_cameras_config_yaml_is_not_tuned_for_are_an_error(mac):
+    cfg = yaml.safe_load((mac.rig / "config.yaml").read_text())
+    for c in "ab":
+        cfg["cameras"][c]["uvc"]["device"].update(vendor=0x0C45, product=0x6361)
+    (mac.rig / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+    r = by_name(doctor.run(["camera_identity"], probe=probe(mac)))["camera_identity"]
+    assert r["status"] == "error" and r["detail"] == (
+        "config.yaml is tuned for Logitech BRIO; these cameras (0c45:6361) are untested: resolution and UVC "
+        "controls must be adapted")
+    assert "cameras.<c>.uvc" in r["fix"]
 
 
 def test_a_usb3_camera_on_a_usb2_link_is_a_warning(mac):
