@@ -19,22 +19,26 @@ BRIO_VID, BRIO_PID = 0x046D, 0x085E
 HUB, TWIN1, TWIN2, BOARD, BRIO = 0x01100000, 0x01110000, 0x01120000, 0x01130000, 0x02100000
 
 
-def _device(name, location, vid, pid, address, speed, serial=None):
+XHCI = {0: 2, 1: 1, 2: 3, 3: 4, 4: 5}           # Device Speed -> USBSpeed, the XHCI port's own numbering
+
+
+def _device(name, location, vid, pid, address, speed, serial=None, encoding="Device Speed"):
+    rate = f'"Device Speed" = {speed}' if encoding == "Device Speed" else f'"USBSpeed" = {XHCI[speed]}'
     props = [f'"idVendor" = {vid}', f'"idProduct" = {pid}', f'"locationID" = {location}',
-             f'"USB Address" = {address}', f'"Device Speed" = {speed}', f'"USB Product Name" = "{name}"']
+             f'"USB Address" = {address}', rate, f'"USB Product Name" = "{name}"']
     if serial is not None:
         props.insert(2, f'"USB Serial Number" = "{serial}"')
     return [f"  | +-o {name}@{location:08x}  <class IOUSBHostDevice, id 0x100000a{address:02x}, registered, matched, "
             "active, busy 0 (1 ms), retain 20>", "  | | {", *(f"  | |   {p}" for p in props), "  | | }", "  | |"]
 
 
-def ioreg_usb(plugged):
+def ioreg_usb(plugged, encoding="Device Speed"):
     lines = ["+-o Root  <class IORegistryEntry, id 0x100000100, retain 35>",
              "  +-o AppleT8142USBXHCI@01000000  <class AppleT8142USBXHCI, id 0x10000046a, registered, matched, "
              "active, busy 0 (9031 ms), retain 134>", "  | {", '  |   "locationID" = 16777216', "  | }",
              *_device("USB2.0 Hub", HUB, 0x05E3, 0x0610, 1, 2)]
     for d in plugged:
-        lines += _device(*d)
+        lines += _device(*d, encoding=encoding)
     return "\n".join(lines) + "\n"
 
 
@@ -69,12 +73,12 @@ OH_BOARD = ("ORCA Hand", BOARD, 0x2F5D, 0x2202, 6, 1, "0123456789ABCDEF")
 A_BRIO = ("Logitech BRIO", BRIO, BRIO_VID, BRIO_PID, 7, 3, "ser-0001")
 
 
-def fake_run(plugged, calls=None):
+def fake_run(plugged, calls=None, encoding="Device Speed"):
     def run(cmd, **kw):
         if calls is not None:
             calls.append(cmd)
         if cmd[:3] == ["ioreg", "-p", "IOUSB"]:
-            out = ioreg_usb(plugged)
+            out = ioreg_usb(plugged, encoding)
         elif cmd[:4] == ["ioreg", "-r", "-c", "IOUSBHostInterface"]:
             out = ioreg_interfaces(plugged)
         elif cmd[0] == "system_profiler":
@@ -103,6 +107,19 @@ def test_ioreg_lists_the_cameras_by_port_and_link_speed():
     assert [c["link"] for c in cams] == ["USB 2 (480 Mb/s)", "USB 2 (480 Mb/s)", "USB 3 (5 Gb/s)"]
     assert [c["avfoundation_index"] for c in cams] == [0, 1, 2]       # sorted unique ids; the MacBook's last
     assert "0c45:6361  serial SN00000000  location 0x01110000  USB 2" in ca.describe(cams[0])
+
+
+@pytest.mark.parametrize("encoding", ["Device Speed", "USBSpeed"])
+def test_both_speed_encodings_read_as_the_same_link(encoding):
+    devs = {d["location"]: d for d in usb_devices(fake_run([*TWINS, A_BRIO], encoding=encoding))}
+    assert devs[TWIN1]["speed"] == 2 and devs[BRIO]["speed"] == 3 and devs[HUB]["speed"] == 2
+    assert "usb_speed" not in devs[BRIO]
+
+
+def test_device_speed_wins_over_usbspeed():
+    text = ioreg_usb([A_BRIO]).replace('"Device Speed" = 3', '"Device Speed" = 3\n  | |   "USBSpeed" = 3')
+    devs = usb_devices(lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, text, ""))
+    assert devs[-1]["speed"] == 3                                          # not USBSpeed 3 = high speed
 
 
 def test_identical_serials_are_assigned_by_port_and_found_by_it(rig):

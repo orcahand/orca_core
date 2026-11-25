@@ -36,7 +36,8 @@ class CameraSettingsError(RuntimeError):
 def usb_devices(run: Callable = subprocess.run) -> list[dict]:
     """Every USB device in the IORegistry: {name, vendor, product, serial, location, address, speed,
     bcd_usb} (macOS; location = locationID, the port; address = the USB address uvcc selects by;
-    speed = the link's Device Speed, see SPEEDS; bcd_usb = the USB version the device supports)."""
+    speed = the link's speed as Device Speed counts it, see SPEEDS; bcd_usb = the USB version the
+    device supports)."""
     p = run(["ioreg", "-p", "IOUSB", "-l", "-w0"], capture_output=True, text=True, timeout=20)
     out, cur = [], None
     for line in p.stdout.splitlines():
@@ -52,14 +53,19 @@ def usb_devices(run: Callable = subprocess.run) -> list[dict]:
         if cur is not None and m:
             key = {"idVendor": "vendor", "idProduct": "product", "USB Serial Number": "serial",
                    "locationID": "location", "USB Address": "address", "Device Speed": "speed",
-                   "USBSpeed": "speed", "bcdUSB": "bcd_usb"}[m.group(1)]
+                   "USBSpeed": "usb_speed", "bcdUSB": "bcd_usb"}[m.group(1)]
             v = m.group(2).strip().strip('"')
             cur[key] = v if key == "serial" else int(v)
+    for d in out:
+        usb_speed = d.pop("usb_speed", None)
+        if "speed" not in d and usb_speed in USB_SPEED:
+            d["speed"] = USB_SPEED[usb_speed]
     return out
 
 
 SPEEDS = {0: "USB 1 low speed", 1: "USB 1 full speed", 2: "USB 2 (480 Mb/s)", 3: "USB 3 (5 Gb/s)",
-          4: "USB 3 (10 Gb/s)", 5: "USB 3 (20 Gb/s)"}
+          4: "USB 3 (10 Gb/s)", 5: "USB 3 (20 Gb/s)"}          # "Device Speed" values
+USB_SPEED = {1: 1, 2: 0, 3: 2, 4: 3, 5: 4, 6: 5}  # "USBSpeed" (the XHCI port speed: 1 full, 2 low, 3 high, 4 super ...)
 
 
 def as_location(value: int | str | None) -> int | None:
