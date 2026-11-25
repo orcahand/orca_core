@@ -44,7 +44,7 @@ class Fake:
             return completed(cmd, (self.branch if "orcahand_description" in path else
                                    doctor.FIRMWARE_BRANCH if "firmware" in path else "internal/rig-calibration") + "\n")
         if cmd[0] == "npx":
-            assert "--no-install" in cmd and "--yes" not in cmd                 # never downloads
+            assert cmd[1:3] == ["--no-install", "--prefer-offline"] and "--yes" not in cmd   # never downloads
             if self.uvcc == "uncached":
                 return completed(cmd, "", 1, 'npm error npx canceled due to missing packages and no YES option: ["uvcc@8.0.0"]')
             return completed(cmd, self.uvcc) if self.uvcc else completed(cmd, "", 1, "npm error network")

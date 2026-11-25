@@ -241,7 +241,8 @@ def check_uvcc(p: Probe) -> dict:
         return _result(ERROR, f"{cmd[0]} not found: uvcc (the camera controls) runs on Node.js",
                        "brew install node   # or the installer from https://nodejs.org")
     if cmd[0] == "npx":                     # only what npx has cached: the doctor downloads nothing
-        cmd = [cmd[0], "--no-install", *(a for a in cmd[1:] if a not in ("--yes", "-y"))]
+        cmd = [cmd[0], "--no-install", "--prefer-offline",
+               *(a for a in cmd[1:] if a not in ("--yes", "-y", "--no-install", "--prefer-offline"))]
     fetch = f"{TOOL} --version   # downloads it once (network); setup_rig.sh does this"
     try:
         r = p.run([*cmd, "--version"], capture_output=True, text=True, timeout=60)

@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-TOOL = os.environ.get("ORCA_UVCC", "npx --yes uvcc@8.0.0")
+TOOL = os.environ.get("ORCA_UVCC", "npx --yes --prefer-offline uvcc@8.0.0")   # once cached, no registry round trip
 AUTO_FLAGS = ("auto_focus", "auto_exposure_mode", "auto_exposure_priority", "auto_white_balance_temperature")
 OVERRIDDEN_BY = {"absolute_focus": ("auto_focus", 0), "absolute_exposure_time": ("auto_exposure_mode", 1),
                  "white_balance_temperature": ("auto_white_balance_temperature", 0)}

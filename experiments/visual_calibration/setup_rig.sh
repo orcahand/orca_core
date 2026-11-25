@@ -36,7 +36,7 @@ UI=${ORCA_UI:-$ROOT/orca_ui}
 FIRMWARE=${ORCA_FIRMWARE_REPO:-$ROOT/orca_firmware}
 DESCRIPTION=${ORCAHAND_DESCRIPTION:-$ROOT/orcahand_description}
 PYTHON_VERSION=3.12
-UVCC=${ORCA_UVCC:-npx --yes uvcc@8.0.0}
+UVCC=${ORCA_UVCC:-npx --yes --prefer-offline uvcc@8.0.0}
 
 FIRMWARE_SETUP=1
 FIRMWARE_UPDATE=0
