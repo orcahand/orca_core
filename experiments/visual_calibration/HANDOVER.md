@@ -8,8 +8,19 @@ Your `visual-calibration` branches, carried on as `internal/rig-calibration` in 
 (internal, not for main). The goal is that in-house assemblers measure each right hand's joint ranges
 on your two-camera turntable rig from orca-ui, and get per-hand accuracy numbers.
 
-**Status: built and tested in software only (orca_core 2388 tests, experiments 120, orca_ui 565), never
-run on the real rig, cameras or a hand.** Expect bugs on hardware. That is what this test is for.
+**Status: built and tested in software only (orca_core 2388 tests, experiments 142, orca_ui 567; the
+setup below was rehearsed from fresh clones), never run on the real rig, cameras or a hand.** Expect bugs
+on hardware. That is what this test is for.
+
+**Not in these branches:** what Clemens and Leander pushed to `visual-calibration` after 23 Nov
+(orca_core `joint_map.yaml`, the rig results snapshot; orca_ui's "0 · Setup" step). Don't merge
+`visual-calibration` into these branches; Diego decides how they come together.
+
+**Ground rules for this test:**
+- Commit fixes on these branches in small commits; never merge into main.
+- Flash firmware only onto a spare board. Ask Diego before flashing a hand's board.
+- There is no pass mark for accuracy yet: report the numbers.
+- Stop and report before anything that could damage a board, a hand or the rig.
 
 **Writing to the hand's board is a separate, last part.** It needs the firmware branch
 `internal/board-calibration-store` (its `HANDOVER.md`), with the board flashed to FW 4. Without
@@ -50,10 +61,14 @@ works.
    at this orca_core (`./dev local`), downloads the BiRefNet weights (~450 MB), runs orca_firmware's
    `./setup.sh` (`--no-firmware` skips it), checks uvcc and Rosetta, and ends with the doctor. Run it
    again whenever: it only does what is missing.
-3. **Doctor:** `python -m visual_calibration.doctor` (from `experiments/visual_calibration`, with
-   orca_ui's `.venv/bin/python`) checks all of this and the rig's hardware, and prints the fix for each
-   problem. It opens nothing.
-4. **Cameras:** plug both in, close Logi Tune, then from `experiments/visual_calibration`:
+3. **Doctor:** from `orca_core/experiments/visual_calibration`, run
+   `../../../orca_ui/.venv/bin/python -m visual_calibration.doctor`. It checks all of this and the rig's
+   hardware, and prints the fix for each problem. It opens nothing and downloads nothing. The console shows
+   the same checks in a "Check this computer" card on the first rig step. Repeat until every check is
+   green; the hardware checks only turn green once the cameras, turntable and hand are plugged in.
+   **Every `python` below means orca_ui's `.venv/bin/python`, run from `orca_core/experiments/visual_calibration`.**
+   Running `uv sync` in orca_ui removes the rig extra: re-run `setup_rig.sh` after it.
+4. **Cameras:** plug both in, close any camera app such as Logi Tune, then run
    `python -m visual_calibration.sweep --assign-cameras`. It writes each camera's USB identity into
    `rigs/v1/camera-rig/config.yaml` (a tracked file). Two cameras that report the same serial (the rig
    Mac's two "USB 2.0 Camera" units, 0c45:6361, both `SN20221220`) are told apart by their USB port, so
@@ -66,7 +81,11 @@ works.
 
 ## The test, in order
 
-1. orca-ui with the hand plugged in → Setup › Visual calibration → "Check cameras" passes.
+0. Firmware first, if board writes are part of the test: run the bench test in orca_firmware's
+   `HANDOVER.md` on a spare board, then flash the test hand's board to FW 4 with `upload.sh`, after
+   Diego's OK. Skip this to test only the rig and the measurement.
+1. `rig-console.sh` with the hand plugged in → Setup › Visual calibration → "Check this computer" is
+   green → "Check cameras" passes.
 2. Rig steps 1a and 1b with both cameras, then save to rig. Check that the result lands in
    `~/.orca/rigs/<rig id>/`.
 3. Dry run: `python -m hand_study.run_hand --dry` (from `experiments/visual_calibration`, with orca-ui
@@ -98,6 +117,13 @@ and those ranges are in force from the next connect. Move the file away to go ba
   - whether camera B sees enough tiles at the park angle;
   - how far the solves lag behind collection against the 3 h deadline.
 - Send back the run folder's `proposed/accuracy.json`, `hardstops.json` and the run's log.
+
+## When a step fails
+
+1. Run the doctor again and fix what it names.
+2. Read the console's terminal output and the run's log (`runs/<hand id>/<date-time>/` in the rig folder).
+3. Fix it on the branch with a test where possible, then repeat the step.
+4. If the fix would change how the rig or the flow works (not only a bug), stop and ask Diego.
 
 ## Tests
 
