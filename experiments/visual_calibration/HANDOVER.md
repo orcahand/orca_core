@@ -11,8 +11,10 @@ on your two-camera turntable rig from orca-ui, and get per-hand accuracy numbers
 **Status: built and tested in software only (orca_core 2388 tests, experiments 120, orca_ui 565), never
 run on the real rig, cameras or a hand.** Expect bugs on hardware. That is what this test is for.
 
-**Out of scope for this test:** flashing firmware and writing to the hand's board. Leave
-`ORCA_FIRMWARE_REPO` unset; the console then hides "Write to board".
+**Writing to the hand's board is a separate, last part.** It needs the firmware branch
+`internal/board-calibration-store` (its `HANDOVER.md`), with the board flashed to FW 4. Without
+`ORCA_FIRMWARE_REPO` pointing at that checkout, the console hides "Write to board" and everything else
+works.
 
 ## What changed from your branch
 
@@ -71,6 +73,11 @@ run on the real rig, cameras or a hand.** Expect bugs on hardware. That is what 
    ranges and accuracy before/after.
 5. E-STOP mid-block, and Stop mid-plate-move: no process left (`ps -g <pgid>`), hand and plate limp. Quit
    orca-ui with one Ctrl+C, never two: the run is killed and torque goes off.
+6. Optional, with the board on FW 4 and `ORCA_FIRMWARE_REPO` set, then orca-ui restarted:
+   - "Write to board" → the read-back confirms.
+   - Unplug and replug: the ranges are still in force.
+   - Start orca-ui with a fresh `ORCA_HOME` (a new folder): the board's calibration is copied on
+     first contact, and the hand menu says the ranges come from the board.
 
 **Note:** a finished run writes the hand's `~/.orca/hands/<hand id>/joint_ranges.yaml` on this computer,
 and those ranges are in force from the next connect. Move the file away to go back to the previous ranges.
