@@ -31,7 +31,6 @@ EXPERIMENT = Path(__file__).resolve().parents[1]          # experiments/visual_c
 CHECKOUT = Path(__file__).resolve().parents[3]            # the orca_core checkout
 PYTHON_TESTED = (3, 12)
 PYTHON_MIN = (3, 11)
-BIREFNET_REPO = "ZhengPeng7/BiRefNet_dynamic"
 BIREFNET_FILES = ("config.json", "birefnet.py", "BiRefNet_config.py", "model.safetensors")
 FIRMWARE_BRANCH = "internal/board-calibration-store"
 MIN_CAMERAS = 2
@@ -189,21 +188,19 @@ def hub_cache(environ: Mapping, home: Path) -> Path:
 
 
 def check_birefnet_weights(p: Probe) -> dict:
+    from hand_study.segment import BIREFNET_REPO, BIREFNET_REVISION
     hub = hub_cache(p.environ, p.home())
-    repo = hub / f"models--{BIREFNET_REPO.replace('/', '--')}"
+    snap = hub / f"models--{BIREFNET_REPO.replace('/', '--')}" / "snapshots" / BIREFNET_REVISION
     fix = (f"cd {_q(EXPERIMENT)} && {_q(p.executable)} -c "
            "'from hand_study.segment import BiRefNet; BiRefNet()'   # downloads ~450 MB once")
-    ref = repo / "refs" / "main"
-    snaps = [repo / "snapshots" / ref.read_text().strip()] if ref.is_file() else sorted((repo / "snapshots").glob("*"))
-    for snap in snaps:
-        missing = [f for f in BIREFNET_FILES if not (snap / f).is_file()]
-        if not missing:
-            mb = (snap / "model.safetensors").stat().st_size / 1e6
-            return _result(OK, f"{BIREFNET_REPO} in {snap} ({mb:.0f} MB)")
+    missing = [f for f in BIREFNET_FILES if not (snap / f).is_file()]
+    if not missing:
+        mb = (snap / "model.safetensors").stat().st_size / 1e6
+        return _result(OK, f"{BIREFNET_REPO}@{BIREFNET_REVISION[:12]} in {snap} ({mb:.0f} MB)")
     if p.environ.get("HF_HUB_OFFLINE") not in (None, "", "0"):
         fix = "unset HF_HUB_OFFLINE; " + fix
-    return _result(ERROR, f"{BIREFNET_REPO} is not in the Hugging Face cache {hub}"
-                          + (f" (incomplete: {', '.join(missing)} missing)" if snaps else "")
+    return _result(ERROR, f"{BIREFNET_REPO} revision {BIREFNET_REVISION[:12]} is not in the Hugging Face cache {hub}"
+                          + (f" (incomplete: {', '.join(missing)} missing)" if snap.is_dir() else "")
                           + ": the hand run would download it at its start", fix)
 
 

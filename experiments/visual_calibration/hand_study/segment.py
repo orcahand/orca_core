@@ -19,6 +19,8 @@ import numpy as np
 
 MEAN, STD = np.array([0.485, 0.456, 0.406]), np.array([0.229, 0.224, 0.225])
 X_MAX = 2900 / 3840                          # on the rig the hand never reaches the frame's right quarter
+BIREFNET_REPO = "ZhengPeng7/BiRefNet_dynamic"
+BIREFNET_REVISION = "280306042f57b7a33854319da62fd86aaa89ec4c"   # its weights and remote code, as tested
 
 
 def name() -> str:
@@ -28,13 +30,13 @@ def name() -> str:
 class BiRefNet:
     prompted = False
 
-    def __init__(self, long_side: int = 1024, repo: str = "ZhengPeng7/BiRefNet_dynamic"):
+    def __init__(self, long_side: int = 1024, repo: str = BIREFNET_REPO, revision: str = BIREFNET_REVISION):
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch
         from transformers import AutoModelForImageSegmentation
         self.torch, self.long = torch, long_side
         self.dev = "mps" if torch.backends.mps.is_available() else "cpu"
-        m = AutoModelForImageSegmentation.from_pretrained(repo, trust_remote_code=True).eval()
+        m = AutoModelForImageSegmentation.from_pretrained(repo, revision=revision, trust_remote_code=True).eval()
         # transformers 5 loads the checkpoint's own dtype (float16), which a CPU cannot run
         self.model = m.to(self.dev).half() if self.dev == "mps" else m.float()
         self.cache: dict = {}

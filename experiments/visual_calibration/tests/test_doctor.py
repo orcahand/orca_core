@@ -64,12 +64,11 @@ def mac(tmp_path, monkeypatch):
     (fw / ".arduino" / "bin").mkdir(parents=True)
     (fw / ".arduino" / "bin" / "arduino-cli").write_text("")
     hf = tmp_path / "hf"
-    snap = hf / "hub" / "models--ZhengPeng7--BiRefNet_dynamic" / "snapshots" / "abc"
+    from hand_study.segment import BIREFNET_REVISION
+    snap = hf / "hub" / "models--ZhengPeng7--BiRefNet_dynamic" / "snapshots" / BIREFNET_REVISION
     snap.mkdir(parents=True)
     for f in doctor.BIREFNET_FILES:
         (snap / f).write_bytes(b"x" * (1000 if f == "model.safetensors" else 1))
-    (hf / "hub" / "models--ZhengPeng7--BiRefNet_dynamic" / "refs").mkdir()
-    (hf / "hub" / "models--ZhengPeng7--BiRefNet_dynamic" / "refs" / "main").write_text("abc")
     rig = tmp_path / "v1" / "camera-rig"
     shutil.copytree(get_rig_path(), rig)
     cfg = yaml.safe_load((rig / "config.yaml").read_text())
@@ -163,7 +162,8 @@ def test_a_usb3_camera_on_a_usb2_link_is_a_warning(mac):
 def test_missing_packages_weights_and_tools_name_their_fix(mac):
     imports = {**GOOD_IMPORTS, "cv2": {"version": "4.13.0", "aruco": False},
                "transformers": {"error": "ModuleNotFoundError: No module named 'transformers'"}}
-    shutil.rmtree(mac.snap)
+    other = mac.snap.parent / ("0" * 40)                               # another revision is not the tested one
+    mac.snap.rename(other)
     p = probe(mac, Fake(imports=imports, uvcc="", rosetta=False, branch="v1-fix"), python=(3, 10, 14))
     r = by_name(doctor.run(probe=p))
     assert r["python"]["status"] == "error" and "uv sync --inexact --python 3.12" in r["python"]["fix"]
@@ -172,7 +172,8 @@ def test_missing_packages_weights_and_tools_name_their_fix(mac):
     assert seg["status"] == "error" and "transformers: ModuleNotFoundError" in seg["detail"]
     assert seg["fix"] == (f"uv pip install --python /venv/bin/python -r {doctor.CHECKOUT / 'pyproject.toml'} --extra rig")
     w = r["birefnet_weights"]
-    assert w["status"] == "error" and "not in the Hugging Face cache" in w["detail"] and "BiRefNet()" in w["fix"]
+    assert w["status"] == "error" and "revision 280306042f57 is not in the Hugging Face cache" in w["detail"]
+    assert "BiRefNet()" in w["fix"]
     assert r["uvcc"]["status"] == "error" and "npm error network" in r["uvcc"]["detail"]
     assert r["rosetta"]["status"] == "warn" and r["rosetta"]["fix"].startswith("softwareupdate --install-rosetta")
     assert r["orcahand_description"]["status"] == "warn" and "switch main" in r["orcahand_description"]["fix"]
