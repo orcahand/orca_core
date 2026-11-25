@@ -1604,7 +1604,7 @@ requires-dist = [
     { name = "timm", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=1.0.31" },
     { name = "torch", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=2.10" },
     { name = "torchvision", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=0.25" },
-    { name = "transformers", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=5.24" },
+    { name = "transformers", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=5.24,<6" },
     { name = "uvicorn", specifier = ">=0.34.2,<0.35.0" },
     { name = "websockets", marker = "python_full_version >= '3.11' and extra == 'rig'", specifier = ">=12" },
 ]
