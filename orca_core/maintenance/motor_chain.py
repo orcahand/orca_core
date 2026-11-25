@@ -91,6 +91,11 @@ class MotorChainAborted(MotorChainError):
         self.invalid_motors = list(invalid_motors or [])
 
 
+class SlotTaken(MotorChainError):
+    """A motor already answers at the target ID, so no further ID write is safe.
+    Re-read the chain before filling the slot."""
+
+
 @dataclass(frozen=True)
 class MotorChainPlan:
     """What the chain should look like once configured.
@@ -449,7 +454,10 @@ def configure_default_motor(
     did not take is retried, not mistaken for a second motor. A factory-default
     motor still answering at the default baud afterwards *is* a second motor that
     joined mid-step (``duplicate_default_motor``), and the step is refused rather
-    than risking a duplicate ``target_id``.
+    than risking a duplicate ``target_id``. A motor already answering at
+    ``target_id`` before an ID write raises :class:`SlotTaken`: the motor is left
+    at the default ID for the next slot. On a retry, a target reply with no motor
+    left at the default ID confirms the previous write instead.
     """
     current = plan.default_baud if current_baud is None else current_baud
     if current != plan.target_baud:
@@ -473,6 +481,12 @@ def configure_default_motor(
                 time.sleep(ID_CHANGE_SETTLE_S)
 
     for attempt in range(1, WRITE_ATTEMPTS + 1):
+        if target_id != plan.default_id and _id_answers(plan, target_id, plan.target_baud):
+            if attempt > 1:
+                _refuse_leftover_default_motor(plan, target_id, progress_callback)
+                if not _default_answers(plan, plan.target_baud):
+                    return
+            raise SlotTaken(f"motor {target_id} answers again; no second motor was given its ID")
         with _config_session(plan.motor_type, [plan.default_id], plan.port, plan.target_baud) as client:
             delay_us = plan.return_delay_time_us
             if delay_us is not None and not client.change_return_delay_time(plan.default_id, delay_us):
@@ -700,19 +714,28 @@ def _is_phantom(plan: MotorChainPlan, motor: dict, at_target: list[dict]) -> boo
         motor["id"] == plan.default_id and _default_answers(plan, plan.default_baud))
 
 
+def _stranded(plan: MotorChainPlan, motor: dict, validated: "set[int] | frozenset[int]") -> bool:
+    """A motor this run already placed, cut off behind a gap: never a stray, it
+    rejoins when the gap closes. The wrong model at a placed ID is a stray."""
+    return motor["id"] in validated and _model_matches(plan, motor, plan.model_for(motor["id"]))
+
+
 def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             progress_callback: Optional[ProgressCallback], tier: int = 1,
-            state: Optional[dict] = None) -> dict:
+            state: Optional[dict] = None,
+            validated: "set[int] | frozenset[int]" = frozenset()) -> dict:
     """Survey the bus for anything that is not the chain so far.
 
     A motor at the target baud with an ID the chain has not configured, and any
     motor at another baud, is a stray: reset to factory defaults in place so the
     poll finds and programs it — one per survey, so two strays never meet at
-    the default ID. Two exceptions: the motor at the factory-default ID at the
-    default or target baud is left to the poll, and a right-model motor already
+    the default ID. Three exceptions: the motor at the factory-default ID at the
+    default or target baud is left to the poll, a right-model motor already
     carrying ``target_id`` — the slot being waited for — is one that came back
     (reconnected after it dropped off), reported as ``returned`` so the caller
-    re-reads the chain. A motor "at" another baud whose ID also answers at the
+    re-reads the chain, and a right-model motor at any ``validated`` ID, one
+    this run already placed, is stranded behind a gap and left alone at any baud
+    (see :func:`_stranded`). A motor "at" another baud whose ID also answers at the
     chain's baud is the chain seen through a bridge that ignored that rate; the
     rate is reported (``phantom_baud``) and skipped for the rest of the run.
     ``tier`` widens the survey (see the tier constants). Returns the IDs seen at
@@ -736,7 +759,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
         if m["id"] == target_id and _model_matches(plan, m, plan.model_for(target_id)):
             returned = True
             continue
-        strays.append(m)
+        if not _stranded(plan, m, validated):
+            strays.append(m)
     other_bauds = _bauds_to_survey(plan, state) if tier >= 2 else []
     id_range = chain_ids
     for baud in other_bauds:
@@ -747,7 +771,8 @@ def _census(plan: MotorChainPlan, configured: list[int], target_id: int,
             _emit(progress_callback, "phantom_baud", baudrate=baud,
                   motor_ids=[m["id"] for m in phantoms])
             continue
-        strays.extend(found)
+        # A placed motor missed at the chain's rate may reappear through a mirrored rate.
+        strays.extend(m for m in found if not _stranded(plan, m, validated))
     if strays and not returned:
         _reset_stray(plan, strays[0], progress_callback)
     if other_bauds:
@@ -793,6 +818,7 @@ def _wait_for_default_motor(
     should_stop: Optional[ShouldStop],
     poll_interval: float,
     state: Optional[dict] = None,
+    validated: "set[int] | frozenset[int]" = frozenset(),
 ) -> Optional[tuple[dict, int]]:
     """Poll until a motor at the factory-default ID is on the bus.
 
@@ -803,10 +829,12 @@ def _wait_for_default_motor(
     ``OTHER_RATES_AFTER_S``, every ID after ``ESCALATE_AFTER_S``);
     ``still_waiting`` reports liveness every ``HEARTBEAT_INTERVAL_S`` with what
     the last survey checked. A bus error (``bus_error``) is retried
-    ``BUS_ERROR_ATTEMPTS`` times in a row before it ends the run.
+    ``BUS_ERROR_ATTEMPTS`` times in a row before it ends the run. While any
+    motor answers at the slot's own ID, no fresh motor is taken: the poll counts
+    as empty and the survey decides whether it is the slot's motor or a stray.
     Returns ``None`` whenever the chain must be re-read from the bus before
-    carrying on: the port went away and came back (``port_lost``), a motor
-    already carrying this slot's ID answered again (``configured_motor_returned``),
+    carrying on: the port went away and came back (``port_lost``), the survey
+    found the slot's motor answering again (``configured_motor_returned``),
     or configured motors stopped answering on two surveys in a row
     (``configured_motor_missing`` on the first; ``configured_motors_back`` if
     they answer again on the second). A wrong model is reported once
@@ -827,18 +855,21 @@ def _wait_for_default_motor(
                           should_stop=should_stop)
             return None
         try:
-            for baud in dict.fromkeys((plan.default_baud, plan.target_baud)):
-                motor = find_default_motor(plan, expected_model, progress_callback, baud=baud)
-                if motor is not None:
-                    if baud != plan.default_baud:
-                        _emit(progress_callback, "half_programmed_motor_adopted",
-                              target_id=target_id, motor=motor)
-                    return motor, baud
+            # While the slot's ID answers no fresh motor is taken; the survey says whose it is.
+            if target_id == plan.default_id or not _id_answers(plan, target_id, plan.target_baud):
+                for baud in dict.fromkeys((plan.default_baud, plan.target_baud)):
+                    motor = find_default_motor(plan, expected_model, progress_callback, baud=baud)
+                    if motor is not None:
+                        if baud != plan.default_baud:
+                            _emit(progress_callback, "half_programmed_motor_adopted",
+                                  target_id=target_id, motor=motor)
+                        return motor, baud
             wrong_model_reported = False
             polls += 1
             if polls % CENSUS_EVERY_POLLS == 0:
                 seen = _census(plan, configured, target_id, progress_callback,
-                               tier=_census_tier(time.monotonic() - started), state=state)
+                               tier=_census_tier(time.monotonic() - started), state=state,
+                               validated=validated)
                 checked = seen["checked"]
                 if seen["returned"]:
                     _emit(progress_callback, "configured_motor_returned", target_id=target_id)
@@ -908,14 +939,14 @@ def _settle_prescan(
             break
         time.sleep(ID_CHANGE_SETTLE_S)
     missing = [i for i in expected if i not in scan.motors_by_id]
-    stranded = [i for i in scan.invalid_ids if i in validated]
+    stranded = [i for i in scan.invalid_ids if _stranded(plan, scan.motors_by_id[i], validated)]
     if missing:
         _emit(progress_callback, "chain_shortened", missing=missing, stranded=stranded,
               configured_ids=list(scan.valid_ids))
     ambiguous: list[dict] = []
     for mid in scan.invalid_ids:
         m = scan.motors_by_id[mid]
-        if mid == plan.default_id or mid in validated:
+        if mid == plan.default_id or mid in stranded:
             continue
         if _model_matches(plan, m, plan.model_for(mid)) and first_scan:
             ambiguous.append(m)
@@ -1020,13 +1051,18 @@ def configure_motor_chain(
               expected_model=expected_model)
         found = _wait_for_default_motor(plan, target_id, expected_model, configured,
                                         progress_callback, should_stop, poll_interval,
-                                        state=bus_state)
+                                        state=bus_state, validated=validated)
         if found is None:
-            continue  # the port came back: re-read the chain before touching anything
+            continue  # the bus changed: re-read the chain before touching anything
         motor, at_baud = found
         _emit(progress_callback, "motor_found", target_id=target_id, motor=motor)
-        configure_default_motor(plan, target_id, progress_callback=progress_callback,
-                                current_baud=at_baud)
+        try:
+            configure_default_motor(plan, target_id, progress_callback=progress_callback,
+                                    current_baud=at_baud)
+        except SlotTaken:
+            _emit(progress_callback, "configured_motor_returned", target_id=target_id)
+            time.sleep(poll_interval)
+            continue
         configured.append(target_id)
         validated.add(target_id)
         _emit(progress_callback, "motor_configured", target_id=target_id,
