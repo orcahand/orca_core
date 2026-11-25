@@ -8,7 +8,8 @@ STUDY_SEGMENTER=birefnet[:LONG_SIDE] - BiRefNet-dynamic (MIT, HF ZhengPeng7/BiRe
 full-resolution photo (the hand's part of it) at LONG_SIDE px (default 1024), MPS if available. It needs no seed, so
 each photo is segmented once and reused across rounds, halves and re-solves; the fit keeps it within GrabCut's own
 band around the model. Benchmark and rationale: ~/Downloads/hand_segmentation_models/report.html (8 Nov 2026).
-Needs torch + transformers + timm + kornia + einops in the venv; the first use downloads the weights (~900 MB).
+Needs orca_core's `rig` extra (torch, torchvision, transformers, timm, kornia, einops); the first use downloads the
+weights (~450 MB).
 """
 from __future__ import annotations
 
@@ -34,7 +35,8 @@ class BiRefNet:
         self.torch, self.long = torch, long_side
         self.dev = "mps" if torch.backends.mps.is_available() else "cpu"
         m = AutoModelForImageSegmentation.from_pretrained(repo, trust_remote_code=True).eval()
-        self.model = m.to(self.dev).half() if self.dev == "mps" else m
+        # transformers 5 loads the checkpoint's own dtype (float16), which a CPU cannot run
+        self.model = m.to(self.dev).half() if self.dev == "mps" else m.float()
         self.cache: dict = {}
 
     def prob(self, img: np.ndarray) -> np.ndarray:
