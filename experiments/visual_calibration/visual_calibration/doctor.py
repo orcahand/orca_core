@@ -33,6 +33,7 @@ PYTHON_TESTED = (3, 12)
 PYTHON_MIN = (3, 11)
 BIREFNET_FILES = ("config.json", "birefnet.py", "BiRefNet_config.py", "model.safetensors")
 FIRMWARE_BRANCH = "internal/board-calibration-store"
+RIG_BRANCH = "internal/rig-calibration"          # orca_core's and orca_ui's
 MIN_CAMERAS = 2
 
 OPENCV = ("cv2",)
@@ -84,7 +85,7 @@ class Probe:
     def cameras(self) -> list[dict]:
         if "cameras" not in self.cache:
             from visual_calibration.camera_assign import usb_cameras
-            self.cache["cameras"] = (self.usb_cameras or (lambda: usb_cameras(self.run)))()
+            self.cache["cameras"] = (self.usb_cameras or (lambda: usb_cameras(self.run, usb=self.usb())))()
         return self.cache["cameras"]
 
     def usb(self) -> list[dict]:
@@ -101,16 +102,25 @@ class Probe:
 
     def imports(self) -> dict:
         if "imports" not in self.cache:
-            p = self.run([self.executable, "-c", _IMPORTS, *RUN_IMPORTS],
-                         capture_output=True, text=True, timeout=180)
-            if p.returncode:
-                raise RuntimeError(f"{self.executable} could not run the imports: "
-                                   f"{(p.stderr or p.stdout).strip().splitlines()[-1:]}")
-            self.cache["imports"] = json.loads(p.stdout.strip().splitlines()[-1])
+            try:
+                p = self.run([self.executable, "-c", _IMPORTS, *RUN_IMPORTS],
+                             capture_output=True, text=True, timeout=180)
+                if p.returncode:
+                    raise RuntimeError(f"{self.executable} could not run the imports: "
+                                       f"{(p.stderr or p.stdout).strip().splitlines()[-1:]}")
+                self.cache["imports"] = json.loads(p.stdout.strip().splitlines()[-1])
+            except Exception as e:                    # once: the other package checks report it too
+                self.cache["imports"] = e
+        if isinstance(self.cache["imports"], Exception):
+            raise self.cache["imports"]
         return self.cache["imports"]
 
     def home(self) -> Path:
         return Path(self.environ.get("HOME") or Path.home())
+
+    def place(self, env: str, name: str) -> Path:
+        """A sibling checkout where setup_rig.sh looks for it: $env, else beside orca_core."""
+        return Path(self.environ.get(env) or CHECKOUT.parent / name)
 
 
 def _result(status: str, detail: str, fix: str = "") -> dict:
@@ -121,8 +131,13 @@ def _q(path) -> str:
     return shlex.quote(str(path))
 
 
-def _install_rig(p: Probe) -> str:
-    return f"uv pip install --python {_q(p.executable)} -r {_q(CHECKOUT / 'pyproject.toml')} --extra rig"
+def _install_rig(p: Probe, *extra: str) -> str:
+    return " ".join(["uv pip install --python", _q(p.executable), *extra, "-r", _q(CHECKOUT / "pyproject.toml"),
+                     "--extra rig"])
+
+
+def _setup_rig() -> str:
+    return f"{_q(EXPERIMENT / 'setup_rig.sh')}   # again"
 
 
 def _git_branch(p: Probe, path: Path) -> str | None:
@@ -137,7 +152,7 @@ def _git_branch(p: Probe, path: Path) -> str | None:
 def check_python(p: Probe) -> dict:
     v = ".".join(map(str, p.python))
     where = f"Python {v} ({p.executable})"
-    fix = f"cd {_q(CHECKOUT.parent / 'orca_ui')} && uv sync --inexact --python 3.12   # then install the rig extra into it"
+    fix = _setup_rig()
     if tuple(p.python[:2]) == PYTHON_TESTED:
         return _result(OK, where)
     if tuple(p.python[:2]) >= PYTHON_MIN:
@@ -161,7 +176,8 @@ def check_opencv(p: Probe) -> dict:
         return _result(ERROR, f"OpenCV {p.imports()['cv2']['version']} without aruco (ArucoDetector, CharucoDetector): "
                               "the opencv-python package, not opencv-contrib-python-headless?",
                        f"uv pip uninstall --python {_q(p.executable)} opencv-python opencv-python-headless "
-                       f"opencv-contrib-python && {_install_rig(p)}")
+                       f"opencv-contrib-python && "
+                       f"{_install_rig(p, '--reinstall-package opencv-contrib-python-headless')}")
     if r["status"] == OK:
         r["detail"] = f"OpenCV {p.imports()['cv2']['version']} with aruco"
     return r
@@ -207,10 +223,10 @@ def check_birefnet_weights(p: Probe) -> dict:
 def check_orcahand_description(p: Probe) -> dict:
     from visual_calibration.hand_model import DESCRIPTION_ENV, description_root
     root = description_root()
-    fix = (f"git clone git@github.com:orcahand/orcahand_description.git {_q(CHECKOUT.parent / 'orcahand_description')}"
+    looked = p.place(DESCRIPTION_ENV, "orcahand_description")
+    fix = (f"git clone git@github.com:orcahand/orcahand_description.git {_q(looked)}"
            f"   # or export {DESCRIPTION_ENV}=<its checkout>")
     if root is None:
-        looked = p.environ.get(DESCRIPTION_ENV) or CHECKOUT.parent / "orcahand_description"
         return _result(ERROR, f"no orcahand_description checkout (v2/models/urdf) at {looked}", fix)
     branch = _git_branch(p, root)
     if branch not in (None, "main"):
@@ -241,7 +257,7 @@ def check_uvcc(p: Probe) -> dict:
 
 
 def check_orca_core(p: Probe) -> dict:
-    fix = f"cd {_q(CHECKOUT.parent / 'orca_ui')} && ./dev local {_q(CHECKOUT)}"
+    fix = f"cd {_q(p.place('ORCA_UI', 'orca_ui'))} && ./dev local {_q(CHECKOUT)}   # or {_setup_rig()}"
     try:
         if p.orca_core_file is not None:
             where = Path(p.orca_core_file()).resolve().parent
@@ -258,9 +274,23 @@ def check_orca_core(p: Probe) -> dict:
             raise AttributeError("no board_push.board_contents")
     except Exception as e:
         return _result(ERROR, f"orca_core at {where} lacks the board store ({e}): not internal/rig-calibration?",
-                       f"git -C {_q(CHECKOUT)} switch internal/rig-calibration")
+                       f"git -C {_q(CHECKOUT)} switch {RIG_BRANCH}")
     branch = _git_branch(p, CHECKOUT)
+    if branch not in (None, RIG_BRANCH):
+        return _result(WARN, f"{where} on {branch}, not {RIG_BRANCH}", f"git -C {_q(CHECKOUT)} switch {RIG_BRANCH}")
     return _result(OK, f"{where}" + (f" ({branch})" if branch else ""))
+
+
+def check_orca_ui(p: Probe) -> dict:
+    ui = p.place("ORCA_UI", "orca_ui")
+    if not (ui / "orca_ui").is_dir():
+        return _result(WARN, f"no orca_ui checkout at {ui}",
+                       f"git clone git@github.com:orcahand/orca_ui.git {_q(ui)} && git -C {_q(ui)} switch {RIG_BRANCH}"
+                       "   # or export ORCA_UI=<its checkout>")
+    branch = _git_branch(p, ui)
+    if branch not in (None, RIG_BRANCH):
+        return _result(WARN, f"{ui} on {branch}, not {RIG_BRANCH}", f"git -C {_q(ui)} switch {RIG_BRANCH}")
+    return _result(OK, f"{ui}" + (f" ({branch})" if branch else ""))
 
 
 def check_firmware(p: Probe) -> dict:
@@ -271,8 +301,8 @@ def check_firmware(p: Probe) -> dict:
     optional = " (only needed to write a hand's board)"
     if not repo.is_dir():
         return _result(WARN, f"no orca_firmware checkout at {repo} ({how}){optional}",
-                       f"git clone git@github.com:orcahand/orca_firmware.git {_q(CHECKOUT.parent / 'orca_firmware')} && "
-                       f"git -C {_q(CHECKOUT.parent / 'orca_firmware')} switch {FIRMWARE_BRANCH}")
+                       f"git clone git@github.com:orcahand/orca_firmware.git {_q(repo)} && "
+                       f"git -C {_q(repo)} switch {FIRMWARE_BRANCH}")
     if not (repo / board_push.TOOL_RELATIVE_PATH).is_file():
         return _result(WARN, f"{repo} has no {board_push.TOOL_RELATIVE_PATH.as_posix()}: not {FIRMWARE_BRANCH}?{optional}",
                        f"git -C {_q(repo)} switch {FIRMWARE_BRANCH}")
@@ -420,6 +450,7 @@ CHECKS: dict[str, Callable[[Probe], dict]] = {
     "orcahand_description": check_orcahand_description,
     "uvcc": check_uvcc,
     "orca_core": check_orca_core,
+    "orca_ui": check_orca_ui,
     "firmware": check_firmware,
     "rosetta": check_rosetta,
     "usb_cameras": check_usb_cameras,
@@ -427,6 +458,9 @@ CHECKS: dict[str, Callable[[Probe], dict]] = {
     "turntable_board": check_turntable_board,
     "hand_board": check_hand_board,
 }
+HARDWARE = ("usb_cameras", "camera_identity", "turntable_board", "hand_board")
+SOFTWARE = tuple(n for n in CHECKS if n not in HARDWARE)
+GROUPS = {"software": SOFTWARE, "hardware": HARDWARE}          # names the CLI takes for several checks
 
 
 def run(checks: Iterable[str] | None = None, probe: Probe | None = None) -> list[dict]:
@@ -448,11 +482,17 @@ def run(checks: Iterable[str] | None = None, probe: Probe | None = None) -> list
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Check this computer for the camera rig (opens nothing).")
-    ap.add_argument("checks", nargs="*", metavar="CHECK", help=f"only these: {', '.join(CHECKS)}")
+    ap.add_argument("checks", nargs="*", metavar="CHECK",
+                    help=f"only these: {', '.join(GROUPS)} or {', '.join(CHECKS)}")
+    ap.add_argument("--skip", action="append", default=[], metavar="CHECK", help="leave this check out")
     ap.add_argument("--json", action="store_true", help="print the results as JSON")
     args = ap.parse_args(argv)
+    names = [n for c in (args.checks or list(CHECKS)) for n in GROUPS.get(c, (c,))]
+    unknown = [s for s in args.skip if s not in CHECKS]
+    if unknown:
+        ap.error(f"no check {', '.join(unknown)} to skip")
     try:
-        results = run(args.checks or None)
+        results = run([n for n in dict.fromkeys(names) if n not in args.skip])
     except ValueError as e:
         ap.error(str(e))
     if args.json:

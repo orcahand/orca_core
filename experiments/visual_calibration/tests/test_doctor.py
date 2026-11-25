@@ -48,6 +48,12 @@ class Fake:
             if self.uvcc == "uncached":
                 return completed(cmd, "", 1, 'npm error npx canceled due to missing packages and no YES option: ["uvcc@8.0.0"]')
             return completed(cmd, self.uvcc) if self.uvcc else completed(cmd, "", 1, "npm error network")
+        if cmd[:4] == ["ioreg", "-r", "-c", "IOUSBHostInterface"]:
+            return completed(cmd, "")
+        if cmd[0] == "system_profiler":
+            return completed(cmd, json.dumps({"SPCameraDataType": [
+                {"_name": c["name"], "spcamera_unique-id": f"0x{c['location']:x}{c['vendor']:04x}{c['product']:04x}"}
+                for c in CAMS]}))
         if cmd[0] == "arch":
             return completed(cmd, code=0 if self.rosetta else 1, err="Bad CPU type in executable")
         raise AssertionError(f"unexpected command {cmd}")
@@ -69,6 +75,8 @@ def mac(tmp_path, monkeypatch):
     snap.mkdir(parents=True)
     for f in doctor.BIREFNET_FILES:
         (snap / f).write_bytes(b"x" * (1000 if f == "model.safetensors" else 1))
+    ui = tmp_path / "orca_ui"
+    (ui / "orca_ui").mkdir(parents=True)
     rig = tmp_path / "v1" / "camera-rig"
     shutil.copytree(get_rig_path(), rig)
     cfg = yaml.safe_load((rig / "config.yaml").read_text())
@@ -82,7 +90,8 @@ def mac(tmp_path, monkeypatch):
     monkeypatch.setenv("ORCAHAND_DESCRIPTION", str(desc))
     monkeypatch.setenv("ORCA_FIRMWARE_REPO", str(fw))
     monkeypatch.setenv("HF_HOME", str(hf))
-    return SimpleNamespace(rig=rig, hf=hf, snap=snap, fw=fw, desc=desc)
+    monkeypatch.setenv("ORCA_UI", str(ui))
+    return SimpleNamespace(rig=rig, hf=hf, snap=snap, fw=fw, desc=desc, ui=ui)
 
 
 def probe(mac, fake=None, cams=CAMS, ports=None, machine="arm64", python=(3, 12, 8), **kw):
@@ -178,7 +187,9 @@ def test_missing_packages_weights_and_tools_name_their_fix(mac):
     mac.snap.rename(other)
     p = probe(mac, Fake(imports=imports, uvcc="", rosetta=False, branch="v1-fix"), python=(3, 10, 14))
     r = by_name(doctor.run(probe=p))
-    assert r["python"]["status"] == "error" and "uv sync --inexact --python 3.12" in r["python"]["fix"]
+    assert r["python"]["status"] == "error" and r["python"]["fix"].startswith(str(doctor.EXPERIMENT / "setup_rig.sh"))
+    assert "--reinstall-package opencv-contrib-python-headless" in r["opencv"]["fix"]
+    assert r["opencv"]["fix"].startswith("uv pip uninstall --python /venv/bin/python opencv-python ")
     assert r["opencv"]["status"] == "error" and "without aruco" in r["opencv"]["detail"]
     seg = r["segmenter_packages"]
     assert seg["status"] == "error" and "transformers: ModuleNotFoundError" in seg["detail"]
@@ -215,7 +226,45 @@ def test_the_firmware_checkout_is_optional_and_its_gaps_are_warnings(mac, monkey
 def test_orca_core_from_elsewhere_is_an_error(mac):
     p = probe(mac, orca_core_file=lambda: "/somewhere/site-packages/orca_core/__init__.py")
     r = by_name(doctor.run(["orca_core"], probe=p))["orca_core"]
-    assert r["status"] == "error" and "not this checkout" in r["detail"] and "./dev local" in r["fix"]
+    assert r["status"] == "error" and "not this checkout" in r["detail"]
+    assert r["fix"].startswith(f"cd {mac.ui} && ./dev local {doctor.CHECKOUT}")            # ORCA_UI honoured
+
+
+def test_orca_ui_on_another_branch_or_missing_is_a_warning(mac, monkeypatch):
+    assert by_name(doctor.run(["orca_ui"], probe=probe(mac)))["orca_ui"]["status"] == "ok"
+    r = by_name(doctor.run(["orca_ui", "orcahand_description"], probe=probe(mac, Fake(branch="main"))))
+    assert r["orcahand_description"]["status"] == "ok"
+    monkeypatch.setenv("ORCA_UI", str(mac.ui.parent / "nowhere"))
+    r = by_name(doctor.run(["orca_ui"], probe=probe(mac)))["orca_ui"]
+    assert r["status"] == "warn" and f"git clone git@github.com:orcahand/orca_ui.git {mac.ui.parent / 'nowhere'}" in r["fix"]
+
+
+def test_a_failed_import_child_runs_once(mac):
+    class Broken(Fake):
+        def run(self, cmd, **kw):
+            if cmd[1:2] == ["-c"]:
+                self.calls.append(cmd)
+                raise subprocess.TimeoutExpired(cmd, 180)
+            return super().run(cmd, **kw)
+    fake = Broken()
+    r = by_name(doctor.run(["opencv", "segmenter_packages", "rig_packages"], probe=probe(mac, fake)))
+    assert all(x["status"] == "error" and "TimeoutExpired" in x["detail"] for x in r.values())
+    assert sum(c[1:2] == ["-c"] for c in fake.calls) == 1
+
+
+def test_the_groups_are_every_check_once_and_cameras_reuse_the_usb_listing(mac, monkeypatch, capsys):
+    assert doctor.SOFTWARE + doctor.HARDWARE == tuple(doctor.CHECKS)
+    fake = Fake()
+    p = probe(mac, fake, usb_cameras=None)
+    assert [c["location"] for c in p.cameras()] == [c["location"] for c in CAMS]
+    assert not any(c[:3] == ["ioreg", "-p", "IOUSB"] for c in fake.calls)          # usb() already listed them
+    ready = probe(mac)
+    monkeypatch.setattr(doctor, "Probe", lambda: ready)
+    doctor.main(["--json", "software", "--skip", "birefnet_weights"])
+    names = [r["name"] for r in json.loads(capsys.readouterr().out)]
+    assert names == [n for n in doctor.SOFTWARE if n != "birefnet_weights"]
+    with pytest.raises(SystemExit):
+        doctor.main(["--skip", "nope"])
 
 
 def test_a_check_that_crashes_is_an_error_not_an_exception(mac):
