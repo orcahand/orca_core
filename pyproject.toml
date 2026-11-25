@@ -20,6 +20,22 @@ dependencies = [
     "numpy (>=2.2.6,<3.0.0)",
 ]
 
+[project.optional-dependencies]
+# The camera rig (experiments/visual_calibration): tile detection (aruco), the
+# BiRefNet hand segmenter and what its remote code imports, the hand run's
+# websocket client. Lower bounds: the versions the rig code was run with (on
+# Python 3.12). They need Python 3.11+: on 3.10 the extra installs nothing.
+rig = [
+    "opencv-contrib-python-headless>=4.13,<6; python_version >= '3.11'",
+    "torch>=2.10; python_version >= '3.11'",
+    "torchvision>=0.25; python_version >= '3.11'",
+    "transformers>=5.24; python_version >= '3.11'",
+    "timm>=1.0.31; python_version >= '3.11'",
+    "kornia>=0.9.2; python_version >= '3.11'",
+    "einops>=0.8.2; python_version >= '3.11'",
+    "websockets>=12; python_version >= '3.11'",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.5,<9.0.0",
